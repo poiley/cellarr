@@ -90,3 +90,73 @@ input  = "Movie.2019.2160p.DV.HDR10Plus.WEB-DL.HEVC-GRP"
 source = "HDR10+ and Dolby Vision both present"
 [case.expected]
 hdr = ["dolbyvision", "hdr10plus"]
+
+# --- Pre-retail movie tiers and full-disc / raw buckets (Radarr vocabulary). ---
+# These map to dedicated quality buckets in resolve_quality; the parser must
+# detect each distinct source token. Clean-room facts.
+
+[[case]]
+input  = "Movie.2019.WORKPRINT.XviD-GRP"
+source = "workprint is the lowest movie tier"
+[case.expected]
+source = "workprint"
+
+[[case]]
+input  = "Movie.2019.TELESYNC.x264-GRP"
+source = "telesync (cam synced to external audio)"
+[case.expected]
+source = "telesync"
+
+[[case]]
+input  = "Movie.2019.HDTS.x264-GRP"
+source = "HDTS is telesync-tier"
+[case.expected]
+source = "telesync"
+
+[[case]]
+input  = "Movie.2019.TELECINE.x264-GRP"
+source = "telecine (film-reel transfer)"
+[case.expected]
+source = "telecine"
+
+[[case]]
+input  = "Movie.2019.DVDSCR.XviD-GRP"
+source = "DVD screener"
+[case.expected]
+source = "dvdscr"
+
+[[case]]
+input  = "Movie.2019.SCREENER.x264-GRP"
+source = "bare SCREENER token maps to dvdscr"
+[case.expected]
+source = "dvdscr"
+
+[[case]]
+input  = "Movie.2019.REGIONAL.DVD.x264-GRP"
+source = "regional early-retail disc beats the generic DVD token"
+[case.expected]
+source = "regional"
+
+[[case]]
+input  = "Movie.2019.DVD-R.PAL-GRP"
+source = "recordable-DVD copy is its own bucket above plain DVD"
+[case.expected]
+source = "dvd-r"
+
+[[case]]
+input  = "Movie.2019.2160p.UHD.BR-DISK.HDR-GRP"
+source = "explicit BR-DISK full-disc marker (no encode)"
+[case.expected]
+source = "br-disk"
+
+[[case]]
+input  = "Movie.2019.COMPLETE.BLURAY.2160p.HDR-GRP"
+source = "COMPLETE.BLURAY = full untouched disc"
+[case.expected]
+source = "br-disk"
+
+[[case]]
+input  = "Show.S01E01.1080i.Raw-HD.MPEG2-GRP"
+source = "Raw-HD untouched broadcast capture"
+[case.expected]
+source = "raw-hd"

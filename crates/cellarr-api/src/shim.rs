@@ -546,7 +546,7 @@ async fn quality_profile_schema(State(fs): State<FaceState>) -> Json<Value> {
         .iter()
         .map(|q| {
             json!({
-                "quality": { "id": q.rank, "name": q.name, "source": "unknown", "resolution": 0 },
+                "quality": { "id": q.rank, "name": face_quality_name(&q.name, fs.face), "source": "unknown", "resolution": 0 },
                 "items": [],
                 "allowed": true,
             })
@@ -573,18 +573,39 @@ async fn quality_profile_schema(State(fs): State<FaceState>) -> Json<Value> {
 
 // --- qualitydefinition -----------------------------------------------------
 
+/// Map cellarr's single canonical quality name to the spelling the addressed
+/// face uses. Sonarr and Radarr genuinely disagree on the remux buckets:
+/// Sonarr says `Bluray-1080p Remux` / `Bluray-2160p Remux` (cellarr's canonical
+/// internal name), Radarr says `Remux-1080p` / `Remux-2160p`. Every other bucket
+/// shares one name across both apps, so this only rewrites the two remux tiers
+/// on the Radarr face. The Cellarr face mirrors Radarr (its default surface).
+fn face_quality_name<'a>(canonical: &'a str, face: Face) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    if !face_is_radarr(face) {
+        return Cow::Borrowed(canonical);
+    }
+    match canonical {
+        "Bluray-1080p Remux" => Cow::Borrowed("Remux-1080p"),
+        "Bluray-2160p Remux" => Cow::Borrowed("Remux-2160p"),
+        other => Cow::Borrowed(other),
+    }
+}
+
 /// v3 `qualitydefinition` — the quality catalogue with size limits. Built from
 /// cellarr's default quality ranking; Recyclarr reads it to map quality names.
-async fn quality_definitions() -> Json<Vec<Value>> {
+/// The remux tiers are rendered with the addressed face's spelling
+/// (`Bluray-…  Remux` on Sonarr, `Remux-…` on Radarr).
+async fn quality_definitions(State(fs): State<FaceState>) -> Json<Vec<Value>> {
     let ranking = cellarr_core::QualityRanking::default();
     let out: Vec<Value> = ranking
         .qualities
         .iter()
         .map(|q| {
+            let name = face_quality_name(&q.name, fs.face);
             json!({
                 "id": q.rank + 1,
-                "quality": { "id": q.rank, "name": q.name, "source": "unknown", "resolution": 0 },
-                "title": q.name,
+                "quality": { "id": q.rank, "name": name, "source": "unknown", "resolution": 0 },
+                "title": name,
                 "weight": q.rank + 1,
                 "minSize": q.min_size_per_min.unwrap_or(0),
                 "maxSize": q.max_size_per_min,

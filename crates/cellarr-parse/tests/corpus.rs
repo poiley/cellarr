@@ -85,13 +85,21 @@ fn parse_resolution(s: &str) -> Resolution {
 
 fn parse_source(s: &str) -> Source {
     match s {
+        "workprint" => Source::Workprint,
         "cam" => Source::Cam,
+        "telesync" => Source::Telesync,
+        "telecine" => Source::Telecine,
+        "regional" => Source::Regional,
+        "dvdscr" => Source::Dvdscr,
         "sdtv" => Source::Sdtv,
         "hdtv" => Source::Hdtv,
+        "raw-hd" => Source::RawHd,
         "webrip" => Source::Webrip,
         "web-dl" => Source::WebDl,
         "dvd" => Source::Dvd,
+        "dvd-r" => Source::DvdR,
         "bluray" => Source::Bluray,
+        "br-disk" => Source::BrDisk,
         "remux" => Source::Remux,
         other => panic!("corpus source `{other}` not recognised"),
     }

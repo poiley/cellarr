@@ -94,15 +94,18 @@ fn ctx<'a>(
 /// Ranks under the default ranking (cellarr_core::QualityRanking::default()),
 /// for readability in the tests below.
 mod rank {
-    pub const WEBDL_1080P: u32 = 13;
-    pub const BLURAY_1080P: u32 = 14;
-    pub const BLURAY_2160P: u32 = 19;
+    pub const WEBDL_1080P: u32 = 20;
+    pub const BLURAY_1080P: u32 = 21;
+    pub const BLURAY_2160P: u32 = 26;
+    /// Bluray-2160p Remux — the top of the original (pre-disc/raw) tiers, used as
+    /// a "cutoff above everything referenced here" sentinel.
+    pub const REMUX_2160P: u32 = 27;
 }
 
 #[test]
 fn quality_rank_dominates_a_lower_quality_with_a_huge_cf_score_is_never_an_upgrade() {
-    // Candidate: WEBDL-1080p (rank 13) carrying a +5000 CF score.
-    // On disk:   Bluray-1080p (rank 14) with CF score 0.
+    // Candidate: WEBDL-1080p (rank 20) carrying a +5000 CF score.
+    // On disk:   Bluray-1080p (rank 21) with CF score 0.
     // The decision must NOT downgrade quality to chase the higher CF score.
     let ranking = QualityRanking::default();
     let formats = vec![freeleech_format(5000)];
@@ -137,7 +140,7 @@ fn a_strictly_higher_quality_upgrades_even_when_its_cf_score_is_lower() {
     let formats: Vec<CustomFormat> = vec![];
     let prof = profile(
         &[rank::BLURAY_1080P, rank::BLURAY_2160P],
-        20, // cutoff above 2160p so upgrades are allowed
+        rank::REMUX_2160P, // cutoff above 2160p so upgrades are allowed
         100_000,
     );
     let rel = release("Movie.2024.2160p.BluRay-GROUP", &[]);
@@ -231,7 +234,7 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
         }],
         score: -10000,
     };
-    let mut prof = profile(&[rank::BLURAY_2160P], 20, 100);
+    let mut prof = profile(&[rank::BLURAY_2160P], rank::REMUX_2160P, 100);
     prof.min_custom_format_score = 0;
     let rel = release("Movie.2024.2160p.BluRay.x265-GROUP", &[]);
     let mut p = parsed(Source::Bluray, Resolution::R2160p);
@@ -258,7 +261,7 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
 fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
     let ranking = QualityRanking::default();
     let formats: Vec<CustomFormat> = vec![];
-    let prof = profile(&[rank::BLURAY_1080P], 20, 100);
+    let prof = profile(&[rank::BLURAY_1080P], rank::REMUX_2160P, 100);
     let rel = release("Movie.2024.PROPER.1080p.BluRay-GROUP", &[]);
     let mut p = parsed(Source::Bluray, Resolution::R1080p);
     p.proper_repack = Some(ProperRepack::Proper);

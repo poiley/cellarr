@@ -146,9 +146,10 @@ fn imported_cam_guard_drives_a_below_minimum_reject() {
     let profile = QualityProfile {
         id: QualityProfileId::new(),
         name: "p".to_string(),
-        allowed_qualities: vec![1, 14],
+        // CAM is rank 2 and Bluray-1080p rank 21 in the default ranking.
+        allowed_qualities: vec![2, 21],
         upgrades_allowed: true,
-        cutoff_quality: 20,
+        cutoff_quality: 27,
         min_custom_format_score: 0,
         upgrade_until_custom_format_score: 1000,
         required_languages: vec![],

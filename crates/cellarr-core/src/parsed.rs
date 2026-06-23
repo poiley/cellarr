@@ -89,20 +89,36 @@ pub enum Resolution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Source {
-    /// Cam / telesync (lowest).
+    /// Workprint — an unfinished pre-release cut (lowest movie tier).
+    Workprint,
+    /// Cam — a recording taken in a cinema.
     Cam,
+    /// Telesync — a cam synced to an external audio source.
+    Telesync,
+    /// Telecine — a film-reel-to-digital transfer.
+    Telecine,
+    /// Regional — an early regional retail/screener disc.
+    Regional,
+    /// DVD screener — a promotional DVD screener.
+    Dvdscr,
     /// Standard-definition TV.
     Sdtv,
     /// High-definition TV broadcast.
     Hdtv,
+    /// Raw-HD — an untouched HD broadcast/transport stream (no re-encode).
+    RawHd,
     /// Web-rip (re-encoded web capture).
     Webrip,
     /// Web-DL (direct web download).
     WebDl,
     /// DVD.
     Dvd,
+    /// DVD-R — a recordable-DVD copy (DVD tier, distinct bucket).
+    DvdR,
     /// Blu-ray (encoded).
     Bluray,
+    /// BR-DISK — a full untouched Blu-ray/UHD disc (BDMV/ISO, no encode).
+    BrDisk,
     /// Remux (untouched disc stream).
     Remux,
 }

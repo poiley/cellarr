@@ -51,15 +51,22 @@ The year after a series name is part of the title (disambiguates remakes). cella
 `...2160p.BluRay.REMUX...` → cellarr `Bluray-2160p Remux`, Radarr `Remux-2160p`. cellarr detects the
 remux correctly; only the *name* differs. **Note:** Sonarr and Radarr **disagree** here historically
 (Sonarr "Bluray-2160p Remux", Radarr newer "Remux-2160p"), so there is no single oracle answer.
-- **Status: DEFERRED (vocabulary).** Part of the quality-vocabulary alignment follow-up; pick a
-  canonical set and a per-app mapping in the `/api/v3` shim rather than changing the core bucket name.
+- **Status: FIXED (vocabulary).** One canonical internal name kept (`Bluray-<res> Remux`, the Sonarr
+  spelling); the `/api/v3` shim's `face_quality_name` renames it to `Remux-<res>` on the Radarr face.
+  Verified against both live apps and pinned by `qualitydefinition_remux_name_differs_per_face`. See
+  [quality-vocab.md](quality-vocab.md).
 
 ### G8 — No full-disc (BR-DISK) quality bucket
 `Movie.2019.4K.UHD.BluRay.2160p.HDR.HEVC-GRP` (no remux, no encode marker) → Radarr `BR-DISK` (raw
 disc); cellarr → `Bluray-2160p`. cellarr has no full-disc bucket, so it collapses discs into the
 encoded Bluray tier.
-- **Status: DEFERRED (real, niche).** Fix = add a disc/`BR-DISK` (and `Raw-HD`) quality + detection
-  of full-disc structure (`UHD BluRay` / `BDMV` / `ISO` without an encode). Low frequency; tracked.
+- **Status: FIXED (real, niche).** Added `BR-DISK` and `Raw-HD` quality buckets (plus the Radarr
+  pre-retail movie tiers) to the default ranking, backed by new `Source` variants the parser detects:
+  `BR-DISK`/`COMPLETE.BLURAY`/`BDMV`/`M2TS`/`BD25`/`BD50`/`UHD-BD` (full disc, listed before the
+  encoded-Bluray pattern so a raw disc wins), and `Raw-HD`/`MPEG-TS` (untouched HD capture). Note the
+  original G8 example `…4K.UHD.BluRay.2160p.HDR.HEVC…` carries an encode marker (`HEVC`), so it stays
+  `Bluray-2160p`; only structure tokens *without* an encode bucket to `BR-DISK`. Corpus vectors added.
+  See [quality-vocab.md](quality-vocab.md).
 
 ### G5 — Edition: only the first keyword captured; some editions unrecognized
 cellarr captures a single token where Radarr captures the full edition phrase, and misses "Final Cut".

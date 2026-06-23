@@ -570,6 +570,69 @@ async fn qualitydefinition_present() {
     assert!(missing.is_empty(), "qualitydefinition missing: {missing:?}");
 }
 
+/// The remux buckets are the one place Sonarr and Radarr genuinely disagree on
+/// the quality name. cellarr keeps one canonical internal name
+/// (`Bluray-<res> Remux`, the Sonarr spelling) and renames it to `Remux-<res>`
+/// on the Radarr face. This pins both spellings against the addressed face.
+#[tokio::test]
+async fn qualitydefinition_remux_name_differs_per_face() {
+    let server = start_open().await;
+    async fn titles(server: &common::TestServer, base: &str) -> BTreeSet<String> {
+        let body: Value = server
+            .client()
+            .get(server.url(&format!("{base}/qualitydefinition")))
+            .send()
+            .await
+            .expect("request")
+            .json()
+            .await
+            .expect("json");
+        body.as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["title"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<String>>()
+    }
+
+    let sonarr = titles(&server, "/sonarr/api/v3").await;
+    assert!(
+        sonarr.contains("Bluray-2160p Remux") && sonarr.contains("Bluray-1080p Remux"),
+        "Sonarr face must use the `Bluray-… Remux` spelling, got {sonarr:?}"
+    );
+    assert!(
+        !sonarr.contains("Remux-2160p"),
+        "Sonarr face must NOT use the Radarr `Remux-…` spelling"
+    );
+
+    let radarr = titles(&server, "/radarr/api/v3").await;
+    assert!(
+        radarr.contains("Remux-2160p") && radarr.contains("Remux-1080p"),
+        "Radarr face must use the `Remux-…` spelling, got {radarr:?}"
+    );
+    assert!(
+        !radarr.contains("Bluray-2160p Remux"),
+        "Radarr face must NOT use the Sonarr `Bluray-… Remux` spelling"
+    );
+
+    // The newly-added vocabulary buckets are present on the (movie) Radarr face.
+    for bucket in [
+        "Bluray-576p",
+        "Raw-HD",
+        "BR-DISK",
+        "DVD-R",
+        "DVDSCR",
+        "REGIONAL",
+        "TELECINE",
+        "TELESYNC",
+        "WORKPRINT",
+    ] {
+        assert!(
+            radarr.contains(bucket),
+            "Radarr qualitydefinition missing {bucket}, got {radarr:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn wanted_missing_has_full_paging_envelope() {
     let server = start_open().await;

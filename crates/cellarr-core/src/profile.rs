@@ -67,14 +67,29 @@ impl Quality {
 ///
 /// The list is intentionally explicit rather than computed so it reads like the
 /// user-facing quality table and is trivial to diff when the catalogue changes.
+/// The remux buckets keep the Sonarr spelling (`Bluray-<res> Remux`) as the
+/// single canonical internal name; the Radarr face renames them to `Remux-<res>`
+/// in the `/api/v3` shim. The pre-retail movie tiers (`WORKPRINT`, `TELESYNC`,
+/// `TELECINE`, `REGIONAL`, `DVDSCR`, `DVD-R`) and the full-disc/Raw buckets
+/// (`BR-DISK`, `Raw-HD`) are placed in Radarr's canonical worst→best weight
+/// order (its catalogue is the superset that contains every bucket). `Bluray-576p`
+/// and `Raw-HD` exist in both apps. This keeps the prior ordering as a subsequence
+/// so no existing relative ranking changes.
 const DEFAULT_QUALITY_NAMES: &[&str] = &[
     "Unknown",
+    "WORKPRINT",
     "CAM",
+    "TELESYNC",
+    "TELECINE",
+    "REGIONAL",
+    "DVDSCR",
     "SDTV",
     "DVD",
+    "DVD-R",
     "WEBRip-480p",
     "WEBDL-480p",
     "Bluray-480p",
+    "Bluray-576p",
     "HDTV-720p",
     "WEBRip-720p",
     "WEBDL-720p",
@@ -89,6 +104,8 @@ const DEFAULT_QUALITY_NAMES: &[&str] = &[
     "WEBDL-2160p",
     "Bluray-2160p",
     "Bluray-2160p Remux",
+    "BR-DISK",
+    "Raw-HD",
 ];
 
 /// An ordered quality catalogue: the names that exist and their ranks.
@@ -160,8 +177,20 @@ impl QualityRanking {
 #[must_use]
 pub fn resolve_quality(parsed: &ParsedRelease, ranking: &QualityRanking) -> Quality {
     let name = match (parsed.source, parsed.resolution) {
-        // Cam is its own bucket regardless of advertised resolution.
+        // Pre-retail movie tiers and full-disc/raw buckets are each their own
+        // bucket regardless of advertised resolution (they mirror Radarr's
+        // quality catalogue, which keys these by source alone).
+        (Some(Source::Workprint), _) => "WORKPRINT",
         (Some(Source::Cam), _) => "CAM",
+        (Some(Source::Telesync), _) => "TELESYNC",
+        (Some(Source::Telecine), _) => "TELECINE",
+        (Some(Source::Regional), _) => "REGIONAL",
+        (Some(Source::Dvdscr), _) => "DVDSCR",
+        (Some(Source::DvdR), _) => "DVD-R",
+        (Some(Source::RawHd), _) => "Raw-HD",
+        // A full untouched Blu-ray/UHD disc collapses to the single BR-DISK
+        // bucket regardless of resolution (matches Radarr).
+        (Some(Source::BrDisk), _) => "BR-DISK",
         (Some(Source::Sdtv), _) => "SDTV",
         (Some(Source::Dvd), _) => "DVD",
 
