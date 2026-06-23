@@ -41,5 +41,7 @@ pub use matching::MatchContext;
 pub use quality::{on_disk_from_media_file, resolve_candidate_quality};
 pub use scoring::{score, score_detailed, MatchedFormat, ScoreBreakdown};
 pub use trash::{
-    convert, import_trash_custom_formats, TrashCustomFormat, TrashFields, TrashSpecification,
+    convert, import_trash_custom_formats, import_trash_custom_formats_counted,
+    import_trash_custom_formats_counted_for_app, import_trash_custom_formats_for_app, TrashApp,
+    TrashCustomFormat, TrashFields, TrashImportReport, TrashSpecification,
 };

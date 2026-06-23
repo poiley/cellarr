@@ -35,6 +35,86 @@ that logic runs only during a live search/grab against configured indexers + a p
    direct score oracle (configure a profile with scores both sides, diff `customFormatScore`) is the
    small remaining confirmation; matching — the hard part — is done.
 
+## Full-corpus, real-TRaSH-set CF oracle (matching + score)
+The hand-written 8-CF oracle above is a sharp regex probe but tiny. The
+`oracle_trash_cf` harness (`tests/oracle_trash_cf.rs`, run via
+`just oracle-trash-cf`) is the heavy version: it POSTs the **entire** TRaSH
+Sonarr CF set into a live Sonarr and the Radarr set into a live Radarr, imports
+the identical sets into cellarr, and diffs — per corpus title, **routed by path**
+to the right app (movie_* + upstream/radarr → Radarr; episode/season/anime/daily
++ upstream/sonarr → Sonarr) — both the matched-CF *set* and the CF *score*. It
+asserts ratchet floors (gated on `CELLARR_ORACLE_*`, like `oracle_cf`); a static
+counterpart (`tests/trash_cf_static.rs`) pins the mechanical behaviors in the
+hermetic suite.
+
+### Mechanical gaps found and fixed (this is what the oracle is for)
+Running it against the full set surfaced three high-blast-radius, *mechanical*
+matching bugs — each verified against the live apps' `/api/v3/parse`:
+
+- **G-CF2 — `ReleaseGroupSpecification` is a regex, not exact-equality.** The
+  apps compile the spec's `value` as a case-insensitive regex against the parsed
+  release group. cellarr compared it for exact string equality, so e.g.
+  `No-RlsGroup` (ReleaseGroup `.` negated = "has no group") matched almost
+  everything. Fix: `cellarr-decide::matching` compiles + evaluates ReleaseGroup
+  as a regex against `parsed.group` (absent group ⇒ no match before negate).
+
+- **G-CF3 — `SourceSpecification` enum indices are app-specific.** Sonarr and
+  Radarr use **different** `QualitySource` enums (verified live): Sonarr
+  `television=1, web=3, webRip=4, dvd=5, bluray=6, blurayRaw=7`; Radarr
+  `cam=1, telesync=2, telecine=3, workprint=4, dvd=5, tv=6, webdl=7, webrip=8,
+  bluray=9`. Index `7` means *blurayRaw* on Sonarr but *WEB-DL* on Radarr — a
+  single shared mapping silently mis-matched a whole class of CFs. Fix: the
+  importer takes a `TrashApp` dialect (`import_trash_custom_formats*_for_app`);
+  `source_from_index` is dialect-specific.
+
+- **G-CF4 — CF boolean algebra is *implementation-grouped*, not flat-OR.** The
+  apps group non-required conditions **by implementation**: within an
+  implementation they OR, across implementations they AND; required conditions
+  are pure AND (even two of the same implementation do *not* OR). cellarr did a
+  flat OR over all non-required conditions, so a "tier" CF listing `Source=web`
+  plus a set of release-group regexes matched *every* WEB release, not just those
+  whose group was in the list. This was the single biggest divergence (the
+  `Anime Web Tier`/`Asian Tier`/… clusters). Fix: `MatchContext::matches` groups
+  by `discriminant(ConditionKind)`. Verified live with crafted probe CFs
+  (`GROUPTEST`/`ORTEST`/`REQOR`/`REQAND`).
+
+### Measured (pinned fixture commit, linuxserver images)
+| app    | titles | match-parity (raw) | modelable-match-parity | score-parity |
+|--------|-------:|-------------------:|-----------------------:|-------------:|
+| Sonarr |  1165  | 0.030              | **0.592**              | **0.550**    |
+| Radarr |   544  | 0.325              | **0.436**              | **0.393**    |
+
+*Before the fixes* score-parity was 0.21 (Sonarr) / 0.11 (Radarr). "Modelable"
+parity excludes CFs cellarr can never model (unsupported `implementation`s) from
+the app's set, isolating the matching-algebra correctness from the unsupported
+tail. Raw match-parity is low mainly because `Single Episode` (a
+`ReleaseTypeSpecification`) matches almost every Sonarr title and cellarr can't
+model it — so nearly every title has ≥1 unavoidable diff.
+
+### Divergence classes (catalogued, not chased)
+The harness tags every mismatch; the remaining tail is, in order:
+
+- **unsupported-spec** *(dominant on Sonarr)* — `ReleaseTypeSpecification`
+  (`Single Episode`/`Season Pack`/`Multi-Episode`): there is no field on
+  cellarr's parse for release type, so these CFs are skipped on import and can
+  never match. `Season Pack` is scored (+10), so it also costs score parity. A
+  real gap, but it needs a new parse axis, not a matching fix.
+- **language-default** *(the `cellarr-stronger` cluster)* — negated
+  `LanguageSpecification` CFs (`Language: Not English`, `Not German…`,
+  `Wrong Language`). cellarr treats an *absent* language as "not English" and so
+  matches; the apps **default an undetected language to English** (and decode the
+  numeric language id), so they don't. Fixing this is parser-coupled (default-to-
+  English + a language-id table) and out of scope for the CF layer; catalogued
+  here.
+- **app-builtin-cf / parser-coverage** — app-only matches on `x264`, `720p`,
+  `1080p`, etc. on titles where the apps' parser infers a codec/resolution
+  cellarr's parser does not (e.g. anime release-group → 720p heuristics, MULTi/
+  TrueFrench codec handling). These are parser-coverage gaps, not CF-matching
+  gaps.
+- **regex-dialect** — a small residue of CFs whose title regex uses a .NET-only
+  construct cellarr's engine can't compile (already skip-and-counted on import;
+  see G-CF1 and `trash_fixtures.rs`).
+
 ## Hard / needs more than a black-box endpoint
 3. **Precedence parity** (quality-rank dominates CF score; upgrade only when both cutoffs unmet;
    proper/repack; hard-negative guards). The apps don't expose this directly. Options, in order of

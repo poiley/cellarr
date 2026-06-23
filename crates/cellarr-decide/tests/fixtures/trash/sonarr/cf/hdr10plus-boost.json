@@ -1,0 +1,20 @@
+{
+  "trash_id": "0c4b99df9206d2cfac3c05ab897dd62a",
+  "trash_scores": {
+    "default": 100
+  },
+  "trash_regex": "https://regex101.com/r/hCAQEO/4",
+  "name": "HDR10+ Boost",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "HDR10+",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "\\b(HDR10(?=[+]|P(lus)?))"
+      }
+    }
+  ]
+}

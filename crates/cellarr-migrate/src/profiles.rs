@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use cellarr_core::{CustomFormat, Quality, QualityProfile, QualityProfileId, QualityRanking};
-use cellarr_decide::{convert as convert_trash, TrashCustomFormat};
+use cellarr_decide::{convert as convert_trash, TrashApp, TrashCustomFormat};
 use serde::Deserialize;
 
 use crate::error::{MigrationError, Result};
@@ -85,12 +85,17 @@ struct FormatItem {
 /// Map source custom formats into core [`CustomFormat`]s, scored by `scores`
 /// (keyed by source CF id).
 ///
+/// `app` selects the `SourceSpecification` enum dialect: Sonarr and Radarr key
+/// the same `value` index to different sources, so migrating a Radarr install
+/// with the Sonarr mapping would silently mis-match source-conditioned CFs.
+///
 /// # Errors
 /// Returns [`MigrationError::Json`] for malformed `Specifications` and
 /// [`MigrationError::CustomFormat`] for an unrecognized specification kind.
 pub(crate) fn map_custom_formats(
     sources: &[SourceCustomFormat],
     scores: &HashMap<i64, i32>,
+    app: TrashApp,
 ) -> Result<Vec<CustomFormat>> {
     let mut out = Vec::with_capacity(sources.len());
     for src in sources {
@@ -114,7 +119,7 @@ pub(crate) fn map_custom_formats(
         if let Some(score) = scores.get(&src.id) {
             score_map.insert(src.name.clone(), *score);
         }
-        out.push(convert_trash(trash, &score_map)?);
+        out.push(convert_trash(trash, &score_map, app)?);
     }
     Ok(out)
 }
@@ -342,7 +347,7 @@ mod tests {
             name: "HDR10".to_string(),
             specifications_json: r#"[{"name":"HDR10","implementation":"ReleaseTitleSpecification","required":true,"negate":false,"fields":{"value":"\\bHDR10\\b"}}]"#.to_string(),
         }];
-        let cfs = map_custom_formats(&sources, &scores).unwrap();
+        let cfs = map_custom_formats(&sources, &scores, TrashApp::Sonarr).unwrap();
         assert_eq!(cfs.len(), 1);
         assert_eq!(cfs[0].name, "HDR10");
         assert_eq!(

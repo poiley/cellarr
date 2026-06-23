@@ -14,9 +14,11 @@ pub enum DecideError {
     InvalidRegex {
         /// The name of the custom format whose condition failed to compile.
         format: String,
-        /// The underlying regex compilation error.
+        /// The underlying regex compilation error. Boxed because
+        /// [`fancy_regex::Error`] is large and would otherwise bloat every
+        /// `Result<_, DecideError>` returned across the crate.
         #[source]
-        source: regex::Error,
+        source: Box<fancy_regex::Error>,
     },
 
     /// TRaSH-format custom-format JSON could not be parsed.

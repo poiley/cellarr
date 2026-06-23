@@ -1,0 +1,87 @@
+{
+  "trash_id": "b8e91cc8fb2bd96468fab74730c30d18",
+  "trash_scores": {
+    "default": 1900,
+    "french-anime-multi": 1300,
+    "french-anime-vostfr": 1300,
+    "french-multi-vf": 1900,
+    "french-multi-vo": 1900,
+    "french-vostfr": 0
+  },
+  "name": "FR Remux Tier 01",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "Remux",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": true,
+      "fields": {
+        "value": 7
+      }
+    },
+    {
+      "name": "FtLi",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(FtLi)$"
+      }
+    },
+    {
+      "name": "Goldenyann",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(Goldenyann)$"
+      }
+    },
+    {
+      "name": "HDForever",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(HDForever)$"
+      }
+    },
+    {
+      "name": "HeavyWeight",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(HeavyWeight)$"
+      }
+    },
+    {
+      "name": "ONLY",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(ONLY)$"
+      }
+    },
+    {
+      "name": "Psaro",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(Psaro)$"
+      }
+    },
+    {
+      "name": "TyrellCorp",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(TyrellCorp)$"
+      }
+    }
+  ]
+}

@@ -172,6 +172,40 @@ oracle-cf-score *ARGS:
     export CELLARR_ORACLE_SONARR="http://127.0.0.1:${port}" CELLARR_ORACLE_SONARR_KEY="$SK"
     cargo test -p cellarr-decide --test oracle_cf_score -- --ignored --nocapture {{ARGS}}
 
+# Full-corpus REAL-TRaSH-set CF MATCH + SCORE oracle: POST the entire TRaSH Sonarr CF
+# set into a live Sonarr and the Radarr set into a live Radarr, import the same sets
+# into cellarr, and diff matched-CF sets + scores over the whole corpus (routed by path).
+# Results: target/parity/trash-cf-*. See docs/parity/decision-gaps.md.
+oracle-trash-cf *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sname="cellarr-sonarr-gt-{{run_id}}"
+    rname="cellarr-radarr-gt-{{run_id}}"
+    trap 'docker rm -f "$sname" "$rname" >/dev/null 2>&1 || true' EXIT
+    docker rm -f "$sname" "$rname" >/dev/null 2>&1 || true
+    docker run -d --name "$sname" -p 0:8989 --tmpfs /config \
+        lscr.io/linuxserver/sonarr@sha256:02bc962946fef994e67a38152446df25c10a52f8583aefeeb6467f9dd44cab99 >/dev/null
+    docker run -d --name "$rname" -p 0:7878 --tmpfs /config \
+        lscr.io/linuxserver/radarr:latest >/dev/null
+    sport=$(docker port "$sname" 8989/tcp | head -1 | sed 's/.*://')
+    rport=$(docker port "$rname" 7878/tcp | head -1 | sed 's/.*://')
+    SK=""; RK=""
+    for _ in $(seq 1 30); do
+      SK=$(docker exec "$sname" sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' /config/config.xml 2>/dev/null || true)
+      RK=$(docker exec "$rname" sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' /config/config.xml 2>/dev/null || true)
+      [ -n "${SK:-}" ] && [ -n "${RK:-}" ] && break; sleep 2
+    done
+    [ -z "$SK" ] || [ -z "$RK" ] && { echo "API keys not ready"; exit 1; }
+    for _ in $(seq 1 30); do
+      a=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Api-Key: $SK" "http://127.0.0.1:${sport}/api/v3/system/status" || true)
+      b=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Api-Key: $RK" "http://127.0.0.1:${rport}/api/v3/system/status" || true)
+      [ "$a" = "200" ] && [ "$b" = "200" ] && break; sleep 2
+    done
+    export CELLARR_ORACLE_SONARR="http://127.0.0.1:${sport}" CELLARR_ORACLE_SONARR_KEY="$SK"
+    export CELLARR_ORACLE_RADARR="http://127.0.0.1:${rport}" CELLARR_ORACLE_RADARR_KEY="$RK"
+    echo "oracle-trash-cf {{run_id}}: sonarr=${sport} radarr=${rport}"
+    cargo test -p cellarr-decide --test oracle_trash_cf -- --ignored --nocapture {{ARGS}}
+
 # --- web ------------------------------------------------------------------------------------
 
 # Typecheck + component tests + the SRCL-only lint.
@@ -203,6 +237,7 @@ ci: lint test test-pg web-test
 # Tear down everything this run created: containers, the scratch dir.
 clean-run:
     -docker rm -f "cellarr-pg-{{run_id}}" >/dev/null 2>&1
+    -docker rm -f "cellarr-sonarr-gt-{{run_id}}" "cellarr-radarr-gt-{{run_id}}" >/dev/null 2>&1
     -docker compose -p "cellarr-oracle-{{run_id}}" -f tests/oracle/docker-compose.yml down -v >/dev/null 2>&1
     -rm -rf "{{run_dir}}"
     @echo "cleaned run {{run_id}}"

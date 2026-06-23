@@ -35,7 +35,8 @@ pub(crate) async fn read(pool: &SqlitePool) -> Result<MappedInstall> {
     let profiles = read_profiles(pool).await?;
     let scores = collect_format_scores(&profiles);
     let source_cfs = read_custom_formats(pool).await?;
-    let custom_formats = map_custom_formats(&source_cfs, &scores)?;
+    let custom_formats =
+        map_custom_formats(&source_cfs, &scores, cellarr_decide::TrashApp::Sonarr)?;
     let mapped_profiles = profiles
         .iter()
         .map(|p| map_quality_profile(p, &ranking))

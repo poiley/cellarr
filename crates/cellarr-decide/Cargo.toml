@@ -8,7 +8,11 @@ publish = false
 
 [dependencies]
 cellarr-core.workspace = true
-regex.workspace = true
+# fancy-regex (not the linear-time `regex` crate) backs custom-format title
+# matching: real TRaSH-Guides CFs use .NET lookaround (look-ahead/look-behind),
+# which `regex` rejects. fancy-regex accepts that dialect, matching the .NET
+# engine Sonarr/Radarr compile CF regexes with.
+fancy-regex.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
