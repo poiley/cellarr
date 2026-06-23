@@ -13,7 +13,17 @@ conventions, not a unilateral act. See [../10-ui.md](../10-ui.md). SRCL is **MIT
 ## Consumption policy (decide at scaffold, record here)
 - Consume SRCL either as the `srcl` npm dependency **or** by vendoring `components/`, `common/`,
   `modules/`, and the global CSS following SRCL's structure. Bring over SRCL's `global.css` /
-  `global-fonts.css` and `colors.json`-derived tokens so the terminal aesthetic is exact.
+  `global-fonts.css` and `colors.json`-derived tokens so the terminal aesthetic is exact — including
+  its `body.theme-light` / `body.theme-dark` (and `tint-*`) classes, which are the theming mechanism.
+
+## Theming (required): light, dark, system default
+- Support **both** SRCL themes and **default to the OS preference** with a persisted manual override
+  (System / Light / Dark). Implement via SRCL's body classes — see [../10-ui.md](../10-ui.md) §Theming.
+- A small **theme controller** (the only allowed non-component code): on load apply
+  `theme-dark`/`theme-light` from `matchMedia('(prefers-color-scheme: dark)')`; subscribe to its
+  `change` so "System" follows the OS live; persist Light/Dark overrides (localStorage); set CSS
+  `color-scheme`; and set the initial class **pre-hydration** to avoid a theme flash.
+- Build the toggle from existing SRCL controls (`RadioButtonGroup` or `DropdownMenu`) — no new component.
 - The canonical component catalog is `reference/www-sacred/components/AGENTS.md`; raw sources at
   `https://sacred.computer/llm/components/<Name>.tsx.txt`.
 
@@ -32,6 +42,10 @@ fields + CF-score breakdown + on-disk comparison).
 - `tsc --noEmit` clean; vitest component tests for assembled screens (render + interaction).
 - The **SRCL-only lint** passes: an allowlist of importable UI modules; CI fails if a UI primitive
   outside the SRCL set is introduced.
+- **Theme tests:** the controller resolves System → the `prefers-color-scheme` body class, reacts to
+  a `matchMedia` `change` while on System, honors a persisted Light/Dark override, and sets
+  `color-scheme`; key screens render correctly under both `theme-light` and `theme-dark`; the initial
+  class is set pre-hydration (no theme flash).
 - A small end-to-end smoke set drives the real API (a release flows from search → grab → import and
   shows up correctly, including a decision-log entry).
 

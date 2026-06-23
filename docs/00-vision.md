@@ -47,7 +47,8 @@ Repeated from the README and agent guide because they are the spine of every dec
 - The major download clients: qBittorrent, Deluge, Transmission, SABnzbd, NZBGet.
 - Quality profiles + custom formats with TRaSH-compatible scoring semantics.
 - A self-hostable metadata service for TMDb (movies) and TheTVDB (TV), with caching.
-- The web UI (Sacred) and the REST/WS API + `/api/v3` compatibility shim.
+- The web UI (Sacred/SRCL, with light/dark themes following the OS default) and the REST/WS API +
+  `/api/v3` compatibility shim.
 - Migration importers from existing Radarr and Sonarr SQLite databases.
 
 ## In scope (post-v1, designed-for now)
