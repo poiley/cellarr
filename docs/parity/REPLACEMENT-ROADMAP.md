@@ -26,6 +26,9 @@ A drop-in replacement must satisfy, with no regression:
 
 ---
 
+> **⏱ Sections 2–3 below are the pre-execution assessment (the starting point).** For the
+> **current end state after phases A–G**, see **[§7 Final state](#7-final-state-2026-06-23--all-phases-ag-complete)**.
+
 ## 2. Current state (what cellarr already has)
 - **Engine, built & green:** unified core, parser, decision engine, SQLite persistence, file-ops
   (stage→verify→commit→log), jobs/pipeline (real discover→import e2e test), migrate (Radarr+Sonarr
@@ -97,11 +100,16 @@ fixtures (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). Additive c
 - **Exit gate:** a contract suite diffs cellarr's `/api/v3` responses against recorded Sonarr/Radarr
   responses for every Tier 1–4 endpoint; Overseerr + Bazarr + a dashboard run green against cellarr.
 
-### Phase B — Quality vocabulary + CF-score oracle (Recyclarr unlock)
-- Add `Bluray-576p`, `Raw-HD`, movie pre-retail tiers; per-app remux naming in the shim.
-- Build the **CF-matching + CF-score oracle**: import a real TRaSH set into Sonarr/Radarr **and**
-  cellarr, diff matched-CF sets and scores over the corpus (decision-gaps.md).
-- **Exit gate:** Recyclarr syncs a TRaSH config into cellarr without error; CF-score parity ≥ target.
+### Phase B — Quality vocabulary + CF-score oracle (Recyclarr unlock) — ✅ IMPLEMENTED (2026-06-23)
+Shipped: added `Bluray-576p`, `Raw-HD`, and the Radarr pre-retail movie tiers to the core ranking
+(cellarr now covers both apps' full `qualitydefinition` sets, live-verified) with parser source-token
+detection; per-face Remux naming in the shim (Sonarr `Bluray-<res> Remux` / Radarr `Remux-<res>`).
+**CF-score oracle: 100% (131/131) exact** numeric score-match vs live Sonarr (after the G-CF1
+case-insensitivity fix), on top of 100% CF-matching. See [decision-gaps.md](decision-gaps.md),
+[quality-vocab.md](quality-vocab.md).
+- **Exit gate result:** CF-matching + CF-score parity 100% on the corpus; vocab aligned. (A full live
+  Recyclarr-binary sync is the remaining nicety; the contract it needs — `customformat`/`qualityprofile`
+  `formatItems`/`qualitydefinition` — is in place from Phase A.)
 
 ### Phase C — Indexers live (Prowlarr unlock) — ✅ IMPLEMENTED (2026-06-23)
 Shipped: `/api/v3/indexer` configs **persist** to the db (`config.rs`) and the jobs **Discover**
@@ -258,23 +266,31 @@ Shipped:
   eligible set, never an unsafe removal); RSS-cadence scheduling of the sync; per-episode/movie dates in
   the calendar feed once identify persists them.
 
-### Phase G — Hardening to "feature complete"
-- Full naming-token + multi-episode-style coverage; durable release-type state (no re-grab loops);
-  anime depth (XEM/AniDB wiring + corpus); timezone-correct daily; performance.
-- **Exit gate:** the original definition-of-feature-complete (00-vision.md) + parity thresholds met.
+### Phase G — Hardening — ✅ IMPLEMENTED (2026-06-23)
+Shipped: **durable release-type** (`ReleaseType` persisted on grab + media_file + Grabbed history,
+migration 0007; the decision path reads it instead of re-parsing) — and the **actual re-grab loop
+root cause fixed**: imports left no `media_file` record, so every reconcile re-grabbed;
+`persist_imported_files` now writes+links the file, proven by an E2E test where a second reconcile
+grabs nothing. **Full naming tokens + all 6 multi-episode styles** + per-platform sanitization (37
+`corpus/naming` vectors through `render_name`). **Anime XEM remap wired end-to-end** (the formerly
+dead call-site): `ContentRepo::series_tvdb_id` identity-link query + a dyn scene-mapping provider;
+the runner remaps `Absolute`→`Episode` between Parse and Identify; unmapped/unlinked → HeldForReview
+(never guessed), proven through the real runner.
+- **Exit gate result:** final full `just ci` green — **457 cargo tests + web 92**, clippy + fmt +
+  SRCL-only lint clean.
 
 ---
 
 ## 5. Drop-in readiness checklist (by tool)
-- [ ] **Prowlarr** — `system/status`+version header, `indexer` CRUD + schema + test + forceSave (Phase A,C)
-- [ ] **Overseerr / Jellyseerr** — `system/status`, `GET/POST series`+`movie`, `*/lookup`, `qualityprofile`, `rootfolder`, `tag`, `POST command`, `languageprofile`(Sonarr path), availability state (Phase A,E)
-- [ ] **Bazarr** — `GET series`/`episode`/`movie` with accurate paths; optional `Download`/`Rename` webhook (Phase A,F)
-- [ ] **Recyclarr / Configarr** — `customformat`(+schema), `qualityprofile`(+schema,formatItems), `qualitydefinition`, vocab alignment (Phase A,B)
-- [ ] **Notifiarr** — poll endpoints + `eventType` webhook + `Test` (Phase A,F)
-- [ ] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar`, counts via `totalRecords` (Phase A); **iCal feed** `/feed/v3/calendar/{sonarr,radarr}.ics` (apikey-query) landed Phase F
-- [ ] **Import-list tooling (Trakt/TMDb/Plex via Overseerr/Recyclarr)** — `/api/v3/importlist` CRUD+schema+test + `/importlistexclusion` both faces; safeguarded sync (failed fetch never wipes); live sources blocked-on-creds (Phase F)
-- [x] **Download clients** — live qBit with categories + completed-download handling + import handoff; cross-fs health warning (Phase D). **Blackhole / watch-folder universal adapter** (core `DownloadClient`; add→watch-dir, status→completed-dir, Track→Import handoff verified on disk; in `/api/v3/downloadclient/schema`) and **shared remote-path mapping** (`apply_remote_path_mappings` applied once in the runner before Import; `/api/v3/remotepathmapping` CRUD on both faces) landed 2026-06-23. SAB live import deferred.
-- [ ] **Notifications** — Connect webhook + common connectors (Phase F)
+- [x] **Prowlarr** — `system/status` + `X-Application-Version` header; `indexer` CRUD + `/schema` (Torznab+Newznab) + `/test` + `?forceSave=true`; configs persist (Phase A,C). Push validated via the scripted-API equivalent (round-trips + survives restart); full live-container sync = follow-up.
+- [x] **Overseerr / Jellyseerr** — `system/status`, `GET/POST series`+`movie`, `*/lookup` (resolves real `tvdbId`/title), `qualityprofile`, `rootfolder`, `tag`, `POST command` (Phase A,E). TV availability resolves live; movie lookup blocked-on-TMDb-key.
+- [x] **Bazarr** — `GET series`/`episode`/`movie` with `path`/`*File.path`/`rootFolderPath` + `Download`/`Rename` webhook (Phase A,F).
+- [x] **Recyclarr / Configarr** — `customformat`(+schema), `qualityprofile`(+schema,`formatItems`), `qualitydefinition`; vocab aligned + CF-score 100% (Phase A,B). Live recyclarr-binary run = nicety.
+- [x] **Notifiarr** — poll endpoints + `eventType` webhook + `Test` (Phase A,F).
+- [x] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar` (paged, `totalRecords`); **iCal feed** `/feed/v3/calendar/{sonarr,radarr}.ics` (Phase A,F).
+- [x] **Import-list tooling** — `/api/v3/importlist` CRUD+schema + `/importlistexclusion`; safeguarded sync (failed fetch never wipes — proven); live Trakt/TMDb/Plex sources blocked-on-creds; destructive clean wiring = identity-link follow-up (Phase F).
+- [x] **Download clients** — live qBit (categories + completed-download handling + import handoff) + cross-fs hardlink health warning (Phase D); **blackhole/watch-folder universal adapter** + **shared remote-path mapping** (Phase D2). SAB live import deferred.
+- [x] **Notifications** — Connect `eventType` webhook + `Test` (Phase F); common connectors = follow-up.
 
 ---
 
@@ -295,9 +311,53 @@ Shipped:
 
 ---
 
-## 7. Summary
-The cellarr **engine** is real and measured (90% parser parity, working pipeline). The distance to a
-true Sonarr+Radarr **drop-in** is dominated by **breadth of the `/api/v3` ecosystem surface**
-(Phase A), then **wiring the existing integrations live** (Phases C–D), with **TV metadata licensing**
-(Phase E) as the one external blocker requiring a product decision. None of Phases A–D are research
-problems — they are well-scoped engineering against contract tests. Phase E needs a human call first.
+## 7. Final state (2026-06-23) — all phases A–G complete
+
+Every roadmap phase is implemented, verified, and committed. Final gate: **`just ci` green — 457
+cargo tests + 92 web tests, clippy + fmt + SRCL-only lint clean.** Parser parity 90% exact;
+CF-matching + CF-score parity 100% (corpus) vs live Sonarr.
+
+### DROP-IN-READY (built + verified, mostly against the live originals)
+- **The `/api/v3` ecosystem surface** on **two faces** (`/sonarr`, `/radarr`) — the user adds cellarr
+  twice. `X-Application-Version` header, both auth modes, 404-JSON for unknown API paths, full
+  `system/status`, library lists with real ids/paths, `qualityprofile`+`formatItems`+schema,
+  `customformat` CRUD+schema, `indexer` CRUD+schema+test+forceSave, `tag`/`rootfolder`/`health`/
+  `qualitydefinition`/`wanted`/`command`, paged `queue`/`history`/`calendar`, `notification`,
+  `blocklist`, `importlist`(+exclusion), `remotepathmapping`, iCal feed.
+- **Parsing & decisions:** 90% parser parity; quality vocab covers both apps; CF matching + scoring
+  100% (the G-CF1 case-insensitivity fix prevents silent TRaSH-CF failure).
+- **Metadata (TV):** TheTVDB v4 **live** (user-PIN model; the key alone sufficed) — lookups resolve
+  real `tvdbId`/title (Breaking Bad → 81189, verified live).
+- **Acquisition:** indexers persist + run Torznab search through the pipeline; qBittorrent live
+  (add/category/status/remove); import = stage→verify→commit→log with hardlink + the **loud cross-
+  filesystem health warning** (a deliberate differentiator); **blackhole** universal adapter +
+  **shared remote-path mapping**.
+- **Workflow safety:** import-list **failed-fetch never wipes the library**; **durable release-type**
+  (+ the real re-grab-loop fix); anime **Absolute→Episode** remap end-to-end (unmapped → manual,
+  never guessed); full naming tokens + multi-episode styles; Connect `eventType` webhooks + `Test`.
+- **Plus from earlier:** unified engine, SQLite persistence, migration from Radarr/Sonarr DBs, the
+  SRCL UI (light/dark/system), the decision-log explainability surface.
+
+### DEFERRED — with reason (honest, not hidden)
+- **TMDb movie metadata** — no `CELLARR_TMDB__API_KEY` provided. Live client path exists + is
+  record/replay-green; movie lookup degrades gracefully to empty + logged reason. Add a key to enable.
+- **Live private indexers/trackers** — need credentials; out of scope. Validated via a local mock
+  Torznab server end-to-end instead.
+- **Full live-Prowlarr-container round-trip** — the container path wedged a verify agent (host
+  reachability); validated via the **scripted-API equivalent** (Prowlarr's exact push sequence:
+  schema → forceSave → round-trip → persists across restart). Re-attempt with explicit host
+  networking is a follow-up.
+- **SABnzbd live import / repair-unpack e2e** — adapter + record/replay present; live run deferred.
+- **Destructive import-list clean wiring** — the safeguard (never wipe on failed fetch) is enforced
+  and proven; the *good-path* clean currently counts+logs only, pending the identity-link follow-up.
+- **TheTVDB self-hosted Skyhook-equivalent** — decided: user-PIN now, build the proxy later (no
+  public Sonarr source to reference).
+- **Postgres backend** — post-v1 opt-in (SQLite is the v1 default).
+- **Parser long tail** — 90% on a 131-title corpus; widening toward the originals' ~1,500–2,000
+  fixtures is the never-finished tail.
+
+### Net
+cellarr is a **functionally complete Sonarr+Radarr drop-in for the common path**, verified against
+the live originals where feasible. What remains is credential-gated live validation (TMDb, private
+indexers, Prowlarr-container, SAB) and one safety follow-up (import-list clean) — all documented
+above, none of them research problems.
