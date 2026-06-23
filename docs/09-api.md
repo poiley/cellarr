@@ -23,12 +23,41 @@
 
 ## The `/api/v3` compatibility shim
 
-A separate router mounted at `/api/v3` that maps the originals' request/response shapes onto
-cellarr's domain. Because cellarr is unified, the shim must present the *right* app's surface based
-on context (a movies library answers like Radarr; a TV library answers like Sonarr). Scope for v1:
-the endpoints the major ecosystem tools actually call (system status, quality profiles, lookup,
-add, command, calendar, queue, history). The shim is **contract-tested against recorded
-request/response pairs** captured from the real apps and the real ecosystem clients.
+A router that maps the originals' request/response shapes onto cellarr's domain. Because a real
+stack configures a *Sonarr* (TV) and a *Radarr* (movies) **separately** — each a URL + key — and
+cellarr is one app, the shim exposes the same handler core under **three mounts (two faces)**:
+
+| Mount | Face | `appName` | Version | List resources |
+|-------|------|-----------|---------|----------------|
+| `/sonarr/api/v3/*` | **Sonarr face** | `Sonarr` | a current Sonarr v4 string | `series`, `episode` |
+| `/radarr/api/v3/*` | **Radarr face** | `Radarr` | a current Radarr v5 string | `movie` |
+| `/api/v3/*` | cellarr's own | per addressed library | per surface | `series` + `movie` |
+
+The user **adds cellarr twice**: once as a Sonarr (`…/sonarr`) and once as a Radarr (`…/radarr`),
+exactly as they would two separate apps. Only `appName`/version and which media type's list
+resources are exposed differ between faces; everything else is one code path.
+
+Phase A implements the ecosystem-core surface (Prowlarr, Overseerr/Jellyseerr, Bazarr, Recyclarr,
+Notifiarr, dashboards):
+
+- **`X-Application-Version` response header** on every API response (Prowlarr's min-version floor).
+- **Both auth modes** when a key is set: `X-Api-Key` header **and** `?apikey=` query.
+- `ping`, `system/status` (full field set), `health`, `rootfolder`, `tag` (CRUD),
+  `qualitydefinition`, `wanted/missing`, `GET`+`POST command`.
+- `GET /series`(+`/episode`) on the Sonarr face, `GET /movie` on the Radarr face, with
+  `path`/`*File.path`/`rootFolderPath`/`monitored`/`hasFile`, plus the existing `POST` add + `/lookup`.
+- `qualityprofile` with **`formatItems[]`** (CF id→score) + `minUpgradeFormatScore` +
+  `qualityprofile/schema`; `customformat` full CRUD + `customformat/schema` (Recyclarr round-trips
+  `specifications[]`).
+- `indexer` CRUD + `indexer/schema` (Torznab + Newznab) + `POST indexer/test` + `?forceSave=true`.
+- Full paging envelope (`page,pageSize,sortKey,sortDirection,totalRecords,records`) on list endpoints.
+
+**Bug B1 (fixed):** unknown `/api/v3/*` (and `/sonarr|radarr/api/v3/*`) paths now return **404 JSON**
+(`{code,message}`), never the SPA HTML fallback — the asset fallback is scoped to non-API paths via
+a 404-JSON fallback owned by each v3 mount.
+
+The shim is **contract-tested against fixtures captured from live Sonarr 4.0.17 / Radarr 6.2.1**
+(`crates/cellarr-api/tests/fixtures/`); the suite diffs cellarr's JSON shapes against them.
 
 > Maintaining the shim is a feature, not tech debt. Breaking it breaks users' existing tools.
 

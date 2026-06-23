@@ -1,0 +1,224 @@
+{
+  "title": "Dune",
+  "originalTitle": "Dune",
+  "originalLanguage": {
+    "id": 1,
+    "name": "English"
+  },
+  "alternateTitles": [
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u30c7\u30e5\u30fc\u30f3"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Dune: Part One"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u05d7\u05d5\u05dc\u05d9\u05ea: \u05d7\u05dc\u05e7 \u05e8\u05d0\u05e9\u05d5\u05df"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u30c7\u30e5\u30fc\u30f3 \u7802\u306e\u60d1\u661f"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "DUNE \u30c7\u30e5\u30fc\u30f3 \u7802\u306e\u60d1\u661f"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\ub4c4"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u0414\u044e\u043d\u0430"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Dune: Part One"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Duna: Parte Um"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Duna: Primeira Part"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u6c99\u4e18"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Dune - Premi\u00e8re partie"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Duna: Pjesa e Par\u00eb"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Dune: Parte uno"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Duna: Parte 1"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u10d3\u10d8\u10e3\u10dc\u10d8"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u6c99\u4e18\u701a\u6230\uff1a\u7b2c\u4e00\u7ae0"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u0534\u0575\u0578\u0582\u0576\u0561"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u30c7\u30e5\u30fc\u30f3 \u7802\u306e\u60d1\u661fPART1"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "Dyuna"
+    },
+    {
+      "sourceType": "tmdb",
+      "movieMetadataId": 0,
+      "title": "\u10e1\u10d8\u10da\u10d0\u10ee\u10d5\u10d0\u10d5\u10d8"
+    }
+  ],
+  "secondaryYearSourceId": 0,
+  "sortTitle": "dune",
+  "status": "released",
+  "overview": "Paul Atreides, a brilliant and gifted young man born into a great destiny beyond his understanding, must travel to the most dangerous planet in the universe to ensure the future of his family and his people. As malevolent forces explode into conflict over the planet's exclusive supply of the most precious resource in existence-a commodity capable of unlocking humanity's greatest potential-only those who can conquer their fear will survive.",
+  "inCinemas": "2021-09-15T00:00:00Z",
+  "physicalRelease": "2021-12-22T00:00:00Z",
+  "digitalRelease": "2021-10-21T00:00:00Z",
+  "releaseDate": "2021-09-15T00:00:00Z",
+  "images": [
+    {
+      "coverType": "poster",
+      "url": "/MediaCoverProxy/8e8512f53e1890510065dc9dd5de257690a12866c23cfda86c5bb44932196210/gDzOcq0pfeCeqMBwKIJlSmQpjkZ.jpg",
+      "remoteUrl": "https://image.tmdb.org/t/p/original/gDzOcq0pfeCeqMBwKIJlSmQpjkZ.jpg"
+    },
+    {
+      "coverType": "fanart",
+      "url": "/MediaCoverProxy/895662c38942b2a88850cad579c8b2b65b9b39c7c9579e0254b693af8217fea4/zRKQW58MBEY078AxkHxEJzUskCl.jpg",
+      "remoteUrl": "https://image.tmdb.org/t/p/original/zRKQW58MBEY078AxkHxEJzUskCl.jpg"
+    }
+  ],
+  "website": "https://www.warnerbros.com/movies/dune",
+  "remotePoster": "https://image.tmdb.org/t/p/original/gDzOcq0pfeCeqMBwKIJlSmQpjkZ.jpg",
+  "year": 2021,
+  "youTubeTrailerId": "w0HgHet0sxg",
+  "studio": "Legendary Pictures",
+  "qualityProfileId": 0,
+  "movieFileId": 0,
+  "monitored": false,
+  "minimumAvailability": "tba",
+  "isAvailable": true,
+  "folderName": "",
+  "runtime": 155,
+  "cleanTitle": "dune",
+  "imdbId": "tt1160419",
+  "tmdbId": 438631,
+  "titleSlug": "438631",
+  "folder": "Dune (2021)",
+  "certification": "PG-13",
+  "genres": [
+    "Science Fiction",
+    "Adventure"
+  ],
+  "keywords": [
+    "army",
+    "baron",
+    "based on novel or book",
+    "best picture nominee",
+    "betrayal",
+    "chosen one",
+    "creature",
+    "desert",
+    "destiny",
+    "dune",
+    "dystopia",
+    "emperor",
+    "empire",
+    "future",
+    "giant creature",
+    "giant worm",
+    "hallucinogen",
+    "knife fight",
+    "messiah",
+    "mother son relationship",
+    "oscar winner",
+    "premonition",
+    "prophecy",
+    "revenge",
+    "sand",
+    "sand dune",
+    "space",
+    "space opera",
+    "spice",
+    "treason",
+    "water shortage"
+  ],
+  "tags": [],
+  "added": "0001-01-01T00:00:00Z",
+  "ratings": {
+    "imdb": {
+      "votes": 1061101,
+      "value": 8,
+      "type": "user"
+    },
+    "tmdb": {
+      "votes": 14979,
+      "value": 7.78,
+      "type": "user"
+    },
+    "metacritic": {
+      "votes": 0,
+      "value": 74,
+      "type": "user"
+    },
+    "rottenTomatoes": {
+      "votes": 0,
+      "value": 83,
+      "type": "user"
+    },
+    "trakt": {
+      "votes": 44640,
+      "value": 8.02328,
+      "type": "user"
+    }
+  },
+  "collection": {
+    "title": "Dune Collection",
+    "tmdbId": 726871
+  },
+  "popularity": 23.0892
+}

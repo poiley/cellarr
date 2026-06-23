@@ -1,0 +1,938 @@
+[
+    {
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Regular Expression",
+                "helpText": "Custom Format RegEx is Case Insensitive",
+                "type": "textbox",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": [
+            {
+                "name": "x264",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "(x|h)\\.?264",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            },
+            {
+                "name": "x265",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "(((x|h)\\.?265)|(HEVC))",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            },
+            {
+                "name": "Simple Hardcoded Subs",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "subs?",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            },
+            {
+                "name": "Hardcoded Subs",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "\\b(?<hcsub>(\\w+SUBS?)\\b)|(?<hc>(HC|SUBBED))\\b",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            },
+            {
+                "name": "Surround Sound",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "DTS.?(HD|ES|X(?!\\D))|TRUEHD|ATMOS|DD(\\+|P).?([5-9])|EAC3.?([5-9])",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            },
+            {
+                "name": "Preferred Words",
+                "implementation": "ReleaseTitleSpecification",
+                "implementationName": "Release Title",
+                "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+                "negate": false,
+                "required": false,
+                "fields": [
+                    {
+                        "order": 0,
+                        "name": "value",
+                        "label": "Regular Expression",
+                        "helpText": "Custom Format RegEx is Case Insensitive",
+                        "value": "\\b(SPARKS|Framestor)\\b",
+                        "type": "textbox",
+                        "advanced": false,
+                        "privacy": "normal",
+                        "isFloat": false
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "implementation": "EditionSpecification",
+        "implementationName": "Edition",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Regular Expression",
+                "helpText": "Custom Format RegEx is Case Insensitive",
+                "type": "textbox",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "LanguageSpecification",
+        "implementationName": "Language",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Language",
+                "value": 0,
+                "type": "select",
+                "advanced": false,
+                "selectOptions": [
+                    {
+                        "value": -1,
+                        "name": "Any",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": -2,
+                        "name": "Original",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 0,
+                        "name": "Unknown",
+                        "order": 0,
+                        "dividerAfter": true
+                    },
+                    {
+                        "value": 51,
+                        "name": "Afrikaans",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 50,
+                        "name": "Albanian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 31,
+                        "name": "Arabic",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 34,
+                        "name": "Bengali",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 41,
+                        "name": "Bosnian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 29,
+                        "name": "Bulgarian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 38,
+                        "name": "Catalan",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 10,
+                        "name": "Chinese",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 39,
+                        "name": "Croatian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 25,
+                        "name": "Czech",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 6,
+                        "name": "Danish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 7,
+                        "name": "Dutch",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 1,
+                        "name": "English",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 42,
+                        "name": "Estonian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 16,
+                        "name": "Finnish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 19,
+                        "name": "Flemish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2,
+                        "name": "French",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 57,
+                        "name": "Georgian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 4,
+                        "name": "German",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 20,
+                        "name": "Greek",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 23,
+                        "name": "Hebrew",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 26,
+                        "name": "Hindi",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 22,
+                        "name": "Hungarian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 9,
+                        "name": "Icelandic",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 44,
+                        "name": "Indonesian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 5,
+                        "name": "Italian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 8,
+                        "name": "Japanese",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 49,
+                        "name": "Kannada",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 21,
+                        "name": "Korean",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 36,
+                        "name": "Latvian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 24,
+                        "name": "Lithuanian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 46,
+                        "name": "Macedonian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 48,
+                        "name": "Malayalam",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 52,
+                        "name": "Marathi",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 56,
+                        "name": "Mongolian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 15,
+                        "name": "Norwegian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 33,
+                        "name": "Persian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 12,
+                        "name": "Polish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 18,
+                        "name": "Portuguese",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 30,
+                        "name": "Portuguese (Brazil)",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 27,
+                        "name": "Romanian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 55,
+                        "name": "Romansh",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 11,
+                        "name": "Russian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 40,
+                        "name": "Serbian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 35,
+                        "name": "Slovak",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 47,
+                        "name": "Slovenian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 3,
+                        "name": "Spanish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 37,
+                        "name": "Spanish (Latino)",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 14,
+                        "name": "Swedish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 53,
+                        "name": "Tagalog",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 43,
+                        "name": "Tamil",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 45,
+                        "name": "Telugu",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 28,
+                        "name": "Thai",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 17,
+                        "name": "Turkish",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 32,
+                        "name": "Ukrainian",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 54,
+                        "name": "Urdu",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 13,
+                        "name": "Vietnamese",
+                        "order": 0,
+                        "dividerAfter": false
+                    }
+                ],
+                "privacy": "normal",
+                "isFloat": false
+            },
+            {
+                "order": 1,
+                "name": "exceptLanguage",
+                "label": "Except Language",
+                "helpText": "Matches if any language other than the selected language is present",
+                "value": false,
+                "type": "checkbox",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "IndexerFlagSpecification",
+        "implementationName": "Indexer Flag",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Flag",
+                "value": 0,
+                "type": "select",
+                "advanced": false,
+                "selectOptions": [
+                    {
+                        "value": 1,
+                        "name": "G Freeleech",
+                        "order": 1,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2,
+                        "name": "G Halfleech",
+                        "order": 2,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 4,
+                        "name": "G DoubleUpload",
+                        "order": 4,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 8,
+                        "name": "PTP Golden",
+                        "order": 8,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 16,
+                        "name": "PTP Approved",
+                        "order": 16,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 32,
+                        "name": "G Internal",
+                        "order": 32,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 128,
+                        "name": "G Scene",
+                        "order": 128,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 256,
+                        "name": "G Freeleech75",
+                        "order": 256,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 512,
+                        "name": "G Freeleech25",
+                        "order": 512,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2048,
+                        "name": "Nuked",
+                        "order": 2048,
+                        "dividerAfter": false
+                    }
+                ],
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "SourceSpecification",
+        "implementationName": "Source",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Source",
+                "value": 0,
+                "type": "select",
+                "advanced": false,
+                "selectOptions": [
+                    {
+                        "value": 0,
+                        "name": "UNKNOWN",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 1,
+                        "name": "CAM",
+                        "order": 1,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2,
+                        "name": "TELESYNC",
+                        "order": 2,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 3,
+                        "name": "TELECINE",
+                        "order": 3,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 4,
+                        "name": "WORKPRINT",
+                        "order": 4,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 5,
+                        "name": "DVD",
+                        "order": 5,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 6,
+                        "name": "TV",
+                        "order": 6,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 7,
+                        "name": "WEBDL",
+                        "order": 7,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 8,
+                        "name": "WEBRIP",
+                        "order": 8,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 9,
+                        "name": "BLURAY",
+                        "order": 9,
+                        "dividerAfter": false
+                    }
+                ],
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "ResolutionSpecification",
+        "implementationName": "Resolution",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Resolution",
+                "value": 0,
+                "type": "select",
+                "advanced": false,
+                "selectOptions": [
+                    {
+                        "value": 0,
+                        "name": "Unknown",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 360,
+                        "name": "R360p",
+                        "order": 360,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 480,
+                        "name": "R480p",
+                        "order": 480,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 540,
+                        "name": "R540p",
+                        "order": 540,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 576,
+                        "name": "R576p",
+                        "order": 576,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 720,
+                        "name": "R720p",
+                        "order": 720,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 1080,
+                        "name": "R1080p",
+                        "order": 1080,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2160,
+                        "name": "R2160p",
+                        "order": 2160,
+                        "dividerAfter": false
+                    }
+                ],
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "QualityModifierSpecification",
+        "implementationName": "Quality Modifier",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Quality Modifier",
+                "value": 0,
+                "type": "select",
+                "advanced": false,
+                "selectOptions": [
+                    {
+                        "value": 0,
+                        "name": "NONE",
+                        "order": 0,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 1,
+                        "name": "REGIONAL",
+                        "order": 1,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 2,
+                        "name": "SCREENER",
+                        "order": 2,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 3,
+                        "name": "RAWHD",
+                        "order": 3,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 4,
+                        "name": "BRDISK",
+                        "order": 4,
+                        "dividerAfter": false
+                    },
+                    {
+                        "value": 5,
+                        "name": "REMUX",
+                        "order": 5,
+                        "dividerAfter": false
+                    }
+                ],
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "SizeSpecification",
+        "implementationName": "Size",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "min",
+                "label": "Minimum Size",
+                "unit": "GB",
+                "helpText": "Release must be greater than this size",
+                "value": 0,
+                "type": "number",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": true
+            },
+            {
+                "order": 1,
+                "name": "max",
+                "label": "Maximum Size",
+                "unit": "GB",
+                "helpText": "Release must be less than or equal to this size",
+                "value": 0,
+                "type": "number",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": true
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "ReleaseGroupSpecification",
+        "implementationName": "Release Group",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "value",
+                "label": "Regular Expression",
+                "helpText": "Custom Format RegEx is Case Insensitive",
+                "type": "textbox",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    },
+    {
+        "implementation": "YearSpecification",
+        "implementationName": "Year",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": false,
+        "fields": [
+            {
+                "order": 0,
+                "name": "min",
+                "label": "Minimum Year",
+                "value": 0,
+                "type": "number",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            },
+            {
+                "order": 1,
+                "name": "max",
+                "label": "Maximum Year",
+                "value": 0,
+                "type": "number",
+                "advanced": false,
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
+        "presets": []
+    }
+]

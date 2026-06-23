@@ -1,0 +1,8 @@
+[
+  {
+    "isWarning": false,
+    "propertyName": "",
+    "errorMessage": "Unable to connect to indexer, please check your DNS settings and ensure that IPv6 is working or disabled. Name does not resolve (example.invalid:80).",
+    "severity": "error"
+  }
+]

@@ -1,0 +1,20 @@
+[
+    {
+        "source": "IndexerRssCheck",
+        "type": "error",
+        "message": "No indexers available with RSS sync enabled, Sonarr will not grab new releases automatically",
+        "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-indexers-available-with-rss-sync-enabled-sonarr-will-not-grab-new-releases-automatically"
+    },
+    {
+        "source": "IndexerSearchCheck",
+        "type": "warning",
+        "message": "No indexers available with Automatic Search enabled, Sonarr will not provide any automatic search results",
+        "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-indexers-available-with-automatic-search-enabled-sonarr-will-not-provide-any-automatic-search-results"
+    },
+    {
+        "source": "DownloadClientCheck",
+        "type": "warning",
+        "message": "No download client is available",
+        "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-download-client-is-available"
+    }
+]

@@ -5,62 +5,83 @@ dashboards at cellarr instead of Sonarr/Radarr with no regression? Measured by p
 running daemon vs live Sonarr 4.0.17 / Radarr 6.2.1. Ecosystem endpoint requirements are sourced in
 the research consolidated into [REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md).
 
-## ⚠️ Measurement caveat that changed the picture
-A status-code probe is **misleading** for cellarr: its static-asset handler serves `index.html`
+## ✅ Phase A status (2026-06-23)
+**Implemented.** cellarr's `/api/v3` is now a real drop-in for **both** Sonarr and Radarr via two
+faces (`/sonarr/api/v3`, `/radarr/api/v3`) plus the bare `/api/v3` for cellarr's own UI — the user
+adds cellarr twice, as a Sonarr and a Radarr. Shapes were captured from live Sonarr 4.0.17 / Radarr
+6.2.1 and pinned by contract tests (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). The
+table at the bottom and the per-item notes below are updated to ✅/🟡 to reflect what shipped.
+
+## ⚠️ Measurement caveat that changed the picture (historical)
+A status-code probe was **misleading** for cellarr: its static-asset handler served `index.html`
 (HTTP **200, `text/html`**) as an SPA fallback for any unmatched path — including unimplemented
-`/api/v3/*` routes. So "200" ≠ "implemented." We re-probed by **Content-Type**: `application/json`
-= real endpoint; `text/html` = SPA fallback = **not implemented**.
+`/api/v3/*` routes. So "200" ≠ "implemented." We re-probed by **Content-Type**.
 
-> **Bug B1 (real):** the SPA fallback intercepts unknown `/api/v3/*` paths and returns HTML 200.
-> Ecosystem tools will try to parse HTML as JSON and misbehave. The asset fallback must be scoped to
-> non-API paths; unknown `/api/v3/*` must return **404 JSON**, not the UI.
+> **Bug B1 — FIXED.** Each v3 mount now owns a 404-JSON fallback, so unknown `/api/v3/*` (and
+> `/sonarr|radarr/api/v3/*`) paths return `404 {code,message}`; only non-API paths reach the SPA
+> asset fallback. Verified by `unknown_api_path_returns_404_json_not_html`.
 
-## Endpoint coverage (by content-type, this run)
-**Real (JSON) in cellarr's shim today:** `system/status`, `qualityprofile`, `queue`, `history`,
-`calendar`, plus (from the router) `movie/lookup`, `series/lookup`, `POST movie`, `POST series`,
-`POST command`.
+## Endpoint coverage (post-Phase A)
+**Real (JSON), all three mounts:** `ping`, `system/status` (full fields), `health`, `rootfolder`,
+`tag` (CRUD), `qualityprofile` (+`formatItems`,`/schema`), `qualitydefinition`,
+`customformat` (CRUD,`/schema`), `indexer` (CRUD,`/schema`,`/test`), `series`/`movie` (GET list +
+POST add), `episode` (list), `movie/lookup`, `series/lookup`, `calendar`, `queue`, `history`,
+`wanted/missing`, `GET`+`POST command`. Unknown v3 paths → 404 JSON.
 
-**NOT implemented (SPA-fallback HTML):**
-`health`, `qualitydefinition`, `rootfolder`, `tag`, `languageprofile`, `customformat`(+`/schema`),
-`indexer`(+`/schema`), `downloadclient`, `wanted/missing`, `qualityprofile/schema`.
+## Shape gaps — closed
+- **`system/status`** — now returns the full captured field set per face (`branch`, `urlBase`,
+  `isDocker`, `databaseType/Version`, `packageVersion`, `migrationVersion`, `osName`, `startTime`,
+  `isAdmin`, `mode`, `appName`, `version`, …). Verified key-for-key against the fixtures.
+- **`qualityprofile`** — now carries **`formatItems[]`** (CF id→score) and `minUpgradeFormatScore`;
+  the Radarr face also carries `language`. `qualityprofile/schema` present.
+- **`queue`/`history`/`wanted`** — full envelope `page,pageSize,sortKey,sortDirection,totalRecords,records`.
+- **`indexer/schema`** — Torznab + Newznab entries with the round-trip `fields[]`.
 
-**Implemented for the wrong methods:** `GET /series` and `GET /movie` return **405** (the shim has
-`POST` add but not the **GET list** the whole ecosystem reads).
-
-## Shape gaps on endpoints that DO exist
-- **`system/status`** — cellarr returns 10 keys; Sonarr returns ~30. Missing keys tools read:
-  `branch`, `urlBase`, `isDocker`, `databaseType`, `databaseVersion`, `packageVersion`,
-  `migrationVersion`, `osName`, `startTime`, `isAdmin`, `mode`, … Overseerr mainly needs `version` +
-  `appName` (present), but be generous for robustness.
-- **`qualityprofile`** — missing **`formatItems[]`** (CF id→score) and `minUpgradeFormatScore`.
-  **Recyclarr/Configarr cannot sync custom-format scores without `formatItems`.**
-- **`queue`** paging envelope — has `page,pageSize,records,totalRecords`; missing
-  `sortKey,sortDirection` (minor; dashboards read `totalRecords`).
-- **`indexer/schema`** — empty/absent. **Prowlarr round-trips its pushed indexer through the schema;
-  empty schema breaks indexer sync.**
-
-## Cross-cutting contract gaps
-- **`X-Application-Version` response header — ABSENT.** Prowlarr reads the *header* (not the body) and
-  enforces a minimum-version floor; missing header = **rejected**. MUST-HAVE for Prowlarr.
-- **Auth modes** — cellarr's demo runs open (no key), so honoring `X-Api-Key` **and** `?apikey=` when a
-  key is set is unverified; both are required (Overseerr/Homepage use `?apikey=`).
-- **Version identity** — decide which app/version cellarr emulates (Sonarr v4 / Radarr v5) so tools
-  land in their "supported" band and take the right code path (e.g. `languageprofile` is Sonarr-v3-only;
-  Jellyseerr branches on it).
-- **Webhook/Connect push** — `eventType`-discriminated webhook (`Grab`/`Download`/`Rename`/`Health`/
-  `Test`) is what Bazarr-push, Notifiarr, and notifications consume. Native cellarr has WS/SSE push but
-  not the *arr webhook contract. (Coverage TBD — tracked in the roadmap.)
+## Cross-cutting contract — addressed
+- **`X-Application-Version`** — present on every API response per face (Sonarr v4 / Radarr v5).
+- **Auth modes** — `X-Api-Key` **and** `?apikey=` both honored when a key is set; open when none.
+- **Version identity** — Sonarr face = v4 (so `languageprofile` is correctly absent); Radarr face = v5.
+- **Webhook/Connect push** — still native WS/SSE only; the `eventType` webhook contract is Phase F.
 
 ## Tiered must-haves vs cellarr status
 | Tier | Needed by | Endpoints | cellarr status |
 |------|-----------|-----------|----------------|
-| 1 | everything | `system/status`(+version header), `/ping`, `health`, both auth modes | partial (status thin, **no version header**, health missing) |
-| 2 | Overseerr, Bazarr | `GET/POST series`/`movie`, `*/lookup`, `qualityprofile`, `rootfolder`, `tag`, `languageprofile`(Sonarr), `POST command`, accurate file paths | partial (**GET list missing**, rootfolder/tag/languageprofile missing) |
-| 3 | Prowlarr | `indexer` CRUD, `indexer/schema`, `indexer/test`, `?forceSave=true` | **missing** |
-| 4 | Recyclarr, Notifiarr, dashboards | `customformat`(+schema), `qualityprofile`(+schema,**formatItems**), `qualitydefinition`, `queue`/`history`(paging), `calendar`, `wanted/missing` | partial (queue/history/calendar real; **customformat/qualitydefinition/wanted missing; formatItems missing**) |
+| 1 | everything | `system/status`(+version header), `/ping`, `health`, both auth modes | ✅ full status field set, `X-Application-Version` per face, `/ping`, `/health`, both auth modes |
+| 2 | Overseerr, Bazarr | `GET/POST series`/`movie`, `*/lookup`, `qualityprofile`, `rootfolder`, `tag`, `POST command`, accurate file paths | ✅ `GET /series`(+`/episode`)/`/movie` lists with `path`/`*File.path`/`rootFolderPath`/`monitored`/`hasFile`; rootfolder + tag CRUD; `GET`+`POST command` (🟡 `languageprofile` intentionally omitted — emulating Sonarr **v4**, which dropped it) |
+| 3 | Prowlarr | `indexer` CRUD, `indexer/schema`, `indexer/test`, `?forceSave=true` | ✅ indexer create/update/list (+idempotent delete), Torznab+Newznab schema, `POST indexer/test`, `?forceSave=true` honored |
+| 4 | Recyclarr, Notifiarr, dashboards | `customformat`(+schema), `qualityprofile`(+schema,**formatItems**), `qualitydefinition`, `queue`/`history`(paging), `calendar`, `wanted/missing` | ✅ customformat CRUD + schema (specs round-trip); qualityprofile **formatItems** + `minUpgradeFormatScore` + `/schema`; qualitydefinition; queue/history/wanted full paging envelope; calendar |
+
+## What shipped in Phase A
+- **Two faces + bare mount** (`/sonarr/api/v3`, `/radarr/api/v3`, `/api/v3`); one handler core, face
+  changes only `appName`/version + which media type's list resources are exposed.
+- **B1 fixed** — unknown v3 paths return 404 JSON, not SPA HTML.
+- **`X-Application-Version`** header on every API response (Sonarr v4 / Radarr v5 strings).
+- **Both auth modes** (`X-Api-Key` + `?apikey=`) when a key is set; open when none.
+- **Full `system/status`** field set per face (matches captured fixture keys).
+- **Library lists** `GET /series`(+`/episode`)/`GET /movie` with file/path/monitored fields.
+- **`rootfolder`, `tag` CRUD, `health`, `qualitydefinition`, `wanted/missing`, `GET command`.**
+- **`qualityprofile` `formatItems[]` + `minUpgradeFormatScore` + `/schema`**;
+  **`customformat` CRUD + `/schema`** with round-tripping `specifications[]`.
+- **`indexer` CRUD + `/schema` (Torznab+Newznab) + `/test` + `?forceSave=true`.**
+- **Full paging envelope** on queue/history/wanted.
+
+### Additive core change
+`ContentRepository::roots(library)` was added (db + trait) so the library list endpoints can list
+series/movie root nodes — `monitored_missing` deliberately excludes container roots (series/season).
+
+## Deliberately deferred (not Phase A)
+- **`languageprofile`** — Sonarr v3-only; we emulate v4, where it is gone (Jellyseerr branches on the
+  version and skips it). Re-add only if a tool insists on a v3 identity.
+- **Title text in list/lookup resources** — the FTS index has no reverse lookup, so list resources
+  fall back to the node id for `title`; a title column on the resolved-identity row closes this.
+- **`customformat`/`indexer` hard delete** — the persistence layer has no delete yet; the shim
+  accepts deletes idempotently (200). Wiring real deletes is a small additive db change.
+- **Live `indexer/test` connectivity** and CF **score** sync semantics — Phases B/C (the shim's CF
+  score lives on the cellarr `CustomFormat`; `formatItems` surfaces it, but Recyclarr-driven score
+  *writes* land with later phases).
 
 ## Summary
-cellarr's `/api/v3` is a **thin slice** today (~5 real GET endpoints + a few POST/lookup), not the
-~25 a drop-in needs. None of this is hard — it's mostly mapping existing cellarr domain data through
-more handlers — but it is the **largest single block of work** between "works for cellarr's own UI"
-and "drop-in for the ecosystem." Sequenced in [REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md).
+cellarr's `/api/v3` is now the ~25-endpoint drop-in surface across both faces, contract-tested
+against live-app fixtures. Remaining ecosystem work is wiring the existing integrations live
+(Phases B–D) and the metadata licensing fork (Phase E), per
+[REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md).

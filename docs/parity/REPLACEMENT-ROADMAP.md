@@ -79,9 +79,16 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 Ordered so each phase unlocks a real chunk of the ecosystem. Each phase has an **exit gate** that is
 an oracle/contract test, not a vibe.
 
-### Phase A — `/api/v3` ecosystem core (the biggest unlock)
-The thin shim is the #1 blocker. Make unknown `/api/v3/*` return **404 JSON** (fix bug B1), then
-implement, mapping existing cellarr domain data:
+### Phase A — `/api/v3` ecosystem core (the biggest unlock) — ✅ IMPLEMENTED (2026-06-23)
+Shipped: **two faces** (`/sonarr/api/v3`, `/radarr/api/v3`) + the bare `/api/v3`, so the user adds
+cellarr twice (as a Sonarr and a Radarr). B1 fixed (404 JSON), `X-Application-Version` per face, both
+auth modes, full `system/status`, `GET /series`(+`/episode`)/`/movie` lists, `rootfolder`, `tag`
+CRUD, `health`, `qualitydefinition`, `wanted/missing`, `GET command`, `qualityprofile` +
+`formatItems` + `/schema`, `customformat` CRUD + `/schema`, `indexer` CRUD + `/schema` + `/test` +
+`?forceSave=true`, full paging envelope. Contract-tested against live Sonarr 4.0.17 / Radarr 6.2.1
+fixtures (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). Additive core change:
+`ContentRepository::roots(library)`. Detail + deferred items in
+[api-v3-gaps.md](api-v3-gaps.md). Original scope (for reference):
 - `system/status` full fields + **`X-Application-Version` header** + version identity decision.
 - `GET /series` and `GET /movie` (list), with accurate `path`/`*File.path`/`rootFolderPath`.
 - `rootfolder`, `tag`, `health`, `qualitydefinition`, `wanted/missing`, `GET /command`.

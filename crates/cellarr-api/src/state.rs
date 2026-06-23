@@ -12,6 +12,7 @@ use cellarr_db::Database;
 use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, ApiScheduler};
 use crate::events::EventBus;
+use crate::tags::TagStore;
 
 /// The injected dependency bundle for the API.
 #[derive(Clone)]
@@ -24,6 +25,10 @@ pub struct AppState {
     pub scheduler: Arc<ApiScheduler>,
     /// API-key auth configuration.
     pub auth: Arc<AuthConfig>,
+    /// The `/api/v3` tag store. cellarr's core has no tag domain yet, so the
+    /// shim's `tag` CRUD (which Overseerr/Bazarr round-trip) is backed by this
+    /// small in-process store rather than touching the persistence layer.
+    pub tags: TagStore,
 }
 
 impl AppState {
@@ -38,6 +43,7 @@ impl AppState {
             events,
             scheduler,
             auth: Arc::new(auth),
+            tags: TagStore::default(),
         }
     }
 }

@@ -25,6 +25,7 @@ pub mod openapi;
 pub mod shim;
 pub mod state;
 pub mod stream;
+pub mod tags;
 
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -34,14 +35,33 @@ pub use error::{ApiError, ApiResult};
 pub use events::{DomainEvent, EventBus};
 pub use state::AppState;
 
-/// Build the complete application router: native API, the v3 shim, and the
-/// embedded-asset fallback. The asset handler is the fallback so any
-/// non-API path serves the SPA (or the "UI not built yet" placeholder).
+/// Build the complete application router.
+///
+/// Surfaces:
+/// - `/api/v1` — the native cellarr REST + SSE API;
+/// - `/api/v3` — cellarr's own v3 face (app surface auto-selected per library);
+/// - `/sonarr/api/v3` — the **Sonarr face** (TV resources, Sonarr v4 identity);
+/// - `/radarr/api/v3` — the **Radarr face** (movie resources, Radarr v5 identity);
+/// - everything else — the embedded SPA assets.
+///
+/// A real stack adds cellarr **twice**: as a Sonarr at `…/sonarr` and a Radarr
+/// at `…/radarr`. The two faces share one handler core; only `appName`/version
+/// and which media type's list resources are exposed differ.
+///
+/// Each v3 mount owns a 404-JSON fallback, so an unknown `/api/v3/*` (or
+/// `/sonarr|radarr/api/v3/*`) path returns structured JSON — **not** the SPA
+/// HTML (bug B1). Only genuinely non-API paths reach the asset fallback.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", native::router(state.clone()))
-        .nest("/api/v3", shim::router(state))
-        // Any unmatched path falls through to the embedded frontend.
+        .nest("/api/v3", shim::router(state.clone(), shim::Face::Cellarr))
+        .nest(
+            "/sonarr/api/v3",
+            shim::router(state.clone(), shim::Face::Sonarr),
+        )
+        .nest("/radarr/api/v3", shim::router(state, shim::Face::Radarr))
+        // Only non-API paths fall through to the embedded frontend; the v3
+        // mounts return their own 404 JSON for unknown API paths.
         .fallback(assets::serve)
         .layer(TraceLayer::new_for_http())
 }

@@ -222,4 +222,17 @@ impl ContentRepository for ContentRepo {
         .await?;
         rows.into_iter().map(row_to_node).collect()
     }
+
+    async fn roots(&self, library: LibraryId) -> Result<Vec<ContentNode>> {
+        // Root nodes have no parent: a flat movie, or a series/artist/author the
+        // tree hangs off of. Ordered by id for a stable list.
+        let rows = sqlx::query(
+            "SELECT id, library_id, media_type, parent_id, kind, coords, monitored, title_id
+             FROM content WHERE library_id = ?1 AND parent_id IS NULL ORDER BY id ASC",
+        )
+        .bind(library.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_node).collect()
+    }
 }

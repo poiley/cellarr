@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 use crate::decision::{Grab, GrabRequest, GrabStatus};
 use crate::history::{DecisionLogRecord, HistoryRecord};
-use crate::ids::{ContentId, GrabId, MediaFileId, QualityProfileId};
+use crate::ids::{ContentId, GrabId, LibraryId, MediaFileId, QualityProfileId};
 use crate::media::{ContentNode, ContentRef, MediaFile};
 use crate::profile::{CustomFormat, QualityProfile};
 
@@ -34,6 +34,13 @@ pub trait ContentRepository: Send + Sync {
 
     /// All monitored content nodes that currently lack an acceptable file.
     async fn monitored_missing(&self) -> Result<Vec<ContentRef>, Self::Error>;
+
+    /// The root nodes (those with no parent) of a library, in stable order — the
+    /// series/movie/artist/author entries a library "lists". This is what the
+    /// `/api/v3` library list endpoints (`GET /series`, `GET /movie`) and the
+    /// native library-content view read, since `monitored_missing` deliberately
+    /// excludes container roots (series/season) that are not themselves grabbable.
+    async fn roots(&self, library: LibraryId) -> Result<Vec<ContentNode>, Self::Error>;
 
     /// Insert or update a content node (keyed by [`ContentNode::id`]), so the
     /// adjacency list can be written by `db/media`.
