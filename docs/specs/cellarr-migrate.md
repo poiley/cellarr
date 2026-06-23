@@ -11,8 +11,19 @@ Internal: `cellarr-core`, `cellarr-db`, `cellarr-decide` (CF/profile mapping). E
 
 ## Public interface
 - `preview(source_paths) -> MigrationPreview` — what would be imported, no writes.
-- `import(source_paths) -> MigrationReport` — perform the mapping into a fresh cellarr DB.
-- Source detection (Radarr vs Sonarr vs Lidarr by schema).
+- `import(source_paths, &Database) -> MigrationReport` — perform the mapping into the destination
+  cellarr DB (the caller owns/opens it; a fresh DB makes the import reversible — throw it away and
+  re-import).
+- `detect_source(path) -> SourceKind` — Radarr vs Sonarr by schema (Lidarr is recognized and
+  reported as not-yet-supported rather than misdetected).
+- `recognize::plan_file_operations(install, policy)` — the shared planner that proves the
+  recognize-in-place guarantee (zero ops with the in-place policy).
+
+Implemented now: **Radarr** (movies) and **Sonarr** (series/season/episode). Lidarr/music and
+history import remain deferred. Indexers/clients/root-folders carry connection settings across
+verbatim for re-test on import. Quality-profile cutoffs and allowed qualities map by **quality name**
+against `cellarr-core`'s ranking; custom-format `Specifications` route through `cellarr-decide`'s own
+TRaSH converter so decisions stay equivalent.
 
 ## Behavior
 - Open the source DB **read-only**; never mutate the user's existing install (it can keep running).

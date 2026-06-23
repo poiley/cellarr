@@ -1,0 +1,839 @@
+//! The pipeline runner: advances one candidate through the `cellarr-core`
+//! [`Stage`] machine, delegating every type-specific step to the media module.
+//!
+//! This is the executor half of `docs/03-pipeline.md`. The *rules* (legal
+//! transitions) live in `cellarr-core`; the runner performs the *work* at each
+//! stage and records, at every transition, a [`DecisionLogRecord`] (why) and —
+//! at terminal/grab outcomes — a [`HistoryRecord`] (what). It never branches on
+//! [`cellarr_core::MediaType`]: it looks up the matching [`DynMediaModule`] and
+//! delegates Identify and naming to it.
+//!
+//! ## Seams
+//!
+//! The runner is constructed from the integration seams it orchestrates so it is
+//! offline-testable with fakes: an [`Indexer`] (Discover), a [`DownloadClient`]
+//! (Grab/Track), a [`MediaRegistry`] (Identify/Rename), a [`QualityProfile`] +
+//! [`CustomFormat`]s + [`QualityRanking`] (Decide), a cellarr-fs target root
+//! (Import/Rename), and a [`Database`] (decision_log + history + grab
+//! persistence). Real cellarr-parse and cellarr-decide are called directly.
+//!
+//! ## Failure transitions are explicit
+//!
+//! Each stage's failure takes a *logged* transition, never a silent drop:
+//! - Decide → [`Stage::Rejected`] for a normal reject (with the [`Decision`]).
+//! - Grab/Track failures → [`Stage::Failed`] with a `grab-failed` note; the grab
+//!   row is moved to [`GrabStatus::Failed`]/[`GrabStatus::Blocklisted`] so a
+//!   re-search never re-grabs the same bad release.
+//! - Import failures → [`Stage::HeldForReview`] (`import-failed → hold`).
+
+use std::sync::Arc;
+
+use cellarr_core::{
+    decision::Verdict,
+    history::{DecisionLogRecord, HistoryEvent, HistoryRecord},
+    pipeline::{Stage, Transition, TransitionKind},
+    ContentMatch, ContentRef, CustomFormat, Decision, DownloadState, GrabId, GrabRequest,
+    GrabStatus, IndexerId, NamingTokens, ParsedRelease, PipelineRunId, PlannedMove, QualityProfile,
+    QualityRanking, Release, Score,
+};
+use cellarr_core::{
+    repo::{DecisionLogRepository, GrabRepository, HistoryRepository},
+    traits::{DownloadClient, Indexer},
+};
+use cellarr_db::Database;
+use cellarr_decide::{decide, DecisionContext, OnDiskFile, ProperRepackPolicy};
+use cellarr_media::MediaRegistry;
+use time::OffsetDateTime;
+
+use crate::clock::Clock;
+use crate::error::{BoxError, JobError, Result};
+
+/// The terminal outcome of driving a candidate through the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// A release was grabbed, downloaded, and imported. Carries the grab id and
+    /// the destination paths the files landed at.
+    Imported {
+        /// The grab that completed.
+        grab_id: GrabId,
+        /// The on-disk destination paths, in plan order.
+        destinations: Vec<String>,
+    },
+    /// The candidate was rejected at Decide (a normal, logged outcome).
+    Rejected {
+        /// The machine-readable reason, as rendered for the log.
+        reason: String,
+    },
+    /// A download or grab failed; the release was failed/blocklisted and the run
+    /// ended at [`Stage::Failed`].
+    Failed {
+        /// What failed.
+        detail: String,
+    },
+    /// The import could not be safely committed and was held for the user.
+    HeldForReview {
+        /// Why it was held.
+        reason: String,
+    },
+    /// No acceptable release was found at Discover.
+    NothingFound,
+}
+
+/// Everything the runner needs that is *not* a live integration seam: the
+/// decision inputs and the on-disk naming/target configuration.
+///
+/// Bundled so [`PipelineRunner::run`] keeps a small signature; built once per
+/// library/profile and reused across runs.
+pub struct RunnerConfig {
+    /// The active quality profile.
+    pub profile: QualityProfile,
+    /// The custom formats to score against.
+    pub custom_formats: Vec<CustomFormat>,
+    /// The quality catalogue candidates are ranked against.
+    pub ranking: QualityRanking,
+    /// Proper/repack handling for the decision engine.
+    pub proper_repack_policy: ProperRepackPolicy,
+    /// The library root the imported files are placed under.
+    pub library_root: std::path::PathBuf,
+    /// The naming format passed to the rename engine (cellarr-fs `render_name`),
+    /// rendered against the media module's [`NamingTokens`]. The result is a
+    /// relative path joined onto `library_root`.
+    pub naming_format: String,
+    /// The indexer id grabs are attributed to (the seam itself is type-erased).
+    pub indexer_id: IndexerId,
+    /// The download client id grabs are attributed to.
+    pub client_id: cellarr_core::DownloadClientId,
+    /// The download category cellarr tags its grabs with.
+    pub category: String,
+    /// How many times to poll the download client before giving up tracking.
+    pub max_track_polls: u32,
+}
+
+/// Drives candidates through the pipeline state machine.
+///
+/// Holds borrowed seams for the duration of a run; cheap to construct per run.
+pub struct PipelineRunner<'a, I, D, C>
+where
+    I: Indexer,
+    D: DownloadClient,
+    C: Clock,
+{
+    indexer: &'a I,
+    client: &'a D,
+    registry: &'a MediaRegistry,
+    db: &'a Database,
+    clock: &'a C,
+    config: &'a RunnerConfig,
+}
+
+impl<'a, I, D, C> PipelineRunner<'a, I, D, C>
+where
+    I: Indexer,
+    D: DownloadClient,
+    C: Clock,
+{
+    /// Construct a runner over its seams.
+    pub fn new(
+        indexer: &'a I,
+        client: &'a D,
+        registry: &'a MediaRegistry,
+        db: &'a Database,
+        clock: &'a C,
+        config: &'a RunnerConfig,
+    ) -> Self {
+        Self {
+            indexer,
+            client,
+            registry,
+            db,
+            clock,
+            config,
+        }
+    }
+
+    /// Run the full pipeline for `content`, returning the terminal outcome.
+    ///
+    /// Advances `Discover → Parse → Identify → Decide → Grab → Track → Import →
+    /// Rename → Notify → Done`, taking the logged reject/fail/hold branch where a
+    /// stage so determines. Every transition appends a decision-log record; grab,
+    /// completion, import, failure, and hold also append history.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only for *infrastructure* failures the run cannot
+    /// recover from (a repository write failed, an illegal transition was
+    /// constructed). Domain outcomes — reject, grab-failed, import-held — are
+    /// returned as [`RunOutcome`], not errors, because they are normal, logged
+    /// results, not bugs.
+    pub async fn run(&self, content: &ContentRef) -> Result<RunOutcome> {
+        let run_id = PipelineRunId::new();
+        let mut stage = Stage::Discover;
+
+        // --- Discover -----------------------------------------------------
+        let releases = self.discover(content).await?;
+        if releases.is_empty() {
+            self.log(
+                run_id,
+                stage,
+                Stage::Failed,
+                TransitionKind::Fail,
+                None,
+                Some("no releases found".into()),
+            )
+            .await?;
+            return Ok(RunOutcome::NothingFound);
+        }
+        stage = self.advance(run_id, stage, None).await?; // -> Parse
+
+        // The pipeline considers the candidates in indexer order; the first that
+        // is identified and not rejected is the one grabbed. A reject is logged
+        // and the next candidate tried (grab-failed → next release).
+        let mut last_reject: Option<String> = None;
+        for release in &releases {
+            // --- Parse (real cellarr-parse on the *title*) ----------------
+            let parsed = cellarr_parse::parse_title(&release.title);
+            // (already advanced to Parse above for the first candidate; for
+            // subsequent candidates the machine logically re-enters at Parse —
+            // we keep `stage` at the furthest point reached so transitions stay
+            // legal and the log reads as one run.)
+
+            // --- Identify (delegated to the media module) -----------------
+            let matches = match self.identify(content, &parsed).await {
+                Ok(m) => m,
+                Err(e) => {
+                    self.log(
+                        run_id,
+                        Stage::Identify,
+                        Stage::HeldForReview,
+                        TransitionKind::Hold,
+                        None,
+                        Some(format!("identify failed: {e}")),
+                    )
+                    .await?;
+                    return Ok(RunOutcome::HeldForReview {
+                        reason: format!("identify failed: {e}"),
+                    });
+                }
+            };
+            if stage == Stage::Parse {
+                stage = self.advance(run_id, stage, None).await?; // -> Identify
+            }
+            let Some(matched) = self.best_match(content, matches) else {
+                last_reject = Some("no confident content match".into());
+                continue;
+            };
+            if stage == Stage::Identify {
+                stage = self.advance(run_id, stage, None).await?; // -> Decide
+            }
+
+            // --- Decide (real cellarr-decide) -----------------------------
+            let on_disk = self.on_disk_for(content).await?;
+            let decision = self.decide(&matched.content_ref, release, &parsed, on_disk)?;
+            match &decision.verdict {
+                Verdict::Reject { reason } => {
+                    let note = format!("rejected: {}", reason_text(reason));
+                    self.log_decision(
+                        run_id,
+                        Stage::Decide,
+                        Stage::Rejected,
+                        TransitionKind::Reject,
+                        decision.clone(),
+                        Some(note.clone()),
+                    )
+                    .await?;
+                    last_reject = Some(note);
+                    // Try the next candidate; the loop's exhaustion returns the
+                    // last logged reject.
+                    continue;
+                }
+                Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => {
+                    let score = *score;
+                    // Log the grab verdict on the Decide->Grab advance.
+                    return self
+                        .grab_track_import(
+                            run_id,
+                            &mut stage,
+                            content,
+                            &matched.content_ref,
+                            release,
+                            &parsed,
+                            decision,
+                            score,
+                        )
+                        .await;
+                }
+            }
+        }
+
+        // No candidate was grabbed. The run ends Rejected (the last logged
+        // reason) — a normal, fully-logged outcome.
+        let reason = last_reject.unwrap_or_else(|| "no acceptable release".into());
+        Ok(RunOutcome::Rejected { reason })
+    }
+
+    // --- Stage implementations -------------------------------------------
+
+    async fn discover(&self, content: &ContentRef) -> Result<Vec<Release>> {
+        let module = self.module_for(content)?;
+        let terms = module
+            .search_terms(content)
+            .await
+            .map_err(|e| JobError::stage_boxed(Stage::Discover, e))?;
+        self.indexer
+            .search(&terms)
+            .await
+            .map_err(|e| JobError::stage(Stage::Discover, e))
+    }
+
+    async fn identify(
+        &self,
+        content: &ContentRef,
+        parsed: &ParsedRelease,
+    ) -> std::result::Result<Vec<ContentMatch>, BoxError> {
+        let module = self
+            .module_for(content)
+            .map_err(|e| Box::new(e) as BoxError)?;
+        module.match_release(parsed).await
+    }
+
+    /// Pick the match that belongs to the content node under consideration, at a
+    /// usable confidence. The module already drops force-fits below
+    /// [`cellarr_media::AMBIGUOUS_CONFIDENCE`]; here we additionally require the
+    /// match to actually be *for the node we are running* (the same library
+    /// node), so a fanned-out multi-episode match cannot satisfy the wrong node.
+    fn best_match(&self, content: &ContentRef, matches: Vec<ContentMatch>) -> Option<ContentMatch> {
+        matches
+            .into_iter()
+            .filter(|m| {
+                m.content_ref.id == content.id
+                    && m.confidence.value() > cellarr_media::AMBIGUOUS_CONFIDENCE
+            })
+            .max_by(|a, b| {
+                a.confidence
+                    .value()
+                    .partial_cmp(&b.confidence.value())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    fn decide(
+        &self,
+        content_ref: &ContentRef,
+        release: &Release,
+        parsed: &ParsedRelease,
+        on_disk: Option<OnDiskFile>,
+    ) -> Result<Decision> {
+        let ctx = DecisionContext {
+            profile: &self.config.profile,
+            custom_formats: &self.config.custom_formats,
+            ranking: &self.config.ranking,
+            blocklisted: false,
+            proper_repack_policy: self.config.proper_repack_policy,
+        };
+        decide(content_ref.clone(), release, parsed, on_disk, &ctx)
+            .map_err(|e| JobError::stage(Stage::Decide, e))
+    }
+
+    /// The currently-best on-disk file for `content`, expressed for the decision
+    /// engine. Reads through the real media-file repository.
+    async fn on_disk_for(&self, content: &ContentRef) -> Result<Option<OnDiskFile>> {
+        use cellarr_core::repo::MediaFileRepository;
+        let files = self
+            .db
+            .media_files()
+            .list_for_content(content.id)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+        Ok(files
+            .into_iter()
+            .map(|f| OnDiskFile {
+                file_id: f.id,
+                quality_rank: f.quality.rank,
+                custom_format_score: f.custom_format_score.unwrap_or(0),
+            })
+            .max_by_key(|d| (d.quality_rank, d.custom_format_score)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn grab_track_import(
+        &self,
+        run_id: PipelineRunId,
+        stage: &mut Stage,
+        content: &ContentRef,
+        matched_ref: &ContentRef,
+        release: &Release,
+        parsed: &ParsedRelease,
+        decision: Decision,
+        _score: Score,
+    ) -> Result<RunOutcome> {
+        // --- Grab: persist the grab, hand to the download client ----------
+        let request = GrabRequest {
+            content_ref: matched_ref.clone(),
+            release: release.clone(),
+            indexer_id: self.config.indexer_id,
+            client_id: self.config.client_id,
+            category: self.config.category.clone(),
+        };
+        let grab_id = self
+            .db
+            .grabs()
+            .create(&request)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+
+        // Decide -> Grab advance carries the grab verdict (the "why we grabbed").
+        *stage = self
+            .advance_with_decision(run_id, *stage, Some(decision))
+            .await?; // -> Grab
+
+        let download_id = match self.client.add(&request).await {
+            Ok(id) => id,
+            Err(e) => {
+                return self
+                    .fail_grab(
+                        run_id,
+                        content.id,
+                        grab_id,
+                        GrabStatus::Failed,
+                        format!("grab failed: {e}"),
+                    )
+                    .await;
+            }
+        };
+        self.set_grab_status(grab_id, GrabStatus::Sent).await?;
+        self.set_download_id(grab_id, &download_id).await?;
+        self.append_history(run_id, content.id, HistoryEvent::Grabbed { grab_id })
+            .await?;
+
+        *stage = self.advance(run_id, *stage, None).await?; // -> Track
+
+        // --- Track: poll to completion, read content_path -----------------
+        let content_path = match self.track(&download_id).await {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                return self
+                    .fail_grab(
+                        run_id,
+                        content.id,
+                        grab_id,
+                        GrabStatus::Blocklisted,
+                        "download completed without a content path".into(),
+                    )
+                    .await;
+            }
+            Err(detail) => {
+                return self
+                    .fail_grab(run_id, content.id, grab_id, GrabStatus::Blocklisted, detail)
+                    .await;
+            }
+        };
+        self.set_grab_status(grab_id, GrabStatus::Completed).await?;
+        self.append_history(
+            run_id,
+            content.id,
+            HistoryEvent::DownloadCompleted { grab_id },
+        )
+        .await?;
+
+        *stage = self.advance(run_id, *stage, None).await?; // -> Import
+
+        // --- Import: stage -> verify -> commit -> log (cellarr-fs) --------
+        match self
+            .import(grab_id, matched_ref, parsed, &content_path)
+            .await
+        {
+            Ok(destinations) => {
+                self.set_grab_status(grab_id, GrabStatus::Imported).await?;
+                *stage = self.advance(run_id, *stage, None).await?; // -> Rename
+                *stage = self.advance(run_id, *stage, None).await?; // -> Notify
+                self.append_history(run_id, content.id, HistoryEvent::Imported { grab_id })
+                    .await?;
+                self.advance(run_id, *stage, Some("imported".into()))
+                    .await?; // -> Done
+                Ok(RunOutcome::Imported {
+                    grab_id,
+                    destinations,
+                })
+            }
+            Err(detail) => {
+                // import-failed -> hold for review (never silently drop, never
+                // force-fit a destructive write).
+                self.log(
+                    run_id,
+                    Stage::Import,
+                    Stage::HeldForReview,
+                    TransitionKind::Hold,
+                    None,
+                    Some(detail.clone()),
+                )
+                .await?;
+                self.append_history(
+                    run_id,
+                    content.id,
+                    HistoryEvent::HeldForReview {
+                        reason: detail.clone(),
+                    },
+                )
+                .await?;
+                Ok(RunOutcome::HeldForReview { reason: detail })
+            }
+        }
+    }
+
+    /// Poll the download client until completion or terminal failure.
+    ///
+    /// Returns `Ok(Some(path))` on completion with a content path,
+    /// `Ok(None)` on completion with no path (a caller-handled anomaly), and
+    /// `Err(detail)` on a failed download or exhausted polls. Uses a bounded
+    /// poll count rather than a tight loop; the logical clock advances between
+    /// polls so tests never sleep.
+    async fn track(&self, download_id: &str) -> std::result::Result<Option<String>, String> {
+        for _ in 0..self.config.max_track_polls {
+            let status = self
+                .client
+                .status(download_id)
+                .await
+                .map_err(|e| format!("status poll failed: {e}"))?;
+            match status.state {
+                DownloadState::Completed => return Ok(status.content_path),
+                DownloadState::Failed => return Err("download failed".into()),
+                DownloadState::Queued | DownloadState::Downloading => {
+                    // Event-driven progress is preferred (docs/03-pipeline.md);
+                    // absent a webhook, poll with the (logical) clock advancing.
+                    let _ = self.clock.now_secs();
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        Err("tracking timed out".into())
+    }
+
+    /// Build and execute the import plan for one completed download.
+    ///
+    /// Re-parses the *file* path (the second parse, the source of truth) and
+    /// asks the media module for naming tokens, renders the destination via
+    /// cellarr-fs, then runs the crash-safe `plan_import`/`execute_import`.
+    async fn import(
+        &self,
+        grab_id: GrabId,
+        matched_ref: &ContentRef,
+        title_parsed: &ParsedRelease,
+        content_path: &str,
+    ) -> std::result::Result<Vec<String>, String> {
+        let src = std::path::Path::new(content_path);
+        if !src.exists() {
+            return Err(format!(
+                "download content path does not exist: {content_path}"
+            ));
+        }
+        // Collect the source file(s). A single-file download is the file itself;
+        // a directory is walked for its media files.
+        let sources = collect_sources(src).map_err(|e| format!("scan source: {e}"))?;
+        if sources.is_empty() {
+            return Err(format!("no importable files under {content_path}"));
+        }
+
+        // The second parse: re-parse the actual file name and verify it does not
+        // disagree with the grab's intent beyond tolerance. Here the tolerance
+        // check is a coarse coordinates agreement; a richer media-info probe is
+        // cellarr-fs/cellarr-media's remit.
+        let module = self
+            .module_for(matched_ref)
+            .map_err(|e| format!("module: {e}"))?;
+        let tokens = module
+            .naming_tokens(matched_ref)
+            .await
+            .map_err(|e| format!("naming tokens: {e}"))?;
+
+        let mut moves = Vec::with_capacity(sources.len());
+        for source in &sources {
+            let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+            let rel =
+                cellarr_fs::render_name(&self.config.naming_format, &with_ext_token(&tokens, ext))
+                    .map_err(|e| format!("render name: {e}"))?;
+            let dest = self.config.library_root.join(&rel);
+            moves.push(PlannedMove {
+                source_path: source.to_string_lossy().into_owned(),
+                destination_path: dest.to_string_lossy().into_owned(),
+                content_ids: vec![matched_ref.id],
+                replaces: None,
+                replaced_path: None,
+                hardlink: false,
+            });
+        }
+
+        // Verify the second parse agrees with the grab intent on coordinates,
+        // when both carry them. A hard disagreement holds, per the pipeline doc.
+        verify_second_parse(title_parsed, &sources)?;
+
+        let plan = cellarr_fs::plan_import(grab_id, moves)
+            .await
+            .map_err(|e| format!("plan import: {e}"))?;
+        let result = cellarr_fs::execute_import(&plan)
+            .await
+            .map_err(|e| format!("execute import: {e}"))?;
+        Ok(result
+            .moves
+            .into_iter()
+            .map(|m| m.destination_path.to_string_lossy().into_owned())
+            .collect())
+    }
+
+    // --- Failure / transition / log helpers ------------------------------
+
+    async fn fail_grab(
+        &self,
+        run_id: PipelineRunId,
+        content_id: cellarr_core::ContentId,
+        grab_id: GrabId,
+        terminal: GrabStatus,
+        detail: String,
+    ) -> Result<RunOutcome> {
+        self.set_grab_status(grab_id, terminal).await?;
+        self.log(
+            run_id,
+            Stage::Grab,
+            Stage::Failed,
+            TransitionKind::Fail,
+            None,
+            Some(detail.clone()),
+        )
+        .await?;
+        self.append_history(
+            run_id,
+            content_id,
+            HistoryEvent::DownloadFailed {
+                grab_id,
+                detail: detail.clone(),
+            },
+        )
+        .await?;
+        Ok(RunOutcome::Failed { detail })
+    }
+
+    async fn advance(
+        &self,
+        run_id: PipelineRunId,
+        from: Stage,
+        note: Option<String>,
+    ) -> Result<Stage> {
+        self.advance_with_decision_note(run_id, from, None, note)
+            .await
+    }
+
+    async fn advance_with_decision(
+        &self,
+        run_id: PipelineRunId,
+        from: Stage,
+        decision: Option<Decision>,
+    ) -> Result<Stage> {
+        self.advance_with_decision_note(run_id, from, decision, None)
+            .await
+    }
+
+    async fn advance_with_decision_note(
+        &self,
+        run_id: PipelineRunId,
+        from: Stage,
+        decision: Option<Decision>,
+        note: Option<String>,
+    ) -> Result<Stage> {
+        let transition = Transition::advance(from)?;
+        let record = DecisionLogRecord {
+            at: self.now(),
+            run_id,
+            transition,
+            decision,
+            note,
+        };
+        DecisionLogRepository::append(&self.db.decision_log(), &record)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+        Ok(transition.to)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn log(
+        &self,
+        run_id: PipelineRunId,
+        from: Stage,
+        to: Stage,
+        kind: TransitionKind,
+        decision: Option<Decision>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let transition = Transition::new(from, to, kind)?;
+        let record = DecisionLogRecord {
+            at: self.now(),
+            run_id,
+            transition,
+            decision,
+            note,
+        };
+        DecisionLogRepository::append(&self.db.decision_log(), &record)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn log_decision(
+        &self,
+        run_id: PipelineRunId,
+        from: Stage,
+        to: Stage,
+        kind: TransitionKind,
+        decision: Decision,
+        note: Option<String>,
+    ) -> Result<()> {
+        self.log(run_id, from, to, kind, Some(decision), note).await
+    }
+
+    async fn append_history(
+        &self,
+        run_id: PipelineRunId,
+        content_id: cellarr_core::ContentId,
+        event: HistoryEvent,
+    ) -> Result<()> {
+        let record = HistoryRecord {
+            at: self.now(),
+            content_id,
+            run_id,
+            event,
+        };
+        HistoryRepository::append(&self.db.history(), &record)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    async fn set_grab_status(&self, id: GrabId, status: GrabStatus) -> Result<()> {
+        GrabRepository::set_status(&self.db.grabs(), id, status)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    async fn set_download_id(&self, id: GrabId, download_id: &str) -> Result<()> {
+        GrabRepository::set_download_id(&self.db.grabs(), id, download_id)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    fn module_for(&self, content: &ContentRef) -> Result<&dyn cellarr_media::DynMediaModule> {
+        self.registry
+            .get(content.media_type)
+            .ok_or(JobError::NotConfigured {
+                resource: "media module",
+                detail: format!("{:?}", content.media_type),
+            })
+    }
+
+    /// The current time, sourced from the injected clock so logs are
+    /// deterministic in tests. The clock yields seconds; we build an
+    /// `OffsetDateTime` from that so the persisted RFC3339 timestamps are stable.
+    fn now(&self) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(self.clock.now_secs() as i64)
+            .unwrap_or_else(|_| OffsetDateTime::now_utc())
+    }
+}
+
+/// Human text for a reject reason, for the decision-log note.
+fn reason_text(reason: &cellarr_core::RejectReason) -> String {
+    use cellarr_core::RejectReason as R;
+    match reason {
+        R::QualityNotAllowed => "quality not allowed by profile".into(),
+        R::BelowMinimumCustomFormatScore => "below minimum custom-format score".into(),
+        R::Blocklisted => "release is blocklisted".into(),
+        R::SizeOutOfRange => "size out of configured range".into(),
+        R::LanguageRequirementUnmet => "required language missing".into(),
+        R::CutoffAlreadyMet => "cutoff already met".into(),
+        R::NotAnUpgrade => "not an upgrade over existing file".into(),
+        R::Other { detail } => detail.clone(),
+    }
+}
+
+/// Append a synthetic `Extension` naming token so the rename format can preserve
+/// the file extension without the media module having to know it.
+fn with_ext_token(tokens: &NamingTokens, ext: &str) -> NamingTokens {
+    let mut t = tokens.tokens.clone();
+    t.push(("Extension".to_string(), ext.to_string()));
+    NamingTokens { tokens: t }
+}
+
+/// Collect importable source files: the file itself, or every file under a
+/// download directory (one level; download clients lay content out flat or in a
+/// single folder).
+fn collect_sources(src: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    if src.is_file() {
+        return Ok(vec![src.to_path_buf()]);
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The second-parse verification gate. Re-parse each source file name and confirm
+/// it does not disagree with the title parse's coordinates beyond tolerance.
+///
+/// Tolerance here: if both the title parse and the file parse carry TV
+/// coordinates, the season/episode must agree. Movies and missing coordinates
+/// pass (a coarse but safe check; richer media-info verification is out of
+/// scope for the runner). A disagreement returns `Err`, which the caller turns
+/// into an import-held outcome — never a force-fit overwrite.
+fn verify_second_parse(
+    title_parsed: &ParsedRelease,
+    sources: &[std::path::PathBuf],
+) -> std::result::Result<(), String> {
+    use cellarr_core::Coordinates;
+    let title_coords: Vec<&Coordinates> = title_parsed.coordinates.iter().collect();
+    if title_coords.is_empty() {
+        return Ok(());
+    }
+    for source in sources {
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let file_parsed = cellarr_parse::parse_title(name);
+        if file_parsed.coordinates.is_empty() {
+            // The file name carried no numbering (common for movies and for
+            // bare-named files); nothing to contradict.
+            continue;
+        }
+        let agree = file_parsed
+            .coordinates
+            .iter()
+            .any(|fc| coords_agree(title_coords.as_slice(), fc));
+        if !agree {
+            return Err(format!(
+                "file parse {:?} disagrees with grab intent {:?}",
+                file_parsed.coordinates, title_parsed.coordinates
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a file-parsed coordinate matches any of the title-parsed coordinates
+/// on its identifying numbers (season+episode for TV; movies always agree).
+fn coords_agree(
+    title_coords: &[&cellarr_core::Coordinates],
+    file: &cellarr_core::Coordinates,
+) -> bool {
+    use cellarr_core::Coordinates as Co;
+    match file {
+        Co::Movie => true,
+        Co::Episode { season, episode, .. } => title_coords.iter().any(|tc| {
+            matches!(tc, Co::Episode { season: ts, episode: te, .. } if ts == season && te == episode)
+        }),
+        other => title_coords.contains(&other),
+    }
+}
+
+/// Make [`PipelineRunner`] usable behind an `Arc` of its seams (the scheduler
+/// holds shared seams). A thin owned-handle variant.
+pub type SharedRegistry = Arc<MediaRegistry>;

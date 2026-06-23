@@ -1,0 +1,81 @@
+// WIT world for an Indexer-like cellarr plugin.
+//
+// This mirrors the `cellarr_core::Indexer` seam trait so a sandboxed WASM
+// component can be adapted to behave like any built-in indexer. The shapes are
+// intentionally a *flattened* subset of the core `Release`/`SearchTerms` types:
+// the WIT type system has no `Option`/`Vec<(String,String)>` directly, so we use
+// `option<...>`, `list<tuple<...>>`, and an enum for `protocol`. The host
+// translates between these wire types and the core domain types.
+//
+// CAPABILITY POSTURE: the world imports exactly one host capability — a narrow
+// `http-fetch` — and nothing else. There is no `wasi:sockets`, no filesystem,
+// no environment, no clocks. A guest can do nothing but compute and call the
+// single granted import. The host decides per-instance whether even that import
+// is wired to a real fetcher or a deny-all stub (see `HostConfig`).
+
+package cellarr:plugins@0.1.0;
+
+interface types {
+    // Mirrors `cellarr_core::release::Protocol`.
+    enum protocol {
+        torrent,
+        usenet,
+    }
+
+    // Flattened mirror of `cellarr_core::release::Release`. `indexer-id` is
+    // assigned by the host (the guest never invents one), so it is not on the
+    // wire shape the guest returns.
+    record release {
+        title: string,
+        download-url: string,
+        guid: option<string>,
+        protocol: protocol,
+        size: option<u64>,
+        seeders: option<u32>,
+        indexer-flags: list<string>,
+    }
+
+    // Flattened mirror of `cellarr_core::traits::SearchTerms`.
+    record search-terms {
+        queries: list<string>,
+        ids: list<tuple<string, string>>,
+        numbering: list<tuple<string, string>>,
+    }
+
+    // A guest-reported error. The host wraps this into a typed `PluginError`.
+    record plugin-error {
+        message: string,
+    }
+}
+
+// The single, narrow host capability a plugin may be granted. Prefer this over
+// `wasi:sockets`: the host fully controls method/URL/timeout and can deny it.
+interface http {
+    use types.{plugin-error};
+
+    record http-response {
+        status: u16,
+        body: list<u8>,
+    }
+
+    // Perform an HTTP GET against `url`. The host enforces all policy
+    // (allow-list, timeout, body-size cap) and may refuse outright.
+    fetch: func(url: string) -> result<http-response, plugin-error>;
+}
+
+// What an indexer plugin must export. Mirrors the `Indexer` trait's
+// `name`/`search`/`latest`.
+interface indexer {
+    use types.{release, search-terms, plugin-error};
+
+    name: func() -> string;
+    search: func(terms: search-terms) -> result<list<release>, plugin-error>;
+    latest: func() -> result<list<release>, plugin-error>;
+}
+
+// The world the host instantiates. It imports only `http` (capability) and
+// exports `indexer`.
+world indexer-plugin {
+    import http;
+    export indexer;
+}

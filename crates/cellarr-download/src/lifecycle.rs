@@ -1,34 +1,34 @@
 //! Shared lifecycle types every adapter speaks.
 //!
-//! `cellarr-core`'s frozen [`DownloadStatus`] is a four-state summary
-//! (`Queued`/`Downloading`/`Completed`/`Failed`) — exactly what the pipeline's
-//! state machine branches on. But the *adapters* need richer detail to do their
-//! job: the on-disk path to hand to Import, and the seed ratio / seeding time to
-//! gate torrent removal. Core deliberately doesn't carry those, so they live
-//! here, crate-local, in [`DownloadProgress`]. See the `coreGaps` note in the
-//! crate report.
+//! `cellarr-core`'s [`DownloadState`] is the four-state summary
+//! (`Queued`/`Downloading`/`Completed`/`Failed`) the pipeline's state machine
+//! branches on. The adapters compute the same detail core now carries on
+//! [`cellarr_core::DownloadStatus`] (on-disk path, progress, seed ratio/time),
+//! plus the client `category` that core does not model. They build that detail
+//! into [`DownloadProgress`] and project it into the core status via
+//! [`DownloadProgress::to_core_status`], so the adapter view and the core view
+//! never disagree.
 //!
-//! [`DownloadProgress::status`] is the single source of truth for the core enum:
-//! adapters fill the whole struct and derive the core [`DownloadStatus`] from
-//! it, so the two never disagree.
+//! [`DownloadProgress::state`] is the single source of truth for the core enum.
 
-use cellarr_core::DownloadStatus;
+use cellarr_core::{DownloadState, DownloadStatus};
 
 /// The detailed state of one tracked download.
 ///
-/// This is what an adapter knows after polling the client. It is reduced to the
-/// core [`DownloadStatus`] for the pipeline, but the extra fields are what make
-/// completion-handoff and ratio/time-gated removal possible.
+/// This is what an adapter knows after polling the client. It projects into the
+/// core [`DownloadStatus`] via [`to_core_status`](Self::to_core_status) for the
+/// pipeline; the only field core does not carry is [`category`](Self::category),
+/// which scopes cellarr to its own downloads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DownloadProgress {
     /// The coarse lifecycle state the pipeline branches on.
-    pub status: DownloadStatus,
+    pub state: DownloadState,
     /// Fraction complete in `[0.0, 1.0]`.
     pub progress: f64,
     /// The on-disk path of the downloaded content, once the client reports one.
     ///
     /// For Usenet this is only meaningful **after** repair/unpack; an adapter
-    /// reports [`DownloadStatus::Completed`] only once the content sits at a
+    /// reports [`DownloadState::Completed`] only once the content sits at a
     /// final, importable path (see `docs/06-integrations.md`).
     pub content_path: Option<String>,
     /// Seed ratio for torrents (uploaded / downloaded), when known. `None` for
@@ -42,6 +42,24 @@ pub struct DownloadProgress {
 }
 
 impl DownloadProgress {
+    /// Project this adapter view into the core [`DownloadStatus`] the
+    /// [`DownloadClient`](cellarr_core::DownloadClient) trait returns.
+    ///
+    /// Carries through the path, progress, and seed signals the executor needs;
+    /// the `category` is dropped because core does not model it (it is an
+    /// adapter-internal scoping concern). `progress` is narrowed from `f64` to the
+    /// core `f32` — a fraction in `[0, 1]` loses no meaningful precision.
+    #[must_use]
+    pub fn to_core_status(&self) -> DownloadStatus {
+        DownloadStatus {
+            state: self.state,
+            progress: self.progress as f32,
+            content_path: self.content_path.clone(),
+            ratio: self.ratio.map(|r| r as f32),
+            seeding_time_secs: self.seeding_time_secs,
+        }
+    }
+
     /// Whether this download belongs to cellarr, i.e. is filed under
     /// `expected_category`.
     ///

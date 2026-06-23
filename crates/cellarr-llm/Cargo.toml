@@ -7,8 +7,14 @@ rust-version.workspace = true
 publish = false
 
 [features]
+# No provider is compiled by default: the daemon must be fully functional with
+# inference disabled (the offline non-negotiable). The in-crate fixture provider
+# is always available so the trait shape can be exercised without any feature.
 default = []
+# Local-first inference against a model server reachable over HTTP (e.g.
+# llama.cpp / Ollama running on localhost). This is the primary provider.
 local = ["dep:reqwest"]
+# Optional remote/cloud provider. An enhancement only; never required.
 cloud = ["dep:reqwest"]
 
 [dependencies]
@@ -16,4 +22,9 @@ cellarr-core.workspace = true
 reqwest = { workspace = true, optional = true }
 moka.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

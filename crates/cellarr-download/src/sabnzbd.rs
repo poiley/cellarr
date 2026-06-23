@@ -17,7 +17,7 @@
 //! An auth failure surfaces as SABnzbd's `{"status": false, "error": "API Key
 //! Incorrect"}`, which we map to [`DownloadError::Auth`].
 
-use cellarr_core::{DownloadStatus, GrabRequest};
+use cellarr_core::{DownloadState, GrabRequest};
 use serde::Deserialize;
 
 use crate::error::DownloadError;
@@ -249,9 +249,9 @@ impl SabnzbdClient {
         progress_from_history(slot)
     }
 
-    /// Poll the coarse [`DownloadStatus`] for an `nzo_id`.
-    pub async fn status(&self, nzo_id: &str) -> Result<DownloadStatus, DownloadError> {
-        Ok(self.progress(nzo_id).await?.status)
+    /// Poll the coarse [`DownloadState`] for an `nzo_id`.
+    pub async fn status(&self, nzo_id: &str) -> Result<DownloadState, DownloadError> {
+        Ok(self.progress(nzo_id).await?.state)
     }
 
     /// Remove a job. Usenet does not seed, so removal is unconditional; the job
@@ -280,14 +280,14 @@ impl SabnzbdClient {
 
 fn progress_from_queue(slot: &QueueSlot) -> DownloadProgress {
     let progress = slot.percentage.parse::<f64>().unwrap_or(0.0) / 100.0;
-    let status = match slot.status.as_str() {
-        "Queued" | "Paused" => DownloadStatus::Queued,
+    let state = match slot.status.as_str() {
+        "Queued" | "Paused" => DownloadState::Queued,
         // Downloading, Checking, Repairing, Extracting, Verifying, Fetching,
         // Grabbing — all still in flight, not yet importable.
-        _ => DownloadStatus::Downloading,
+        _ => DownloadState::Downloading,
     };
     DownloadProgress {
-        status,
+        state,
         progress,
         content_path: None,
         ratio: None,
@@ -308,7 +308,7 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
     };
     match slot.status.as_str() {
         "Completed" => Ok(DownloadProgress {
-            status: DownloadStatus::Completed,
+            state: DownloadState::Completed,
             progress: 1.0,
             content_path: if slot.storage.is_empty() {
                 None
@@ -320,7 +320,7 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
             category,
         }),
         "Failed" => Ok(DownloadProgress {
-            status: DownloadStatus::Failed,
+            state: DownloadState::Failed,
             progress: 1.0,
             content_path: None,
             ratio: None,
@@ -330,7 +330,7 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
         // Still post-processing in history (Extracting/Verifying/Repairing):
         // not yet importable — repair/unpack must finish first.
         _ => Ok(DownloadProgress {
-            status: DownloadStatus::Downloading,
+            state: DownloadState::Downloading,
             progress: 1.0,
             content_path: None,
             ratio: None,

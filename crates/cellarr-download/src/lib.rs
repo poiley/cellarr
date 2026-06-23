@@ -14,12 +14,14 @@
 //! replay recorded API exchanges with no live client (the integration-test rule
 //! in `docs/06-integrations.md`). Production uses [`ReqwestTransport`].
 //!
-//! `cellarr-core`'s frozen [`cellarr_core::DownloadStatus`] is a four-state
-//! summary, which is all the pipeline branches on. Adapters additionally expose
-//! a [`progress`](QbittorrentClient::progress)-style method returning
-//! [`DownloadProgress`] (on-disk path for Import, seed ratio/time for gated
-//! removal) — detail core deliberately does not carry. See the crate report's
-//! `coreGaps`.
+//! `cellarr-core`'s [`cellarr_core::DownloadStatus`] now carries the detail the
+//! pipeline executor needs — coarse [`cellarr_core::DownloadState`], on-disk
+//! `content_path` for Import, `progress`, and the seed `ratio`/`seeding_time_secs`
+//! for gated removal. Adapters compute all of that into a richer crate-local
+//! [`DownloadProgress`] (which also tracks the client `category` core does not
+//! model) and project it onto the trait return type via
+//! [`DownloadProgress::to_core_status`], so the trait alone gives the executor a
+//! full picture without downcasting to a concrete client.
 //!
 //! # Category scoping
 //!
@@ -60,7 +62,11 @@ impl DownloadClient for QbittorrentClient {
     }
 
     async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
-        QbittorrentClient::status(self, download_id).await
+        // Project the adapter's richer view onto the core status so callers get
+        // content_path/progress/seed signals straight off the trait.
+        Ok(QbittorrentClient::progress(self, download_id)
+            .await?
+            .to_core_status())
     }
 
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
@@ -85,7 +91,9 @@ impl DownloadClient for SabnzbdClient {
     }
 
     async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
-        SabnzbdClient::status(self, download_id).await
+        Ok(SabnzbdClient::progress(self, download_id)
+            .await?
+            .to_core_status())
     }
 
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
@@ -106,7 +114,9 @@ impl DownloadClient for NzbgetClient {
     }
 
     async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
-        NzbgetClient::status(self, download_id).await
+        Ok(NzbgetClient::progress(self, download_id)
+            .await?
+            .to_core_status())
     }
 
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {

@@ -8,14 +8,14 @@
 //!   `0`/negative means the add was rejected.
 //! - **Poll** via `listgroups` (active queue) then `history` (finished). NZBGet
 //!   does post-processing (par2 repair, unpack) on the queue side, so a job is
-//!   only [`DownloadStatus::Completed`] once it reaches history with a
+//!   only [`DownloadState::Completed`] once it reaches history with a
 //!   `SUCCESS`/`HEALTH` status; the final path is `DestDir`.
 //! - **Remove** via `editqueue`/`HistoryFinalDelete` (Usenet does not seed →
 //!   unconditional).
 //!
 //! Basic auth failure surfaces as HTTP 401, mapped to [`DownloadError::Auth`].
 
-use cellarr_core::{DownloadStatus, GrabRequest};
+use cellarr_core::{DownloadState, GrabRequest};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -229,9 +229,9 @@ impl NzbgetClient {
         Ok(progress_from_history(item))
     }
 
-    /// Poll the coarse [`DownloadStatus`] for an NZBGet id.
-    pub async fn status(&self, download_id: &str) -> Result<DownloadStatus, DownloadError> {
-        Ok(self.progress(download_id).await?.status)
+    /// Poll the coarse [`DownloadState`] for an NZBGet id.
+    pub async fn status(&self, download_id: &str) -> Result<DownloadState, DownloadError> {
+        Ok(self.progress(download_id).await?.state)
     }
 
     /// Remove a finished job from history (Usenet does not seed → unconditional).
@@ -270,12 +270,12 @@ fn progress_from_group(g: &Group) -> DownloadProgress {
     // PP_QUEUED, LOADING_PARS, VERIFYING_SOURCES, REPAIRING, UNPACKING,
     // POST_PROCESSING. None of these is importable yet — post-processing happens
     // before the job leaves the queue.
-    let status = match g.status.as_str() {
-        "QUEUED" | "PAUSED" => DownloadStatus::Queued,
-        _ => DownloadStatus::Downloading,
+    let state = match g.status.as_str() {
+        "QUEUED" | "PAUSED" => DownloadState::Queued,
+        _ => DownloadState::Downloading,
     };
     DownloadProgress {
-        status,
+        state,
         progress,
         content_path: None,
         ratio: None,
@@ -298,15 +298,15 @@ fn progress_from_history(h: &HistoryItem) -> DownloadProgress {
     // content is on disk and importable, FAILURE/* (incl. par/unpack failures)
     // is terminal.
     let kind = h.status.split('/').next().unwrap_or("");
-    let status = match kind {
-        "SUCCESS" | "WARNING" => DownloadStatus::Completed,
-        "FAILURE" | "DELETED" => DownloadStatus::Failed,
-        _ => DownloadStatus::Downloading,
+    let state = match kind {
+        "SUCCESS" | "WARNING" => DownloadState::Completed,
+        "FAILURE" | "DELETED" => DownloadState::Failed,
+        _ => DownloadState::Downloading,
     };
     DownloadProgress {
-        status,
+        state,
         progress: 1.0,
-        content_path: if matches!(status, DownloadStatus::Completed) && !h.dest_dir.is_empty() {
+        content_path: if matches!(state, DownloadState::Completed) && !h.dest_dir.is_empty() {
             Some(h.dest_dir.clone())
         } else {
             None

@@ -12,4 +12,10 @@ cellarr-db.workspace = true
 cellarr-decide.workspace = true
 sqlx.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+rstest = { workspace = true }
+uuid = { workspace = true }

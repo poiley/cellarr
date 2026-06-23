@@ -5,7 +5,7 @@
 
 mod common;
 
-use cellarr_core::DownloadStatus;
+use cellarr_core::DownloadState;
 use cellarr_download::{DownloadError, QbittorrentClient, QbittorrentSettings, RemovePolicy};
 use common::{torrent_grab, ReplayTransport};
 
@@ -55,7 +55,7 @@ async fn full_lifecycle_with_legacy_login_and_ratio_gated_remove() {
 
     // Still downloading.
     let p = client.progress(&id).await.expect("progress 1");
-    assert_eq!(p.status, DownloadStatus::Downloading);
+    assert_eq!(p.state, DownloadState::Downloading);
     assert_eq!(p.content_path.as_deref(), Some("/downloads/Show.S01E01"));
     assert!(p.is_in_category("cellarr-tv"));
 
@@ -81,8 +81,10 @@ async fn accepts_5x_changed_login_body_via_sid_cookie() {
     let (client, transport) = client("qbittorrent/login_5x_changed_body.json", "cellarr-movies");
     // The 5.x build returns a non-`Ok.` body; the adapter must still authenticate
     // via the issued SID cookie and resend it on the next call.
-    let status = client.status("abc123").await.expect("status");
-    assert_eq!(status, DownloadStatus::Downloading);
+    let state = QbittorrentClient::status(&client, "abc123")
+        .await
+        .expect("status");
+    assert_eq!(state, DownloadState::Downloading);
     transport.assert_drained();
 }
 
@@ -116,7 +118,7 @@ async fn errored_torrent_is_failed_and_foreign_category_is_visible() {
         .progress("erroredhash")
         .await
         .expect("errored progress");
-    assert_eq!(p.status, DownloadStatus::Failed);
+    assert_eq!(p.state, DownloadState::Failed);
 
     // A foreign download surfaces its own category so the caller can refuse to
     // touch it (category scoping).
@@ -124,9 +126,19 @@ async fn errored_torrent_is_failed_and_foreign_category_is_visible() {
         .progress("foreignhash")
         .await
         .expect("foreign progress");
-    assert_eq!(p.status, DownloadStatus::Completed);
+    assert_eq!(p.state, DownloadState::Completed);
     assert!(!p.is_in_category("cellarr-tv"));
     assert!(p.is_in_category("manual-stuff"));
+
+    // The trait projection carries the same detail the executor needs: a
+    // completed status exposes its on-disk content_path (required for Import) and
+    // its seed signals for gated removal. Project from the already-fetched
+    // progress so no extra (unrecorded) exchange is consumed.
+    let core = p.to_core_status();
+    assert!(core.is_completed());
+    assert_eq!(core.content_path.as_deref(), Some("/other/thing"));
+    assert_eq!(core.ratio, Some(3.0));
+    assert_eq!(core.seeding_time_secs, Some(100_000));
 
     transport.assert_drained();
 }

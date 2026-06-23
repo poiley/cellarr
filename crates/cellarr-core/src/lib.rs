@@ -60,5 +60,6 @@ pub use repo::{
     MediaFileRepository, ProfileRepository,
 };
 pub use traits::{
-    DownloadClient, DownloadStatus, Indexer, MediaModule, MetadataSource, NamingTokens, SearchTerms,
+    DownloadClient, DownloadState, DownloadStatus, Indexer, MediaModule, MetadataSource,
+    NamingTokens, SearchTerms,
 };

@@ -509,6 +509,7 @@ dependencies = [
 name = "cellarr-jobs"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "cellarr-core",
  "cellarr-db",
  "cellarr-decide",
@@ -516,9 +517,14 @@ dependencies = [
  "cellarr-fs",
  "cellarr-indexers",
  "cellarr-media",
+ "cellarr-parse",
  "governor",
  "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-cron-scheduler",
  "tracing",
@@ -528,11 +534,14 @@ dependencies = [
 name = "cellarr-llm"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "cellarr-core",
  "moka",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -574,9 +583,13 @@ dependencies = [
  "cellarr-core",
  "cellarr-db",
  "cellarr-decide",
+ "rstest",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

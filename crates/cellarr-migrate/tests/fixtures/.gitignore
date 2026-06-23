@@ -1,0 +1,5 @@
+# The synthetic *arr fixture databases are TEST INPUT and must be committed,
+# even though the repo root ignores *.sqlite. Re-include them (and their build
+# scripts) here so `cargo test` has its fixtures in a fresh checkout.
+!radarr.sqlite
+!sonarr.sqlite

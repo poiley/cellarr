@@ -22,7 +22,7 @@
 
 use std::sync::Mutex;
 
-use cellarr_core::{DownloadStatus, GrabRequest};
+use cellarr_core::{DownloadState, GrabRequest};
 use serde::Deserialize;
 
 use crate::error::DownloadError;
@@ -284,9 +284,9 @@ impl QbittorrentClient {
         Ok(progress_from_info(&info))
     }
 
-    /// Poll the coarse [`DownloadStatus`] of a torrent by infohash.
-    pub async fn status(&self, hash: &str) -> Result<DownloadStatus, DownloadError> {
-        Ok(self.progress(hash).await?.status)
+    /// Poll the coarse [`DownloadState`] of a torrent by infohash.
+    pub async fn status(&self, hash: &str) -> Result<DownloadState, DownloadError> {
+        Ok(self.progress(hash).await?.state)
     }
 
     /// Remove a torrent, honouring a ratio/time gate.
@@ -327,20 +327,20 @@ fn progress_from_info(info: &TorrentInfo) -> DownloadProgress {
     // qBittorrent's `error`/`missingFiles` states are terminal failures; any
     // `*UP` / uploading / forced-up / queued-up state means the content is on
     // disk and seeding, i.e. complete and importable.
-    let status = match info.state.as_str() {
-        "error" | "missingFiles" => DownloadStatus::Failed,
+    let state = match info.state.as_str() {
+        "error" | "missingFiles" => DownloadState::Failed,
         s if s.ends_with("UP") || s == "uploading" || s == "forcedUP" || s == "stalledUP" => {
-            DownloadStatus::Completed
+            DownloadState::Completed
         }
         // A finished but checking/moving torrent: treat 100% as completed.
-        _ if info.progress >= 1.0 => DownloadStatus::Completed,
+        _ if info.progress >= 1.0 => DownloadState::Completed,
         "queuedDL" | "stalledDL" | "metaDL" | "allocating" | "checkingResumeData" => {
-            DownloadStatus::Queued
+            DownloadState::Queued
         }
-        _ => DownloadStatus::Downloading,
+        _ => DownloadState::Downloading,
     };
     DownloadProgress {
-        status,
+        state,
         progress: info.progress,
         content_path: if info.content_path.is_empty() {
             None

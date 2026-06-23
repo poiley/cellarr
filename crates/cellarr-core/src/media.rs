@@ -72,7 +72,12 @@ pub enum MediaType {
 /// let back: Coordinates = serde_json::from_value(json).unwrap();
 /// assert_eq!(back, c);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// `Ord`/`PartialOrd` are derived so coordinates can key ordered sets and maps
+// (cellarr-media flags fanned-out episode nodes need a deterministic, sortable
+// order — e.g. a `BTreeSet<Coordinates>` of the episodes a season pack covers).
+// The derived order follows variant declaration order then field order, which is
+// stable but not otherwise semantically meaningful.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Coordinates {
     /// A movie is its own unit; it carries no coordinates.

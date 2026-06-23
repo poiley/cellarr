@@ -12,6 +12,7 @@
 //! failures without core depending on any I/O crate.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::decision::GrabRequest;
 use crate::media::{ContentRef, MediaType};
@@ -108,9 +109,14 @@ pub trait Indexer: Send + Sync {
     async fn latest(&self) -> Result<Vec<Release>, Self::Error>;
 }
 
-/// The status of a tracked download.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DownloadStatus {
+/// The coarse lifecycle state of a tracked download.
+///
+/// This is the four-state summary the pipeline's state machine branches on. The
+/// surrounding [`DownloadStatus`] carries the detail (path, progress, seed
+/// signals) that Import and torrent-cleanup also need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadState {
     /// Queued but not started.
     Queued,
     /// Actively downloading.
@@ -119,6 +125,57 @@ pub enum DownloadStatus {
     Completed,
     /// Failed (the caller should blocklist and re-search).
     Failed,
+}
+
+/// The status of a tracked download, with the detail the executor needs.
+///
+/// The pipeline branches on [`DownloadStatus::state`]; Import and torrent-cleanup
+/// need more than that. Import has to know **where on disk** the finished content
+/// landed ([`content_path`](DownloadStatus::content_path)), and ratio/time-gated
+/// removal needs the seed signals ([`ratio`](DownloadStatus::ratio),
+/// [`seeding_time_secs`](DownloadStatus::seeding_time_secs)). Carrying them on the
+/// trait's return type lets both work off the [`DownloadClient`] trait alone,
+/// without downcasting to a concrete client.
+///
+/// `content_path` is `None` until the download is [`DownloadState::Completed`];
+/// see [`DownloadClient::status`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DownloadStatus {
+    /// The coarse lifecycle state the pipeline branches on.
+    pub state: DownloadState,
+    /// Fraction complete in `[0.0, 1.0]`.
+    pub progress: f32,
+    /// The on-disk path of the finished content, set once the download is
+    /// [`DownloadState::Completed`] and the client reports a final, importable
+    /// location. `None` while queued/downloading. **Required for Import.**
+    pub content_path: Option<String>,
+    /// Seed ratio (uploaded / downloaded) for torrents, when known. `None` for
+    /// Usenet, which does not seed. Used to ratio-gate removal.
+    pub ratio: Option<f32>,
+    /// Seeding time in seconds for torrents, when known. `None` for Usenet. Used
+    /// to time-gate removal.
+    pub seeding_time_secs: Option<u64>,
+}
+
+impl DownloadStatus {
+    /// A status carrying only its coarse state, with no detail. Useful for tests
+    /// and for clients that expose nothing beyond the lifecycle state.
+    #[must_use]
+    pub const fn from_state(state: DownloadState) -> Self {
+        Self {
+            state,
+            progress: 0.0,
+            content_path: None,
+            ratio: None,
+            seeding_time_secs: None,
+        }
+    }
+
+    /// Whether the download has finished and is ready to import.
+    #[must_use]
+    pub const fn is_completed(&self) -> bool {
+        matches!(self.state, DownloadState::Completed)
+    }
 }
 
 /// A download-client integration (qBittorrent, Deluge, Transmission, SABnzbd,
@@ -135,6 +192,13 @@ pub trait DownloadClient: Send + Sync {
     async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error>;
 
     /// Poll the status of a download by its client id.
+    ///
+    /// The returned [`DownloadStatus::content_path`] is `None` until the download
+    /// reaches [`DownloadState::Completed`], at which point it is set to the final
+    /// on-disk location Import reads from. For torrents the status also carries the
+    /// seed [`ratio`](DownloadStatus::ratio) /
+    /// [`seeding_time_secs`](DownloadStatus::seeding_time_secs) so removal can be
+    /// ratio/time-gated.
     async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error>;
 
     /// Remove a download (optionally deleting its data).

@@ -2,7 +2,7 @@
 
 mod common;
 
-use cellarr_core::DownloadStatus;
+use cellarr_core::DownloadState;
 use cellarr_download::{DownloadError, HttpTransport, NzbgetClient, NzbgetSettings};
 use common::{usenet_grab, ReplayTransport};
 
@@ -47,22 +47,33 @@ async fn full_lifecycle_completes_only_after_postprocess() {
 
     // listgroups: downloading.
     let p = client.progress(&id).await.expect("downloading");
-    assert_eq!(p.status, DownloadStatus::Downloading);
+    assert_eq!(p.state, DownloadState::Downloading);
     assert!((p.progress - 0.6).abs() < 1e-9);
     assert!(p.is_in_category("cellarr-tv"));
 
     // listgroups: unpacking (post-process), still not importable.
     let p = client.progress(&id).await.expect("unpacking");
-    assert_eq!(p.status, DownloadStatus::Downloading);
+    assert_eq!(p.state, DownloadState::Downloading);
     assert!(p.content_path.is_none());
 
     // history: SUCCESS with DestDir.
     let p = client.progress(&id).await.expect("history success");
-    assert_eq!(p.status, DownloadStatus::Completed);
+    assert_eq!(p.state, DownloadState::Completed);
     assert_eq!(
         p.content_path.as_deref(),
         Some("/downloads/dst/Show.S02E05")
     );
+
+    // The core projection a completed download exposes to the executor carries
+    // the on-disk content_path Import reads from; Usenet does not seed.
+    let core = p.to_core_status();
+    assert!(core.is_completed());
+    assert_eq!(
+        core.content_path.as_deref(),
+        Some("/downloads/dst/Show.S02E05")
+    );
+    assert_eq!(core.ratio, None);
+    assert_eq!(core.seeding_time_secs, None);
 
     client.remove(&id, true).await.expect("remove");
     transport.assert_drained();
@@ -80,6 +91,6 @@ async fn http_401_maps_to_auth_error() {
 async fn history_failure_status_maps_to_failed() {
     let (client, transport) = client("nzbget/failed_download.json", "cellarr-tv");
     let p = client.progress("99").await.expect("progress");
-    assert_eq!(p.status, DownloadStatus::Failed);
+    assert_eq!(p.state, DownloadState::Failed);
     transport.assert_drained();
 }
