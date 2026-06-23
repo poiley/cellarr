@@ -27,16 +27,23 @@
 
 pub mod clock;
 pub mod error;
+pub mod importlists;
 pub mod indexers;
 pub mod job;
+pub mod notify;
 pub mod runner;
 pub mod scheduler;
 
 pub use clock::{Clock, LogicalClock, SystemClock};
 pub use error::{BoxError, JobError, Result};
+pub use importlists::{
+    DbLibraryIndex, ImportListSync, ImportListSyncError, LibraryIndex, ListSyncReport,
+    SourceFactory,
+};
 pub use indexers::{DbIndexerSet, IndexerSetError, NabAdapter};
 pub use job::{
     Job, JobKind, JobState, JobStore, MemoryJobStore, MemoryStoreError, RetryPolicy, Schedule,
 };
+pub use notify::{WebhookNotifier, WEBHOOK_KIND, WEBHOOK_URL_FIELD};
 pub use runner::{PipelineRunner, RunOutcome, RunnerConfig};
 pub use scheduler::{ConcurrencyCaps, CronError, JobHandler, JobResult, Scheduler};

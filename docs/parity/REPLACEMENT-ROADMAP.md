@@ -59,11 +59,11 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 | Anime (absolute/XEM/AniDB) | 🟡 extract + remap path; live TheXEM provider wired | remap backed by live TheTVDB+TheXEM (`TvdbSceneMappings`); pipeline invocation gated on identity-link query; corpus depth |
 | Daily shows | ✅ parse + date | timezone handling to verify |
 | Season packs / multi-ep | 🟡 modeled | persist release-type as durable state (avoid re-grab loops) |
-| Calendar / iCal | 🟡 `calendar` JSON | iCal/ICS feed missing |
+| Calendar / iCal | ✅ iCal/ICS feed live | `/feed/v3/calendar/{sonarr,radarr}.ics`, apikey-query auth, RFC 5545 VEVENTs (Phase F); JSON `calendar` still thin |
 | Queue / history / activity | 🟡 JSON + envelope | add `sortKey/sortDirection`; wire to live downloads |
 | Blocklist | 🔴 | failed-download blocklist + redownload |
 | Notifications / Connect webhook | 🔴 (native WS only) | `eventType` webhook + `Test` event |
-| Import lists | 🔴 | Trakt/TMDb/IMDb/Plex-watchlist; **don't wipe library on failed fetch** |
+| Import lists | ✅ framework + safeguard; sources blocked-on-key | `ListSource` trait + safeguarded `sync_import_list` (failed/empty-errored fetch wipes NOTHING; `last_successful_sync` stamped only on confirmed-good); `/api/v3/importlist` CRUD+schema+test + `/importlistexclusion` both faces; Trakt/TMDb/Plex sources wired but credential-gated (fail gracefully), tested via a mock source (Phase F) |
 | Tags | 🔴 in shim | `/api/v3/tag` |
 | Root folders | 🟡 core | `/api/v3/rootfolder` missing in shim |
 | Naming tokens | 🟡 rename engine | full token + multi-episode-style coverage |
@@ -211,10 +211,52 @@ Shipped:
   unavailable: `movie/lookup` degrades to an empty, clearly-flagged result rather than erroring. Set
   `CELLARR_TMDB__API_KEY` to enable + live-test.
 
-### Phase F — Connect webhooks + lists + calendar polish
+### Phase F — Connect webhooks + lists + calendar polish — ✅ IMPLEMENTED (2026-06-23)
+Original scope (for reference):
 - `eventType` webhook + `Test` event (Bazarr-push/Notifiarr/notifications); iCal feed; import lists
   (with the **empty-vs-failed-fetch** safeguard so a failed list never wipes the library); blocklist.
 - **Exit gate:** Bazarr (push), Notifiarr, and a Trakt/TMDb list run green; failed-fetch leaves library intact.
+
+Shipped:
+- **Connect webhooks + `Test` event + blocklist** landed in Phase 1 (Connect `Webhook` notification
+  CRUD/schema/test firing real `eventType` Grab/Download/Rename/Health/Test from pipeline transitions;
+  failed-download blocklist + skip-on-re-search; both verified hermetically).
+- **Import lists framework + the safeguard (this phase):**
+  - **Source abstraction** `cellarr_core::importlist::ListSource` (`fetch() -> FetchResult`), with a
+    pure, unit-tested **safeguarded sync** `sync_import_list`. The safeguard is enforced *by
+    construction*: `FetchResult` is `Fetched(items)` (confirmed-good; empty allowed) **xor**
+    `Failed(reason)`; the diff **never** marks anything removable on a failed (or empty-because-errored)
+    fetch, `SyncOutcome::removable` is always empty unless the fetch was confirmed-good *and* the list
+    opted into a destructive `CleanAction` (default `None`), and `last_successful_sync` is stamped
+    (`ImportListRepo::mark_synced`) only on a confirmed-good fetch. The orchestrator
+    `cellarr_jobs::importlists::ImportListSync` adds non-present monitored items as content nodes and
+    applies the gated clean.
+  - **Sources:** Trakt / TMDb / Plex-watchlist wired (`cellarr_jobs::importlists::sources`) but
+    **blocked-on-key** — with no credential in the list's `settings` each returns a graceful
+    `FetchResult::Failed` (never a network call, never a falsely-empty success). A deterministic
+    `MockListSource` exercises the framework offline.
+  - **CRUD both faces:** `/api/v3/importlist` CRUD + `/schema` + `/test` and `/api/v3/importlistexclusion`
+    on the Sonarr/Radarr/cellarr faces; persisted via the `import_list` / `import_list_exclusion` tables
+    (migration `0006`, JSON-body + typed columns). An unrecognized/absent `cleanLibraryLevel` maps to
+    the safe `None`.
+  - **Tested:** `cellarr-core` unit tests (pure diff incl. the catastrophe setup), `cellarr-jobs/tests/import_list_sync.rs`
+    (end-to-end against the real db: a failed fetch with `clean=Remove` over a populated library
+    removes/cleans **nothing** and leaves it fully intact + doesn't stamp `last_successful_sync`; a
+    confirmed-good list adds items; a confirmed-good *empty* list gates a clean while the same empty
+    symptom from a failure does not; exclusions suppress adds; live sources fail gracefully without creds).
+- **iCal/ICS calendar feed:** `/feed/v3/calendar/sonarr.ics` (TV) + `radarr.ics` (movies), `apikey`-query
+  authenticated. `cellarr-api::calendar` is a pure RFC 5545 ICS writer (CRLF, text escaping, 75-octet
+  folding, all-day `DTSTART;VALUE=DATE` VEVENTs) + a feed handler collecting dated library content (TV
+  daily-coded episodes today; per-episode air dates / movie release dates follow when identify persists
+  them). Empty feed → valid empty `VCALENDAR`. Tested in `cellarr-api/tests/v3_import_list_calendar.rs`.
+- **Live status / blocked-on-creds:** the import-list **framework, safeguard, CRUD, and calendar feed
+  are live and verified hermetically**; the three real list **sources (Trakt/TMDb/Plex) are
+  blocked-on-creds** (no Trakt client-id+slug / TMDb api-key+list / Plex token provisioned) and degrade
+  to a graceful failed fetch until configured.
+- **Deferred (small follow-ups):** resolving a removable external-id key back to a content node (the
+  documented identity-link gap) so the gated clean mutates library state (today it counts+logs the
+  eligible set, never an unsafe removal); RSS-cadence scheduling of the sync; per-episode/movie dates in
+  the calendar feed once identify persists them.
 
 ### Phase G — Hardening to "feature complete"
 - Full naming-token + multi-episode-style coverage; durable release-type state (no re-grab loops);
@@ -229,7 +271,8 @@ Shipped:
 - [ ] **Bazarr** — `GET series`/`episode`/`movie` with accurate paths; optional `Download`/`Rename` webhook (Phase A,F)
 - [ ] **Recyclarr / Configarr** — `customformat`(+schema), `qualityprofile`(+schema,formatItems), `qualitydefinition`, vocab alignment (Phase A,B)
 - [ ] **Notifiarr** — poll endpoints + `eventType` webhook + `Test` (Phase A,F)
-- [ ] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar`, counts via `totalRecords` (Phase A)
+- [ ] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar`, counts via `totalRecords` (Phase A); **iCal feed** `/feed/v3/calendar/{sonarr,radarr}.ics` (apikey-query) landed Phase F
+- [ ] **Import-list tooling (Trakt/TMDb/Plex via Overseerr/Recyclarr)** — `/api/v3/importlist` CRUD+schema+test + `/importlistexclusion` both faces; safeguarded sync (failed fetch never wipes); live sources blocked-on-creds (Phase F)
 - [x] **Download clients** — live qBit with categories + completed-download handling + import handoff; cross-fs health warning (Phase D). **Blackhole / watch-folder universal adapter** (core `DownloadClient`; add→watch-dir, status→completed-dir, Track→Import handoff verified on disk; in `/api/v3/downloadclient/schema`) and **shared remote-path mapping** (`apply_remote_path_mappings` applied once in the runner before Import; `/api/v3/remotepathmapping` CRUD on both faces) landed 2026-06-23. SAB live import deferred.
 - [ ] **Notifications** — Connect webhook + common connectors (Phase F)
 

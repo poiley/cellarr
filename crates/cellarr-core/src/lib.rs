@@ -22,11 +22,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod blocklist;
 pub mod config;
 pub mod decision;
 pub mod error;
 pub mod history;
 pub mod ids;
+pub mod importlist;
 pub mod media;
 pub mod parsed;
 pub mod pipeline;
@@ -34,6 +36,9 @@ pub mod profile;
 pub mod release;
 pub mod repo;
 pub mod traits;
+pub mod webhook;
+
+pub use blocklist::{release_key, BlocklistEntry, BlocklistRepository};
 
 pub use config::{
     apply_remote_path_mappings, DownloadClientConfig, IndexerConfig, NotificationConfig,
@@ -47,6 +52,10 @@ pub use history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 pub use ids::{
     ContentId, CustomFormatId, DownloadClientId, GrabId, IndexerId, LibraryId, MediaFileId,
     PipelineRunId, QualityProfileId, TitleId,
+};
+pub use importlist::{
+    sync_import_list, CleanAction, FetchResult, ImportListConfig, ImportListExclusion,
+    ImportListItem, ImportListRepository, ListSource, SyncOutcome,
 };
 pub use media::{ContentKind, ContentNode, ContentRef, Coordinates, Library, MediaFile, MediaType};
 pub use parsed::{
@@ -65,4 +74,8 @@ pub use repo::{
 pub use traits::{
     DownloadClient, DownloadState, DownloadStatus, Indexer, MediaModule, MetadataSource,
     NamingTokens, SearchTerms,
+};
+pub use webhook::{
+    WebhookEventType, WebhookFile, WebhookHealth, WebhookPayload, WebhookRelease, WebhookSender,
+    WebhookSubject,
 };

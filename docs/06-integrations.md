@@ -99,6 +99,65 @@ Client-specific facts the adapters must handle (from research):
 
 See [`specs/cellarr-download.md`](specs/cellarr-download.md).
 
+## Import lists (the "what to want" sources)
+
+An **import list** pulls a curated set of items from an external source and adds
+the monitored ones cellarr does not already have — the originals' "Import List" /
+"List Sync". The design is a **source abstraction** plus a **safeguarded sync**:
+
+- **`ListSource` trait** (`cellarr-core::importlist`) is the abstraction every
+  backend implements (`fetch() -> FetchResult`). The live backends —
+  `TraktListSource`, `TmdbListSource`, `PlexWatchlistSource` (in
+  `cellarr-jobs::importlists::sources`) — are wired but **blocked-on-key**: with no
+  credential in the list's `settings` they return a graceful
+  `FetchResult::Failed` (never a network call, never a falsely-empty success). A
+  deterministic `MockListSource` exercises the framework offline.
+- **`/api/v3/importlist`** CRUD + `/schema` + `/test` and **`/api/v3/importlistexclusion`**
+  CRUD live on both faces (Sonarr/Radarr) and the bare cellarr face, so
+  Overseerr/Recyclarr-style tooling round-trips lists. Persisted via the
+  `import_list` / `import_list_exclusion` tables (JSON body + typed columns, like
+  the other config aggregates).
+
+### ⚠️ The empty-vs-failed safeguard (the #1 library-wipe footgun)
+
+The originals' optional *clean-library* action (unmonitor/remove items that fell
+off a list) is only safe against a **confirmed-good** fetch. The classic
+catastrophe: a source errors (auth expired, tracker down), returns *nothing*, and
+a naive sync treats "empty" as "the list is now empty" and **wipes the library**.
+
+cellarr makes that impossible by construction. `FetchResult` is explicitly either
+`Fetched(items)` (confirmed-good — an empty `Vec` legitimately means the list is
+empty) or `Failed(reason)`. The pure `sync_import_list` then:
+
+- **never** marks anything removable on a `Failed` fetch — not even when the
+  failure surfaced as an empty item set (`SyncOutcome::removable` is *always* empty
+  unless the fetch was confirmed-good **and** the list opted into a destructive
+  `CleanAction`);
+- persists `last_successful_sync` **only** on a confirmed-good fetch (stamped via
+  `ImportListRepo::mark_synced`), so clean logic can require a recent good sync; and
+- defaults `CleanAction` to `None` and maps any unrecognized/absent v3
+  `cleanLibraryLevel` to the safe `None` (a destructive action is strictly opt-in).
+
+This is contract-tested: `cellarr-core` unit tests prove the pure diff, and
+`cellarr-jobs/tests/import_list_sync.rs` proves it end-to-end against the real db —
+a source that errors (or returns empty due to error) **removes/cleans nothing** and
+leaves a populated library fully intact, while a real successful list adds its
+items. The live credential-gated sources are asserted to fail gracefully.
+
+## iCal / ICS calendar feed
+
+The ecosystem (and Google/Apple Calendar, dashboards) subscribes to a
+Sonarr/Radarr **iCal feed** for upcoming/aired episodes and movie release dates.
+cellarr serves the same at **`/feed/v3/calendar/sonarr.ics`** (TV) and
+**`/feed/v3/calendar/radarr.ics`** (movies), authenticated by the **`apikey` query
+parameter** calendar clients append to the URL (they cannot send a header). The
+`cellarr-api::calendar` module is a pure, spec-valid ICS writer (RFC 5545: CRLF
+line endings, text escaping, 75-octet line folding, all-day `DTSTART;VALUE=DATE`
+VEVENTs) plus a feed handler that collects events from the library's dated content
+(today: TV daily-coded episodes; per-episode air dates / movie release dates land
+when the identify pipeline persists them). An empty feed is still a valid empty
+`VCALENDAR`. Tested in `cellarr-api/tests/v3_import_list_calendar.rs`.
+
 ## Third-party plugins: WASM Component Model (post-v1)
 
 For integrations we don't ship, `cellarr-plugins` hosts **WASM components** via **`wasmtime`**,

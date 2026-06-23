@@ -9,20 +9,24 @@
 //! or committed offline `.sqlx` metadata. Switching to compile-time-checked
 //! queries + a committed `.sqlx` directory is a planned follow-up.
 
+mod blocklist;
 mod cache;
 mod config;
 mod content;
 mod decision_log;
 mod grab;
 mod history;
+mod import_list;
 mod media_file;
 mod profile;
 
+pub use blocklist::BlocklistRepo;
 pub use cache::CacheRepo;
 pub use config::ConfigRepo;
 pub use content::ContentRepo;
 pub use decision_log::DecisionLogRepo;
 pub use grab::GrabRepo;
 pub use history::HistoryRepo;
+pub use import_list::ImportListRepo;
 pub use media_file::MediaFileRepo;
 pub use profile::ProfileRepo;

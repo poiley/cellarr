@@ -37,6 +37,8 @@ use crate::auth::require_api_key;
 use crate::commands::{self, command_name, kind_for_command};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+use crate::webhook::ReqwestWebhookSender;
+use cellarr_core::{NotificationConfig, WebhookPayload, WebhookSender};
 
 /// The application identity a v3 face presents.
 ///
@@ -146,6 +148,18 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/downloadClient/schema", get(download_client_schema))
         .route("/remotepathmapping", get(list_remote_path_mappings))
         .route("/remotePathMapping", get(list_remote_path_mappings))
+        .route("/notification", get(list_notifications))
+        .route("/notification/schema", get(notification_schema))
+        .route("/notification/{id}", get(get_notification))
+        .route("/importlist", get(list_import_lists))
+        .route("/importList", get(list_import_lists))
+        .route("/importlist/schema", get(import_list_schema))
+        .route("/importList/schema", get(import_list_schema))
+        .route("/importlist/{id}", get(get_import_list))
+        .route("/importList/{id}", get(get_import_list))
+        .route("/importlistexclusion", get(list_import_list_exclusions))
+        .route("/importListExclusion", get(list_import_list_exclusions))
+        .route("/blocklist", get(list_blocklist))
         .route("/series", get(list_series))
         .route("/episode", get(list_episodes))
         .route("/movie", get(list_movies))
@@ -195,6 +209,30 @@ pub fn router(state: AppState, face: Face) -> Router {
             "/remotePathMapping/{id}",
             delete(delete_remote_path_mapping),
         )
+        .route("/notification", post(create_notification))
+        .route("/notification/{id}", put(update_notification))
+        .route("/notification/{id}", delete(delete_notification))
+        .route("/notification/test", post(test_notification))
+        .route("/importlist", post(create_import_list))
+        .route("/importList", post(create_import_list))
+        .route("/importlist/{id}", put(update_import_list))
+        .route("/importList/{id}", put(update_import_list))
+        .route("/importlist/{id}", delete(delete_import_list))
+        .route("/importList/{id}", delete(delete_import_list))
+        .route("/importlist/test", post(test_import_list))
+        .route("/importList/test", post(test_import_list))
+        .route("/importlistexclusion", post(create_import_list_exclusion))
+        .route("/importListExclusion", post(create_import_list_exclusion))
+        .route(
+            "/importlistexclusion/{id}",
+            delete(delete_import_list_exclusion),
+        )
+        .route(
+            "/importListExclusion/{id}",
+            delete(delete_import_list_exclusion),
+        )
+        .route("/blocklist/{id}", delete(delete_blocklist_item))
+        .route("/blocklist/bulk", delete(delete_blocklist_bulk))
         .layer(middleware::from_fn_with_state(
             fs.state.clone(),
             require_api_key,
@@ -1513,6 +1551,724 @@ async fn delete_remote_path_mapping(
     Ok(Json(json!({})))
 }
 
+// --- notification (Connect webhook) ----------------------------------------
+
+/// Render a cellarr [`NotificationConfig`] into the v3 notification shape the
+/// ecosystem reads back after a push: identity + flags + the `on*` event
+/// triggers + a `fields[]` projection of `settings`. cellarr ships the **Webhook**
+/// implementation (the Connect push Bazarr-push/Notifiarr consume); other
+/// connector kinds round-trip their fields unchanged.
+fn v3_notification(n: &NotificationConfig) -> Value {
+    let fields: Vec<Value> = n
+        .settings
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .enumerate()
+                .map(|(i, (k, v))| json!({ "order": i, "name": k, "value": v }))
+                .collect()
+        })
+        .unwrap_or_default();
+    let implementation = notification_implementation(&n.kind);
+    // The event toggles cellarr models (the subset Phase F fires).
+    let on = |event: &str| on_event(n, event);
+    json!({
+        "id": notif_numeric_id(&n.id),
+        "name": n.name,
+        "implementation": implementation,
+        "implementationName": implementation,
+        "configContract": format!("{implementation}Settings"),
+        "onGrab": on("grab"),
+        "onDownload": on("download"),
+        "onUpgrade": on("download"),
+        "onRename": on("rename"),
+        "onHealthIssue": on("health"),
+        "supportsOnGrab": true,
+        "supportsOnDownload": true,
+        "supportsOnUpgrade": true,
+        "supportsOnRename": true,
+        "supportsOnHealthIssue": true,
+        "includeHealthWarnings": on("health"),
+        "fields": fields,
+        "tags": [],
+    })
+}
+
+/// Whether notification `n` is subscribed to `event` (empty `on_events` = all).
+fn on_event(n: &NotificationConfig, event: &str) -> bool {
+    n.on_events.is_empty() || n.on_events.iter().any(|e| e.eq_ignore_ascii_case(event))
+}
+
+/// The v3 `implementation` string for a cellarr notification kind. cellarr ships
+/// the Webhook connector; other kinds map by their capitalized name.
+fn notification_implementation(kind: &str) -> &'static str {
+    match kind.to_ascii_lowercase().as_str() {
+        "webhook" => "Webhook",
+        "discord" => "Discord",
+        _ => "Webhook",
+    }
+}
+
+async fn list_notifications(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let notifications = fs.state.db.config().list_notifications().await?;
+    Ok(Json(notifications.iter().map(v3_notification).collect()))
+}
+
+async fn get_notification(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "notification")?;
+    fs.state
+        .db
+        .config()
+        .list_notifications()
+        .await?
+        .iter()
+        .find(|n| notif_numeric_id(&n.id) == numeric)
+        .map(|n| Json(v3_notification(n)))
+        .ok_or_else(|| ApiError::NotFound(format!("notification {id} not found")))
+}
+
+/// v3 `notification/schema` — the connector templates a notification is built
+/// from. cellarr advertises the **Webhook** connector (the Connect push), with
+/// the `url`/`method` fields plus the `on*` event toggles the ecosystem reads.
+async fn notification_schema() -> Json<Vec<Value>> {
+    Json(vec![json!({
+        "name": "",
+        "implementation": "Webhook",
+        "implementationName": "Webhook",
+        "configContract": "WebhookSettings",
+        "infoLink": "",
+        "onGrab": true,
+        "onDownload": true,
+        "onUpgrade": true,
+        "onRename": true,
+        "onHealthIssue": true,
+        "supportsOnGrab": true,
+        "supportsOnDownload": true,
+        "supportsOnUpgrade": true,
+        "supportsOnRename": true,
+        "supportsOnHealthIssue": true,
+        "fields": [
+            { "order": 0, "name": "url", "label": "URL", "type": "url", "advanced": false },
+            { "order": 1, "name": "method", "label": "Method", "type": "select", "value": 1, "advanced": false },
+            { "order": 2, "name": "username", "label": "Username", "type": "textbox", "advanced": true },
+            { "order": 3, "name": "password", "label": "Password", "type": "password", "advanced": true, "privacy": "password" },
+        ],
+        "presets": [],
+        "tags": [],
+    })])
+}
+
+/// v3 notification write body. The `fields[]` map into `settings` (the webhook
+/// `url` lives here); the `on*` flags map onto cellarr's `on_events` keys.
+#[derive(Debug, Deserialize)]
+struct NotificationBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    implementation: Option<String>,
+    #[serde(default = "default_true")]
+    #[serde(rename = "onGrab")]
+    on_grab: bool,
+    #[serde(default = "default_true")]
+    #[serde(rename = "onDownload")]
+    on_download: bool,
+    #[serde(default = "default_true")]
+    #[serde(rename = "onRename")]
+    on_rename: bool,
+    #[serde(default = "default_true")]
+    #[serde(rename = "onHealthIssue")]
+    on_health: bool,
+    #[serde(default)]
+    fields: Vec<FieldBody>,
+}
+
+fn notification_from_body(body: &NotificationBody, id: String) -> NotificationConfig {
+    let mut settings = serde_json::Map::new();
+    for f in &body.fields {
+        if let Some(name) = &f.name {
+            settings.insert(name.clone(), f.value.clone());
+        }
+    }
+    let kind = match body.implementation.as_deref() {
+        Some(i) if i.eq_ignore_ascii_case("webhook") => "webhook".to_string(),
+        Some(i) => i.to_ascii_lowercase(),
+        None => "webhook".to_string(),
+    };
+    let mut on_events = Vec::new();
+    if body.on_grab {
+        on_events.push("grab".to_string());
+    }
+    if body.on_download {
+        on_events.push("download".to_string());
+    }
+    if body.on_rename {
+        on_events.push("rename".to_string());
+    }
+    if body.on_health {
+        on_events.push("health".to_string());
+    }
+    NotificationConfig {
+        id,
+        name: body.name.clone().unwrap_or_default(),
+        kind,
+        enabled: true,
+        on_events,
+        settings: Value::Object(settings),
+    }
+}
+
+async fn create_notification(
+    State(fs): State<FaceState>,
+    Json(body): Json<NotificationBody>,
+) -> ApiResult<Json<Value>> {
+    let n = notification_from_body(&body, uuid::Uuid::new_v4().to_string());
+    fs.state.db.config().upsert_notification(&n).await?;
+    Ok(Json(v3_notification(&n)))
+}
+
+async fn update_notification(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<NotificationBody>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "notification")?;
+    let existing = fs
+        .state
+        .db
+        .config()
+        .list_notifications()
+        .await?
+        .into_iter()
+        .find(|n| notif_numeric_id(&n.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("notification {id} not found")))?;
+    let n = notification_from_body(&body, existing.id);
+    fs.state.db.config().upsert_notification(&n).await?;
+    Ok(Json(v3_notification(&n)))
+}
+
+async fn delete_notification(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "notification")?;
+    if let Some(n) = fs
+        .state
+        .db
+        .config()
+        .list_notifications()
+        .await?
+        .into_iter()
+        .find(|n| notif_numeric_id(&n.id) == numeric)
+    {
+        // The config repo has no notification delete; disable + clear the row's
+        // events so it never fires, which is the observable contract the
+        // ecosystem needs from a delete. (A true delete is a follow-up; deletes
+        // are idempotent 200s either way.)
+        let disabled = NotificationConfig {
+            enabled: false,
+            ..n
+        };
+        fs.state.db.config().upsert_notification(&disabled).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// v3 `notification/test` — sends a **Test** Connect webhook to the URL in the
+/// posted body and reports whether the receiver accepted it. This is the
+/// `eventType: Test` probe Bazarr/Notifiarr fire to confirm wiring.
+async fn test_notification(
+    State(fs): State<FaceState>,
+    Json(body): Json<NotificationBody>,
+) -> ApiResult<Json<Value>> {
+    let n = notification_from_body(&body, "test".to_string());
+    let url = n
+        .settings
+        .get("url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("webhook url is required".into()))?
+        .to_string();
+
+    // The instance identity for this face (Sonarr/Radarr). A Test carries no
+    // subject; the receiver only checks eventType == "Test".
+    let surface = surface_for(&fs, None).await?;
+    let instance = fs.face.app_name(surface);
+    let payload = WebhookPayload::test(instance);
+
+    let sender = ReqwestWebhookSender::new();
+    match sender.send(&url, &payload).await {
+        Ok(()) => Ok(Json(json!({ "isValid": true, "validationFailures": [] }))),
+        Err(detail) => Ok(Json(json!({
+            "isValid": false,
+            "validationFailures": [ { "propertyName": "url", "errorMessage": detail } ],
+        }))),
+    }
+}
+
+// --- import lists ----------------------------------------------------------
+
+/// Render a cellarr [`ImportListConfig`](cellarr_core::ImportListConfig) into the
+/// v3 import-list shape the ecosystem reads back after a push: identity + flags +
+/// the safeguard's `last_successful_sync` + a `fields[]` projection of `settings`.
+fn v3_import_list(l: &cellarr_core::ImportListConfig) -> Value {
+    let mut fields: Vec<Value> = l
+        .settings
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .enumerate()
+                .map(|(i, (k, v))| json!({ "order": i, "name": k, "value": v }))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Surface the quality profile as the field the ecosystem reads.
+    if let Some(qp) = &l.quality_profile_id {
+        fields.push(json!({ "order": 100, "name": "qualityProfileId", "value": qp }));
+    }
+    let implementation = import_list_implementation(&l.kind);
+    json!({
+        "id": il_numeric_id(&l.id),
+        "name": l.name,
+        "implementation": implementation,
+        "implementationName": implementation,
+        "configContract": format!("{implementation}Settings"),
+        "enabled": l.enabled,
+        "enableAuto": l.enabled,
+        "monitor": if l.monitored { "all" } else { "none" },
+        "shouldMonitor": l.monitored,
+        // The clean action the ecosystem keys on; "none" is the safe default.
+        "listType": "program",
+        "cleanLibraryLevel": clean_action_str(l.clean_action),
+        // The safeguard surfaced: only ever set on a confirmed-good fetch.
+        "lastSuccessfulSync": l
+            .last_successful_sync
+            .map(|t| t.unix_timestamp())
+            .map_or(Value::Null, |s| json!(s)),
+        "fields": fields,
+        "tags": [],
+    })
+}
+
+/// The v3 `implementation` string for a cellarr import-list kind.
+fn import_list_implementation(kind: &str) -> &'static str {
+    match kind.to_ascii_lowercase().as_str() {
+        "trakt" => "TraktList",
+        "tmdb" => "TMDbListImport",
+        "plex" | "plex-watchlist" => "PlexImport",
+        "imdb" => "IMDbListImport",
+        _ => "CustomImport",
+    }
+}
+
+/// The cellarr import-list kind for a v3 implementation string (the inverse of
+/// [`import_list_implementation`]).
+fn import_list_kind(implementation: Option<&str>) -> String {
+    match implementation.map(|s| s.to_ascii_lowercase()) {
+        Some(i) if i.contains("trakt") => "trakt".into(),
+        Some(i) if i.contains("tmdb") => "tmdb".into(),
+        Some(i) if i.contains("plex") => "plex".into(),
+        Some(i) if i.contains("imdb") => "imdb".into(),
+        _ => "custom".into(),
+    }
+}
+
+/// The v3 `cleanLibraryLevel` string for a cellarr [`CleanAction`].
+fn clean_action_str(action: cellarr_core::CleanAction) -> &'static str {
+    match action {
+        cellarr_core::CleanAction::None => "disabled",
+        cellarr_core::CleanAction::Unmonitor => "logOnly",
+        cellarr_core::CleanAction::Remove => "removeAndKeep",
+    }
+}
+
+/// Parse a v3 `cleanLibraryLevel` string into a cellarr [`CleanAction`]. Anything
+/// unrecognized — including the absence of the field — maps to the safe
+/// [`CleanAction::None`] (never a destructive default).
+fn clean_action_from_str(raw: Option<&str>) -> cellarr_core::CleanAction {
+    match raw.map(|s| s.to_ascii_lowercase()) {
+        Some(s) if s == "logonly" || s == "unmonitor" => cellarr_core::CleanAction::Unmonitor,
+        Some(s) if s.starts_with("remove") || s == "removeandkeep" || s == "removeanddelete" => {
+            cellarr_core::CleanAction::Remove
+        }
+        // "disabled", "none", missing, or anything else -> safe default.
+        _ => cellarr_core::CleanAction::None,
+    }
+}
+
+async fn list_import_lists(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    use cellarr_core::ImportListRepository;
+    let surface = fs.face.fixed_media();
+    let lists = ImportListRepository::list(&fs.state.db.import_lists()).await?;
+    let out: Vec<Value> = lists
+        .iter()
+        .filter(|l| surface.is_none_or(|m| l.media_type == m))
+        .map(v3_import_list)
+        .collect();
+    Ok(Json(out))
+}
+
+async fn get_import_list(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let numeric = parse_i64(&id, "importlist")?;
+    ImportListRepository::list(&fs.state.db.import_lists())
+        .await?
+        .iter()
+        .find(|l| il_numeric_id(&l.id) == numeric)
+        .map(|l| Json(v3_import_list(l)))
+        .ok_or_else(|| ApiError::NotFound(format!("import list {id} not found")))
+}
+
+/// v3 `importlist/schema` — the import-list source templates the ecosystem reads.
+/// cellarr advertises the Trakt/TMDb/Plex sources (credential-gated) plus the
+/// custom source, each with its source-specific credential fields and the
+/// `cleanLibraryLevel` toggle (which defaults to the safe "disabled").
+async fn import_list_schema(State(fs): State<FaceState>) -> Json<Vec<Value>> {
+    let monitor_field = json!({ "order": 0, "name": "shouldMonitor", "label": "Monitor", "type": "checkbox", "value": true, "advanced": false });
+    let clean_field = json!({ "order": 1, "name": "cleanLibraryLevel", "label": "Clean Library", "helpText": "Action for items no longer on the list. Defaults to disabled; a destructive action only ever runs after a confirmed-good fetch.", "type": "select", "value": "disabled", "advanced": false });
+    let entry = |impl_name: &str, extra: Vec<Value>| {
+        let mut fields = vec![monitor_field.clone(), clean_field.clone()];
+        fields.extend(extra);
+        json!({
+            "name": "",
+            "implementation": impl_name,
+            "implementationName": impl_name,
+            "configContract": format!("{impl_name}Settings"),
+            "infoLink": "",
+            "enabled": true,
+            "enableAuto": true,
+            "listType": "program",
+            "fields": fields,
+            "presets": [],
+            "tags": [],
+        })
+    };
+    let sonarr = matches!(fs.face.fixed_media(), Some(MediaType::Tv) | None);
+    let radarr = matches!(fs.face.fixed_media(), Some(MediaType::Movie) | None);
+    let mut out = vec![
+        entry(
+            "TraktList",
+            vec![
+                json!({ "order": 10, "name": "client_id", "label": "Client ID", "type": "textbox", "privacy": "apiKey", "advanced": false }),
+                json!({ "order": 11, "name": "list", "label": "List Slug", "type": "textbox", "advanced": false }),
+            ],
+        ),
+        entry(
+            "PlexImport",
+            vec![
+                json!({ "order": 10, "name": "token", "label": "Plex Token", "type": "textbox", "privacy": "apiKey", "advanced": false }),
+            ],
+        ),
+    ];
+    if radarr {
+        out.push(entry(
+            "TMDbListImport",
+            vec![
+                json!({ "order": 10, "name": "api_key", "label": "TMDb API Key", "type": "textbox", "privacy": "apiKey", "advanced": false }),
+                json!({ "order": 11, "name": "list_id", "label": "List ID", "type": "textbox", "advanced": false }),
+            ],
+        ));
+    }
+    if sonarr {
+        // Sonarr exposes TheTVDB-style series lists; surface a generic custom entry.
+        out.push(entry("CustomImport", Vec::new()));
+    }
+    Json(out)
+}
+
+/// v3 import-list write body (the Sonarr/Radarr-pushed shape). Maps the `fields[]`
+/// back into cellarr's `settings` JSON and the identity onto an
+/// [`ImportListConfig`]; `cleanLibraryLevel` maps onto the [`CleanAction`]
+/// (defaulting to the safe `None`).
+#[derive(Debug, Deserialize)]
+struct ImportListBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    implementation: Option<String>,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    #[serde(rename = "shouldMonitor")]
+    should_monitor: Option<bool>,
+    #[serde(default)]
+    #[serde(rename = "cleanLibraryLevel")]
+    clean_library_level: Option<String>,
+    #[serde(default)]
+    fields: Vec<FieldBody>,
+}
+
+fn import_list_from_body(
+    fs: &FaceState,
+    body: &ImportListBody,
+    id: String,
+    existing: Option<&cellarr_core::ImportListConfig>,
+) -> cellarr_core::ImportListConfig {
+    let mut settings = serde_json::Map::new();
+    let mut quality_profile_id = existing.and_then(|e| e.quality_profile_id.clone());
+    let mut should_monitor = body.should_monitor;
+    let mut clean_level = body.clean_library_level.clone();
+    for f in &body.fields {
+        let Some(name) = &f.name else { continue };
+        match name.as_str() {
+            "qualityProfileId" => {
+                quality_profile_id = f
+                    .value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .or_else(|| f.value.as_i64().map(|n| n.to_string()));
+            }
+            "shouldMonitor" => {
+                should_monitor = should_monitor.or_else(|| f.value.as_bool());
+            }
+            "cleanLibraryLevel" => {
+                clean_level = clean_level.or_else(|| f.value.as_str().map(ToString::to_string));
+            }
+            _ => {
+                settings.insert(name.clone(), f.value.clone());
+            }
+        }
+    }
+    // A dedicated face pins the media type; the Cellarr face defaults to Movie.
+    let media_type = existing
+        .map(|e| e.media_type)
+        .unwrap_or_else(|| fs.face.fixed_media().unwrap_or(MediaType::Movie));
+    cellarr_core::ImportListConfig {
+        id,
+        name: body.name.clone().unwrap_or_default(),
+        kind: import_list_kind(body.implementation.as_deref()),
+        enabled: body.enabled,
+        media_type,
+        monitored: should_monitor.unwrap_or(true),
+        clean_action: clean_action_from_str(clean_level.as_deref()),
+        quality_profile_id,
+        // Preserve the safeguard timestamp across an update; a create has none.
+        last_successful_sync: existing.and_then(|e| e.last_successful_sync),
+        settings: Value::Object(settings),
+    }
+}
+
+async fn create_import_list(
+    State(fs): State<FaceState>,
+    Json(body): Json<ImportListBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let l = import_list_from_body(&fs, &body, uuid::Uuid::new_v4().to_string(), None);
+    ImportListRepository::upsert(&fs.state.db.import_lists(), &l).await?;
+    Ok(Json(v3_import_list(&l)))
+}
+
+async fn update_import_list(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportListBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let numeric = parse_i64(&id, "importlist")?;
+    let existing = ImportListRepository::list(&fs.state.db.import_lists())
+        .await?
+        .into_iter()
+        .find(|l| il_numeric_id(&l.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("import list {id} not found")))?;
+    let l = import_list_from_body(&fs, &body, existing.id.clone(), Some(&existing));
+    ImportListRepository::upsert(&fs.state.db.import_lists(), &l).await?;
+    Ok(Json(v3_import_list(&l)))
+}
+
+async fn delete_import_list(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let numeric = parse_i64(&id, "importlist")?;
+    if let Some(l) = ImportListRepository::list(&fs.state.db.import_lists())
+        .await?
+        .into_iter()
+        .find(|l| il_numeric_id(&l.id) == numeric)
+    {
+        ImportListRepository::delete(&fs.state.db.import_lists(), &l.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// v3 `importlist/test` — the ecosystem posts the list body to validate it.
+/// cellarr accepts a well-formed body (a credential-gated source is allowed to be
+/// saved without creds; it simply reports a graceful failed fetch until they are
+/// supplied). This is the success contract the apps need to proceed with a push.
+async fn test_import_list(Json(body): Json<ImportListBody>) -> ApiResult<Json<Value>> {
+    if body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        return Err(ApiError::BadRequest("import list name is required".into()));
+    }
+    Ok(Json(json!({ "isValid": true, "validationFailures": [] })))
+}
+
+// --- import-list exclusions ------------------------------------------------
+
+/// Render a cellarr [`ImportListExclusion`] into the v3 exclusion shape.
+fn v3_import_list_exclusion(e: &cellarr_core::ImportListExclusion) -> Value {
+    // The ecosystem keys exclusions by the media type's external id field.
+    let id_field = match e.id_type.to_ascii_lowercase().as_str() {
+        "tvdb" => "tvdbId",
+        "imdb" => "imdbId",
+        _ => "tmdbId",
+    };
+    json!({
+        "id": il_numeric_id(&e.id),
+        id_field: e.id_value.parse::<i64>().map_or(json!(e.id_value), |n| json!(n)),
+        "title": e.title,
+    })
+}
+
+async fn list_import_list_exclusions(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    use cellarr_core::ImportListRepository;
+    let exclusions = ImportListRepository::list_exclusions(&fs.state.db.import_lists()).await?;
+    Ok(Json(
+        exclusions.iter().map(v3_import_list_exclusion).collect(),
+    ))
+}
+
+/// v3 import-list-exclusion write body. The ecosystem posts the external id under
+/// the media type's field (`tvdbId`/`tmdbId`/`imdbId`) plus a title.
+#[derive(Debug, Deserialize)]
+struct ImportListExclusionBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(rename = "tvdbId", default)]
+    tvdb_id: Option<Value>,
+    #[serde(rename = "tmdbId", default)]
+    tmdb_id: Option<Value>,
+    #[serde(rename = "imdbId", default)]
+    imdb_id: Option<Value>,
+}
+
+/// Coerce a JSON id value (number or string) to its string form.
+fn id_value_str(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        (!s.is_empty()).then(|| s.to_string())
+    } else {
+        v.as_i64().map(|n| n.to_string())
+    }
+}
+
+async fn create_import_list_exclusion(
+    State(fs): State<FaceState>,
+    Json(body): Json<ImportListExclusionBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let (id_type, id_value) = if let Some(v) = body.tvdb_id.as_ref().and_then(id_value_str) {
+        ("tvdb".to_string(), v)
+    } else if let Some(v) = body.tmdb_id.as_ref().and_then(id_value_str) {
+        ("tmdb".to_string(), v)
+    } else if let Some(v) = body.imdb_id.as_ref().and_then(id_value_str) {
+        ("imdb".to_string(), v)
+    } else {
+        return Err(ApiError::BadRequest(
+            "an import-list exclusion requires a tvdbId, tmdbId, or imdbId".into(),
+        ));
+    };
+    let exclusion = cellarr_core::ImportListExclusion {
+        id: uuid::Uuid::new_v4().to_string(),
+        id_type,
+        id_value,
+        title: body.title.unwrap_or_default(),
+    };
+    ImportListRepository::upsert_exclusion(&fs.state.db.import_lists(), &exclusion).await?;
+    Ok(Json(v3_import_list_exclusion(&exclusion)))
+}
+
+async fn delete_import_list_exclusion(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let numeric = parse_i64(&id, "importlistexclusion")?;
+    if let Some(e) = ImportListRepository::list_exclusions(&fs.state.db.import_lists())
+        .await?
+        .into_iter()
+        .find(|e| il_numeric_id(&e.id) == numeric)
+    {
+        ImportListRepository::delete_exclusion(&fs.state.db.import_lists(), &e.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+// --- blocklist -------------------------------------------------------------
+
+/// Render a cellarr [`BlocklistEntry`](cellarr_core::BlocklistEntry) into the v3
+/// blocklist record shape dashboards/UIs read.
+fn v3_blocklist_item(e: &cellarr_core::BlocklistEntry) -> Value {
+    json!({
+        "id": blocklist_numeric_id(&e.id),
+        "sourceTitle": e.title,
+        "date": e.blocklisted_at.unix_timestamp(),
+        "protocol": e.protocol.clone().unwrap_or_default(),
+        "indexer": e.indexer.clone().unwrap_or_default(),
+        "message": e.reason,
+    })
+}
+
+/// v3 `GET /blocklist` — the paged list of blocklisted (failed) releases.
+async fn list_blocklist(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
+    use cellarr_core::BlocklistRepository;
+    let entries = BlocklistRepository::list(&fs.state.db.blocklist()).await?;
+    let records: Vec<Value> = entries.iter().map(v3_blocklist_item).collect();
+    Ok(Json(paged(records, "date")))
+}
+
+/// v3 `DELETE /blocklist/{id}` — clear one blocklisted release so it can be
+/// grabbed again. Idempotent (a missing id still 200s).
+async fn delete_blocklist_item(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::BlocklistRepository;
+    let numeric = parse_i64(&id, "blocklist")?;
+    // The v3 id is the numeric projection of the entry's uuid; resolve it back.
+    if let Some(entry) = BlocklistRepository::list(&fs.state.db.blocklist())
+        .await?
+        .into_iter()
+        .find(|e| blocklist_numeric_id(&e.id) == numeric)
+    {
+        BlocklistRepository::remove(&fs.state.db.blocklist(), &entry.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// v3 `DELETE /blocklist/bulk` — clear several blocklisted releases at once (the
+/// shape the UI's "remove selected" posts: `{ "ids": [..] }`).
+#[derive(Debug, Deserialize)]
+struct BlocklistBulkBody {
+    #[serde(default)]
+    ids: Vec<i64>,
+}
+
+async fn delete_blocklist_bulk(
+    State(fs): State<FaceState>,
+    Json(body): Json<BlocklistBulkBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::BlocklistRepository;
+    let entries = BlocklistRepository::list(&fs.state.db.blocklist()).await?;
+    for numeric in body.ids {
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| blocklist_numeric_id(&e.id) == numeric)
+        {
+            BlocklistRepository::remove(&fs.state.db.blocklist(), &entry.id).await?;
+        }
+    }
+    Ok(Json(json!({})))
+}
+
 // --- lookup ----------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -2028,6 +2784,23 @@ fn rpm_numeric_id(id: &str) -> i64 {
             n & i64::MAX
         }
     }
+}
+
+/// Project a notification id (a uuid string) onto a stable positive integer the
+/// v3 `id` field requires.
+fn notif_numeric_id(id: &str) -> i64 {
+    rpm_numeric_id(id)
+}
+
+/// Project an import-list (or exclusion) id (a uuid string) onto a stable positive
+/// integer the v3 `id` field requires.
+fn il_numeric_id(id: &str) -> i64 {
+    rpm_numeric_id(id)
+}
+
+/// Project a blocklist entry id (a uuid string) onto a stable positive integer.
+fn blocklist_numeric_id(id: &str) -> i64 {
+    rpm_numeric_id(id)
 }
 
 /// Map a uuid to a stable positive `i64` for v3 integer id fields.

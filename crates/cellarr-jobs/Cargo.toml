@@ -29,3 +29,4 @@ time.workspace = true
 tempfile = "3"
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util", "macros", "rt-multi-thread"] }
+uuid = { workspace = true }

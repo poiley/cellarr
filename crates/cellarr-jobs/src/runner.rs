@@ -28,6 +28,7 @@
 
 use std::sync::Arc;
 
+use cellarr_core::blocklist::{BlocklistEntry, BlocklistRepository};
 use cellarr_core::{
     decision::Verdict,
     history::{DecisionLogRecord, HistoryEvent, HistoryRecord},
@@ -40,6 +41,7 @@ use cellarr_core::{
     repo::{DecisionLogRepository, GrabRepository, HistoryRepository},
     traits::{DownloadClient, Indexer},
 };
+use cellarr_core::{WebhookEventType, WebhookFile, WebhookPayload, WebhookSubject};
 use cellarr_db::Database;
 use cellarr_decide::{decide, DecisionContext, OnDiskFile, ProperRepackPolicy};
 use cellarr_media::MediaRegistry;
@@ -47,6 +49,7 @@ use time::OffsetDateTime;
 
 use crate::clock::Clock;
 use crate::error::{BoxError, JobError, Result};
+use crate::notify::WebhookNotifier;
 
 /// The terminal outcome of driving a candidate through the pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +140,10 @@ where
     db: &'a Database,
     clock: &'a C,
     config: &'a RunnerConfig,
+    /// The Connect-webhook dispatcher, fired at the Grab/Import/Rename
+    /// transitions. `None` (the default) sends nothing — the offline/test path —
+    /// so the pipeline never depends on webhook wiring.
+    notifier: Option<WebhookNotifier>,
 }
 
 impl<'a, I, D, C> PipelineRunner<'a, I, D, C>
@@ -161,7 +168,18 @@ where
             db,
             clock,
             config,
+            notifier: None,
         }
+    }
+
+    /// Attach a Connect-webhook dispatcher so Grab/Import/Rename transitions fire
+    /// `eventType` webhooks to the configured notifications. Builder form so the
+    /// base [`PipelineRunner::new`] stays offline (no webhooks) and the live
+    /// wiring opts in.
+    #[must_use]
+    pub fn with_notifier(mut self, notifier: WebhookNotifier) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 
     /// Run the full pipeline for `content`, returning the terminal outcome.
@@ -236,6 +254,28 @@ where
             };
             if stage == Stage::Identify {
                 stage = self.advance(run_id, stage, None).await?; // -> Decide
+            }
+
+            // --- Blocklist consultation (before Decide) -------------------
+            // A previously-failed release for this content must never be
+            // re-grabbed; skip it and try the next candidate (the
+            // download-failed -> blocklist + re-search transition). The decision
+            // engine also hard-rejects a blocklisted release, so we pass the
+            // membership through to keep the reject reason precise and logged.
+            let blocklisted = self.is_blocklisted(matched.content_ref.id, release).await?;
+            if blocklisted {
+                let note = "rejected: release is blocklisted".to_string();
+                self.log(
+                    run_id,
+                    Stage::Decide,
+                    Stage::Rejected,
+                    TransitionKind::Reject,
+                    None,
+                    Some(note.clone()),
+                )
+                .await?;
+                last_reject = Some(note);
+                continue;
             }
 
             // --- Decide (real cellarr-decide) -----------------------------
@@ -408,6 +448,7 @@ where
                         grab_id,
                         GrabStatus::Failed,
                         format!("grab failed: {e}"),
+                        release,
                     )
                     .await;
             }
@@ -416,6 +457,10 @@ where
         self.set_download_id(grab_id, &download_id).await?;
         self.append_history(run_id, content.id, HistoryEvent::Grabbed { grab_id })
             .await?;
+
+        // Fire the Connect `Grab` webhook (eventType: Grab) carrying the subject
+        // + the grabbed release object Bazarr-push/Notifiarr read.
+        self.fire_grab_webhook(matched_ref, release).await;
 
         *stage = self.advance(run_id, *stage, None).await?; // -> Track
 
@@ -439,12 +484,20 @@ where
                         grab_id,
                         GrabStatus::Blocklisted,
                         "download completed without a content path".into(),
+                        release,
                     )
                     .await;
             }
             Err(detail) => {
                 return self
-                    .fail_grab(run_id, content.id, grab_id, GrabStatus::Blocklisted, detail)
+                    .fail_grab(
+                        run_id,
+                        content.id,
+                        grab_id,
+                        GrabStatus::Blocklisted,
+                        detail,
+                        release,
+                    )
                     .await;
             }
         };
@@ -465,7 +518,15 @@ where
         {
             Ok(destinations) => {
                 self.set_grab_status(grab_id, GrabStatus::Imported).await?;
+                // The `Download` (import) webhook fires on the Import->Rename
+                // advance; the `Rename` webhook fires on Rename->Notify. Both
+                // carry the destination files the receiver reads. (Sonarr/Radarr
+                // name the import event `Download`, kept for compatibility.)
+                self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
+                    .await;
                 *stage = self.advance(run_id, *stage, None).await?; // -> Rename
+                self.fire_files_webhook(WebhookEventType::Rename, matched_ref, &destinations)
+                    .await;
                 *stage = self.advance(run_id, *stage, None).await?; // -> Notify
                 self.append_history(run_id, content.id, HistoryEvent::Imported { grab_id })
                     .await?;
@@ -602,6 +663,7 @@ where
 
     // --- Failure / transition / log helpers ------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     async fn fail_grab(
         &self,
         run_id: PipelineRunId,
@@ -609,8 +671,16 @@ where
         grab_id: GrabId,
         terminal: GrabStatus,
         detail: String,
+        release: &Release,
     ) -> Result<RunOutcome> {
         self.set_grab_status(grab_id, terminal).await?;
+        // A download/grab failure that reaches a Blocklisted terminal records the
+        // release in the blocklist so a re-search never re-grabs it (the
+        // download-failed -> blocklist + re-search transition). A plain Failed is
+        // re-searchable and is not blocklisted.
+        if terminal == GrabStatus::Blocklisted {
+            self.blocklist_release(content_id, release, &detail).await?;
+        }
         self.log(
             run_id,
             Stage::Grab,
@@ -630,6 +700,31 @@ where
         )
         .await?;
         Ok(RunOutcome::Failed { detail })
+    }
+
+    /// Add a failed release to the blocklist (idempotent on content+release key).
+    async fn blocklist_release(
+        &self,
+        content_id: cellarr_core::ContentId,
+        release: &Release,
+        reason: &str,
+    ) -> Result<()> {
+        let entry =
+            BlocklistEntry::from_release(content_id, release, reason.to_string(), self.now());
+        BlocklistRepository::add(&self.db.blocklist(), &entry)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    /// Whether `release` is already blocklisted for `content_id`.
+    async fn is_blocklisted(
+        &self,
+        content_id: cellarr_core::ContentId,
+        release: &Release,
+    ) -> Result<bool> {
+        BlocklistRepository::is_blocklisted(&self.db.blocklist(), content_id, release)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))
     }
 
     async fn advance(
@@ -736,6 +831,76 @@ where
         GrabRepository::set_download_id(&self.db.grabs(), id, download_id)
             .await
             .map_err(|e| JobError::Persistence(Box::new(e)))
+    }
+
+    // --- Connect-webhook firing ------------------------------------------
+
+    /// Fire the `Grab` webhook for a grabbed release. Best-effort: no notifier
+    /// configured (the offline path) sends nothing; a delivery failure is logged
+    /// inside the dispatcher and never affects the run.
+    async fn fire_grab_webhook(&self, content_ref: &ContentRef, release: &Release) {
+        let Some(notifier) = self.notifier.as_ref() else {
+            return;
+        };
+        let subject = self.subject_for(content_ref).await;
+        let payload = WebhookPayload::for_subject(
+            WebhookEventType::Grab,
+            content_ref.media_type,
+            subject,
+            String::new(),
+        )
+        .with_release(cellarr_core::WebhookRelease::from_release(release, None));
+        notifier.dispatch(payload).await;
+    }
+
+    /// Fire a `Download`(import) or `Rename` webhook carrying the destination
+    /// files. Best-effort, like [`fire_grab_webhook`](Self::fire_grab_webhook).
+    async fn fire_files_webhook(
+        &self,
+        event_type: WebhookEventType,
+        content_ref: &ContentRef,
+        destinations: &[String],
+    ) {
+        let Some(notifier) = self.notifier.as_ref() else {
+            return;
+        };
+        let subject = self.subject_for(content_ref).await;
+        let files: Vec<WebhookFile> = destinations
+            .iter()
+            .map(|d| WebhookFile {
+                path: d.clone(),
+                previous_path: None,
+            })
+            .collect();
+        let payload =
+            WebhookPayload::for_subject(event_type, content_ref.media_type, subject, String::new())
+                .with_files(files);
+        notifier.dispatch(payload).await;
+    }
+
+    /// Build the webhook subject for a content node — its id + best-known title.
+    async fn subject_for(&self, content_ref: &ContentRef) -> WebhookSubject {
+        let title = self
+            .db
+            .content()
+            .title_for(content_ref.id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| content_ref.id.to_string());
+        // External ids (tvdbId/tmdbId/imdbId) live behind the node's title_id in
+        // cellarr-meta; resolving them here is a documented follow-up (the same
+        // gap the v3 list resources carry). The subject still carries the id +
+        // title every receiver keys on, and which-field-is-present (series vs
+        // movie) conveys the media type.
+        WebhookSubject {
+            id: content_ref.id.to_string(),
+            title,
+            year: None,
+            tvdb_id: None,
+            tmdb_id: None,
+            imdb_id: None,
+        }
     }
 
     fn module_for(&self, content: &ContentRef) -> Result<&dyn cellarr_media::DynMediaModule> {

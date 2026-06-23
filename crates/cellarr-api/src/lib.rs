@@ -17,6 +17,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod calendar;
 pub mod commands;
 pub mod error;
 pub mod events;
@@ -28,6 +29,7 @@ pub mod shim;
 pub mod state;
 pub mod stream;
 pub mod tags;
+pub mod webhook;
 
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -37,6 +39,7 @@ pub use error::{ApiError, ApiResult};
 pub use events::{DomainEvent, EventBus};
 pub use metadata::{LookupCandidate, LookupOutcome, MetadataLookup, MetadataLookupError};
 pub use state::AppState;
+pub use webhook::ReqwestWebhookSender;
 
 /// Build the complete application router.
 ///
@@ -62,7 +65,22 @@ pub fn build_router(state: AppState) -> Router {
             "/sonarr/api/v3",
             shim::router(state.clone(), shim::Face::Sonarr),
         )
-        .nest("/radarr/api/v3", shim::router(state, shim::Face::Radarr))
+        .nest(
+            "/radarr/api/v3",
+            shim::router(state.clone(), shim::Face::Radarr),
+        )
+        // The iCal/ICS calendar feed (`sonarr.ics` / `radarr.ics`), authenticated
+        // by the `apikey` query parameter calendar clients append to the URL. Built
+        // as its own stateful sub-router and merged so it composes with the
+        // already-stateless `nest`ed faces.
+        .merge(
+            Router::new()
+                .route(
+                    "/feed/v3/calendar/{file}",
+                    axum::routing::get(calendar::calendar_feed),
+                )
+                .with_state(state),
+        )
         // Only non-API paths fall through to the embedded frontend; the v3
         // mounts return their own 404 JSON for unknown API paths.
         .fallback(assets::serve)

@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::error::Result;
 use crate::repos::{
-    CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo, MediaFileRepo,
-    ProfileRepo,
+    BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo,
+    ImportListRepo, MediaFileRepo, ProfileRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -169,5 +169,17 @@ impl Database {
     #[must_use]
     pub fn config(&self) -> ConfigRepo {
         ConfigRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The failed-download blocklist repository.
+    #[must_use]
+    pub fn blocklist(&self) -> BlocklistRepo {
+        BlocklistRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The import-list repository (lists + exclusions).
+    #[must_use]
+    pub fn import_lists(&self) -> ImportListRepo {
+        ImportListRepo::new(self.pool.clone(), self.writer.clone())
     }
 }
