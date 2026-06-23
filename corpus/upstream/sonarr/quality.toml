@@ -1,0 +1,1762 @@
+# Sonarr quality vectors (resolution + source [+ proper]).
+# Re-curated FACTS from Sonarr's QualityParserFixture [TestCase] rows, grouped by
+# the Quality bucket each test method asserts (mapped to cellarr resolution/source).
+# proper=true rows record proper_repack='proper'. Unknown/extension-only methods omitted.
+
+[[case]]
+input  = 'S07E23 .avi '
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S01E13.x264-CtrlSD'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The Series S02E01 HDTV XviD 2HD'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The Series S05E11 PROPER HDTV XviD 2HD'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'The Series Show S02E08 HDTV x264 FTP'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.2011.S02E01.WS.PDTV.x264-TLA'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.2011.S02E01.WS.PDTV.x264-REPACK-TLA'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'The Series S01E04 DSR x264 2HD'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The Series S01E04 Series Death Train DSR x264 MiNDTHEGAP'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The Series S11E03 has no periods or extension HDTV'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S04E05.HDTV.XviD-LOL'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S02E15.avi'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S02E15.xvid'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S02E15.divx'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S03E06.HDTV-WiDE'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'Series.S10E27.WS.DSR.XviD-2HD'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[HorribleSubs] The Series - 32 [480p]'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[CR] The Series - 004 [480p][48CE2D0F]'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[Hatsuyuki] The Series - 363 [848x480][ADE35E38]'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S03.TVRip.XviD-NOGRP'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[HorribleSubs] The Series - 03 [360p].mkv'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[SubsPlease] Series Title (540p) [AB649D32].mkv'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = '[Erai-raws] Series Title [540p][Multiple Subtitle].mkv'
+source = 'Sonarr QualityParserFixture (sdtv)'
+[case.expected]
+source = 'sdtv'
+
+[[case]]
+input  = 'The.Series.S01E13.NTSC.x264-CtrlSD'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = 'The.Series.S03E06.DVDRip.XviD-WiDE'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = 'The.Series.S03E06.DVD.Rip.XviD-WiDE'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = 'the.Series.1x13.circles.ws.xvidvd-tns'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = 'the_Series.9x18.sunshine_days.ac3.ws_dvdrip_xvid-fov.avi'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = '[FroZen] Series - 23 [DVD][7F6170E6]'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = '[AniDL] Series - 26 -[360p][DVD][D - A][Exiled - Destiny]'
+source = 'Sonarr QualityParserFixture (dvd)'
+[case.expected]
+source = 'dvd'
+
+[[case]]
+input  = 'The.Series.S01E10.The.Leviathan.480p.WEB-DL.x264-mSD'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S04E10.Glee.Actually.480p.WEB-DL.x264-mSD'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.SeriesS06E11.The.Santa.Simulation.480p.WEB-DL.x264-mSD'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S02E04.480p.WEB.DL.nSD.x264-NhaNc3'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S01E08.Das.geloeschte.Ich.German.Dubbed.DL.AmazonHD.x264-TVS'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S01E04.Rod.Trip.mit.meinem.Onkel.German.DL.NetflixUHD.x264'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S01 [Web][MKV][h264][480p][AAC 2.0][Softsubs (HorribleSubs)]'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S13E11.Ausgebacken.German.AmazonSD.h264-4SF'
+source = 'Sonarr QualityParserFixture (webdl480p)'
+[case.expected]
+resolution = '480p'
+source = 'web-dl'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.XviD.Bluray.AC3-REPACK.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.BDRip.XviD.AC3.-HELLYWOOD'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.BDRip.X-viD.AC3.-HELLYWOOD'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.BDRip.AC3.-HELLYWOOD'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.BDRip.XviD.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.XviD.Bluray.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'The.Series.S01E05.480p.BluRay.DD5.1.x264-HiSD'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'The Series (BD)(640x480(RAW) (BATCH 1) (1-13)'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = '[Doki] Series - 02 (848x480 XviD BD MP3) [95360783]'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'Adventures.of.Sonic.the.Hedgehog.S01.BluRay.480i.DD.2.0.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'Adventures.of.Sonic.the.Hedgehog.S01E01.Best.Hedgehog.480i.DD.2.0.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray480p)'
+[case.expected]
+resolution = '480p'
+source = 'bluray'
+
+[[case]]
+input  = 'The.Series.S02E10.480p.HULU.WEBRip.x264-Puffin'
+source = 'Sonarr QualityParserFixture (webrip480p)'
+[case.expected]
+resolution = '480p'
+source = 'webrip'
+
+[[case]]
+input  = 'The.Series.S10E14.Techs.And.Balances.480p.AE.WEBRip.AAC2.0.x264-SEA'
+source = 'Sonarr QualityParserFixture (webrip480p)'
+[case.expected]
+resolution = '480p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.1x04.ITA.WEBMux.x264-NovaRip'
+source = 'Sonarr QualityParserFixture (webrip480p)'
+[case.expected]
+resolution = '480p'
+source = 'webrip'
+
+[[case]]
+input  = 'The.Series.S01E05.576p.BluRay.DD5.1.x264-HiSD'
+source = 'Sonarr QualityParserFixture (bluray576p)'
+[case.expected]
+resolution = '576p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series - S01E01 - Title [HDTV]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series - S01E01 - Title [HDTV-720p]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The Series S04E87 REPACK 720p HDTV x264 aAF'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'The.Series.S02E15.720p'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'S07E23 - [HDTV-720p].mkv '
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series - S22E03 - MoneyBART - HD TV.mkv'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'S07E23.mkv '
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.S08E05.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.S02E15.mkv'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = "E:\\Downloads\\tv\\The.Series.S01E01.720p.HDTV\\ajifajjjeaeaeqwer_eppj.avi"
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.S01E08.Tourmaline.Nepal.720p.HDTV.x264-DHD'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Underwater-FFF] The Series - 01 (720p) [27AAA0A0]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Doki] The Series - 07 (1280x720 Hi10P AAC) [80AF7DDE]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Doremi].The.Series.5.Go.Go!.31.[1280x720].[C65D4B1F].mkv'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[HorribleSubs]_Series_Title_-_145_[720p]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Eveyuu] Series Title - 10 [Hi10P 1280x720 H264][10B23BD8]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.US.S12E17.HR.WS.PDTV.X264-DIMENSION'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.The.Lost.Sonarr.Summer.HR.WS.PDTV.x264-DHD'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The Series S01E07 - Motor zmen (CZ)[TvRip][HEVC][720p]'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The.Series.S05E06.720p.HDTV.x264-FHD'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = "Series.Title.1x01.ITA.720p.x264-RlsGrp [01/54] - \"series.title.1x01.ita.720p.x264-rlsgrp.nfo\""
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = '[TMS-Remux].Series.Title.X.21.720p.[76EA1C53].mkv'
+source = 'Sonarr QualityParserFixture (hdtv720p)'
+[case.expected]
+resolution = '720p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Under the Series S01E10 Let the Sonarr Begin 1080p'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series.S07E01.ARE.YOU.1080P.HDTV.X264-QCF'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series.S07E01.ARE.YOU.1080P.HDTV.x264-QCF'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series.S07E01.ARE.YOU.1080P.HDTV.proper.X264-QCF'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'Series - S01E01 - Title [HDTV-1080p]'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = '[HorribleSubs] Series Title - 32 [1080p]'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series S01E07 - Sonarr zmen (CZ)[TvRip][HEVC][1080p]'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'The Online Series Alicization 04 vostfr FHD'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series Slayer 04 vostfr FHD.mkv'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Onii-ChanSub] The.Series - 02 vostfr (FHD 1080p 10bits).mkv'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Miaou] Series Title 02 VOSTFR FHD 10 bits'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = '[mhastream.com]_Episode_05_FHD.mp4'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = '[Kousei]_One_Series_ - _609_[FHD][648A87C7].mp4'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series culpable 1x02 Culpabilidad [HDTV 1080i AVC MP2 2.0 Sub][GrupoHDS]'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series cómo pasó - 19x15 [344] Cuarenta años de baile [HDTV 1080i AVC MP2 2.0 Sub][GrupoHDS]'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Super.Seires.Go.S01E02.Depths.of.Sonarr.1080i.HDTV.DD5.1.H.264-NOGRP'
+source = 'Sonarr QualityParserFixture (hdtv1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'hdtv'
+
+[[case]]
+input  = 'My Title - S01E01 - EpTitle [HEVC 4k DTSHD-MA-6ch]'
+source = 'Sonarr QualityParserFixture (hdtv2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'hdtv'
+
+[[case]]
+input  = 'My Title - S01E01 - EpTitle [HEVC-4k DTSHD-MA-6ch]'
+source = 'Sonarr QualityParserFixture (hdtv2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'hdtv'
+
+[[case]]
+input  = 'My Title - S01E01 - EpTitle [4k HEVC DTSHD-MA-6ch]'
+source = 'Sonarr QualityParserFixture (hdtv2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'hdtv'
+
+[[case]]
+input  = '[GM-Team][国漫][诛仙][Series Title][2022][19][HEVC][GB][4K]'
+source = 'Sonarr QualityParserFixture (hdtv2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'hdtv'
+
+[[case]]
+input  = 'Series S01E04 Mexicos Death Train 720p WEB DL'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Five 0 S02E21 720p WEB DL DD5 1 H 264'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series S04E22 720p WEB DL DD5 1 H 264 NFHD'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series - S11E06 - D-Yikes! - 720p WEB-DL.mkv'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S02E15.720p.WEB-DL.DD5.1.H.264-SURFER'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'S07E23 - [WEBDL].mkv '
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series S04E22 720p WEB-DL DD5.1 H264-EbP.mkv'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S04.720p.Web-Dl.Dd5.1.h264-P2PACK'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Da.Series.Shows.S02E04.720p.WEB.DL.nSD.x264-NhaNc3'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Miami.S04E25.720p.iTunesHD.AVC-TVS'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S06E23.720p.WebHD.h264-euHD'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.720p.WEB.x264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.720p.WEB.h264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01E08.Das.geloeschte.Ich.German.DD51.Dubbed.DL.720p.AmazonHD.x264-TVS'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Polo.S01E11.One.Hundred.Sonarrs.2015.German.DD51.DL.720p.NetflixUHD.x264.NewUp.by.Wunschtante'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series 2016 German DD51 DL 720p NetflixHD x264-TVS'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.6x10.Basic.Sonarr.Repair.and.Replace.ITA.ENG.720p.WEB-DLMux.H.264-GiuseppeTnT'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.6x11.Modern.Spy.ITA.ENG.720p.WEB.DLMux.H.264-GiuseppeTnT'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The Series Was Dead 2010 S09E13 [MKV / H.264 / AC3/AAC / WEB / Dual Áudio / Inglês / 720p]'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'into.the.Series.s03e16.h264.720p-web-handbrake.mkv'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01E01.The.Sonarr.Principle.720p.WEB-DL.DD5.1.H.264-BD'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S03E05.Griebnitzsee.German.720p.MaxdomeHD.AVC-TVS'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S01 [Web][MKV][h264][720p][AAC 2.0][Softsubs (HorribleSubs)]'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S01 [Web][MKV][h264][AAC 2.0][Softsubs (HorribleSubs)]'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S04E13.960p.WEB-DL.AAC2.0.H.264-squalor'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S16.DP.WEB.720p.DDP.5.1.H.264.PLEX'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S01E01.Erste.Begegnungen.German.DD51.Synced.DL.720p.HBOMaxHD.AVC-TVS'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S01E05.Tavora.greift.an.German.DL.720p.DisneyHD.h264-4SF'
+source = 'Sonarr QualityParserFixture (webdl720p)'
+[case.expected]
+resolution = '720p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S04E01.720p.WEBRip.AAC2.0.x264-NFRiP'
+source = 'Sonarr QualityParserFixture (webrip720p)'
+[case.expected]
+resolution = '720p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.S01E07.A.Prayer.For.Mad.Sweeney.720p.AMZN.WEBRip.DD5.1.x264-NTb'
+source = 'Sonarr QualityParserFixture (webrip720p)'
+[case.expected]
+resolution = '720p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.S07E01.A.New.Home.720p.DSNY.WEBRip.AAC2.0.x264-TVSmash'
+source = 'Sonarr QualityParserFixture (webrip720p)'
+[case.expected]
+resolution = '720p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.1x04.ITA.720p.WEBMux.x264-NovaRip'
+source = 'Sonarr QualityParserFixture (webrip720p)'
+[case.expected]
+resolution = '720p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series S09E03 1080p WEB DL DD5 1 H264 NFHD'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Two and a Half Developers of the Series S10E03 1080p WEB DL DD5 1 H 264 NFHD'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S08E01.1080p.WEB-DL.DD5.1.H264-NFHD'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Its.Always.Sonarrs.Fault.S08E01.1080p.WEB-DL.proper.AAC2.0.H.264'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'This is an Easter Egg S10E03 1080p WEB DL DD5 1 H 264 REPACK NFHD'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'Series.S04E09.Swan.Song.1080p.WEB-DL.DD5.1.H.264-ECI'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Big.Easter.Theory.S06E11.The.Sonarr.Simulation.1080p.WEB-DL.DD5.1.H.264'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = "Sonarr's.Baby.S01E02.Night.2.[WEBDL-1080p].mkv"
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.1080p.WEB.x264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.1080p.WEB.h264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01.1080p.WEB-DL.AAC2.0.AVC-TrollHD'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title S06E08 1080p WEB h264-EXCLUSIVE'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title S06E08 No One PROPER 1080p WEB DD5 1 H 264-EXCLUSIVE'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'Series Title S06E08 No One PROPER 1080p WEB H 264-EXCLUSIVE'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'The.Series.S25E21.Pay.No1.1080p.WEB-DL.DD5.1.H.264-NTb'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01E08.Das.geloeschte.Ich.German.DD51.Dubbed.DL.1080p.AmazonHD.x264-TVS'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Death.Series.2017.German.DD51.DL.1080p.NetflixHD.x264-TVS'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01E08.Pro.Gamer.1440p.BKPL.WEB-DL.H.264-LiGHT'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = "Series.Title.S04E11.Teddy's.Choice.FHD.1080p.Web-DL"
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S04E03.The.False.Bride.1080p.NF.WEB.DDP5.1.x264-NTb[rartv]'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E02.This.Year.Will.Be.Different.1080p.AMZN.WEB...'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E02.This.Year.Will.Be.Different.1080p.AMZN.WEB.'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title - S01E11 2020 1080p Viva MKV WEB'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S01 [Web][MKV][h264][1080p][AAC 2.0][Softsubs (HorribleSubs)]'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = '[LostYears] Series Title - 01-17 (WEB 1080p x264 10-bit AAC) [Dual-Audio]'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.and.Titles.S01.1080p.NF.WEB.DD2.0.x264-SNEAkY'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E02.This.Year.Will.Be.Different.1080p.WEB.H 265'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title Season 2 [WEB 1080p HEVC Opus] [Netaro]'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title Season 2 (WEB 1080p HEVC Opus) [Netaro]'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S01E01.Erste.Begegnungen.German.DD51.Synced.DL.1080p.HBOMaxHD.AVC-TVS'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S01E05.Tavora.greift.an.German.DL.1080p.DisneyHD.h264-4SF'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E04.German.Dubbed.DL.AAC.1080p.WEB.AVC-GROUP'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Tiny.Series.2020.DOC.S01.MULTi.1080p.ATVP.WEB.Atmos.H.265-TFA'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'The.Series.S25E21.Pay.No1.1080p.WEB-DL.DD5.1.H.266-GROUP'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S04E01.1080p.WEB.H266-GROUP'
+source = 'Sonarr QualityParserFixture (webdl1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S04E01.iNTERNAL.1080p.WEBRip.x264-QRUS'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.S07E20.1080p.AMZN.WEBRip.DDP5.1.x264-ViSUM ac3.(NLsub)'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.S03E09.1080p.NF.WEBRip.DD5.1.x264-ViSUM'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'The Series 42 S09E13 1.54 GB WEB-RIP 1080p Dual-Audio 2019 MKV'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.1x04.ITA.1080p.WEBMux.x264-NovaRip'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.2019.S02E07.Chapter.15.The.Believer.4Kto1080p.DSNYP.Webrip.x265.10bit.EAC3.5.1.Atmos.GokiTAoE'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.S01.1080p.AMZN.WEB-Rip.DDP5.1.H.264-Telly'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series Title S01 WEBRip 1080p x266-GROUP'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series Title S01 Complete German 1080p HDR UHD WEBRip h266-GROUP'
+source = 'Sonarr QualityParserFixture (webrip1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'webrip'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.2160p.WEB.x264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.2160p.WEB.h264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.2160p.WEB.PROPER.h264-spamTV'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'House.of.Sonarr.AK.s05e13.4K.UHD.WEB.DL'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'House.of.Sonarr.AK.s05e13.UHD.4K.WEB.DL'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S01 [Web][MKV][h264][2160p][AAC 2.0][Softsubs (HorribleSubs)]'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title S02 2013 WEB-DL 4k H265 AAC 2Audio-HDSWEB'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E02.This.Year.Will.Be.Different.2160p.WEB.H.265'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.S02E04.German.Dubbed.DL.AAC.2160p.DV.HDR.WEB.HEVC-GROUP'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.S01.MULTi.2160p.NF.SDR.WEB.DDP.5.1.Atmos.h265-FRESH'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.2160p.WEB.h266-GROUP'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series.Title.2016.03.14.2160p.WEB-DL.H.266-GROUP'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series Title S02 2013 WEB-DL 4k H266 AAC 2Audio-GROUP'
+source = 'Sonarr QualityParserFixture (webdl2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'web-dl'
+
+[[case]]
+input  = 'Series S01E01.2160P AMZN WEBRIP DD2.0 HI10P X264-TROLLUHD'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'JUST ADD SONARR S01E01.2160P AMZN WEBRIP DD2.0 X264-TROLLUHD'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'The.Man.In.The.Series.S01E01.2160p.AMZN.WEBRip.DD2.0.Hi10p.X264-TrollUHD'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'The Man In the Series S01E01 2160p AMZN WEBRip DD2.0 Hi10P x264-TrollUHD'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'House.of.Sonarr.AK.S05E08.Chapter.60.2160p.NF.WEBRip.DD5.1.x264-NTb.NLsubs'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'Sonarr Saves the World S01 2160p Netflix WEBRip DD5.1 x264-TrollUHD'
+source = 'Sonarr QualityParserFixture (webrip2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'webrip'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.Bluray.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series - S01E03 - Come Fly With Me - 720p BluRay.mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'The Big Series.S03E01.The Sonarr Can Opener.m2ts'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.S01E02.Chained.Sonarr.[Bluray720p].mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = '[FFF] DATE A Sonarr Dev - 01 [BD][720p-AAC][0601BED4]'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = '[coldhell] Series v3 [BD720p][03192D4C]'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = '[RandomRemux] Series - 01 [720p BD][043EA407].mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = '[Kaylith] Series Friends Specials - 01 [BD 720p AAC][B7EEE164].mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.Blu-ray.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.720p.Blu-ray.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = '[Elysium]Lucky.Series.01(BD.720p.AAC.DA)[0BB96AD8].mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Galaxy.S01E01.33.720p.HDDVD.x264-SiNNERS.mkv'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'The.Series.S01E07.RERIP.720p.BluRay.x264-DEMAND'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+proper_repack = 'proper'
+
+[[case]]
+input  = 'Sans.Series.De.Traces.FRENCH.720p.BluRay.x264-FHD'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Black.1x01.Selezione.Naturale.ITA.720p.BDMux.x264-NovaRip'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Hunter.S02.720p.Blu-ray.Remux.AVC.FLAC.2.0-SiCFoI'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Adventures.of.Sonic.the.Hedgehog.S01E01.Best.Hedgehog.720p.DD.2.0.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray720p)'
+[case.expected]
+resolution = '720p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series - S01E03 - Come Fly With Me - 1080p BluRay.mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Sonarr.Of.Series.S02E13.1080p.BluRay.x264-AVCDVD'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.S01E02.Chained.Heat.[Bluray1080p].mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = '[FFF] Series no Muromi-san - 10 [BD][1080p-FLAC][0C4091AF]'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = '[coldhell] Series v2 [BD1080p][5A45EABE].mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = '[Kaylith] Series Friends Specials - 01 [BD 1080p FLAC][429FD8C7].mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = '[Zurako] Log Series - 01 - The Sonarr (BD 1080p AAC) [7AE12174].mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'SERIES.S03E01-06.DUAL.1080p.Blu-ray.AC3.-HELLYWOOD.avi'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = '[Coalgirls]_Series!!_01_(1920x1080_Blu-ray_FLAC)_[8370CB8F].mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Planet.Series.S01E11.Code.Deep.1080p.HD-DVD.DD.VC1-TRB'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series Away(2001) Bluray FHD Hi10P.mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'S for Series 2005 1080p UHD BluRay DD+7.1 x264-LoRD.mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Title.2011.1080p.UHD.BluRay.DD5.1.HDR.x265-CtrlHD.mkv'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Fall.Of.The.Release.Groups.S02E13.1080p.BDLight.x265-AVCDVD'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series Title S01E01 1080p BluRay DD 5 1 Atmos x266-GROUP'
+source = 'Sonarr QualityParserFixture (bluray1080p)'
+[case.expected]
+resolution = '1080p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series!!! on ICE - S01E12[JP BD Remux][ENG subs]'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.S01E08.The.Well.BluRay.1080p.AVC.DTS-HD.MA.5.1.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.2x11.Nato.Per.La.Truffa.Bluray.Remux.AVC.1080p.AC3.ITA'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.2x11.Nato.Per.La.Truffa.Bluray.Remux.AVC.AC3.ITA'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.S03E01.The.Calm.1080p.DTS-HD.MA.5.1.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series Title Season 2 (BDRemux 1080p HEVC FLAC) [Netaro]'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = '[Vodes] Series Title - Other Title (2020) [BDRemux 1080p HEVC Dual-Audio]'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Adventures.of.Sonic.the.Hedgehog.S01E01.Best.Hedgehog.1080p.DD.2.0.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series Title S01 2018 1080p BluRay Hybrid-REMUX AVC TRUEHD 5.1 Dual Audio-ZR-'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.S01.2018.1080p.BluRay.Hybrid-REMUX.AVC.TRUEHD.5.1.Dual.Audio-ZR-'
+source = 'Sonarr QualityParserFixture (bluray1080p_remux)'
+[case.expected]
+resolution = '1080p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.US.s05e13.4K.UHD.Bluray'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Title.US.s05e13.UHD.4K.Bluray'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = '[DameDesuYo] Series Bundle - Part 1 (BD 4K 8bit FLAC)'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Title.2014.2160p.UHD.BluRay.X265-IAMABLE.mkv'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Title.2014.2160p.UHD.BluRay.X265-IAMABLE.mkv'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series.Title.S05EO1.Episode.Title.2160p.BDRip.AAC.7.1.HDR10.x265.10bit-Markll'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series Title S01E01 2160p UHD BluRay H266-GROUP'
+source = 'Sonarr QualityParserFixture (bluray2160p)'
+[case.expected]
+resolution = '2160p'
+source = 'bluray'
+
+[[case]]
+input  = 'Series!!! on ICE - S01E12[JP BD 2160p Remux][ENG subs]'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.S01E08.The.Sonarr.BluRay.2160p.AVC.DTS-HD.MA.5.1.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.2x11.Nato.Per.The.Sonarr.Bluray.Remux.AVC.2160p.AC3.ITA'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = '[Dolby Vision] Sonarr.of.Series.S07.MULTi.UHD.BLURAY.REMUX.DV-NoTag'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'Adventures.of.Sonic.the.Hedgehog.S01E01.Best.Hedgehog.2160p.DD.2.0.AVC.REMUX-FraMeSToR'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'Series Title S01 2018 2160p BluRay Hybrid-REMUX AVC TRUEHD 5.1 Dual Audio-ZR-'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'Series.Title.S01.2018.2160p.BluRay.Hybrid-REMUX.AVC.TRUEHD.5.1.Dual.Audio-ZR-'
+source = 'Sonarr QualityParserFixture (bluray2160p_remux)'
+[case.expected]
+resolution = '2160p'
+source = 'remux'
+
+[[case]]
+input  = 'POI S02E11 1080i HDTV DD5.1 MPEG2-TrollHD'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'How I Met Your Developer S01E18 Nothing Good Happens After Sonarr 720p HDTV DD5.1 MPEG2-TrollHD'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'The Series S01E11 The Finals 1080i HDTV DD5.1 MPEG2-TrollHD'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Series.Title.S07E11.1080i.HDTV.DD5.1.MPEG2-NTb.ts'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Game of Series S04E10 1080i HDTV MPEG2 DD5.1-CtrlHD.ts'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Series.Title.S02E05.1080i.HDTV.DD2.0.MPEG2-NTb.ts'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Show - S03E01 - Episode Title Raw-HD.ts'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Series.Title.S10E09.Title.1080i.UPSCALE.HDTV.DD5.1.MPEG2-zebra'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+
+[[case]]
+input  = 'Series.Title.2011-08-04.1080i.HDTV.MPEG-2-CtrlHD'
+source = 'Sonarr QualityParserFixture (raw)'
+[case.expected]
+source = 'raw-hd'
+

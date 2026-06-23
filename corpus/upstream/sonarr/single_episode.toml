@@ -1,0 +1,1449 @@
+# Sonarr single-episode vectors (TV).
+# Re-curated input->expected FACTS from Sonarr's SingleEpisodeParserFixture
+# [TestCase] rows (clean-room; see docs/agents/legal-and-licensing.md).
+# expected: title<-seriesTitle, season<-seasonNumber, episode<-episodeNumbers[0].
+
+[[case]]
+input  = 'Series.With.Title.S02E15'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series With Title'
+season = 2
+episode = 15
+
+[[case]]
+input  = 'Series.and.a.Title.103.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series and a Title'
+season = 1
+episode = 3
+
+[[case]]
+input  = 'Series.and.a.Title.113.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series and a Title'
+season = 1
+episode = 13
+
+[[case]]
+input  = 'Series.and.a.Title.1013.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series and a Title'
+season = 10
+episode = 13
+
+[[case]]
+input  = 'Series.Title.4x05.HDTV.XviD-LOL'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 4
+episode = 5
+
+[[case]]
+input  = 'Series.Title.S03E06.DVDRip.XviD-WiDE'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 3
+episode = 6
+
+[[case]]
+input  = 'Series.Title.S10E27.WS.DSR.XviD-2HD'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 10
+episode = 27
+
+[[case]]
+input  = 'Series.Title.2010.S02E14.HDTV.XviD-LOL'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title 2010'
+season = 2
+episode = 14
+
+[[case]]
+input  = 'Series Title 0 S01E19 720p WEB DL DD5 1 H 264 NT'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title 0'
+season = 1
+episode = 19
+
+[[case]]
+input  = 'The Series Title S01E14 A Message Back 720p WEB DL DD5 1 H264 SURFER'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series Title'
+season = 1
+episode = 14
+
+[[case]]
+input  = 'Series Title S01E07 WS PDTV XviD FUtV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 7
+
+[[case]]
+input  = 'Series.Title.S03E19.DVDRip.XviD-OSiTV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 3
+episode = 19
+
+[[case]]
+input  = 'S03E09 WS PDTV XviD FUtV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 3
+episode = 9
+
+[[case]]
+input  = '5x10 WS PDTV XviD FUtV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 5
+episode = 10
+
+[[case]]
+input  = 'Series.Title.2009.S01E14.HDTV.XviD-LOL'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title 2009'
+season = 1
+episode = 14
+
+[[case]]
+input  = 'Series.Title.1995.S03E20.HDTV.XviD-LOL'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title 1995'
+season = 3
+episode = 20
+
+[[case]]
+input  = 'Series.Title.S03E115.DVDRip.XviD-OSiTV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 3
+episode = 115
+
+[[case]]
+input  = 'Series Title - S02E21 - 94 Meetings - 720p TV.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 21
+
+[[case]]
+input  = '24-7 Series - Title - Road to the Sonarr - S01E03 - Episode 3.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '24-7 Series - Title - Road to the Sonarr'
+season = 1
+episode = 3
+
+[[case]]
+input  = "Series.Title.Inc.S03E19.DVDRip.\"XviD\"-OSiTV"
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title Inc'
+season = 3
+episode = 19
+
+[[case]]
+input  = 'Series Title-0 (2010) - 1x05 - Missing Title'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title-0 (2010)'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Series Title-0 (2010) - 1x05 - Title'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title-0 (2010)'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Series Title - S06E13 - 5 to 9 [DVD]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episode = 13
+
+[[case]]
+input  = 'Series Title - S02E21 - 18-5-4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 21
+
+[[case]]
+input  = 'Series.Title.S01E07.21.0.Jump.Street.720p.WEB-DL.DD5.1.h.264-KiNGS'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 7
+
+[[case]]
+input  = 'Series.Title.525'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episode = 25
+
+[[case]]
+input  = 'Series Title - 10x12 - 24 Hour Propane People [SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 10
+episode = 12
+
+[[case]]
+input  = 'Series Title S01E06 3 Beers For Batali DVDRip XviD SPRiNTER'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 6
+
+[[case]]
+input  = '24 7 Series-Title - Road to the Sonarr Part01 720p HDTV x264 ORENJI'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '24 7 Series-Title - Road to the Sonarr'
+season = 1
+episode = 1
+
+[[case]]
+input  = '24 7 Series-Title - Road to the Sonarr Part 02 720p HDTV x264 ORENJI'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '24 7 Series-Title - Road to the Sonarr'
+season = 1
+episode = 2
+
+[[case]]
+input  = '24-7 Series-Title - Road to the Sonarr - S01E01 - Part 1'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '24-7 Series-Title - Road to the Sonarr'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'S6E02-Unwrapped-(Playing With Food) - [DarkData]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 6
+episode = 2
+
+[[case]]
+input  = 'S06E03-Unwrapped-(Number Ones Unwrapped) - [DarkData]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 6
+episode = 3
+
+[[case]]
+input  = 'Series Title S02E21 18 5 4 720p WEB DL DD5 1 h 264 EbP'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 21
+
+[[case]]
+input  = '01x04 - Halloween, Part 1 - 720p WEB-DL'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 4
+
+[[case]]
+input  = 'series.s03.e05.ws.dvdrip.xvid-m00tv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'series'
+season = 3
+episode = 5
+
+[[case]]
+input  = 'series.2009.416.hdtv-lol'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'series 2009'
+season = 4
+episode = 16
+
+[[case]]
+input  = 'series.six-0.2010.217.hdtv-lol'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'series six-0 2010'
+season = 2
+episode = 17
+
+[[case]]
+input  = 'Series Title - S1936E18 - I Love to Singa'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1936
+episode = 18
+
+[[case]]
+input  = 'Series_Title!_-_7x6_-_The_Scarlett_Getter_[SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title!'
+season = 7
+episode = 6
+
+[[case]]
+input  = 'Series_Title_-_1x1_-_Live_and_Learn_[HDTV-720p]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Top Series - 07x03 - 2005.11.70'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Top Series'
+season = 7
+episode = 3
+
+[[case]]
+input  = 'Series.S04E09.Swan.Song.1080p.WEB-DL.DD5.1.H.264-ECI'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 4
+episode = 9
+
+[[case]]
+input  = 'S08E20 50-50 Carla [DVD]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 8
+episode = 20
+
+[[case]]
+input  = 'Series S08E20 50-50 Carla [DVD]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 8
+episode = 20
+
+[[case]]
+input  = 'S02E10 6-50 to SLC [SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 2
+episode = 10
+
+[[case]]
+input  = 'Developers & Coders S02E10 6-50 to SLC [SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Developers & Coders'
+season = 2
+episode = 10
+
+[[case]]
+input  = 'The_Big_Series_Title_-_6x12_-_The_Code_Review_Equivalency_[HDTV-720p]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Big Series Title'
+season = 6
+episode = 12
+
+[[case]]
+input  = 'Series_Title.19x06.720p_HDTV_x264-FoV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 19
+episode = 6
+
+[[case]]
+input  = 'Series.S03E10.Alexandra.720p.WEB-DL.AAC2.0.H.264-CROM.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+episode = 10
+
+[[case]]
+input  = "(Series of Title s03 e - \"Series of Title Season 3 Episode 10\""
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series of Title'
+season = 3
+episode = 10
+
+[[case]]
+input  = 'Series.Hunters.Galatic.S05E607.720p.hdtv.x264'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Hunters Galatic'
+season = 5
+episode = 607
+
+[[case]]
+input  = 'Series.Time.With.Dev1.And.Dev2.S01E20.720p.BluRay.x264-DEiMOS'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Time With Dev1 And Dev2'
+season = 1
+episode = 20
+
+[[case]]
+input  = 'Series.S01E04.2-45.PM.[HDTV-720p].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 4
+
+[[case]]
+input  = 'S01E04'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 4
+
+[[case]]
+input  = '1x04'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 4
+
+[[case]]
+input  = '10.Lines.You.Know.About.Code.S02E04.Prohibition.HDTV.XviD-AFG'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '10 Lines You Know About Code'
+season = 2
+episode = 4
+
+[[case]]
+input  = '30 Series - S01E01 - Pilot.avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '30 Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = '666 Series Title - S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '666 Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series 13 - S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 13'
+season = 1
+episode = 1
+
+[[case]]
+input  = "Don't Ever Trust The B---- in Code 23.S01E01"
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = "Don't Ever Trust The B---- in Code 23"
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Warehouse.13.S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Warehouse 13'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Never.Trust.The.B----.in.Code.23.S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Never Trust The B---- in Code 23'
+season = 1
+episode = 1
+
+[[case]]
+input  = '42 S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '42'
+season = 1
+episode = 1
+
+[[case]]
+input  = '69.S01E01'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '69'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series - 2x12 - The Choice [HDTV-1080p].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 2
+episode = 12
+
+[[case]]
+input  = 'Series - 2x4 - New Car Smell [HDTV-1080p].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 2
+episode = 4
+
+[[case]]
+input  = 'Top Series - 06x11 - 2005.08.07'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Top Series'
+season = 6
+episode = 11
+
+[[case]]
+input  = 'The_Series_US_s06e19_04.28.2014_hdtv.x264.Poke.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series US'
+season = 6
+episode = 19
+
+[[case]]
+input  = 'the.Series.110.hdtv-lol'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'the Series'
+season = 1
+episode = 10
+
+[[case]]
+input  = '2009x09 [SDTV].avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 2009
+episode = 9
+
+[[case]]
+input  = 'S2009E09 [SDTV].avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 2009
+episode = 9
+
+[[case]]
+input  = 'Series Week S2009E09 [SDTV].avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Week'
+season = 2009
+episode = 9
+
+[[case]]
+input  = 'St_Series_209_Aids_And_Comfort'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'St Series'
+season = 2
+episode = 9
+
+[[case]]
+input  = '[Impatience] Series - 0x01 [720p][34073169].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 0
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S15.E06.City.Sushi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 15
+episode = 6
+
+[[case]]
+input  = 'Series Title - S15 E06 - City Code'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 15
+episode = 6
+
+[[case]]
+input  = 'Series S1-E1-WEB-DL-1080p-NZBgeek'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series S1E1-WEB-DL-1080p-NZBgeek'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.S010E16.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 10
+episode = 16
+
+[[case]]
+input  = '[ www.Torrenting.com ] - Series.2012.S02E17.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 2012'
+season = 2
+episode = 17
+
+[[case]]
+input  = 'Series.2012.S02E18.720p.HDTV.X264-DIMENSION.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 2012'
+season = 2
+episode = 18
+
+[[case]]
+input  = 'Series - Season 1 - Episode 01 (Resolution).avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = '5x09 - 100 [720p WEB-DL].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 5
+episode = 9
+
+[[case]]
+input  = '1x03 - 274 [1080p BluRay].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 3
+
+[[case]]
+input  = '1x03 - The 112th Congress [1080p BluRay].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 3
+
+[[case]]
+input  = 'Series.2012.S02E14.720p.HDTV.X264-DIMENSION [PublicHD].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 2012'
+season = 2
+episode = 14
+
+[[case]]
+input  = 'Series.2009.S06E03.720p.HDTV.X264-DIMENSION [PublicHD].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 2009'
+season = 6
+episode = 3
+
+[[case]]
+input  = '20-1.2014.S02E01.720p.HDTV.x264-CROOKS'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '20-1 2014'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Series - S01E09 - Debate 109'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 9
+
+[[case]]
+input  = 'Series - S02E02 - My Maserati Does 185'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 2
+episode = 2
+
+[[case]]
+input  = '6x13 - The Series Show 100th Episode Special'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 6
+episode = 13
+
+[[case]]
+input  = 'The Series And the Show - S41 E10478 - 2014-08-15'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series And the Show'
+season = 41
+episode = 10478
+
+[[case]]
+input  = 'The Series And the Show - S42 E10591 - 2015-01-27'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series And the Show'
+season = 42
+episode = 10591
+
+[[case]]
+input  = 'Series Title [1x05] Episode Title'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Series Title [S01E05] Episode Title'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Series Title Season 01 Episode 05 720p'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'The Series And the Show - S42 E10713 - 2015-07-20.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series And the Show'
+season = 42
+episode = 10713
+
+[[case]]
+input  = 'Series.103.hdtv-lol[ettv].mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 3
+
+[[case]]
+input  = 'Series - 01x02 - The Rooster Prince - [itz_theo]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 2
+
+[[case]]
+input  = 'Series (2009) - [06x16] - Room 147.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series (2009)'
+season = 6
+episode = 16
+
+[[case]]
+input  = 'grp-zoos01e11-1080p'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'grp-zoo'
+season = 1
+episode = 11
+
+[[case]]
+input  = 'grp-zoo-s01e11-1080p'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'grp-zoo'
+season = 1
+episode = 11
+
+[[case]]
+input  = 'Series!.S2016E14.2016-01-20.avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series!'
+season = 2016
+episode = 14
+
+[[case]]
+input  = 'John.Smith.The.Series.Title.5of9.The.Universe.Of.Development.1990.DVDRip.x264-HANDJOB'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'John Smith The Series Title'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Judge Developer 2016 02 25 S20E142'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Judge Developer'
+season = 20
+episode = 142
+
+[[case]]
+input  = 'Judge Developer 2016 02 25 S20E143'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Judge Developer'
+season = 20
+episode = 143
+
+[[case]]
+input  = 'Red Show - S02 - E06 - Parallel Series'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Red Show'
+season = 2
+episode = 6
+
+[[case]]
+input  = 'App.Sonarr.Made.in.Canada.Part.Two.720p.HDTV.x264-2HD'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'App Sonarr Made in Canada'
+season = 1
+episode = 2
+
+[[case]]
+input  = 'The.100000.Series.Title.2016.S01E05.720p.HDTV.x264-W4F'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The 100000 Series Title 2016'
+season = 1
+episode = 5
+
+[[case]]
+input  = 'Series S01E02 (22 October 2016) HDTV 720p [Webrip]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 2
+
+[[case]]
+input  = 'this.is.a.show.2015.0308-yestv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'this is a show 2015'
+season = 3
+episode = 8
+
+[[case]]
+input  = 'Series - S2016E231'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 2016
+episode = 231
+
+[[case]]
+input  = 'Series - 2016x231'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 2016
+episode = 231
+
+[[case]]
+input  = 'Short.Series.S26E022.HDTV.x264-FiHTV'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Short Series'
+season = 26
+episode = 22
+
+[[case]]
+input  = 'Super.Series.S01.Ep06.1080p.BluRay.DTS.x264-MiR'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Super Series'
+season = 1
+episode = 6
+
+[[case]]
+input  = 'Series 104 - S01E07 The Developers [SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 104'
+season = 1
+episode = 7
+
+[[case]]
+input  = '11-02 The Series Reaction (HD).m4v'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 11
+episode = 2
+
+[[case]]
+input  = 'Plus Series la title - S14E3533 FRENCH WEBRIP H.264 AAC (09.05.2018)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Plus Series la title'
+season = 14
+episode = 3533
+
+[[case]]
+input  = 'The Series - S01E02 - Earth Skills HDTV-1080p AVC DTS [EN+FR+ES+PT+DA+FI+NB+SV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'The Series'
+season = 1
+episode = 2
+
+[[case]]
+input  = 'Series Title - S01E01 - Day 100 [SDTV]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S01.Ep.01.English.AC3.DL.1080p.BluRay-Sonarr'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S01.E.01.English.AC3.DL.1080p.BluRay-Sonarr'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S01.Ep01.English.AC3.DL.1080p.BluRay-Sonarr'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S01.E01.English.AC3.DL.1080p.BluRay-Sonarr'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series.Title.S01EP01.English.AC3.DL.1080p.BluRay-Sonarr'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'tvs-amgo-dd51-dl-7p-azhd-x264-103'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'tvs-amgo-dd51-dl-7p-azhd'
+season = 1
+episode = 3
+
+[[case]]
+input  = 'Series Title - S01E01 [AC3 5.1 Castellano][www.descargas2020.org]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series Title - [02x01] - Episode 1'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Series.Title.Of.S01E01.xyz'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title Of'
+season = 1
+episode = 1
+
+[[case]]
+input  = '[RlsGrp] Series Title - S01E27 - 24-Hour'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 27
+
+[[case]]
+input  = 'Series Title - S02E01 1920x910'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Anime Title - S2020E1527 [1527] [2020-10-11] - Episode Title'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Anime Title'
+season = 2020
+episode = 1527
+
+[[case]]
+input  = 'Anime Title - S2010E994 [0994] [2010-02-28] - Episode Title [x264 720p][AAC 2ch][HS][Shion+GakiDave]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Anime Title'
+season = 2010
+episode = 994
+
+[[case]]
+input  = 'Series Title - Temporada 2 [HDTV 720p][Cap.201][AC3 5.1 Castellano][www.pctnew.com]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Series Title - Temporada 2 [HDTV 720p][Cap.1901][AC3 5.1 Castellano][www.pctnew.com]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 19
+episode = 1
+
+[[case]]
+input  = 'Series Title 1x1'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = '1x1'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series Title [2022] [S25E13] [PL] [720p] [WEB-DL-CZRG] [x264] '
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title [2022]'
+season = 25
+episode = 13
+
+[[case]]
+input  = 'Series T Se.3 afl.3'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series T'
+season = 3
+episode = 3
+
+[[case]]
+input  = '[Anime Chap] Anime Title! S01E09 [WEB 1080p] {OP & ED Lyrics} - Episode 9 (The Eminence in Shadow)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Anime Title!'
+season = 1
+episode = 9
+
+[[case]]
+input  = '[Anime Chap] Anime Title! S01E12 [WEB 1080p] {OP & ED Lyrics} - Episode 12 (The Eminence in Shadow)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Anime Title!'
+season = 1
+episode = 12
+
+[[case]]
+input  = 'SeriesTitle-S16E08-10426008-0.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+season = 16
+episode = 8
+
+[[case]]
+input  = 'Series-S07E12-31st_Century_Fox-[Bluray-1080p].mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 7
+episode = 12
+
+[[case]]
+input  = 'TheTitle-S12E13-3_Acts_of_God.mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'TheTitle'
+season = 12
+episode = 13
+
+[[case]]
+input  = 'Series Title - Temporada 2 [HDTV 720p][Cap.408]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 4
+episode = 8
+
+[[case]]
+input  = 'Series Title [HDTV][Cap.104](website.com).avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 4
+
+[[case]]
+input  = 'Series Title [HDTV][Cap.402](website.com).avi'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 4
+episode = 2
+
+[[case]]
+input  = 'Series Title [HDTV 720p][Cap.101](website.com).mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Босх: Спадок (S2E1) / Series: Legacy (S2E1) (2023) WEB-DL 1080p Ukr/Eng | sub Eng'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series: Legacy'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Босх: Спадок / Series: Legacy / S2E1 of 10 (2023) WEB-DL 1080p Ukr/Eng | sub Eng'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series: Legacy'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Titles.s06e01.1999.BDRip.1080p.Ukr.Eng.AC3.Hurtom.TNU.Tenax555'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Titles'
+season = 6
+episode = 1
+
+[[case]]
+input  = 'Titles.s06.01.1999.BDRip.1080p.Ukr.Eng.AC3.Hurtom.TNU.Tenax555'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Titles'
+season = 6
+episode = 1
+
+[[case]]
+input  = '[Judas] Series Title (2024) - S01E14'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title (2024)'
+season = 1
+episode = 14
+
+[[case]]
+input  = '[ReleaseGroup] SeriesTitle S01E1 Webdl 1080p'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+season = 1
+episode = 1
+
+[[case]]
+input  = '[SubsPlus+] Series no Chill - S02E01 (NF WEB 1080p AVC AAC)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series no Chill'
+season = 2
+episode = 1
+
+[[case]]
+input  = '[SubsPlus+] Series no Chill - S02E01v2 (NF WEB 1080p AVC AAC)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series no Chill'
+season = 2
+episode = 1
+
+[[case]]
+input  = 'Series - Temporada 1 - [HDTV 1080p][Cap.101](wolfmax4k.com)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series [HDTV 1080p][Cap.101](wolfmax4k.com)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series [HDTV 1080p][Cap. 101](wolfmax4k.com).mkv'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Amazing Title (2024/S01E07/DSNP/WEB-DL/1080p/ESP/EAC3 5.1/ING/EAC3 5.1 Atmos/SUBS) SPWEB'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Amazing Title (2024)'
+season = 1
+episode = 7
+
+[[case]]
+input  = 'Mini Title (Miniserie) (2024/S01E07/DSNP/WEB-DL/1080p/ESP/EAC3 5.1/ING/EAC3 5.1 Atmos/SUBS) SPWEB'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Mini Title (2024)'
+season = 1
+episode = 7
+
+[[case]]
+input  = 'Series.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 6
+episode = 18
+
+[[case]]
+input  = 'Series.2006.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series 2006'
+season = 6
+episode = 18
+
+[[case]]
+input  = '我的人间烟火.Fireworks.Series.S01E01.2023.V2.1080p.WEB-DL.H264.AAC-SeeWEB'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Fireworks Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Fireworks.Series.S01E01.2023.V2.1080p.WEB-DL.H264.AAC-SeeWEB'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Fireworks Series'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'S3E3 - Seventeen Seconds [1080p]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 3
+episode = 3
+
+[[case]]
+input  = 'S3E3 - Part 3 Seventeen Seconds [1080p]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 3
+episode = 3
+
+[[case]]
+input  = 'S03E03 - Part 3 Seventeen Seconds [1080p]'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+season = 3
+episode = 3
+
+[[case]]
+input  = '[VARYG] Series at Age 29 S01E03 Rirui and Anyango 1080p CR WEB-DL AAC2.0 H.264 (29-sai Dokushin Chuuken Boukensha no Nichijou, Multi-Subs)'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series at Age 29'
+season = 1
+episode = 3
+
+[[case]]
+input  = 'Series S093E081 1080p ALL4 WEB-DL AAC2 0 H 264-JJUNAHJAMESON'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 93
+episode = 81
+
+[[case]]
+input  = 'Series S87E136 1080p WEB-DL x264-NGP'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 87
+episode = 136
+
+[[case]]
+input  = 'Series S092E001 1080p ALL4 WEB-DL AAC2 0 H 264-JJunahJameson'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 92
+episode = 1
+
+[[case]]
+input  = 'Series s90 e43 1080p HDTV AAC H264'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 90
+episode = 43
+
+[[case]]
+input  = '221208 ABC123 Series Title Season 39 ep11.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'ABC123 Series Title'
+season = 39
+episode = 11
+
+[[case]]
+input  = '221208 ABC123 Series Title ep34[1080p60 H264].mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'ABC123 Series Title'
+season = 1
+episode = 34
+
+[[case]]
+input  = '221205 ABC123 17研究所！ #17.ts'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'ABC123 17研究所！'
+season = 1
+episode = 17
+
+[[case]]
+input  = '221201 Series Title! ABC123 ep219[720p.h264].mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title! ABC123'
+season = 1
+episode = 219
+
+[[case]]
+input  = '221206 Series Title! ep08(Tanaka Miku).ts'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title!'
+season = 1
+episode = 8
+
+[[case]]
+input  = '210810 ABC123 Series Title ep05.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'ABC123 Series Title'
+season = 1
+episode = 5
+
+[[case]]
+input  = '221204 乃木坂工事中 ep389.mp4'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = '乃木坂工事中'
+season = 1
+episode = 389
+
+[[case]]
+input  = 'Series Title S01E11.5 [SP]-The Poppies Bloom Red on the Battlefield'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episode = 11
+
+[[case]]
+input  = 'Series.Title.S06E01b.Fade.Out.Fade.in.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-FLUX'
+source = 'Sonarr SingleEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episode = 1
+

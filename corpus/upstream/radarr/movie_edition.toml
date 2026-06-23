@@ -1,0 +1,263 @@
+# Re-curated input->expected FACTS extracted from Radarr's GPLv3 parser
+# test fixtures (clean-room: facts only, never code; each vector records
+# its `source`). See docs/agents/legal-and-licensing.md and corpus/README.md.
+# Schema mirrors corpus/parse/*.toml (cellarr ParsedRelease subset).
+# Concern: movie edition extraction.
+
+[[case]]
+input  = "Movie Title 2012 Directors Cut"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Directors Cut"
+
+[[case]]
+input  = "Movie Title 1999 (Despecialized).mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Despecialized"
+
+[[case]]
+input  = "Movie Title.2012.(Special.Edition.Remastered).[Bluray-1080p].mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Special Edition Remastered"
+
+[[case]]
+input  = "Movie Title 2012 Extended"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended"
+
+[[case]]
+input  = "Movie Title 2012 Extended Directors Cut Fan Edit"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Directors Cut Fan Edit"
+
+[[case]]
+input  = "Movie Title 2012 Director's Cut"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "Movie Title 2012 Directors Cut"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Directors Cut"
+
+[[case]]
+input  = "Movie Title.2012.(Extended.Theatrical.Version.IMAX).BluRay.1080p.2012.asdf"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Theatrical Version IMAX"
+
+[[case]]
+input  = "2021 A Movie (1968) Director's Cut .mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "2021 A Movie 1968 (Extended Directors Cut FanEdit)"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Directors Cut FanEdit"
+
+[[case]]
+input  = "A Fake Movie 2035 2012 Directors.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Directors"
+
+[[case]]
+input  = "Movie 2049 Director's Cut.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "Movie Title 2012 50th Anniversary Edition.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "50th Anniversary Edition"
+
+[[case]]
+input  = "Movie 2012 2in1.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "2in1"
+
+[[case]]
+input  = "Movie 2012 IMAX.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "IMAX"
+
+[[case]]
+input  = "Movie 2012 Restored.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Restored"
+
+[[case]]
+input  = "Movie Title.Special.Edition.Fan Edit.2012..BRRip.x264.AAC-m2g"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Special Edition Fan Edit"
+
+[[case]]
+input  = "Movie Title (Despecialized) 1999.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Despecialized"
+
+[[case]]
+input  = "Movie Title.(Special.Edition.Remastered).2012.[Bluray-1080p].mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Special Edition Remastered"
+
+[[case]]
+input  = "Movie Title Extended 2012"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended"
+
+[[case]]
+input  = "Movie Title Extended Directors Cut Fan Edit 2012"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Directors Cut Fan Edit"
+
+[[case]]
+input  = "Movie Title Director's Cut 2012"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "Movie Title Directors Cut 2012"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Directors Cut"
+
+[[case]]
+input  = "Movie Title.(Extended.Theatrical.Version.IMAX).2012.BluRay.1080p.asdf"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Theatrical Version IMAX"
+
+[[case]]
+input  = "Movie Director's Cut (1968).mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "2021 A Movie (Extended Directors Cut FanEdit) 1968 Bluray 1080p"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Directors Cut FanEdit"
+
+[[case]]
+input  = "A Fake Movie 2035 Directors 2012.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Directors"
+
+[[case]]
+input  = "Movie Director's Cut 2049.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "Movie Title 50th Anniversary Edition 2012.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "50th Anniversary Edition"
+
+[[case]]
+input  = "Movie 2in1 2012.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "2in1"
+
+[[case]]
+input  = "Movie IMAX 2012.mkv"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "IMAX"
+
+[[case]]
+input  = "Fake Movie Final Cut 2016"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Final Cut"
+
+[[case]]
+input  = "Fake Movie 2016 Final Cut "
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Final Cut"
+
+[[case]]
+input  = "My Movie GERMAN Extended Cut 2016"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Cut"
+
+[[case]]
+input  = "My.Movie.GERMAN.Extended.Cut.2016"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Cut"
+
+[[case]]
+input  = "My.Movie.GERMAN.Extended.Cut"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Extended Cut"
+
+[[case]]
+input  = "My.Movie.Assembly.Cut.1992.REPACK.1080p.BluRay.DD5.1.x264-Group"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Assembly Cut"
+
+[[case]]
+input  = "Movie.1987.Ultimate.Hunter.Edition.DTS-HD.DTS.MULTISUBS.1080p.BluRay.x264.HQ-TUSAHD"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Ultimate Hunter Edition"
+
+[[case]]
+input  = "Movie.1950.Diamond.Edition.1080p.BluRay.x264-nikt0"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Diamond Edition"
+
+[[case]]
+input  = "Movie.Title.1990.Ultimate.Rekall.Edition.NORDiC.REMUX.1080p.BluRay.AVC.DTS-HD.MA5.1-TWA"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Ultimate Rekall Edition"
+
+[[case]]
+input  = "Movie.Title.1971.Signature.Edition.1080p.BluRay.FLAC.2.0.x264-TDD"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Signature Edition"
+
+[[case]]
+input  = "Movie.1979.The.Imperial.Edition.BluRay.720p.DTS.x264-CtrlHD"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Imperial Edition"
+
+[[case]]
+input  = "Movie.1997.Open.Matte.1080p.BluRay.x264.DTS-FGT"
+source = "Radarr EditionParserFixture.should_parse_edition"
+[case.expected]
+edition = "Open Matte"

@@ -1,0 +1,172 @@
+# Sonarr anime multi-episode absolute-range vectors.
+# Re-curated FACTS from Sonarr's AbsoluteEpisodeNumberParserFixture [TestCase] rows.
+# expected: title, absolute<-firstAbsoluteEpisodeNumber; full range is in notes.
+
+[[case]]
+input  = '[ANBU-AonE]_SeriesTitle_26-27_[F224EF26].avi'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 26-27'
+[case.expected]
+title = 'SeriesTitle'
+absolute = 26
+
+[[case]]
+input  = '[Doutei] Some Good, Anime Show - 01-12 [BD][720p-AAC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-12'
+[case.expected]
+title = 'Some Good, Anime Show'
+absolute = 1
+
+[[case]]
+input  = 'Series Title (2010) - 01-02-03 - Episode Title (1) HDTV-720p'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-3'
+[case.expected]
+title = 'Series Title (2010)'
+absolute = 1
+
+[[case]]
+input  = '[RlsGrp] Series Title (2010) - S01E01-02-03 - 001-002-003 - Episode Title HDTV-720p v2'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-3'
+[case.expected]
+title = 'Series Title (2010)'
+absolute = 1
+
+[[case]]
+input  = '[RlsGrp] Series Title (2010) - S01E01-02 - 001-002 - Episode Title HDTV-720p v2'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-2'
+[case.expected]
+title = 'Series Title (2010)'
+absolute = 1
+
+[[case]]
+input  = 'Series Title (2010) - S01E01-02 (001-002) - Episode Title (1) HDTV-720p v2 [RlsGrp]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-2'
+[case.expected]
+title = 'Series Title (2010)'
+absolute = 1
+
+[[case]]
+input  = '[HorribleSubs] Some Anime Show!! (01-25) [1080p] (Batch)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-25'
+[case.expected]
+title = 'Some Anime Show!!'
+absolute = 1
+
+[[case]]
+input  = 'Some Anime Show (2011) Episode 99-100 [1080p] [Dual.Audio] [x265]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 99-100'
+[case.expected]
+title = 'Some Anime Show (2011)'
+absolute = 99
+
+[[case]]
+input  = 'Some Anime Show 1-13 (English Dub) [720p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-13'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 1
+
+[[case]]
+input  = 'Series.Title.Ep01-12.Complete.English.AC3.DL.1080p.BluRay.x264'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-12'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[Judas] Some Anime Show 091-123 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 91-123'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 91
+
+[[case]]
+input  = '[Judas] Some Anime Show - 091-123 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 91-123'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 91
+
+[[case]]
+input  = '[HorribleSubs] Some Anime Show 01 - 119 [1080p] [Batch]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-119'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 1
+
+[[case]]
+input  = '[Erai-raws] Series Title! - 01~10 [1080p][Multiple Subtitle]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-10'
+[case.expected]
+title = 'Series Title!'
+absolute = 1
+
+[[case]]
+input  = '[Erai-raws] Series-Title! 2 - 01~10 [1080p][Multiple Subtitle]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-10'
+[case.expected]
+title = 'Series-Title! 2'
+absolute = 1
+
+[[case]]
+input  = '[Erai-raws] Series Title! - 01 ~ 10 [1080p][Multiple Subtitle]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-10'
+[case.expected]
+title = 'Series Title!'
+absolute = 1
+
+[[case]]
+input  = '[Erai-raws] Series-Title! 2 - 01 ~ 10 [1080p][Multiple Subtitle]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-10'
+[case.expected]
+title = 'Series-Title! 2'
+absolute = 1
+
+[[case]]
+input  = 'Series_Title_2_[01-05]_[AniLibria_TV]_[WEBRip_1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1-5'
+[case.expected]
+title = 'Series Title 2'
+absolute = 1
+
+[[case]]
+input  = '[Moxie] One Series - The Country (892-916) (BD Remux 1080p AAC FLAC) [Dual Audio]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 892-916'
+[case.expected]
+title = 'One Series - The Country'
+absolute = 892
+
+[[case]]
+input  = '[HatSubs] One Series (1017-1088) (WEB 1080p)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1017-1088'
+[case.expected]
+title = 'One Series'
+absolute = 1017
+
+[[case]]
+input  = '[HatSubs] One Series 1017-1088 (WEB 1080p)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (multi-absolute)'
+notes  = 'absolute range 1017-1088'
+[case.expected]
+title = 'One Series'
+absolute = 1017
+

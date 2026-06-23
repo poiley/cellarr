@@ -1,0 +1,773 @@
+# Re-curated input->expected FACTS extracted from Radarr's GPLv3 parser
+# test fixtures (clean-room: facts only, never code; each vector records
+# its `source`). See docs/agents/legal-and-licensing.md and corpus/README.md.
+# Schema mirrors corpus/parse/*.toml (cellarr ParsedRelease subset).
+# Concern: release-group extraction (positive group facts).
+
+[[case]]
+input  = "Movie.2009.S01E14.English.HDTV.XviD-LOL"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "LOL"
+
+[[case]]
+input  = "Punky.Brewster.S01.EXTRAS.DVDRip.XviD-RUNNER"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "RUNNER"
+
+[[case]]
+input  = "2020.NZ.2011.12.02.PDTV.XviD-C4TV"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "C4TV"
+
+[[case]]
+input  = "Some.Movie.S03E115.DVDRip.XviD-OSiTV"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "OSiTV"
+
+[[case]]
+input  = "Movie.Name.S04E13.720p.WEB-DL.AAC2.0.H.264-Cyphanix"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "Cyphanix"
+
+[[case]]
+input  = "Movie.Name 10x11 - Wild Movies Cant Be Broken [rl].avi"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "rl"
+
+[[case]]
+input  = "[ www.Torrenting.com ] - Movie.Name.S03E14.720p.HDTV.X264-DIMENSION"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "DIMENSION"
+
+[[case]]
+input  = "Movie.Name S02E09 HDTV x264-2HD [eztv]-[rarbg.com]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "2HD"
+
+[[case]]
+input  = "The.Movie.Name.720p.HEVC.x265-MeGusta-Pre"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "MeGusta"
+
+[[case]]
+input  = "Blue.Movie.Name.S08E05.The.Movie.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-Rakuv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.Name.S01E13.720p.BluRay.x264-SiNNERS-Rakuvfinhel"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "SiNNERS"
+
+[[case]]
+input  = "Movie.Name.S01E01.INTERNAL.720p.HDTV.x264-aAF-RakuvUS-Obfuscated"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "aAF"
+
+[[case]]
+input  = "Movie.Name.2018.720p.WEBRip.DDP5.1.x264-NTb-postbot"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.Name.2018.720p.WEBRip.DDP5.1.x264-NTb-xpost"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.Name.S02E24.1080p.AMZN.WEBRip.DD5.1.x264-CasStudio-AsRequested"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "CasStudio"
+
+[[case]]
+input  = "Movie.Name.S04E11.Lamster.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-AlternativeToRequested"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.Name.S16E04.Third.Wheel.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-GEROV"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.NameS10E06.Kid.n.Play.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-Z0iDS3N"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.Name.S02E06.The.House.of.Lords.DVDRip.x264-MaG-Chamele0n"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "MaG"
+
+[[case]]
+input  = "SomeMovie.1080p.BluRay.DTS-X.264.-D-Z0N3.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "D-Z0N3"
+
+[[case]]
+input  = "SomeMovie.1080p.BluRay.DTS.x264.-Blu-bits.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "Blu-bits"
+
+[[case]]
+input  = "SomeMovie.1080p.BluRay.DTS.x264.-DX-TV.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "DX-TV"
+
+[[case]]
+input  = "SomeMovie.1080p.BluRay.DTS.x264.-FTW-HS.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "FTW-HS"
+
+[[case]]
+input  = "SomeMovie.1080p.BluRay.DTS.x264.-VH-PROD.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "VH-PROD"
+
+[[case]]
+input  = "Some.Dead.Movie.2006.1080p.BluRay.DTS.x264.D-Z0N3"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "D-Z0N3"
+
+[[case]]
+input  = "Movie.Title.2010.720p.BluRay.x264.-[YTS.LT]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "YTS.LT"
+
+[[case]]
+input  = "The.Movie.Title.2013.720p.BluRay.x264-ROUGH [PublicHD]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "ROUGH"
+
+[[case]]
+input  = "The.Movie.Title.2013.1080p.10bit.AMZN.WEB-DL.DDP5.1.HEVC-Vyndros"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "Vyndros"
+
+[[case]]
+input  = "Movie.Name.2022.1080p.BluRay.x264-[YTS.AG]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "YTS.AG"
+
+[[case]]
+input  = "Movie.Name.2022.1080p.BluRay.x264-VARYG"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "VARYG"
+
+[[case]]
+input  = "Movie Name (2017) [2160p REMUX] [HEVC DV HYBRID HDR10+ Dolby TrueHD Atmos 7 1 24-bit Audio English]-DataLass"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "DataLass"
+
+[[case]]
+input  = "Movie Name (2017) (Showtime) (1080p.BD.DD5.1.x265-TheSickle[TAoE])"
+source = "Radarr ReleaseGroupParserFixture.should_parse_release_group"
+[case.expected]
+group = "TAoE"
+
+[[case]]
+input  = "Movie Name (2020) [2160p x265 10bit S82 Joy]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Joy"
+
+[[case]]
+input  = "Movie Name (2003) (2160p BluRay X265 HEVC 10bit HDR AAC 7.1 Tigole) [QxR]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "QxR"
+
+[[case]]
+input  = "Ode To Joy (2009) (2160p BluRay x265 10bit HDR Joy)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Joy"
+
+[[case]]
+input  = "Movie Name (2001) 1080p NF WEB-DL DDP2.0 x264-E.N.D"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "E.N.D"
+
+[[case]]
+input  = "Movie Name (2020) [1080p] [WEBRip] [5.1] [YTS.MX]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "YTS.MX"
+
+[[case]]
+input  = "Movie Name.2018.1080p.Blu-ray.Remux.AVC.DTS-HD.MA.5.1.KRaLiMaRKo"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "KRaLiMaRKo"
+
+[[case]]
+input  = "Ode To Joy (2009) (2160p BluRay x265 10bit HDR FreetheFish)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "FreetheFish"
+
+[[case]]
+input  = "Ode To Joy (2009) (2160p BluRay x265 10bit HDR afm72)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "afm72"
+
+[[case]]
+input  = "Movie Name (2012) (1080p BluRay x265 HEVC 10bit AC3 2.0 Anna)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Anna"
+
+[[case]]
+input  = "Movie Name (2019) (1080p BluRay x265 HEVC 10bit AAC 7.1 Q22 Joy)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Joy"
+
+[[case]]
+input  = "Movie Name (2019) (2160p BluRay x265 HEVC 10bit HDR AAC 7.1 Bandi)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Bandi"
+
+[[case]]
+input  = "Movie Name (2009) (1080p HDTV x265 HEVC 10bit AAC 2.0 Ghost)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Ghost"
+
+[[case]]
+input  = "Movie Name in the Movie (2017) (1080p BluRay x265 HEVC 10bit AAC 7.1 Tigole)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Tigole"
+
+[[case]]
+input  = "Mission - Movie Name - Movie Protocol (2011) (1080p BluRay x265 HEVC 10bit AAC 7.1 Tigole)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Tigole"
+
+[[case]]
+input  = "Movie Name (1990) (1080p BluRay x265 HEVC 10bit AAC 5.1 Silence)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Silence"
+
+[[case]]
+input  = "Happy Movie Name (1999) (1080p BluRay x265 HEVC 10bit AAC 5.1 Korean Kappa)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Kappa"
+
+[[case]]
+input  = "Movie Name (2007) Open Matte (1080p AMZN WEB-DL x265 HEVC 10bit AAC 5.1 MONOLITH)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "MONOLITH"
+
+[[case]]
+input  = "Movie-Name (2019) (1080p BluRay x265 HEVC 10bit DTS 7.1 Qman)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Qman"
+
+[[case]]
+input  = "Movie Name - Hell to Ticket (2018) + Extras (1080p BluRay x265 HEVC 10bit AAC 5.1 RZeroX)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "RZeroX"
+
+[[case]]
+input  = "Movie Name (2013) (Diamond Luxe Edition) + Extras (1080p BluRay x265 HEVC 10bit EAC3 7.1 SAMPA)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "SAMPA"
+
+[[case]]
+input  = "Movie Name 1984 (2020) (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Silence"
+
+[[case]]
+input  = "The.Movie.of.the.Name.1991.REMASTERED.720p.10bit.BluRay.6CH.x265.HEVC-PSA"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "PSA"
+
+[[case]]
+input  = "Movie Name 2016 (1080p BluRay x265 HEVC 10bit DDP 5.1 theincognito)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "theincognito"
+
+[[case]]
+input  = "Movie Name - A History of Movie (2017) (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 2.0 t3nzin)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "t3nzin"
+
+[[case]]
+input  = "Movie Name (2019) (1080p BluRay x265 HEVC 10bit AAC 7.1 Vyndros)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Vyndros"
+
+[[case]]
+input  = "Movie Name (2015) [BDRemux 1080p AVC ES-CAT-EN DTS-HD MA 5.1 Subs][HDO]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HDO"
+
+[[case]]
+input  = "Movie Name (2015) [BDRemux 1080p AVC EN-CAT-ES DTS-HD MA 5.1 Subs][HDO]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HDO"
+
+[[case]]
+input  = "Movie Name (2017) [BDRemux 1080p AVC ES DTS 5.1 - EN DTS-HD MA 7.1 Subs][HDO]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HDO"
+
+[[case]]
+input  = "Movie Name (2006) [BDRemux 1080p AVC ES DTS-HD MA 2.0 - EN DTS-HD MA 5.1 Sub][HDO]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HDO"
+
+[[case]]
+input  = "Another Crappy Anime Movie Name 1999 [DusIctv] [Blu-ray][MKV][h264][1080p][DTS-HD MA 5.1][Dual Audio][Softsubs (DusIctv)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "DusIctv"
+
+[[case]]
+input  = "Another Crappy Anime Movie Name 1999 [DHD] [Blu-ray][MKV][h264][1080p][AAC 5.1][Dual Audio][Softsubs (DHD)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "DHD"
+
+[[case]]
+input  = "Another Crappy Anime Movie Name 1999 [SEV] [Blu-ray][MKV][h265 10-bit][1080p][FLAC 5.1][Dual Audio][Softsubs (SEV)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "SEV"
+
+[[case]]
+input  = "Another Crappy Anime Movie Name 1999 [CtrlHD] [Blu-ray][MKV][h264][720p][AC3 2.0][Dual Audio][Softsubs (CtrlHD)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "CtrlHD"
+
+[[case]]
+input  = "Crappy Anime Movie Name 2017 [-ZR-] [Blu-ray][MKV][h264][1080p][TrueHD 5.1][Dual Audio][Softsubs (-ZR-)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "-ZR-"
+
+[[case]]
+input  = "Crappy Anime Movie Name 2017 [XZVN] [Blu-ray][MKV][h264][1080p][TrueHD 5.1][Dual Audio][Softsubs (XZVN)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "XZVN"
+
+[[case]]
+input  = "Crappy Anime Movie Name 2017 [ADC] [Blu-ray][M2TS (A)][16:9][h264][1080p][TrueHD 5.1][Dual Audio][Softsubs (ADC)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "ADC"
+
+[[case]]
+input  = "Crappy Anime Movie Name 2017 [Koten_Gars] [Blu-ray][MKV][h264][1080p][TrueHD 5.1][Dual Audio][Softsubs (Koten_Gars)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Koten_Gars"
+
+[[case]]
+input  = "Crappy Anime Movie Name 2017 [RH] [Blu-ray][MKV][h264 10-bit][1080p][FLAC 5.1][Dual Audio][Softsubs (RH)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "RH"
+
+[[case]]
+input  = "Yet Another Anime Movie 2012 [Kametsu] [Blu-ray][MKV][h264 10-bit][1080p][FLAC 5.1][Dual Audio][Softsubs (Kametsu)]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Kametsu"
+
+[[case]]
+input  = "Another.Anime.Film.Name.2016.JPN.Blu-Ray.Remux.AVC.DTS-MA.BluDragon"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "BluDragon"
+
+[[case]]
+input  = "A Movie in the Name (1964) (1080p BluRay x265 r00t)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "r00t"
+
+[[case]]
+input  = "Movie Title (2022) (2160p ATV WEB-DL Hybrid H265 DV HDR DDP Atmos 5.1 English - HONE)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HONE"
+
+[[case]]
+input  = "Movie Title (2009) (2160p PMTP WEB-DL Hybrid H265 DV HDR10+ DDP Atmos 5.1 English - HONE)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HONE"
+
+[[case]]
+input  = "Movie Title (2022) (1080p PCOK WEB-DL H265 DV HDR DDP Atmos 5.1 English - GiLG)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "GiLG"
+
+[[case]]
+input  = "Movie Title (2022) Extended (2160p PCOK WEB-DL H265 DV HDR DDP Atmos 5.1 English - GiLG)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "GiLG"
+
+[[case]]
+input  = "Why.Cant.You.Use.Normal.Characters.2021.2160p.UHD.HDR10+.BluRay.TrueHD.Atmos.7.1.x265-ZØNEHD"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "ZØNEHD"
+
+[[case]]
+input  = "Movie.Should.Not.Use.Dots.2022.1080p.BluRay.x265.10bit.Tigole)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Tigole"
+
+[[case]]
+input  = "Movie.Title.2005.2160p.UHD.BluRay.TrueHD 7.1.Atmos.x265 - HQMUX"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "HQMUX"
+
+[[case]]
+input  = "Movie.Name.2022.1080p.BluRay.x264-VARYG (Blue Lock, Multi-Subs)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "VARYG"
+
+[[case]]
+input  = "Movie Title (2023) (1080p BluRay x265 SDR AAC 2.0 English Vyndros)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Vyndros"
+
+[[case]]
+input  = "Movie Title (2010) 1080p BrRip x264 - YIFY"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "YIFY"
+
+[[case]]
+input  = "Movie Title (2011) [BluRay] [1080p] [YTS.MX] [YIFY]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "YIFY"
+
+[[case]]
+input  = "Movie Title (2014) [BluRay] [1080p] [YIFY] [YTS]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "YTS"
+
+[[case]]
+input  = "Movie Title (2018) [BluRay] [1080p] [YIFY] [YTS.LT]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "YTS.LT"
+
+[[case]]
+input  = "Movie Title (2016) (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 5 1 RZeroX) QxR"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "QxR"
+
+[[case]]
+input  = "Movie Title (2016) (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 5 1 Garshasp) QxR"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "QxR"
+
+[[case]]
+input  = "Movie Title 2024 mUHD 10Bits DoVi HDR10 2160p BluRay DD 5 1 x265 - TMd"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "TMd"
+
+[[case]]
+input  = "Movie Title 2024 mUHD 10Bits DoVi HDR10 2160p BluRay DD 5 1 x265 TMd"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "TMd"
+
+[[case]]
+input  = "Movie Title (2024) 2160p WEB-DL ESP DD+ 5.1 ING DD+ 5.1 Atmos DV HDR H.265-Eml HDTeam"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "Eml HDTeam"
+
+[[case]]
+input  = "Movie Title(2023) 1080p SkySHO WEB-DL ESP DD+ 5.1 H.264-EML HDTeam"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "EML HDTeam"
+
+[[case]]
+input  = "Movie Title (2022) BDFull 1080p DTS-HD MA 5.1 AVC LMain"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "LMain"
+
+[[case]]
+input  = "Movie Title (2024) (1080p BluRay x265 SDR DDP 5.1 English - DarQ)"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "DarQ"
+
+[[case]]
+input  = "Movie Title (2024) (1080p BluRay x265 SDR DDP 5.1 English -BEN THE MEN"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "BEN THE MEN"
+
+[[case]]
+input  = "Movie Title 2024 2160p WEB-DL DoVi HDR10+ H265 DDP 5.1 Atmos-126811"
+source = "Radarr ReleaseGroupParserFixture.should_parse_exception_release_group"
+[case.expected]
+group = "126811"
+
+[[case]]
+input  = "Some.Movie.S02E04.720p.WEBRip.x264-SKGTV English"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_language_in_release_group"
+[case.expected]
+group = "SKGTV"
+
+[[case]]
+input  = "Some.Movie.S02E04.720p.WEBRip.x264-SKGTV_English"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_language_in_release_group"
+[case.expected]
+group = "SKGTV"
+
+[[case]]
+input  = "Some.Movie.S02E04.720p.WEBRip.x264-SKGTV.English"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_language_in_release_group"
+[case.expected]
+group = "SKGTV"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-RP"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-RP-RP"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Obfuscation"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-NZBgeek"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-1"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-sample.mkv"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Scrambled"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-postbot"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-xpost"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Rakuv"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Rakuv02"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Rakuvfinhel"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Obfuscated"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-WhiteRev"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-BUYMORE"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-AsRequested"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-AlternativeToRequested"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-GEROV"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Z0iDS3N"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-Chamele0n"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-4P"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-EVO-4Planet"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "EVO"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-DON-AlteZachen"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "DON"
+
+[[case]]
+input  = "Some.Movie.2019.1080p.BDRip.X264.AC3-HarrHD-RePACKPOST"
+source = "Radarr ReleaseGroupParserFixture.should_not_include_bad_suffix_in_release_group"
+[case.expected]
+group = "HarrHD"
+
+[[case]]
+input  = "[FFF] Invaders of the Movies!! - S01E11 - Someday, With Movies"
+source = "Radarr ReleaseGroupParserFixture.should_parse_anime_release_groups"
+[case.expected]
+group = "FFF"
+
+[[case]]
+input  = "[HorribleSubs] Invaders of the Movies!! - S01E12 - Movies Going Well!!"
+source = "Radarr ReleaseGroupParserFixture.should_parse_anime_release_groups"
+[case.expected]
+group = "HorribleSubs"
+
+[[case]]
+input  = "[Anime-Koi] Movies - S01E06 - Guys From Movies"
+source = "Radarr ReleaseGroupParserFixture.should_parse_anime_release_groups"
+[case.expected]
+group = "Anime-Koi"
+
+[[case]]
+input  = "[Anime-Koi] Movies - S01E07 - A High-Grade Movies"
+source = "Radarr ReleaseGroupParserFixture.should_parse_anime_release_groups"
+[case.expected]
+group = "Anime-Koi"
+
+[[case]]
+input  = "[Anime-Koi] Kami-sama Movies 2 - 01 [h264-720p][28D54E2C]"
+source = "Radarr ReleaseGroupParserFixture.should_parse_anime_release_groups"
+[case.expected]
+group = "Anime-Koi"

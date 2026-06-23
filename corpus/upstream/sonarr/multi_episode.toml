@@ -1,0 +1,597 @@
+# Sonarr multi-episode vectors (TV).
+# Re-curated FACTS from Sonarr's MultiEpisodeParserFixture [TestCase] rows.
+# expected: title, season, episodes<-episodeNumbers[].
+
+[[case]]
+input  = 'Series.S03E01-06.DUAL.BDRip.XviD.AC3.-HELLYWOOD'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+episodes = [1, 2, 3, 4, 5, 6]
+
+[[case]]
+input  = 'Series.Title.103.104.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episodes = [3, 4]
+
+[[case]]
+input  = 'Series.S03E01.S03E02.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+episodes = [1, 2]
+
+[[case]]
+input  = 'The Series S01e01 e02 ShoHD On Demand 1080i DD5 1 ALANiS'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series'
+season = 1
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series.Title.2x04.2x05.720p.BluRay-FUTV'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episodes = [4, 5]
+
+[[case]]
+input  = 'Series.Title.S07E22E23.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 7
+episodes = [22, 23]
+
+[[case]]
+input  = 'Series Title - S07E22 - S07E23 - And Lots of Security.. [HDTV-720p].mkv'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 7
+episodes = [22, 23]
+
+[[case]]
+input  = 'S03E01.S03E02.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 3
+episodes = [1, 2]
+
+[[case]]
+input  = '2x04x05.720p.BluRay-FUTV'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 2
+episodes = [4, 5]
+
+[[case]]
+input  = 'S02E04E05.720p.BluRay-FUTV'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 2
+episodes = [4, 5]
+
+[[case]]
+input  = 'S02E03-04-05.720p.BluRay-FUTV'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 2
+episodes = [3, 4, 5]
+
+[[case]]
+input  = 'Series.Kings.S02E09-E10.HDTV.x264-ASAP'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Kings'
+season = 2
+episodes = [9, 10]
+
+[[case]]
+input  = 'Series Kings - 2x9-2x10 - Served Code [SDTV] '
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Kings'
+season = 2
+episodes = [9, 10]
+
+[[case]]
+input  = 'Series Kings - 2x09-2x10 - Served Code [SDTV] '
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Kings'
+season = 2
+episodes = [9, 10]
+
+[[case]]
+input  = 'Hell on Series S02E09 E10 HDTV x264 EVOLVE'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Hell on Series'
+season = 2
+episodes = [9, 10]
+
+[[case]]
+input  = 'Hell.on.Series.S02E09-E10.720p.HDTV.x264-EVOLVE'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Hell on Series'
+season = 2
+episodes = [9, 10]
+
+[[case]]
+input  = "Series's Sonarr - 8x01_02 - Free Falling"
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = "Series's Sonarr"
+season = 8
+episodes = [1, 2]
+
+[[case]]
+input  = '8x01_02 - Free Falling'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 8
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series.S01E91-E100'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episodes = [91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+
+[[case]]
+input  = 'Series.S29E161-E165.PDTV.x264-FQM'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 29
+episodes = [161, 162, 163, 164, 165]
+
+[[case]]
+input  = 'Shortland.Series.S22E5363-E5366.HDTV.x264-FiHTV'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Shortland Series'
+season = 22
+episodes = [5363, 5364, 5365, 5366]
+
+[[case]]
+input  = 'the.Series.101.102.hdtv-lol'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'the Series'
+season = 1
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series.10708.hdtv-lol.mp4'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episodes = [7, 8]
+
+[[case]]
+input  = 'Series.10910.hdtv-lol.mp4'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episodes = [9, 10]
+
+[[case]]
+input  = 'E.010910.HDTVx264REPACKLOL.mp4'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'E'
+season = 1
+episodes = [9, 10]
+
+[[case]]
+input  = 'World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'World Series of Sonarr'
+season = 2010
+episodes = [15, 16]
+
+[[case]]
+input  = 'The Series US S01E01-E02 720p HDTV x264'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series US'
+season = 1
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title Season 01 Episode 05-06 720p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episodes = [5, 6]
+
+[[case]]
+input  = 'The Series And The Code - S42 Ep10718 - Ep10722'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series And The Code'
+season = 42
+episodes = [10718, 10719, 10720, 10721, 10722]
+
+[[case]]
+input  = 'The Series And The Code - S42 Ep10688 - Ep10692'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series And The Code'
+season = 42
+episodes = [10688, 10689, 10690, 10691, 10692]
+
+[[case]]
+input  = 'Series.S01E02E03.1080p.BluRay.x264-DeBTViD'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+episodes = [2, 3]
+
+[[case]]
+input  = 'grp-zoos01e11e12-1080p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'grp-zoo'
+season = 1
+episodes = [11, 12]
+
+[[case]]
+input  = 'grp-zoo-s01e11e12-1080p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'grp-zoo'
+season = 1
+episodes = [11, 12]
+
+[[case]]
+input  = 'Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6E1-E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6E1-S6E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6E1E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6E1-E2-E3.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series Title.S6.E1E3.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series Title.S6.E1-E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6.E1-S6E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6.E1E2.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title.S6.E1-E2-E3.Episode Name.1080p.WEB-DL'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 6
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series.Title.S05E01-E02.720p.5.1Ch.BluRay'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series.Title.S05E01-02.720p.5.1Ch.BluRay'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [1, 2]
+
+[[case]]
+input  = 'S01E01-E03 - Episode Title.HDTV-720p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 1
+episodes = [1, 2, 3]
+
+[[case]]
+input  = '1x01-x03 - Episode Title.HDTV-720p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+season = 1
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series.Title.E07-E08.180612.1080p-NEXT'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episodes = [7, 8]
+
+[[case]]
+input  = 'Series Title? E11-E12 1080p HDTV AAC H.264-NEXT'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episodes = [11, 12]
+
+[[case]]
+input  = 'The Series Title (2010) - [S01E01-02-03] - Episode Title'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series Title (2010)'
+season = 1
+episodes = [1, 2, 3]
+
+[[case]]
+input  = '[AqusiQ-TorrentS.pl]The.Name.of.the.Series.S01E05-06.PL.2160p-Ralf[shogho]'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Name of the Series'
+season = 1
+episodes = [5, 6]
+
+[[case]]
+input  = '[AgusiQ-TorrentS.pl] The.Name.of.the.Series.S01E05-E06.PL.1080i.Ralf [jans12]'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Name of the Series'
+season = 1
+episodes = [5, 6]
+
+[[case]]
+input  = 'The.Name.of.the.Series.S01E05-6.PL.1080p.WEBRip.x264-666'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Name of the Series'
+season = 1
+episodes = [5, 6]
+
+[[case]]
+input  = 'Series Title - S15E06-07 - City Sushi HDTV-720p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 15
+episodes = [6, 7]
+
+[[case]]
+input  = 'Series Title - S01E01-02-03 - Episode Title HDTV-720p'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series Title - [02x01x02] - Episode 1'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title - [02x01-x02] - Episode 1'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title - [02x01-02] - Episode 1'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series Title (2011) - S01E23-E24 - ...E i nuovi orizzonti [HDTV 360p] [ITA].mkv'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title (2011)'
+season = 1
+episodes = [23, 24]
+
+[[case]]
+input  = 'The Series Title! - S01E01-02-03'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'The Series Title!'
+season = 1
+episodes = [1, 2, 3]
+
+[[case]]
+input  = 'Series Title! (2013) - S04E44-E45 - Il 200 spettacolare episodio da narcisisti!'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title! (2013)'
+season = 4
+episodes = [44, 45]
+
+[[case]]
+input  = 'Series Title! (2013) - S04E44-E45 - Il 200 spettacolare episodio da narcisisti! [NetflixHD 720p HEVC] [ITA+ENG].mkv'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title! (2013)'
+season = 4
+episodes = [44, 45]
+
+[[case]]
+input  = '13 Series Se.1 afl.2-3-4 [VTM]'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = '13 Series'
+season = 1
+episodes = [2, 3, 4]
+
+[[case]]
+input  = 'Series T Se.3 afl.3 en 4'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series T'
+season = 3
+episodes = [3, 4]
+
+[[case]]
+input  = 'Series Title (S15E06-08) City Sushi'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 15
+episodes = [6, 7, 8]
+
+[[case]]
+input  = 'Series Title (S05E06-08 of 24) City Sushi'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [6, 7, 8]
+
+[[case]]
+input  = 'Series Title (S05E06-08_of_24) City Sushi'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [6, 7, 8]
+
+[[case]]
+input  = 'Series Title (S5E6-8.of.24) City Sushi'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [6, 7, 8]
+
+[[case]]
+input  = 'Series Title (S5E6-8.of.XX) City Sushi'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 5
+episodes = [6, 7, 8]
+
+[[case]]
+input  = 'Босх: Спадок (S2E1-4) / Series: Legacy (S2E1-4) (2023) WEB-DL 1080p Ukr/Eng | sub Eng'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series: Legacy'
+season = 2
+episodes = [1, 2, 3, 4]
+
+[[case]]
+input  = 'Босх: Спадок / Series: Legacy / S2E1-4 of 10 (2023) WEB-DL 1080p Ukr/Eng | sub Eng'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series: Legacy'
+season = 2
+episodes = [1, 2, 3, 4]
+
+[[case]]
+input  = 'Series Title - S26E96-97-98-99-100 - Episode 5931 + Episode 5932 + Episode 5933 + Episode 5934 + Episode 5935'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 26
+episodes = [96, 97, 98, 99, 100]
+
+[[case]]
+input  = 'Series falls - Temporada 1 [HDTV][Cap.111_120]'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series falls'
+season = 1
+episodes = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+[[case]]
+input  = 'Series.S101E01-E02.Some.Title.Name.1080p.WEB-DL.AAC2.0.H.264-Release'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series'
+season = 101
+episodes = [1, 2]
+
+[[case]]
+input  = 'Series.2006.S101E01-E02.Some.Title.Name.1080p.WEB-DL.AAC2.0.H.264-Release'
+source = 'Sonarr MultiEpisodeParserFixture'
+[case.expected]
+title = 'Series 2006'
+season = 101
+episodes = [1, 2]
+

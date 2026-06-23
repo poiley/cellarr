@@ -28,25 +28,45 @@ const PATTERNS: &[(&str, Source)] = &[
         r"(?i)\b(raw[\s\-]?hd|hdtv[\s\-]?raw|mpeg[\s\-]?ts)\b",
         Source::RawHd,
     ),
+    // Encoded Bluray. Allows the many run-together spellings (`MBluRay`,
+    // `BDLight`, `BDMux`, `BDFull`, `BD720p`, `UHDBDRip`, `UHD2BD`, `Bluray1080p`):
+    // a `bd`/`bluray` stem optionally glued to a resolution or a `rip`/`light`/
+    // `mux`/`full` qualifier. No leading boundary on the `bd`/`bluray` stem so a
+    // glued prefix (`MBluRay`/`UHDBDRip`) still matches.
     (
-        r"(?i)\b(blu[\s\-]?ray|bluray|bdrip|brrip|hddvd|bd)\b",
+        r"(?i)(blu[\s\-]?ray|bdrip|brrip|hddvd|bd(?:light|mux|full|rip|\d{3,4}p?|[\s\-]?\d{2})?)\b",
         Source::Bluray,
     ),
-    (r"(?i)\b(web[\s\-]?dl|webdl|web)\b", Source::WebDl),
-    (r"(?i)\b(web[\s\-]?rip|webrip)\b", Source::Webrip),
+    (
+        r"(?i)\b(web[\s\-]?dl|webdl|web[\s\-]?hd|itunes[\s\-]?hd|web)\b",
+        Source::WebDl,
+    ),
+    (
+        r"(?i)\b(web[\s\-]?rip|webrip|web[\s\-]?mux)\b",
+        Source::Webrip,
+    ),
     (r"(?i)\b(hdtv|hdrip)\b", Source::Hdtv),
     // DVD pre-retail tiers, most specific first (each its own quality bucket).
     (r"(?i)\b(dvdscr|dvd[\s\-]?scr|screener)\b", Source::Dvdscr),
-    (r"(?i)\b(dvd[\s\-]?r|r5)\b", Source::DvdR),
+    (r"(?i)\b(\d?dvd[\s\-]?r|r5|\ddvd\d)\b", Source::DvdR),
     (r"(?i)\bregional\b", Source::Regional),
-    (r"(?i)\b(dvdrip|dvd|dvd5|dvd9|pal|ntsc)\b", Source::Dvd),
+    (
+        r"(?i)(\bdvdrip|\bdvd\b|\bdvd5|\bdvd9|\bpal\b|\bntsc\b|xvidvd)",
+        Source::Dvd,
+    ),
     (r"(?i)\b(sdtv|pdtv|tvrip|dsr)\b", Source::Sdtv),
     // Cinema-source tiers, each a distinct quality bucket (Radarr keeps these
-    // separate from CAM; only `cam`/`hdcam`/`camrip` are CAM-tier).
+    // separate from CAM; only the CAM family is CAM-tier).
     (r"(?i)\b(workprint|wp)\b", Source::Workprint),
-    (r"(?i)\b(telesync|hdts|ts)\b", Source::Telesync),
+    (
+        r"(?i)\b(telesync|telesynch|hdts|tsrip|ts)\b",
+        Source::Telesync,
+    ),
     (r"(?i)\b(telecine|tc)\b", Source::Telecine),
-    (r"(?i)\b(cam|camrip|hdcam)\b", Source::Cam),
+    (
+        r"(?i)\b(cam[\s\-]?rip|hd[\s\-]?cam[a-z]*|hq[\s\-]?cam|new[\s\-]?cam|cam)\b",
+        Source::Cam,
+    ),
 ];
 
 static SET: LazyLock<RegexSet> =

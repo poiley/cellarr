@@ -1,0 +1,779 @@
+# Sonarr language vectors (TV release titles).
+# Re-curated FACTS from Sonarr's LanguageParserFixture [TestCase] rows, grouped by
+# the asserting test method. expected: languages<-Language. (Subtitle-only and
+# Unknown-language rows are omitted.)
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.English.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (english)'
+[case.expected]
+languages = ['English']
+
+[[case]]
+input  = 'Series Title - S01E01 - Pilot.English.sub'
+source = 'Sonarr LanguageParserFixture (english)'
+[case.expected]
+languages = ['English']
+
+[[case]]
+input  = 'Series Title - S01E01 - Pilot.english.sub'
+source = 'Sonarr LanguageParserFixture (english)'
+[case.expected]
+languages = ['English']
+
+[[case]]
+input  = 'Series S02 (1999–2003)[BDRemux 1080p AVC Esp DD2.0,Ing DTS-HD5.1,Cat DD2.0 Subs][HD-Olimpo][PACK]'
+source = 'Sonarr LanguageParserFixture (english)'
+[case.expected]
+languages = ['English']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.French.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.the.Series.The.1x13.Tueurs.De.Flics.FR.DVDRip.XviD'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.S01.720p.VF.WEB-DL.AAC2.0.H.264-BTN'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.S01.720p.VF2.WEB-DL.AAC2.0.H.264-BTN'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.S01.720p.VFF.WEB-DL.AAC2.0.H.264-BTN'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.S01.720p.VFQ.WEB-DL.AAC2.0.H.264-BTN'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Title.S01.720p.TRUEFRENCH.WEB-DL.AAC2.0.H.264-BTN'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series In The Middle S01 Multi VFI VO 1080p WEB x265 HEVC AAC 5.1-Papaya'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 AVC.1080p.Blu-ray HD.VOSTFR.VFF'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 Bluray 4k HDR HEVC AC3 VFF'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 AVC.1080p.Blu-ray Remux HD.VOSTFR.VFF'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 x264.720p.Blu-ray Rip HD.VOSTFR.VFF. ONLY'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 HEVC.2160p.Blu-ray 4K.VOSTFR.VFF. JATO'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series_Title_S01_ENG_ITA_FRA_AAC_1080p_WebDL_x264'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series.Title.S01.ENG-ITA-FRA.AAC.1080p.WebDL.x264'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 (BDrip 1080p ENG-ITA-FRA) Multisub x264'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series.Title.S01.ENG-ITA-FRE.AAC.1080p.WebDL.x264'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 (BDrip 1080p ENG-ITA-FRE) Multisub x264'
+source = 'Sonarr LanguageParserFixture (french)'
+[case.expected]
+languages = ['French']
+
+[[case]]
+input  = 'Series Title S01 1080p Eng Fra [mkvonly]'
+source = 'Sonarr LanguageParserFixture (french_english)'
+[case.expected]
+languages = ['French', 'English']
+
+[[case]]
+input  = 'Series Title S01 Eng Fre Multi Subs 720p [H264 mp4]'
+source = 'Sonarr LanguageParserFixture (french_english)'
+[case.expected]
+languages = ['French', 'English']
+
+[[case]]
+input  = 'Series-Title-S01-[DVDRip]-H264-Fra-Ac3-2-0-Eng-5-1'
+source = 'Sonarr LanguageParserFixture (french_english)'
+[case.expected]
+languages = ['French', 'English']
+
+[[case]]
+input  = 'Series Title S01 1080p FR ENG [mkvonly]'
+source = 'Sonarr LanguageParserFixture (french_english)'
+[case.expected]
+languages = ['French', 'English']
+
+[[case]]
+input  = 'Series Title S01 1080p ENG FR [mkvonly]'
+source = 'Sonarr LanguageParserFixture (french_english)'
+[case.expected]
+languages = ['French', 'English']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Spanish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (spanish)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series Title - Temporada 1 [HDTV 720p][Cap.101][AC3 5.1 Castellano][www.pctnew.ORG]'
+source = 'Sonarr LanguageParserFixture (spanish)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series Title - Temporada 2 [HDTV 720p][Cap.206][AC3 5.1 Español Castellano]'
+source = 'Sonarr LanguageParserFixture (spanish)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.German.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Title.the.Series.S04E15.Brotherly.Love.GERMAN.DUBBED.WS.WEBRiP.XviD.REPACK-TVP'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'The Series Title - S02E16 - Kampfhaehne - mkv - by Videomann'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series.Title.S01E03.Ger.Dub.AAC.1080p.WebDL.x264-TKP21'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series Title S01 Eng Fre Ger Ita Spa Cze Jpn 2160p BluRay Remux DV HDR HEVC Atmos SGF'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series Title.S01.Eng.Fre.Ger.Ita.Por.Spa.2160p.WEBMux.DV.HDR.HEVC.Atmos-SGF'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series.Title.S02E10.Episode.Title.German.DL.BD.x264-TVS'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series Title S01 Eng Fre Ger Ita Por Spa 2160p WEBMux HDR HEVC DDP SGF'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series Title S01 KOREAN ENG FRA GER ITA SPA MULTI 2160p NF WEB DL DDP5 1 DV HDR x265 Atmos MassModz'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series.Title.S02E09.EpisodeName.German.DL.BD.x264-TVS'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Series.Title.S01E10.EpisodeName.SwissGerman.WEB-DL.h264-RlsGrp'
+source = 'Sonarr LanguageParserFixture (german)'
+[case.expected]
+languages = ['German']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Italian.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (italian)'
+[case.expected]
+languages = ['Italian']
+
+[[case]]
+input  = 'Title.the.Series.1x19.ita.720p.bdmux.x264-novarip'
+source = 'Sonarr LanguageParserFixture (italian)'
+[case.expected]
+languages = ['Italian']
+
+[[case]]
+input  = 'Title.the.Series.ENG-FRE-ITA.AAC.1080p.WebDL.x264'
+source = 'Sonarr LanguageParserFixture (italian)'
+[case.expected]
+languages = ['Italian']
+
+[[case]]
+input  = 'Title the Series (BDrip 1080p ENG-FRE-ITA) Multisub x264'
+source = 'Sonarr LanguageParserFixture (italian)'
+[case.expected]
+languages = ['Italian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Danish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (danish)'
+[case.expected]
+languages = ['Danish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Dutch.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (dutch)'
+[case.expected]
+languages = ['Dutch']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Japanese.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = '[Erai-raws] To Be Series - 14 (JA) [1080p CR WEB-DL AVC AAC][MultiSub]'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = 'Spicchi di Series [Stagione 1] [COMPLETA] [1080p H265 ITA AAC JAP AC3 SUB ITA ENG] [by oldbelle]'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = 'Detective Series - Stagione 1 e01-29 (1996) [COMPLETA] 1080p H265 Ita Ac3 Jap Aac Sub Ita Eng [BDmux by thegatto][T7ST]'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = "7th Series (2024) [Stagione 1] [COMPLETA] [1080p H265 JAP AAC 2.0 SUB ITA-ENG] [By Seregorn]\nand"
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = 'Solo Series (2025) Stagione 1 [01/24] [IN CORSO] [1080p H265 JPN AAC SUB ITA ENG] [WebRip]'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = 'Le Series - Stagione 5 [COMPLETA] 1080p H264 ITA JPN EAC3 AAC SUB ITA JPN - UBI CreW'
+source = 'Sonarr LanguageParserFixture (japanese)'
+[case.expected]
+languages = ['Japanese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Icelandic.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (icelandic)'
+[case.expected]
+languages = ['Icelandic']
+
+[[case]]
+input  = 'Title.the.Series.S01E03.1080p.WEB-DL.DD5.1.H.264-SbR Icelandic'
+source = 'Sonarr LanguageParserFixture (icelandic)'
+[case.expected]
+languages = ['Icelandic']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Chinese.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Cantonese.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Mandarin.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [CHS]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [CHT]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [BIG5]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [GB]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [繁中]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [繁体]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [简繁外挂]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[abc] My Series - 01 [简繁内封字幕]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[ABC字幕组] My Series - 01 [HDTV]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = '[喵萌奶茶屋&LoliHouse] 拳愿阿修罗 / Kengan Ashura - 17 [WebRip 1080p HEVC-10bit AAC][中日双语字幕]'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = 'Series.Towards.You.S01.国语音轨.2023.1080p.NF.WEB-DL.H264.DDP2.0-SeeWEB'
+source = 'Sonarr LanguageParserFixture (chinese)'
+[case.expected]
+languages = ['Chinese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Korean.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (korean)'
+[case.expected]
+languages = ['Korean']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E08.2160p.WEB-DL.LAV.ENG'
+source = 'Sonarr LanguageParserFixture (latvian)'
+[case.expected]
+languages = ['Latvian']
+
+[[case]]
+input  = 'Title.the.Series.S01.COMPLETE.2009.1080p.WEB-DL.x264.AVC.AAC.LT.LV.RU'
+source = 'Sonarr LanguageParserFixture (latvian)'
+[case.expected]
+languages = ['Latvian']
+
+[[case]]
+input  = 'Title.the.Series.S03.1080p.WEB.x264.LAT.ENG'
+source = 'Sonarr LanguageParserFixture (latvian)'
+[case.expected]
+languages = ['Latvian']
+
+[[case]]
+input  = 'Title.the.Series.S02E02.LATViAN.1080p.WEB.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (latvian)'
+[case.expected]
+languages = ['Latvian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Russian.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (russian)'
+[case.expected]
+languages = ['Russian']
+
+[[case]]
+input  = 'Title.the.Series.S01E01.1080p.WEB-DL.Rus.Eng.TVKlondike'
+source = 'Sonarr LanguageParserFixture (russian)'
+[case.expected]
+languages = ['Russian']
+
+[[case]]
+input  = 'Title.the.Series.S01.COMPLETE.2009.1080p.WEB-DL.x264.AVC.AAC.LT.LV.RU'
+source = 'Sonarr LanguageParserFixture (russian)'
+[case.expected]
+languages = ['Russian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Polish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.PL.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.PLLEK.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.PL-LEK.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.LEKPL.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.LEK-PL.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.PLDUB.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.PL-DUB.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.DUBPL.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.DUB-PL.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (polish)'
+[case.expected]
+languages = ['Polish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Vietnamese.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (vietnamese)'
+[case.expected]
+languages = ['Vietnamese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Swedish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (swedish)'
+[case.expected]
+languages = ['Swedish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Norwegian.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (norwegian)'
+[case.expected]
+languages = ['Norwegian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Finnish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (finnish)'
+[case.expected]
+languages = ['Finnish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Turkish.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (turkish)'
+[case.expected]
+languages = ['Turkish']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Portuguese.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (portuguese)'
+[case.expected]
+languages = ['Portuguese']
+
+[[case]]
+input  = 'Title.the.Series.S01E01.FLEMISH.HDTV.x264-BRiGAND'
+source = 'Sonarr LanguageParserFixture (flemish)'
+[case.expected]
+languages = ['Flemish']
+
+[[case]]
+input  = 'Title.the.Series.S03E13.Greek.PDTV.XviD-Ouzo'
+source = 'Sonarr LanguageParserFixture (greek)'
+[case.expected]
+languages = ['Greek']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.HDTV.XviD.HUNDUB-LOL'
+source = 'Sonarr LanguageParserFixture (hungarian)'
+[case.expected]
+languages = ['Hungarian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.HDTV.XviD.ENG.HUN-LOL'
+source = 'Sonarr LanguageParserFixture (hungarian)'
+[case.expected]
+languages = ['Hungarian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.HDTV.XviD.HUN-LOL'
+source = 'Sonarr LanguageParserFixture (hungarian)'
+[case.expected]
+languages = ['Hungarian']
+
+[[case]]
+input  = 'Title.the.Series.S01-03.DVDRip.HebDub'
+source = 'Sonarr LanguageParserFixture (hebrew)'
+[case.expected]
+languages = ['Hebrew']
+
+[[case]]
+input  = 'Title.the.Series.S05E01.WEBRip.x264.AC3.LT.EN-CNN'
+source = 'Sonarr LanguageParserFixture (lithuanian)'
+[case.expected]
+languages = ['Lithuanian']
+
+[[case]]
+input  = 'Title.the.Series.​S07E11.​WEB Rip.​XviD.​Louige-​CZ.​EN.​5.​1'
+source = 'Sonarr LanguageParserFixture (czech)'
+[case.expected]
+languages = ['Czech']
+
+[[case]]
+input  = 'Series Title.S01.ARABIC.COMPLETE.720p.NF.WEBRip.x264-PTV'
+source = 'Sonarr LanguageParserFixture (arabic)'
+[case.expected]
+languages = ['Arabic']
+
+[[case]]
+input  = 'The Shadow Series S01 E01-08 WebRip Dual Audio [Hindi 5.1] 720p x264 AAC ESub'
+source = 'Sonarr LanguageParserFixture (hindi)'
+[case.expected]
+languages = ['Hindi']
+
+[[case]]
+input  = 'The Final Sonarr (2020) S04 Complete 720p NF WEBRip [Hindi] Dual audio'
+source = 'Sonarr LanguageParserFixture (hindi)'
+[case.expected]
+languages = ['Hindi']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Bulgarian.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (bulgarian)'
+[case.expected]
+languages = ['Bulgarian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.BGAUDIO.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (bulgarian)'
+[case.expected]
+languages = ['Bulgarian']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.BG.AUDIO.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (bulgarian)'
+[case.expected]
+languages = ['Bulgarian']
+
+[[case]]
+input  = 'Series Title S01E01 Malayalam.1080p.WebRip.AVC.5.1-Rjaa'
+source = 'Sonarr LanguageParserFixture (malayalam)'
+[case.expected]
+languages = ['Malayalam']
+
+[[case]]
+input  = 'Series Title S01E01 Malayalam DVDRip XviD 5.1 ESub MTR'
+source = 'Sonarr LanguageParserFixture (malayalam)'
+[case.expected]
+languages = ['Malayalam']
+
+[[case]]
+input  = 'Series.Title.S01E01.DVDRip.1CD.Malayalam.Xvid.MP3 @Mastitorrents'
+source = 'Sonarr LanguageParserFixture (malayalam)'
+[case.expected]
+languages = ['Malayalam']
+
+[[case]]
+input  = 'Гало(Сезон 1, серії 1-5) / SeriesTitle(Season 1, episodes 1-5) (2022) WEBRip-AVC Ukr/Eng'
+source = 'Sonarr LanguageParserFixture (ukrainian)'
+[case.expected]
+languages = ['Ukrainian']
+
+[[case]]
+input  = 'Архів 81 (Сезон 1) / Series 81 (Season 1) (2022) WEB-DLRip-AVC Ukr/Eng | Sub Ukr/Eng'
+source = 'Sonarr LanguageParserFixture (ukrainian)'
+[case.expected]
+languages = ['Ukrainian']
+
+[[case]]
+input  = 'Книга Боби Фетта(Сезон 1) / Series Title(Season 1) (2021) WEB-DLRip Ukr/Eng'
+source = 'Sonarr LanguageParserFixture (ukrainian)'
+[case.expected]
+languages = ['Ukrainian']
+
+[[case]]
+input  = 'Title.the.Series.2022.S02E22.Slovak.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (slovak)'
+[case.expected]
+languages = ['Slovak']
+
+[[case]]
+input  = 'Title.the.Series.2021.S01E11.HDTV.XviD.ENG.SK-LOL'
+source = 'Sonarr LanguageParserFixture (slovak)'
+[case.expected]
+languages = ['Slovak']
+
+[[case]]
+input  = 'Thai.Series.Title.S01.THAI.1080p.WEBRip.x265-RARBG'
+source = 'Sonarr LanguageParserFixture (thai)'
+[case.expected]
+languages = ['Thai']
+
+[[case]]
+input  = 'Series.Title.S02.THAI.1080p.NF.WEBRip.DDP2.0.x264-PAAI[rartv]'
+source = 'Sonarr LanguageParserFixture (thai)'
+[case.expected]
+languages = ['Thai']
+
+[[case]]
+input  = 'Series.Title.S01.THAI.1080p.NF.WEBRip.DDP5.1.x264-NTG[rartv]'
+source = 'Sonarr LanguageParserFixture (thai)'
+[case.expected]
+languages = ['Thai']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Brazilian.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (portuguese_brazil)'
+[case.expected]
+languages = ['Portuguese']
+
+[[case]]
+input  = 'Title.the.Series.2009.S01E14.Dublado.HDTV.XviD-LOL'
+source = 'Sonarr LanguageParserFixture (portuguese_brazil)'
+[case.expected]
+languages = ['Portuguese']
+
+[[case]]
+input  = 'Series.Title.S01.2019.720p_Eng-Spa(Latino)_MovieClubMx'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series.Title.1.WEB-DL.720p.Complete.Latino.YG'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series.Title.S08E01.1080p.WEB.H264.Latino.YG'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series Title latino'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'Series Title (Temporada 11 Completa) Audio Dual Ingles/Latino 1920x1080'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'series title 7x4 audio latino'
+source = 'Sonarr LanguageParserFixture (spanish_latino)'
+[case.expected]
+languages = ['Spanish']
+
+[[case]]
+input  = 'TV.Series.S01.720p.WEB-DL.RoDubbed-RLSGRP'
+source = 'Sonarr LanguageParserFixture (romanian)'
+[case.expected]
+languages = ['Romanian']
+
+[[case]]
+input  = 'TV Series S22E36 ROMANIAN 1080p WEB-DL AAC 2.0 H.264-RLSGRP'
+source = 'Sonarr LanguageParserFixture (romanian)'
+[case.expected]
+languages = ['Romanian']
+

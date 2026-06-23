@@ -8,41 +8,72 @@ use regex::Regex;
 // `4k`/`uhd` map to 2160p; `2160`, `1080`, `720`, `576`, `480` may appear with or
 // without the trailing `p`/`i`. The literal numbers are anchored on word
 // boundaries so a year like `1080`-prefixed token is not mistaken (years are a
-// 19xx/20xx range, handled separately).
+// 19xx/20xx range, handled separately). The `p`-suffixed forms additionally allow
+// a glued letter prefix (`BD720p`, `Bluray1080p`) — common when a source tag and
+// the resolution run together — by not requiring a leading boundary there.
 static RES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?ix)
-        \b(
-            2160p? | 4k | uhd |
-            1080p? | 1080i |
-            720p? |
-            576p? | 576i |
-            480p? | 480i
-        )\b",
+        \b( 2160p? | 4k | uhd | 1080p? | 1080i | 720p? | 576p? | 576i | 480p? | 480i )\b
+        | ( 2160 | 1080 | 720 | 576 | 540 | 480 ) p          # glued: BD720p, 540p
+        ",
     )
     .unwrap()
 });
 
+// Explicit `WIDTHxHEIGHT` dimensions (anime convention: `1920x1080`, `1280x720`,
+// `640x480`). Mapped to the nearest standard tier by height.
+static DIMENSIONS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(\d{3,4})\s*x\s*(\d{3,4})\b").unwrap());
+
+fn tier_from_token(tok: &str) -> Option<Resolution> {
+    match tok.trim_end_matches(['p', 'i']) {
+        "2160" | "4k" | "uhd" => Some(Resolution::R2160p),
+        "1080" => Some(Resolution::R1080p),
+        "720" => Some(Resolution::R720p),
+        "576" => Some(Resolution::R576p),
+        // 540p is binned to the 480p (SD) tier by upstream.
+        "480" | "540" => Some(Resolution::R480p),
+        _ => None,
+    }
+}
+
+// Map a pixel height to the nearest standard tier (upstream's WxH binning).
+fn tier_from_height(h: u32) -> Option<Resolution> {
+    Some(match h {
+        0..=540 => Resolution::R480p,
+        541..=620 => Resolution::R576p,
+        621..=899 => Resolution::R720p,
+        900..=1559 => Resolution::R1080p,
+        _ => Resolution::R2160p,
+    })
+}
+
 /// Extract the video resolution.
 pub fn extract(input: &str, out: &mut ParsedRelease) {
     let norm = crate::tokens::normalize(input);
-    let Some(m) = RES.find(&norm) else {
-        return;
-    };
-    let tok = m.as_str().to_ascii_lowercase();
-    let res = match tok.as_str() {
-        "2160p" | "2160" | "4k" | "uhd" => Resolution::R2160p,
-        "1080p" | "1080" | "1080i" => Resolution::R1080p,
-        "720p" | "720" => Resolution::R720p,
-        "576p" | "576" | "576i" => Resolution::R576p,
-        "480p" | "480" | "480i" => Resolution::R480p,
-        _ => return,
-    };
-    out.resolution = Some(res);
-    // `4k`/`uhd`/interlaced spellings are slightly less certain than the explicit
-    // `1080p`-style tag, but all are strong signals.
-    let conf = if tok.ends_with('p') { 1.0 } else { 0.9 };
-    out.set_confidence(ParsedField::Resolution, Confidence::new(conf));
+
+    if let Some(m) = RES.find(&norm) {
+        let tok = m.as_str().to_ascii_lowercase();
+        if let Some(res) = tier_from_token(&tok) {
+            out.resolution = Some(res);
+            // `4k`/`uhd`/interlaced spellings are slightly less certain than the
+            // explicit `1080p`-style tag, but all are strong signals.
+            let conf = if tok.ends_with('p') { 1.0 } else { 0.9 };
+            out.set_confidence(ParsedField::Resolution, Confidence::new(conf));
+            return;
+        }
+    }
+
+    // Fallback: explicit pixel dimensions (`1280x720`).
+    if let Some(c) = DIMENSIONS.captures(&norm) {
+        if let Some(h) = c.get(2).and_then(|m| m.as_str().parse::<u32>().ok()) {
+            if let Some(res) = tier_from_height(h) {
+                out.resolution = Some(res);
+                out.set_confidence(ParsedField::Resolution, Confidence::new(0.85));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,22 +1,38 @@
 //! Differential-oracle harness: diff cellarr's parser against the live
-//! Sonarr/Radarr `/api/v3/parse` endpoints over the `corpus/parse` titles.
+//! Sonarr/Radarr `/api/v3/parse` endpoints over the WHOLE corpus — both the
+//! curated `corpus/parse/*.toml` set and the harvested `corpus/upstream/**`
+//! set (potentially thousands of titles).
 //!
 //! `#[ignore]` so it never runs in normal `cargo test`. It self-skips when the
 //! oracle env vars are unset, so `just oracle` (which sets them after bringing up
 //! the containers) is the intended entry point. Results are written under
-//! `target/parity/` (git-ignored): a per-field summary JSON and a JSONL of every
-//! mismatch, so no finding is lost. See docs/parity/.
+//! `target/parity/` (git-ignored): a per-field summary JSON
+//! (`oracle-fullscale.json`) and a JSONL of every mismatch
+//! (`oracle-fullscale-mismatches.jsonl`), so no finding is lost. See docs/parity/.
 //!
-//! Run: `just oracle`, or manually with CELLARR_ORACLE_SONARR[_KEY] /
-//! CELLARR_ORACLE_RADARR[_KEY] set.
+//! Routing is by corpus path:
+//!   - `corpus/parse/*.toml`        — routed per-file by concern (curated set),
+//!     with movie-shaped generic titles sent to Radarr (as before).
+//!   - `corpus/upstream/sonarr/**`  — Sonarr.
+//!   - `corpus/upstream/radarr/**`  — Radarr.
+//!
+//! Daily/anime sub-handling (drop Sonarr's season-0 sentinel; compare air-date /
+//! absolute number) is applied per-domain on both sets.
+//!
+//! Calls are issued concurrently (bounded thread pool) with a per-call timeout so
+//! the full set finishes in bounded wall time. Run: `just oracle`, or manually
+//! with CELLARR_ORACLE_SONARR[_KEY] / CELLARR_ORACLE_RADARR[_KEY] set.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use cellarr_core::profile::{resolve_quality, QualityRanking};
 use cellarr_core::Coordinates;
 use cellarr_parse::parse_title;
+use rayon::prelude::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -53,7 +69,14 @@ enum Domain {
     Movie,
 }
 
-fn classify(file_stem: &str) -> Domain {
+#[derive(Clone, Copy, PartialEq)]
+enum App {
+    Sonarr,
+    Radarr,
+}
+
+/// Classify a curated `corpus/parse/<stem>.toml` file into a comparison domain.
+fn classify_curated(file_stem: &str) -> Domain {
     match file_stem {
         "movie_title" | "movie_year" | "movie_edition" => Domain::Movie,
         "daily_episode" => Domain::Daily,
@@ -63,9 +86,28 @@ fn classify(file_stem: &str) -> Domain {
     }
 }
 
+/// Classify an upstream `corpus/upstream/<app>/<stem>.toml` file into a domain.
+/// The app is fixed by the directory; the stem chooses which fields are relevant.
+fn classify_upstream(app: App, file_stem: &str) -> Domain {
+    match app {
+        App::Radarr => match file_stem {
+            "movie_title" | "movie_year" | "movie_edition" | "quality" | "group" => Domain::Movie,
+            _ => Domain::Movie,
+        },
+        App::Sonarr => match file_stem {
+            "daily" => Domain::Daily,
+            "anime" | "anime_multi" => Domain::Absolute,
+            "single_episode" | "multi_episode" | "season" | "miniseries" => Domain::TvEpisode,
+            // quality, language, group, unicode -> title/group/quality only.
+            _ => Domain::TvGeneric,
+        },
+    }
+}
+
 // Movie-shaped: a 4-digit year and no episode/absolute numbering. Used to route
-// the generic-quality corpus per-title (e.g. movie-only CAM/HDCAM titles go to
-// Radarr, which has those qualities; sending them to Sonarr would mis-map to SDTV).
+// the curated generic-quality corpus per-title (e.g. movie-only CAM/HDCAM titles
+// go to Radarr, which has those qualities; sending them to Sonarr would mis-map
+// to SDTV). Only applied to the curated TvGeneric files.
 fn movie_shaped(title: &str) -> bool {
     use regex::Regex;
     use std::sync::LazyLock;
@@ -87,6 +129,23 @@ fn norm_title(s: &str) -> String {
 
 fn norm_opt(s: Option<&str>) -> Option<String> {
     s.map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty())
+}
+
+/// Render cellarr's canonical quality name on the Radarr face, mirroring the
+/// `/api/v3` shim's `face_quality_name`: Sonarr/cellarr say `bluray-<res> remux`,
+/// Radarr says `remux-<res>`. Applied to cellarr's quality before comparing
+/// against a Radarr-routed title, so the known-and-intended G7 vocabulary
+/// difference is not counted as a false mismatch (the parser detects the remux
+/// correctly; only the face spelling differs). See docs/parity/quality-vocab.md.
+fn radarr_face_quality(name: &str) -> String {
+    if let Some(res) = name
+        .strip_prefix("bluray-")
+        .and_then(|r| r.strip_suffix(" remux"))
+    {
+        format!("remux-{res}")
+    } else {
+        name.to_string()
+    }
 }
 
 fn from_cellarr(input: &str, ranking: &QualityRanking) -> Record {
@@ -146,11 +205,6 @@ fn from_sonarr(v: &serde_json::Value) -> Record {
         .pointer("/quality/quality/name")
         .and_then(|x| x.as_str())
         .map(str::to_lowercase);
-    let rev_ver = pi
-        .pointer("/quality/revision/version")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(1);
-    let _ = rev_ver; // proper/repack comparison handled at field level later
     Record {
         title: pi
             .get("seriesTitle")
@@ -250,6 +304,76 @@ fn cmp_field(field: &str, c: &Record, o: &Record) -> Option<(String, String)> {
     }
 }
 
+/// One unit of work: a title to parse, which app is the oracle, and which domain
+/// drives the field set. `set` tags the corpus partition ("curated" / "upstream").
+struct Job {
+    set: &'static str,
+    file: String,
+    input: String,
+    app: App,
+    domain: Domain,
+}
+
+/// Collect every job from both corpus partitions, applying the routing rules.
+fn collect_jobs() -> Vec<Job> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+    let mut jobs = Vec::new();
+
+    // Curated: corpus/parse/*.toml, routed per-file (+ movie-shaped to Radarr).
+    let curated = root.join("parse");
+    let mut files: Vec<PathBuf> = fs::read_dir(&curated)
+        .expect("read corpus/parse")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    for path in files {
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let domain = classify_curated(&stem);
+        let parsed: CorpusFile =
+            toml::from_str(&fs::read_to_string(&path).expect("read")).expect("toml");
+        for case in parsed.case {
+            let use_radarr = domain == Domain::Movie
+                || (domain == Domain::TvGeneric && movie_shaped(&case.input));
+            jobs.push(Job {
+                set: "curated",
+                file: stem.clone(),
+                input: case.input,
+                app: if use_radarr { App::Radarr } else { App::Sonarr },
+                domain,
+            });
+        }
+    }
+
+    // Upstream: corpus/upstream/{sonarr,radarr}/*.toml, routed by directory.
+    let upstream = root.join("upstream");
+    for (sub, app) in [("sonarr", App::Sonarr), ("radarr", App::Radarr)] {
+        let dir = upstream.join(sub);
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let mut files: Vec<PathBuf> = rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        files.sort();
+        for path in files {
+            let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+            let domain = classify_upstream(app, &stem);
+            let parsed: CorpusFile =
+                toml::from_str(&fs::read_to_string(&path).expect("read")).expect("toml");
+            for case in parsed.case {
+                jobs.push(Job {
+                    set: "upstream",
+                    file: format!("{sub}/{stem}"),
+                    input: case.input,
+                    app,
+                    domain,
+                });
+            }
+        }
+    }
+    jobs
+}
+
 #[test]
 #[ignore = "differential oracle; run via `just oracle` with live Sonarr/Radarr"]
 fn oracle_parser_parity() {
@@ -265,84 +389,175 @@ fn oracle_parser_parity() {
     let sk = std::env::var("CELLARR_ORACLE_SONARR_KEY").unwrap_or_default();
     let rk = std::env::var("CELLARR_ORACLE_RADARR_KEY").unwrap_or_default();
 
-    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpus/parse")
-        .canonicalize()
-        .expect("corpus/parse dir");
     let ranking = QualityRanking::default();
-    let client = reqwest::blocking::Client::new();
+    let jobs = collect_jobs();
+    eprintln!("oracle: {} titles queued (curated + upstream)", jobs.len());
 
-    let parse = |base: &str, key: &str, title: &str| -> Option<serde_json::Value> {
+    // Bounded-concurrency HTTP. Each call has a hard ≤10s timeout; a dedicated
+    // rayon pool caps in-flight requests so we never stampede the apps.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(32)
+        .build()
+        .expect("client");
+
+    let parse = |app: App, title: &str| -> Option<serde_json::Value> {
+        let (base, key) = match app {
+            App::Sonarr => (&sonarr, &sk),
+            App::Radarr => (&radarr, &rk),
+        };
         let resp = client
             .get(format!("{base}/api/v3/parse"))
             .query(&[("title", title)])
-            .header("X-Api-Key", key)
+            .header("X-Api-Key", key.as_str())
             .send()
             .ok()?;
         resp.json().ok()
     };
 
-    // per-field tallies and the raw mismatch log
-    let mut compared: BTreeMap<String, u64> = BTreeMap::new();
-    let mut matched: BTreeMap<String, u64> = BTreeMap::new();
-    let mut by_file: BTreeMap<String, (u64, u64)> = BTreeMap::new(); // (titles, exact)
-    let mut mismatches: Vec<serde_json::Value> = Vec::new();
-    let mut total_titles = 0u64;
-    let mut exact_titles = 0u64;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(24)
+        .build()
+        .expect("pool");
 
-    let mut files: Vec<PathBuf> = fs::read_dir(&corpus_dir)
-        .expect("read corpus")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
-        .collect();
-    files.sort();
+    let done = AtomicUsize::new(0);
+    let total = jobs.len();
 
-    for path in files {
-        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-        let domain = classify(&stem);
-        let text = fs::read_to_string(&path).expect("read corpus file");
-        let parsed: CorpusFile = toml::from_str(&text).expect("parse corpus toml");
-        for case in parsed.case {
-            let title = case.input;
-            let cell = from_cellarr(&title, &ranking);
-            // Route movie titles (and movie-shaped generic-corpus titles) to Radarr;
-            // everything else to Sonarr.
-            let use_radarr =
-                domain == Domain::Movie || (domain == Domain::TvGeneric && movie_shaped(&title));
-            let oracle = if use_radarr {
-                parse(&radarr, &rk, &title).as_ref().map(from_radarr)
-            } else {
-                parse(&sonarr, &sk, &title).as_ref().map(from_sonarr)
-            };
-            let Some(oracle) = oracle else {
-                mismatches.push(serde_json::json!({
-                    "file": stem, "input": title, "field": "_oracle_error",
-                    "cellarr": "", "oracle": "no response"
-                }));
-                continue;
-            };
-            total_titles += 1;
-            let file_ent = by_file.entry(stem.clone()).or_default();
-            file_ent.0 += 1;
-            let mut title_exact = true;
-            for &field in fields_for(domain) {
-                *compared.entry(field.to_string()).or_default() += 1;
-                match cmp_field(field, &cell, &oracle) {
-                    None => *matched.entry(field.to_string()).or_default() += 1,
-                    Some((c, o)) => {
-                        title_exact = false;
-                        mismatches.push(serde_json::json!({
-                            "file": stem, "input": title, "field": field,
-                            "cellarr": c, "oracle": o
-                        }));
+    // Outcome per job: per-field (matched?) plus optional error + mismatch rows.
+    struct Outcome {
+        set: &'static str,
+        file: String,
+        oracle_error: bool,
+        title_exact: bool,
+        fields: Vec<(&'static str, bool)>,
+        mismatches: Vec<serde_json::Value>,
+    }
+
+    let outcomes: Vec<Outcome> = pool.install(|| {
+        jobs.par_iter()
+            .map(|job| {
+                let mut cell = from_cellarr(&job.input, &ranking);
+                // On the Radarr face, cellarr's remux tier is spelled `remux-<res>`
+                // (matching Radarr); apply that rename before comparison.
+                if job.app == App::Radarr {
+                    if let Some(q) = cell.quality.take() {
+                        cell.quality = Some(radarr_face_quality(&q));
                     }
                 }
+                let oracle = parse(job.app, &job.input).map(|v| match job.app {
+                    App::Sonarr => from_sonarr(&v),
+                    App::Radarr => from_radarr(&v),
+                });
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 200 == 0 {
+                    eprintln!("  ... {n}/{total}");
+                }
+                let Some(oracle) = oracle else {
+                    return Outcome {
+                        set: job.set,
+                        file: job.file.clone(),
+                        oracle_error: true,
+                        title_exact: false,
+                        fields: Vec::new(),
+                        mismatches: vec![serde_json::json!({
+                            "set": job.set, "file": job.file, "input": job.input,
+                            "field": "_oracle_error", "cellarr": "", "oracle": "no response"
+                        })],
+                    };
+                };
+                let mut fields = Vec::new();
+                let mut mismatches = Vec::new();
+                let mut title_exact = true;
+                for &field in fields_for(job.domain) {
+                    match cmp_field(field, &cell, &oracle) {
+                        None => fields.push((field, true)),
+                        Some((c, o)) => {
+                            fields.push((field, false));
+                            title_exact = false;
+                            mismatches.push(serde_json::json!({
+                                "set": job.set, "file": job.file, "input": job.input,
+                                "field": field, "cellarr": c, "oracle": o
+                            }));
+                        }
+                    }
+                }
+                Outcome {
+                    set: job.set,
+                    file: job.file.clone(),
+                    oracle_error: false,
+                    title_exact,
+                    fields,
+                    mismatches,
+                }
+            })
+            .collect()
+    });
+
+    // Aggregate. Tallies are kept per-partition AND combined.
+    #[derive(Default)]
+    struct Agg {
+        compared: BTreeMap<String, u64>,
+        matched: BTreeMap<String, u64>,
+        by_file: BTreeMap<String, (u64, u64)>, // (titles, exact)
+        total_titles: u64,
+        exact_titles: u64,
+        oracle_errors: u64,
+    }
+    let mut all = Agg::default();
+    let mut curated = Agg::default();
+    let mut upstream = Agg::default();
+    let mut mismatches: Vec<serde_json::Value> = Vec::new();
+
+    for o in &outcomes {
+        let buckets: [&mut Agg; 2] = if o.set == "curated" {
+            [&mut all, &mut curated]
+        } else {
+            [&mut all, &mut upstream]
+        };
+        mismatches.extend(o.mismatches.iter().cloned());
+        if o.oracle_error {
+            for b in buckets {
+                b.oracle_errors += 1;
             }
-            if title_exact {
-                exact_titles += 1;
-                file_ent.1 += 1;
+            continue;
+        }
+        for b in buckets {
+            b.total_titles += 1;
+            let ent = b.by_file.entry(o.file.clone()).or_default();
+            ent.0 += 1;
+            for (field, ok) in &o.fields {
+                *b.compared.entry((*field).to_string()).or_default() += 1;
+                if *ok {
+                    *b.matched.entry((*field).to_string()).or_default() += 1;
+                }
+            }
+            if o.title_exact {
+                b.exact_titles += 1;
+                ent.1 += 1;
             }
         }
+    }
+
+    fn field_rates(a: &Agg) -> BTreeMap<String, f64> {
+        a.compared
+            .iter()
+            .map(|(f, c)| {
+                let m = *a.matched.get(f).unwrap_or(&0);
+                (f.clone(), if *c == 0 { 1.0 } else { m as f64 / *c as f64 })
+            })
+            .collect()
+    }
+    fn agg_json(a: &Agg) -> serde_json::Value {
+        serde_json::json!({
+            "total_titles": a.total_titles,
+            "exact_titles": a.exact_titles,
+            "exact_rate": if a.total_titles == 0 { 0.0 } else { a.exact_titles as f64 / a.total_titles as f64 },
+            "oracle_errors": a.oracle_errors,
+            "field_compared": a.compared,
+            "field_matched": a.matched,
+            "field_rates": field_rates(a),
+            "by_file": a.by_file.iter().map(|(k,(t,e))| (k.clone(), serde_json::json!({"titles":t,"exact":e}))).collect::<BTreeMap<_,_>>(),
+        })
     }
 
     // Write raw outputs under target/parity (git-ignored).
@@ -353,42 +568,46 @@ fn oracle_parser_parity() {
         .map(|m| m.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(out_dir.join("parser-mismatches.jsonl"), jsonl).ok();
+    fs::write(out_dir.join("oracle-fullscale-mismatches.jsonl"), jsonl).ok();
 
-    let field_rates: BTreeMap<String, f64> = compared
-        .iter()
-        .map(|(f, c)| {
-            let m = *matched.get(f).unwrap_or(&0);
-            (f.clone(), if *c == 0 { 1.0 } else { m as f64 / *c as f64 })
-        })
-        .collect();
     let summary = serde_json::json!({
-        "total_titles": total_titles,
-        "exact_titles": exact_titles,
-        "exact_rate": if total_titles == 0 { 0.0 } else { exact_titles as f64 / total_titles as f64 },
-        "field_compared": compared,
-        "field_matched": matched,
-        "field_rates": field_rates,
-        "by_file": by_file.iter().map(|(k,(t,e))| (k.clone(), serde_json::json!({"titles":t,"exact":e}))).collect::<BTreeMap<_,_>>(),
+        "all": agg_json(&all),
+        "curated": agg_json(&curated),
+        "upstream": agg_json(&upstream),
         "mismatch_count": mismatches.len(),
     });
     fs::write(
-        out_dir.join("parser-results.json"),
+        out_dir.join("oracle-fullscale.json"),
         serde_json::to_string_pretty(&summary).unwrap(),
     )
     .ok();
 
-    // Print a human summary (visible with --nocapture).
-    println!("\n=== cellarr parser parity vs Sonarr/Radarr ===");
+    // Human summary (visible with --nocapture).
+    let report = |label: &str, a: &Agg| {
+        println!(
+            "\n=== {label}: {} titles  exact {} ({:.1}%)  oracle-errors {} ===",
+            a.total_titles,
+            a.exact_titles,
+            if a.total_titles == 0 {
+                0.0
+            } else {
+                a.exact_titles as f64 / a.total_titles as f64 * 100.0
+            },
+            a.oracle_errors,
+        );
+        for (f, r) in field_rates(a) {
+            let c = a.compared.get(&f).unwrap_or(&0);
+            let m = a.matched.get(&f).unwrap_or(&0);
+            println!("  {f:10} {:.1}%  ({m}/{c})", r * 100.0);
+        }
+    };
+    println!("\n=== cellarr parser parity vs Sonarr/Radarr (FULL corpus) ===");
+    report("ALL", &all);
+    report("curated (corpus/parse)", &curated);
+    report("upstream (corpus/upstream)", &upstream);
     println!(
-        "titles: {total_titles}  exact: {exact_titles}  mismatches: {}",
+        "\nresults: target/parity/oracle-fullscale.json + oracle-fullscale-mismatches.jsonl ({} rows)",
         mismatches.len()
     );
-    for (f, r) in &field_rates {
-        let c = compared.get(f).unwrap_or(&0);
-        let m = matched.get(f).unwrap_or(&0);
-        println!("  {f:10} {:.1}%  ({m}/{c})", r * 100.0);
-    }
-    println!("results: target/parity/parser-results.json + parser-mismatches.jsonl");
-    // Intentionally not asserting a threshold yet: first we measure & catalogue.
+    // Intentionally not asserting a threshold: this catalogues at-scale divergence.
 }

@@ -1,0 +1,243 @@
+# Re-curated input->expected FACTS extracted from Radarr's GPLv3 parser
+# test fixtures (clean-room: facts only, never code; each vector records
+# its `source`). See docs/agents/legal-and-licensing.md and corpus/README.md.
+# Schema mirrors corpus/parse/*.toml (cellarr ParsedRelease subset).
+# Concern: movie title (+ group/year for anime-movie cases).
+
+[[case]]
+input  = "1776.1979.EXTENDED.720p.BluRay.X264-AMIABLE"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "1776"
+
+[[case]]
+input  = "MY MOVIE (2016) [R][Action, Horror][720p.WEB-DL.AVC.8Bit.6ch.AC3].mkv"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "MY MOVIE"
+
+[[case]]
+input  = "R.I.P.D.2013.720p.BluRay.x264-SPARKS"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "R.I.P.D."
+
+[[case]]
+input  = "V.H.S.2.2013.LIMITED.720p.BluRay.x264-GECKOS"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "V.H.S. 2"
+
+[[case]]
+input  = "This Is A Movie (1999) [IMDB #] <Genre, Genre, Genre> {ACTORS} !DIRECTOR +MORE_SILLY_STUFF_NO_ONE_NEEDS ?"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "This Is A Movie"
+
+[[case]]
+input  = "We Are the Movie!.2013.720p.H264.mkv"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "We Are the Movie!"
+
+[[case]]
+input  = "(500).Days.Of.Movie.(2009).DTS.1080p.BluRay.x264.NLsubs"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "(500) Days Of Movie"
+
+[[case]]
+input  = "To.Live.and.Movie.in.L.A.1985.1080p.BluRay"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "To Live and Movie in L.A."
+
+[[case]]
+input  = "A.I.Artificial.Movie.(2001)"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "A.I. Artificial Movie"
+
+[[case]]
+input  = "A.Movie.Name.(1998)"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "A Movie Name"
+
+[[case]]
+input  = "www.Torrenting.com - Movie.2008.720p.X264-DIMENSION"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie"
+
+[[case]]
+input  = "www.5MovieRulz.tc - Movie (2000) Malayalam HQ HDRip - x264 - AAC - 700MB.mkv"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie"
+
+[[case]]
+input  = "Movie: The Movie World 2013"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie: The Movie World"
+
+[[case]]
+input  = "Movie.The.Final.Chapter.2016"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie The Final Chapter"
+
+[[case]]
+input  = "Der.Movie.James.German.Bluray.FuckYou.Pso.Why.cant.you.follow.scene.rules.1998"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Der Movie James"
+
+[[case]]
+input  = "Movie.German.DL.AC3.Dubbed..BluRay.x264-PsO"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie"
+
+[[case]]
+input  = "Valana la Movie TRUEFRENCH BluRay 720p 2016 kjhlj"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Valana la Movie"
+
+[[case]]
+input  = "Mission Movie: Rogue Movie (2015)�[XviD - Ita Ac3 - SoftSub Ita]azione, spionaggio, thriller *Prima Visione* Team mulnic Tom Cruise"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Mission Movie: Rogue Movie"
+
+[[case]]
+input  = "Movie.Movie.2000.FRENCH..BluRay.-AiRLiNE"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie Movie"
+
+[[case]]
+input  = "My Movie 1999 German Bluray"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "My Movie"
+
+[[case]]
+input  = "Leaving Movie by Movie (1897) [DVD].mp4"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Leaving Movie by Movie"
+
+[[case]]
+input  = "Movie.2018.1080p.AMZN.WEB-DL.DD5.1.H.264-NTG"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie"
+
+[[case]]
+input  = "Movie.Title.Imax.2018.1080p.AMZN.WEB-DL.DD5.1.H.264-NTG"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie Title"
+
+[[case]]
+input  = "World.Movie.Z.EXTENDED.2013.German.DL.1080p.BluRay.AVC-XANOR"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "World Movie Z"
+
+[[case]]
+input  = "World.Movie.Z.2.EXTENDED.2013.German.DL.1080p.BluRay.AVC-XANOR"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "World Movie Z 2"
+
+[[case]]
+input  = "G.I.Movie.Movie.2013.THEATRiCAL.COMPLETE.BLURAY-GLiMMER"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "G.I. Movie Movie"
+
+[[case]]
+input  = "www.Torrenting.org - Movie.2008.720p.X264-DIMENSION"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "Movie"
+
+[[case]]
+input  = "The.French.Movie.2013.720p.BluRay.x264 - ROUGH[PublicHD]"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "The French Movie"
+
+[[case]]
+input  = "The.Good.German.2006.720p.BluRay.x264-RlsGrp"
+source = "Radarr ParserFixture.should_parse_movie_title"
+[case.expected]
+title = "The Good German"
+
+[[case]]
+input  = "[MTBB] Kimi no Na wa. (2016) v2 [97681524].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title"
+[case.expected]
+title = "Kimi no Na wa"
+group = "MTBB"
+year = 2016
+
+[[case]]
+input  = "[sam] Toward the Terra (1980) [BD 1080p TrueHD].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title"
+[case.expected]
+title = "Toward the Terra"
+group = "sam"
+year = 1980
+
+[[case]]
+input  = "[Arid] Cowboy Bebop - Knockin' on Heaven's Door v2 [00F4CDA0].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "Cowboy Bebop - Knockin' on Heaven's Door"
+group = "Arid"
+
+[[case]]
+input  = "[Baws] Evangelion 1.11 - You Are (Not) Alone v2 (1080p BD HEVC FLAC) [BF42B1C8].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "Evangelion 1 11 - You Are (Not) Alone"
+group = "Baws"
+
+[[case]]
+input  = "[Arid] 5 Centimeters per Second (BDRip 1920x1080 Hi10 FLAC) [FD8B6FF2].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "5 Centimeters per Second"
+group = "Arid"
+
+[[case]]
+input  = "[Baws] Evangelion 2.22 - You Can (Not) Advance (1080p BD HEVC FLAC) [56E7A5B8].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "Evangelion 2 22 - You Can (Not) Advance"
+group = "Baws"
+
+[[case]]
+input  = "[sam] Goblin Slayer - Goblin's Crown [BD 1080p FLAC] [CD298D48].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "Goblin Slayer - Goblin's Crown"
+group = "sam"
+
+[[case]]
+input  = "[Kulot] Violet Evergarden Gaiden Eien to Jidou Shuki Ningyou [Dual-Audio][BDRip 1920x804 HEVC FLACx2] [91FC62A8].mkv"
+source = "Radarr ParserFixture.should_parse_anime_movie_title_without_year"
+[case.expected]
+title = "Violet Evergarden Gaiden Eien to Jidou Shuki Ningyou"
+group = "Kulot"
+
+[[case]]
+input  = "(1995) Movie Name"
+source = "Radarr ParserFixture.should_parse_movie_folder_name"
+[case.expected]
+title = "Movie Name"

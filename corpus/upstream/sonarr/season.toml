@@ -1,0 +1,420 @@
+# Sonarr full-season (season-pack) vectors (TV).
+# Re-curated FACTS from Sonarr's SeasonParserFixture [TestCase] rows.
+# expected: title, season, season_pack=true (FullSeason).
+
+[[case]]
+input  = '30.Series.Season.04.HDTV.XviD-DIMENSION'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = '30 Series'
+season = 4
+season_pack = true
+
+[[case]]
+input  = 'Sonarr.and.Series.S02.720p.x264-DIMENSION'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Sonarr and Series'
+season = 2
+season_pack = true
+
+[[case]]
+input  = 'The.Series.US.S03.720p.x264-DIMENSION'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series US'
+season = 3
+season_pack = true
+
+[[case]]
+input  = "Series.of.Sonarr.S03.720p.BluRay-CLUE\\REWARD"
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series of Sonarr'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series Time S02 720p HDTV x264 CRON'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Time'
+season = 2
+season_pack = true
+
+[[case]]
+input  = 'Series.2021.S04.iNTERNAL.DVDRip.XviD-VCDVaULT'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series 2021'
+season = 4
+season_pack = true
+
+[[case]]
+input  = 'Series Five 0 S01 720p WEB DL DD5 1 H 264 NT'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Five 0'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '30 Series S03 WS PDTV XviD FUtV'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = '30 Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'The Series Season 4 WS PDTV XviD FUtV'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 4
+season_pack = true
+
+[[case]]
+input  = 'Series Season 1 720p WEB DL DD 5 1 h264 TjHD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'The Series Season4 WS PDTV XviD FUtV'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 4
+season_pack = true
+
+[[case]]
+input  = 'Series S 01 720p WEB DL DD 5 1 h264 TjHD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Confidential   Season 3'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Confidential'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series.S01.720p.WEBDL.DD5.1.H.264-NTb'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series.Makes.It.Right.S02.720p.HDTV.AAC5.1.x265-NOGRP'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Makes It Right'
+season = 2
+season_pack = true
+
+[[case]]
+input  = 'My.Series.S2014.720p.HDTV.x264-ME'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'My Series'
+season = 2014
+season_pack = true
+
+[[case]]
+input  = 'Series.Saison3.VOSTFR.HDTV.XviD-NOTAG'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series.SAISON.1.VFQ.PDTV.H264-ACC-ROLLED'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title - Series 1 (1970) DivX'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'SeriesTitle.S03.540p.AMZN.WEB-DL.DD+2.0.x264-RTN'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series.Title.S01.576p.BluRay.DD5.1.x264-HiSD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series.Stagione.3.HDTV.XviD-NOTAG'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series.Stagione.3.HDTV.XviD-NOTAG'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series No More S01 2023 1080p WEB-DL AVC AC3 2.0 Dual Audio -ZR-'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series No More'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title / S1E1-8 of 8 [2024, WEB-DL 1080p] + Original + RUS'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title / S2E1-16 of 16 [2022, WEB-DL] RUS'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 2
+season_pack = true
+
+[[case]]
+input  = '[hchcsen] Mobile Series 00 S01 [BD Remux Dual Audio 1080p AVC 2xFLAC] (Kidou Senshi Gundam 00 Season 1)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Mobile Series 00'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[HorribleRips] Mobile Series 00 S1 [1080p]'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Mobile Series 00'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[Zoombie] Series 100: Bucket List S01 [Web][MKV][h265 10-bit][1080p][AC3 2.0][Softsubs (Zoombie)]'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series 100: Bucket List'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[GROUP] Series: Title (2023) (Season 1) [BDRip] [1080p Dual Audio HEVC 10 bits DDP] (serie) (Batch)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series: Title (2023)'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[GROUP] Series: Title (2023) (Season 1) [BDRip] [1080p Dual Audio HEVC 10-bits DDP] (serie) (Batch)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series: Title (2023)'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[GROUP] Series: Title (2023) (Season 1) [BDRip] [1080p Dual Audio HEVC 10-bit DDP] (serie) (Batch)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series: Title (2023)'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Seriesless (2016/S01/WEB-DL/1080p/AC3 5.1/DUAL/SUB)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Seriesless (2016)'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series (1994) - Temporada 10'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series (1994)'
+season = 10
+season_pack = true
+
+[[case]]
+input  = 'Series S01 1080p HMAX WEB-DL DD+ 5.1 H.265'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series S01 1440p HMAX WEB-DL DD+ 5.1 H.265'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Acropolis Series S05 EXTRAS DVDRip XviD RUNNER'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Acropolis Series'
+season = 5
+season_pack = true
+
+[[case]]
+input  = 'Punky Series S01 EXTRAS DVDRip XviD RUNNER'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Punky Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Instant Series S03 EXTRAS DVDRip XviD OSiTV'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Instant Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'The.Series.S03.Extras.01.Deleted.Scenes.720p'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'The.Series.S03.Extras.02.720p'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'Series.to.Me.S03.SUBPACK.DVDRip.XviD-REWARD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series to Me'
+season = 3
+season_pack = true
+
+[[case]]
+input  = 'The.Series.S02.SUBPACK.DVDRip.XviD-REWARD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 2
+season_pack = true
+
+[[case]]
+input  = 'Series.S11.SUBPACK.DVDRip.XviD-REWARD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series'
+season = 11
+season_pack = true
+
+[[case]]
+input  = 'The Series S01-05 WS BDRip X264-REWARD-No Rars'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'The Series'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series.Title.S01-S09.1080p.AMZN.WEB-DL.DDP2.0.H.264-NTb'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title S01 - S07 BluRay 1080p x264 REPACK -SacReD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title Season 01-07 BluRay 1080p x264 REPACK -SacReD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title Season 01 - Season 07 BluRay 1080p x264 REPACK -SacReD'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title Complete Series S01 S04 (1080p BluRay x265 HEVC 10bit AAC 5.1 Vyndros)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title S01 S04 (1080p BluRay x265 HEVC 10bit AAC 5.1 Vyndros)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Series Title S01 04 (1080p BluRay x265 HEVC 10bit AAC 5.1 Vyndros)'
+source = 'Sonarr SeasonParserFixture'
+[case.expected]
+title = 'Series Title'
+season = 1
+season_pack = true
+

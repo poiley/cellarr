@@ -1,0 +1,103 @@
+# Sonarr mini-series vectors (TV; numbered Part/Exx with implicit season 1).
+# Re-curated FACTS from Sonarr's MiniSeriesEpisodeParserFixture [TestCase] rows.
+# expected: title, season=1, episode<-episodeNumbers[0].
+
+[[case]]
+input  = 'The.Big.Series.Leader.Part.2.DSR.XviD-SYS'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'The Big Series Leader'
+season = 1
+episode = 2
+
+[[case]]
+input  = 'kill-roy-was-here-e07-720p'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'kill-roy-was-here'
+season = 1
+episode = 7
+
+[[case]]
+input  = 'Series and Show 2012 Part 1 REPACK 720p HDTV x264 2HD'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'Series and Show 2012'
+season = 1
+episode = 1
+
+[[case]]
+input  = 'Series Show.2016.E04.Power.720p.WEB-DL.DD5.1.H.264-MARS'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'Series Show 2016'
+season = 1
+episode = 4
+
+[[case]]
+input  = "It's a Series Title.E56.190121.720p-NEXT.mp4"
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = "It's a Series Title"
+season = 1
+episode = 56
+
+[[case]]
+input  = 'My Only Series Title.E37.190120.1080p-NEXT.mp4'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'My Only Series Title'
+season = 1
+episode = 37
+
+[[case]]
+input  = 'Series.E191.190121.720p-NEXT.mp4'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'Series'
+season = 1
+episode = 191
+
+[[case]]
+input  = 'The Series Title Challenge.E932.190120.720p-NEXT.mp4'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = 'The Series Title Challenge'
+season = 1
+episode = 932
+
+[[case]]
+input  = '백번의 추억.E12.251019.1080p-F1RST'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = '백번의 추억'
+season = 1
+episode = 12
+
+[[case]]
+input  = '나는 SOLO <나는 솔로>.E223.251015.1080p-F1RST'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = '나는 SOLO 나는 솔로'
+season = 1
+episode = 223
+
+[[case]]
+input  = '나는 SOLO 그 후, 사랑은 계속된다(나솔사계).E135.251016.1080p-F1RST'
+source = 'Sonarr MiniSeriesEpisodeParserFixture'
+notes  = 'mini-series; SeasonNumber=1'
+[case.expected]
+title = '나는 SOLO 그 후, 사랑은 계속된다(나솔사계)'
+season = 1
+episode = 135
+

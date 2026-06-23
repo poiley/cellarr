@@ -1,0 +1,231 @@
+# Sonarr daily-episode vectors (date-addressed TV).
+# Re-curated FACTS from Sonarr's DailyEpisodeParserFixture [TestCase] rows.
+# expected: title, daily=true (a Daily coordinate); asserted airDate is in notes.
+
+[[case]]
+input  = 'Series Title 2011 04 18 Emma Roberts HDTV XviD BFF'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-04-18'
+[case.expected]
+title = 'Series Title'
+daily = true
+
+[[case]]
+input  = 'A Late Talk Show 2011 04 15 1080i HDTV DD5 1 MPEG2 TrollHD'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-04-15'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = 'A.Late.Talk.Show.2010.10.11.Johnny.Knoxville.iTouch-MW'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2010-10-11'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = 'A Late Talk Show - 2011-04-12 - Gov. Deval Patrick'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-04-12'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = '2011.01.10 - A Late Talk Show- HD TV.mkv'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-01-10'
+[case.expected]
+daily = true
+
+[[case]]
+input  = '2011.03.13 - A Late Talk Show - HD TV.mkv'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-03-13'
+[case.expected]
+daily = true
+
+[[case]]
+input  = "A Late Talk Show - 2011-06-16 - Larry David, \"Bachelorette\" Ashley Hebert, Pitbull with Ne-Yo"
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-06-16'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = '2020.A.Late.Talk.Show.2012.16.02.PDTV.XviD-C4TV'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2012-02-16'
+[case.expected]
+title = '2020 A Late Talk Show'
+daily = true
+
+[[case]]
+input  = '2020.A.Late.Talk.Show.2012.13.02.PDTV.XviD-C4TV'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2012-02-13'
+[case.expected]
+title = '2020 A Late Talk Show'
+daily = true
+
+[[case]]
+input  = '2020.A.Late.Talk.Show.2011.12.02.PDTV.XviD-C4TV'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2011-12-02'
+[case.expected]
+title = '2020 A Late Talk Show'
+daily = true
+
+[[case]]
+input  = 'Series Title - 2013-10-30 - Episode Title (1) [HDTV-720p]'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2013-10-30'
+[case.expected]
+title = 'Series Title'
+daily = true
+
+[[case]]
+input  = 'The_Series_US_04.28.2014_hdtv.x264.Poke.mp4'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2014-04-28'
+[case.expected]
+title = 'The Series US'
+daily = true
+
+[[case]]
+input  = 'A.Late.Talk.Show.140722.720p.HDTV.x264-YesTV'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2014-07-22'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = 'A_Late_Talk_Show_140722_720p_HDTV_x264-YesTV'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2014-07-22'
+[case.expected]
+title = 'A Late Talk Show'
+daily = true
+
+[[case]]
+input  = 'The Show Series 2015 02 09 WEBRIP s01e13'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2015-02-09'
+[case.expected]
+title = 'The Show Series'
+daily = true
+
+[[case]]
+input  = 'Tree_Series_2018_06_22_Seth_Meyers_720p_HEVC_x265-MeGusta'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2018-06-22'
+[case.expected]
+title = 'Tree Series'
+daily = true
+
+[[case]]
+input  = '20161024- Exotic Payback.21x41_720.mkv'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2016-10-24'
+[case.expected]
+daily = true
+
+[[case]]
+input  = '2018-11-14.1080.all.mp4'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2018-11-14'
+[case.expected]
+daily = true
+
+[[case]]
+input  = '2019_08_20_1080_all.mp4'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2019-08-20'
+[case.expected]
+daily = true
+
+[[case]]
+input  = 'Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2020-10-13'
+[case.expected]
+title = 'Series and Title'
+daily = true
+
+[[case]]
+input  = 'Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 1954-01-23'
+[case.expected]
+title = 'Series Title (1955)'
+daily = true
+
+[[case]]
+input  = 'Series Title - 30-04-2024 HDTV 1080p H264 AAC'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2024-04-30'
+[case.expected]
+title = 'Series Title'
+daily = true
+
+[[case]]
+input  = 'Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2024-08-08'
+[case.expected]
+title = 'Series On TitleClub'
+daily = true
+
+[[case]]
+input  = 'Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2025-02-13'
+[case.expected]
+title = 'Series Title'
+daily = true
+
+[[case]]
+input  = "Series.2025.09.01.The.170.Million.Pound.Diamond.Scam.1080p.HDTV.H264-DEADPOOL'"
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2025-09-01'
+[case.expected]
+title = 'Series'
+daily = true
+
+[[case]]
+input  = "Series.2025.09.01.The.Million.Pound.Diamond.Scam.1080p.HDTV.H264-DEADPOOL'"
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2025-09-01'
+[case.expected]
+title = 'Series'
+daily = true
+
+[[case]]
+input  = 'Series 5th Mar 2025 1080 (Deep61)'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2025-03-05'
+[case.expected]
+title = 'Series'
+daily = true
+
+[[case]]
+input  = 'Series 31st Jan 2025 1080 (Deep61)'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2025-01-31'
+[case.expected]
+title = 'Series'
+daily = true
+
+[[case]]
+input  = 'Series 23rd Feb 2024 (Deep61)'
+source = 'Sonarr DailyEpisodeParserFixture'
+notes  = 'airDate 2024-02-23'
+[case.expected]
+title = 'Series'
+daily = true
+

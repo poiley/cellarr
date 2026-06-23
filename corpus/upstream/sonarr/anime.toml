@@ -1,0 +1,945 @@
+# Sonarr anime absolute-numbering vectors.
+# Re-curated FACTS from Sonarr's AbsoluteEpisodeNumberParserFixture [TestCase] rows.
+# expected: title, absolute<-absoluteEpisodeNumbers[0] (or season+season_pack for anime batches).
+
+[[case]]
+input  = '[SubDESU]_Show_One_07_(1280x720_x264-AAC)_[6B7FD717]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Show One'
+absolute = 7
+
+[[case]]
+input  = '[Chihiro]_Show!!_-_06_[848x480_H.264_AAC][859EEAFA]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Show!!'
+absolute = 6
+
+[[case]]
+input  = '[Commie]_Some_Anime_Show_-_11_[65F220B4]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 11
+
+[[case]]
+input  = '[Underwater]_Some_Anime_Show_-_12_(720p)_[5C7BC4F9]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 12
+
+[[case]]
+input  = '[Commie]_Some_Anime_Show_-_15_[E76552EA]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 15
+
+[[case]]
+input  = '[HorribleSubs]_Some_Anime_Show_-_33_[720p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 33
+
+[[case]]
+input  = '[HorribleSubs]_Some_Anime_Show_-_145_[720p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 145
+
+[[case]]
+input  = '[HorribleSubs] Some Anime Show - 13 [1080p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 13
+
+[[case]]
+input  = '[Doremi].Some.Anime.Show.8.Go!.31.[1280x720].[C65D4B1F].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show 8 Go!'
+absolute = 31
+
+[[case]]
+input  = '[K-F] Some Anime Show 214'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 214
+
+[[case]]
+input  = '[K-F] Some Anime Show S10E14 214'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S10E14'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 214
+
+[[case]]
+input  = '[K-F] Some Anime Show 10x14 214'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S10E14'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 214
+
+[[case]]
+input  = '[K-F] Some Anime Show 214 10x14'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S10E14'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 214
+
+[[case]]
+input  = 'Some Anime Show - 031 - The Resolution to Kill [Lunar].avi'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 31
+
+[[case]]
+input  = 'Some Anime Show - 031 - The Resolution to Kill [Lunar]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 31
+
+[[case]]
+input  = '[ACX]Some Anime Show 01 Role Play [Kosaka] [9C57891E].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 1
+
+[[case]]
+input  = '[SFW-sage] Some Anime Show S3 - 12 [720p][D07C91FC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show S3'
+absolute = 12
+
+[[case]]
+input  = 'Some_Anime_Show_e66_time_is_money_part_one_marking_time'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Anime Show'
+absolute = 66
+
+[[case]]
+input  = '[Underwater-FFF] No Series Title No Life - 01 (720p) [27AAA0A0].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'No Series Title No Life'
+absolute = 1
+
+[[case]]
+input  = '[FroZen] Series Title - 23 [DVD][7F6170E6]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 23
+
+[[case]]
+input  = '[Commie] Series Title - 32 [0BA19D5B]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 32
+
+[[case]]
+input  = '[Doki]Series Title - 07 (1280x720 Hi10P AAC) [80AF7DDE]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 7
+
+[[case]]
+input  = '[HorribleSubs] Series Title - 32 [480p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 32
+
+[[case]]
+input  = '[CR] Series Title - 004 [480p][48CE2D0F]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 4
+
+[[case]]
+input  = '[Chibiki] Series Title!! - 42 [360p][7A4FC77B]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title!!'
+absolute = 42
+
+[[case]]
+input  = '[HorribleSubs] Series Title - 32 [1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 32
+
+[[case]]
+input  = '[HorribleSubs] Series Title! S2 - 07 [720p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title! S2'
+absolute = 7
+
+[[case]]
+input  = '[DeadFish] Series Title - 09v2 [720p][AAC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 9
+
+[[case]]
+input  = '[Underwater-FFF] Series Title - 01 (720p) [27AAA0A0]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[S-T-D] Series Title! - 06 (1280x720 10bit AAC) [59B3F2EA].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title!'
+absolute = 6
+
+[[case]]
+input  = 'Series Title - 010 (720p) [27AAA0A0].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 10
+
+[[case]]
+input  = 'Initial_Series_Title - 01 DVD - Central Anime'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 1
+
+[[case]]
+input  = 'Initial_Series_Title_-_01(DVD)_-_(Central_Anime)[5AF6F1E4].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 1
+
+[[case]]
+input  = 'Initial_Series_Title_-_02(DVD)_-_(Central_Anime)[0CA65F00].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 2
+
+[[case]]
+input  = 'Initial_Series_Title - 03 DVD - Central Anime'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 3
+
+[[case]]
+input  = 'Initial_Series_Title_-_03(DVD)_-_(Central_Anime)[629BD592].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 3
+
+[[case]]
+input  = 'Initial_Series_Title - 14 DVD - Central Anime'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 14
+
+[[case]]
+input  = 'Initial_Series_Title_-_14(DVD)_-_(Central_Anime)[0183D922].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Initial Series Title'
+absolute = 14
+
+[[case]]
+input  = '[ChihiroDesuYo].Series.Title.-.09.1280x720.10bit.AAC.[24CCE81D]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 9
+
+[[case]]
+input  = 'Series Title - 001 - Fairy Tail'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = 'Series Title - 049 - The Day of Fated Meeting'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 49
+
+[[case]]
+input  = 'Series Title - 050 - Special Request Watch Out for the Guy You Like!'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 50
+
+[[case]]
+input  = 'Series Title - 099 - Natsu vs. Gildarts'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 99
+
+[[case]]
+input  = 'Series Title - 100 - Mest'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 100
+
+[[case]]
+input  = '[Exiled-Destiny] Series Title Ep01 (D2201EC5).mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[Commie] Series Title - 23 [5396CA24].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 23
+
+[[case]]
+input  = '[FFF] Series Title - 01 [1FB538B5].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[Hatsuyuki]Series_Title-01[1280x720][122E6EF8]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[CBM]_Series_Title_-_11_-_511_Kinderheim_[6C70C4E4].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 11
+
+[[case]]
+input  = '[HorribleSubs] Series Title 2 - 05 [720p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 2'
+absolute = 5
+
+[[case]]
+input  = '[Commie] Series Title 2 - 05 [FCE4D070].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 2'
+absolute = 5
+
+[[case]]
+input  = '[DRONE]Series.Title.100'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 100
+
+[[case]]
+input  = '[RlsGrp]Series.Title.2010.S01E01.001.HDTV-720p.x264-DTS'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S1E1'
+[case.expected]
+title = 'Series Title 2010'
+absolute = 1
+
+[[case]]
+input  = 'Series Title - 130 - Found You, Gohan! Harsh Training in the Kaioshin Realm! [Baaro][720p][5A1AD35B].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 130
+
+[[case]]
+input  = 'Series Title - 131 - A Merged Super-Warrior Is Born, His Name Is Gotenks!! [Baaro][720p][32E03F96].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 131
+
+[[case]]
+input  = '[HorribleSubs] Series Title - 01 [1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 1
+
+[[case]]
+input  = '[Jumonji-Giri]_[F-B]_Series_Title_Ep04_(0b0e2c10).mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 4
+
+[[case]]
+input  = '[Jumonji-Giri]_[F-B]_Series_Title_Ep08_(8246e542).mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 8
+
+[[case]]
+input  = 'Knights Series Title - 01 [1080p 10b DTSHD-MA eng sub].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Knights Series Title'
+absolute = 1
+
+[[case]]
+input  = 'Series Title (2010) {01} Episode Title (1).hdtv-720p'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title (2010)'
+absolute = 1
+
+[[case]]
+input  = '[HorribleSubs] Series Title - 20 [720p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 20
+
+[[case]]
+input  = '[Hatsuyuki] Series Title (2014) - 017 (115) [1280x720][B2CFBC0F]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title (2014)'
+absolute = 17
+
+[[case]]
+input  = '[Hatsuyuki] Series Title (2014) - 018 (116) [1280x720][C4A3B16E]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title (2014)'
+absolute = 18
+
+[[case]]
+input  = 'Series Title (2014) - 39 (137) [v2][720p.HDTV][Unison Fansub]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title (2014)'
+absolute = 39
+
+[[case]]
+input  = '[HorribleSubs] Series Title 21 - 101 [480p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 21'
+absolute = 101
+
+[[case]]
+input  = '[Cthuyuu].Series.Title.-.03.[720p.H264.AAC][8AD82C3A]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 3
+
+[[case]]
+input  = '[Cthuyuu] Series Title - 03 [720p H264 AAC][8AD82C3A]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 3
+
+[[case]]
+input  = 'Series Title Episode 56 [VOSTFR V2][720p][AAC]-Mystic Z-Team'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 56
+
+[[case]]
+input  = '[Mystic Z-Team] Series Title Episode 69 [VOSTFR_Finale][1080p][AAC].mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 69
+
+[[case]]
+input  = '[Shark-Raws] Series Title #957 (NBN 1280x720 x264 AAC).mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 957
+
+[[case]]
+input  = 'Series Title EP06 720p x265 AOZ.mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 6
+
+[[case]]
+input  = 'Series Title 2018 EP06 720p x265 AOZ.mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 2018'
+absolute = 6
+
+[[case]]
+input  = 'Series Title 2018 06 720p x265 AOZ.mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 2018'
+absolute = 6
+
+[[case]]
+input  = "Series Title S03 - EP14 VOSTFR [1080p] [HardSub] Yass'Kun"
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title S03'
+absolute = 14
+
+[[case]]
+input  = 'Series Title S3 -  15 VOSTFR [720p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title S3'
+absolute = 15
+
+[[case]]
+input  = 'A Series: RE S2 - Episode 4 VOSTFR (1080p)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'A Series: RE S2'
+absolute = 4
+
+[[case]]
+input  = 'To Another Series III - Episode 5 VOSTFR (1080p)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'To Another Series III'
+absolute = 5
+
+[[case]]
+input  = '[Prout] Show;Title 0 - Episode 5 VOSTFR (BDRip 1920x1080 x264 FLAC)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Show;Title 0'
+absolute = 5
+
+[[case]]
+input  = '[BakedFish] Some Show [Anime] - 01 [720p][AAC].mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some Show [Anime]'
+absolute = 1
+
+[[case]]
+input  = 'Abc x Abc (2011) - 141 - Magician [KaiDubs] [1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Abc x Abc (2011)'
+absolute = 141
+
+[[case]]
+input  = 'Abc Abc 484 VOSTFR par Abc-Abc (1280*720) - version MQ'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Abc Abc'
+absolute = 484
+
+[[case]]
+input  = 'Abc - Abc Abc Abc - 107 VOSTFR par Fansub-Miracle Sharingan (1920x1080) - HQ_Draft'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Abc - Abc Abc Abc'
+absolute = 107
+
+[[case]]
+input  = 'Abc Abc Abc Abc Episode 10 VOSTFR (1920x1080) Miracle Sharingan Fansub.MKV - Team - (� suivre)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Abc Abc Abc Abc'
+absolute = 10
+
+[[case]]
+input  = '[Glenn] Series! 3 - 11 (1080p AAC)[C34B2B3B].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series! 3'
+absolute = 11
+
+[[case]]
+input  = 'SeriesTitle.E1135.Lasst.den.Mond.am.Himmel.stehen.GERMAN.1080p.WEBRip.x264-Group'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+absolute = 1135
+
+[[case]]
+input  = 'SeriesTitle E1135 Lasst den Mond am Himmel stehen GERMAN 1080p WEBRip x264-Group'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+absolute = 1135
+
+[[case]]
+input  = 'SeriesTitle.E1206.In.seinen.Augen.2022.GERMAN.1080p.WEB.h264-Group'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+absolute = 1206
+
+[[case]]
+input  = 'SeriesTitle E1206 In seinen Augen 2022 GERMAN 1080p WEB h264-Group'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'SeriesTitle'
+absolute = 1206
+
+[[case]]
+input  = 'Series.Title.E195.Zurueck.auf.die.Grand.Line.UNCUT.German.Dubbed.1999.ANiME.DVDRiP.XviD-Group'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 195
+
+[[case]]
+input  = '[HorribleSubs] Series 100 - 07 [1080p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series 100'
+absolute = 7
+
+[[case]]
+input  = '[HorribleSubs] Series 100 S2 - 07 [1080p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series 100 S2'
+absolute = 7
+
+[[case]]
+input  = '[abc] Adventure Series: 30 [Web][MKV][h264][720p][AAC 2.0][abc]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Adventure Series:'
+absolute = 30
+
+[[case]]
+input  = '[XKsub] Series Title S2 [05][HEVC-10bit 1080p AAC][CHS&CHT&JPN]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title S2'
+absolute = 5
+
+[[case]]
+input  = '[Cheetah-Raws] Super Long Anime - 1000 (YTV 1280x720 x264 AAC)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Super Long Anime'
+absolute = 1000
+
+[[case]]
+input  = '[DameDesuYo] Another Anime With Special Naming (Season 2) - 33 (1280x720 10bit EAC3) [42A12A76].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime With Special Naming'
+absolute = 33
+
+[[case]]
+input  = '[SubsPlease] Anime Title 300-nen, With Even More Title - 01 (1080p) [8DE44442]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title 300-nen, With Even More Title'
+absolute = 1
+
+[[case]]
+input  = '[Chihiro] Anime Title 300-nen, With Even More Title 02 [720p Hi10P AAC][031FA533]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title 300-nen, With Even More Title'
+absolute = 2
+
+[[case]]
+input  = '[BakeSubs] 86 - 01 [1080p][D40A9E55].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = '86'
+absolute = 1
+
+[[case]]
+input  = 'Anime Title the Final - 09 (2021) [SubsPlease] [WEBRip] [HD 1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title the Final'
+absolute = 9
+
+[[case]]
+input  = 'Anime Title S21 999'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title S21'
+absolute = 999
+
+[[case]]
+input  = 'Anime Title S21 1000'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title S21'
+absolute = 1000
+
+[[case]]
+input  = '[HatSubs] Anime Title 1004 [E63F2984].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title'
+absolute = 1004
+
+[[case]]
+input  = 'Anime Title 100 S3 - 01 (1080p) [5A493522]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title 100 S3'
+absolute = 1
+
+[[case]]
+input  = '[SubsPlease] Anime Title 100 S3 - 01 (1080p) [5A493522]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Title 100 S3'
+absolute = 1
+
+[[case]]
+input  = '[CameEsp] Another Anime 100 - Another 100 Anime - 01 [720p][ESP-ENG][mkv]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime 100 - Another 100 Anime'
+absolute = 1
+
+[[case]]
+input  = '[SubsPlease] Another Anime 100 - Another 100 Anime - 01 (1080p) [4E6B4518].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime 100 - Another 100 Anime'
+absolute = 1
+
+[[case]]
+input  = 'Some show 69. Blm (29.10.2023) 1080p WebDL #turkseed'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Some show'
+absolute = 69
+
+[[case]]
+input  = 'Soap opera 01 BLM(01.11.2023) 1080p HDTV AC3 x264 TURG'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Soap opera'
+absolute = 1
+
+[[case]]
+input  = 'Turkish show 60.Bolum (31.01.2023) 720p WebDL AAC H.264 - TURG'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Turkish show'
+absolute = 60
+
+[[case]]
+input  = 'Different show 1. Bölüm (23.10.2023) 720p WebDL AAC H.264 - TURG'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Different show'
+absolute = 1
+
+[[case]]
+input  = 'Dubbed show 79.BLM Sezon Finali(25.06.2023) 720p WEB-DL AAC2.0 H.264-TURG'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Dubbed show'
+absolute = 79
+
+[[case]]
+input  = 'Exclusive BLM Documentary with no false positives EP03.1080p.AAC.x264'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Exclusive BLM Documentary with no false positives'
+absolute = 3
+
+[[case]]
+input  = '[SubsPlease] Title de Series S2 - 03 (540p) [63501322]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Title de Series S2'
+absolute = 3
+
+[[case]]
+input  = '[Naruto-Kun.Hu] Dr Series S3 - 21 [1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Dr Series S3'
+absolute = 21
+
+[[case]]
+input  = '[Naruto-Kun.Hu] Series Title - 12 [1080p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title'
+absolute = 12
+
+[[case]]
+input  = '[Naruto-Kun.Hu] Anime Triangle - 08 [1080p].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Anime Triangle'
+absolute = 8
+
+[[case]]
+input  = '[Mystic Z-Team] Series Title Super - Episode 013 VF - Non-censuré [720p].mp4'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title Super'
+absolute = 13
+
+[[case]]
+input  = 'Series Title Kai Episodio 13 Audio Latino'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title Kai'
+absolute = 13
+
+[[case]]
+input  = 'Series_Title_2_[01]_[AniLibria_TV]_[WEBRip_1080p]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 2'
+absolute = 1
+
+[[case]]
+input  = '[SubsPlease] Series Title - 100 Years Quest - 01 (1080p) [1107F3A9].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title - 100 Years Quest'
+absolute = 1
+
+[[case]]
+input  = '[SubsPlease] Series Title 100 Years Quest - 01 (1080p) [1107F3A9].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Series Title 100 Years Quest'
+absolute = 1
+
+[[case]]
+input  = '[Dae-P9] Anime Series - 05 - S01E05 - Marrying by Contesting (BD 1080p HEVC FLAC AAC) [Dual Audio] [5BCD56B8]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S1E5'
+[case.expected]
+title = 'Anime Series'
+absolute = 5
+
+[[case]]
+input  = '[Kaleido-subs] Animation - 12 (S01E12) - (WEB 1080p HEVC x265 10-bit E-AC3 2.0) [1ADD8F6D]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+notes  = 'also S1E12'
+[case.expected]
+title = 'Animation'
+absolute = 12
+
+[[case]]
+input  = '[DeadFish] Another Anime Show - 01 - Special [BD][720p][AAC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime Show'
+absolute = 1
+
+[[case]]
+input  = '[DeadFish] Another Anime Show - 01 - OVA [BD][720p][AAC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime Show'
+absolute = 1
+
+[[case]]
+input  = '[DeadFish] Another Anime Show - 01 - OVD [BD][720p][AAC]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another Anime Show'
+absolute = 1
+
+[[case]]
+input  = '[Underwater] Another OVA - The Other -Karma- (BD 1080p) [3A561D0E].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Another'
+absolute = 0
+
+[[case]]
+input  = '[sam] Long Series - NCOP [BD 1080p FLAC] [BBC3BC68].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Long Series'
+absolute = 0
+
+[[case]]
+input  = '[sam] Long Series - NCED [BD 1080p FLAC] [BBC3BC68].mkv'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture'
+[case.expected]
+title = 'Long Series'
+absolute = 0
+
+[[case]]
+input  = '[Vivid] Some Anime Show S01 [Web][MKV][h264 10-bit][1080p][AAC 2.0]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (anime season pack)'
+[case.expected]
+title = 'Some Anime Show'
+season = 1
+season_pack = true
+
+[[case]]
+input  = 'Anime, Title? | Japanse Anime, Title? [Season 1 + EXTRA] [BD 1080p x265 HEVC OPUS] [Dual-Audio]'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (anime season pack)'
+[case.expected]
+title = 'Anime, Title | Japanse Anime, Title'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[Judas] Japanse Anime, Title (Anime, Title?) (Season 1) [1080p][HEVC x265 10bit][Multi-Subs] (Batch)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (anime season pack)'
+[case.expected]
+title = 'Japanse Anime, Title (Anime, Title)'
+season = 1
+season_pack = true
+
+[[case]]
+input  = '[Judas] Japanse Anime, Title (Anime, Title?) (Season 1) [1080p][HEVC x265 10bit][Multi-Subs] (Batch)'
+source = 'Sonarr AbsoluteEpisodeNumberParserFixture (anime season pack)'
+[case.expected]
+title = 'Japanse Anime, Title (Anime, Title)'
+season = 1
+season_pack = true
+

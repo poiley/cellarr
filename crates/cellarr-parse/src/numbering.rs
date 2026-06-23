@@ -30,33 +30,83 @@ use regex::Regex;
 static SXXEXX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bs(\d{1,3})[\s._-]*e(\d{1,4})").unwrap());
 
-// The whole S01E01E02E03 / S01E01-E03 multi-episode block.
+// The whole multi-episode block following a single `Sxx` marker:
+// `S01E01E02E03`, `S01E01-E03`, `S01E01-02-03`, `S6.E1-E2-E3`, `S6E1-S6E2`.
+// Allows repeated `S<same>` markers and bare `Eyy` / `-yy` continuations.
 static MULTI_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\bs(\d{1,3})((?:[\s._-]*e\d{1,4}){2,}|[\s._-]*e\d{1,4}[\s._-]*-[\s._-]*e?\d{1,4})",
+        r"(?ix)
+        \b s\d{1,3} [\s._-]* e \d{1,4}       # the first SxxEyy
+        (                                    # continuation: 1+ more episodes, each
+                                             # carrying an explicit `E`/`S..E` marker
+                                             # OR joined by a hyphen (range/list)
+            (?:
+                [\s._-]* (?:s\d{1,3}[\s._-]*)? e \d{1,4}   # SxxEzz / Ezz
+              | [\s._-]*-[\s._-]* e? \d{1,4}               # -zz / -Ezz
+            )+
+        )",
     )
     .unwrap()
 });
 
-// Every Exx inside a multi block.
-static EP_IN_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)e(\d{1,4})").unwrap());
-// A trailing range `E01-E05` or `E01-05`.
-static EP_RANGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)e(\d{1,4})[\s._-]*-[\s._-]*e?(\d{1,4})").unwrap());
+// Every episode number inside a multi block (the digits after an optional
+// `S<n>` / `E` / separator). Skips a season repeat so `S6E1-S6E2` yields [1,2].
+static EP_IN_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:s\d{1,3}[\s._-]*)?e?(\d{1,4})").unwrap());
 
-// 1x05, 12x05 (alternate single).
+// 1x05, 12x05 (alternate single). Also matches the multi forms `2x04x05`,
+// `2x04.2x05`, `2x01-x02` via `nxn_episodes`.
 static NXN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(\d{1,3})x(\d{1,4})\b").unwrap());
+
+// A multi NxN block: `2x04x05`, `2x04.2x05`, `2x01-x02`, `2x9-2x10`, `1x01-x03`.
+static NXN_MULTI: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)
+        \b (\d{1,3}) x \d{1,4}
+        (?:                                  # continuation, each carrying an `x`
+                                             # marker OR a hyphen (range/list)
+            (?: [\s._-]* (?:\d{1,3})? x \d{1,4} )
+          | (?: [\s._-]*-[\s._-]* \d{1,4} )
+        )+",
+    )
+    .unwrap()
+});
+// Each episode number inside an NxN multi block (`x05`, `2x05`, bare `-05`).
+static NXN_EP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:\d{1,3}x|x|-)(\d{1,4})").unwrap());
+
+// `Season 1 Episode 5-6`, `Ep10718 - Ep10722` (word-form episode range).
+static SEASON_EP_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)
+        \b season [\s._-]* (\d{1,3}) [\s._-]* episode [\s._-]* (\d{1,4}) [\s._-]*-[\s._-]* (\d{1,4})",
+    )
+    .unwrap()
+});
+static EP_PREFIX_RANGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?ix) \b s(\d{1,3}) [\s._-]* ep (\d{1,5}) [\s._-]*-[\s._-]* ep (\d{1,5})").unwrap()
+});
 
 // Season pack: "Season 1", "S01" (no episode), "S01-S03".
 static SEASON_RANGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bs(\d{1,3})[\s._-]*-[\s._-]*s(\d{1,3})\b").unwrap());
-static SEASON_WORD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(?:season|series)[\s._-]*(\d{1,3})\b").unwrap());
-static SEASON_SHORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bs(\d{1,3})\b").unwrap());
+// Season-pack words, incl. foreign-language spellings (Saison/Stagione/Temporada).
+static SEASON_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:season|series|saison|stagione|temporada|seizoen|sezon|staffel)[\s._-]*(\d{1,4})\b",
+    )
+    .unwrap()
+});
+// A spaced-out `S 01` marker (no episode).
+static SEASON_SPACED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bs[\s_.-]+(\d{1,4})\b").unwrap());
+static SEASON_SHORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bs(\d{1,4})\b").unwrap());
 
-// Daily date YYYY MM DD (already-normalised separators).
+// Daily date YYYY MM DD. `normalize` turns `.`/`_`/space into a single space but
+// leaves `-`, so accept either a space or a hyphen between the parts to also catch
+// the ISO `YYYY-MM-DD` form (`Series - 2013-10-30 - Episode …`).
 static DAILY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(19\d{2}|20\d{2})\s(\d{2})\s(\d{2})\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\b(19\d{2}|20\d{2})[\s-](\d{2})[\s-](\d{2})\b").unwrap());
 
 // Anime absolute: "- 071", "- 1071", optionally with version "- 071v2".
 static ABSOLUTE_DASH: LazyLock<Regex> =
@@ -88,43 +138,48 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
         }
     }
 
-    // 2. Multi-episode block.
+    // 2a. Word-form `Season N Episode A-B` and `Sxx EpA - EpB`.
+    if let Some(c) = SEASON_EP_WORD.captures(&norm).or_else(|| {
+        EP_PREFIX_RANGE
+            .captures(&norm)
+            .filter(|_| EP_PREFIX_RANGE.is_match(&norm))
+    }) {
+        let season: u32 = c.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+        let a: u32 = c.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+        let b: u32 = c.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+        if a > 0 && b >= a && b - a < 500 {
+            push_episodes(out, season, (a..=b).collect(), 0.95);
+            return;
+        }
+    }
+
+    // 2b. Multi-episode block following an `Sxx` marker.
     if let Some(block) = MULTI_BLOCK.find(&norm) {
         if let Some(sm) = SXXEXX.captures(block.as_str()) {
             let season: u32 = sm.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let block_str = block.as_str();
-            let mut episodes: Vec<u32> = Vec::new();
-
-            if let Some(rng) = EP_RANGE.captures(block_str) {
-                let start: u32 = rng
-                    .get(1)
-                    .and_then(|m| m.as_str().parse().ok())
-                    .unwrap_or(0);
-                let end: u32 = rng
-                    .get(2)
-                    .and_then(|m| m.as_str().parse().ok())
-                    .unwrap_or(0);
-                if start > 0 && end >= start && end - start < 200 {
-                    episodes.extend(start..=end);
-                }
-            } else {
-                for ep in EP_IN_BLOCK.captures_iter(block_str) {
-                    if let Some(n) = ep.get(1).and_then(|m| m.as_str().parse::<u32>().ok()) {
-                        episodes.push(n);
-                    }
-                }
-            }
-            episodes.sort_unstable();
-            episodes.dedup();
+            let nums: Vec<u32> = EP_IN_BLOCK
+                .captures_iter(block.as_str())
+                .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<u32>().ok()))
+                .collect();
+            let episodes = expand_episode_list(&nums);
             if !episodes.is_empty() {
-                for ep in episodes {
-                    out.coordinates.push(Coordinates::Episode {
-                        season,
-                        episode: ep,
-                        absolute: None,
-                    });
-                }
-                out.set_confidence(ParsedField::Coordinates, Confidence::new(0.97));
+                push_episodes(out, season, episodes, 0.97);
+                return;
+            }
+        }
+    }
+
+    // 2c. Multi NxN block (`2x04x05`, `2x04.2x05`, `2x01-x02`, `1x01-x03`).
+    if let Some(block) = NXN_MULTI.find(&norm) {
+        if let Some(sm) = NXN.captures(block.as_str()) {
+            let season: u32 = sm.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let nums: Vec<u32> = NXN_EP
+                .captures_iter(block.as_str())
+                .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<u32>().ok()))
+                .collect();
+            let episodes = expand_episode_list(&nums);
+            if episodes.len() >= 2 {
+                push_episodes(out, season, episodes, 0.9);
                 return;
             }
         }
@@ -169,9 +224,10 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
         }
     }
 
-    // 4b. Season pack "Season 1" / "S01".
+    // 4b. Season pack "Season 1" / "Saison 3" / "S 01" / "S01".
     let season_pack = SEASON_WORD
         .captures(&norm)
+        .or_else(|| SEASON_SPACED.captures(&norm))
         .or_else(|| SEASON_SHORT.captures(&norm));
     if let Some(c) = season_pack {
         if let Some(s) = c.get(1).and_then(|m| m.as_str().parse::<u32>().ok()) {
@@ -198,6 +254,33 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
             }
         }
     }
+}
+
+/// Expand a list of episode numbers parsed from a multi-block into the final
+/// episode set. An exactly-two-number block is treated as an inclusive range
+/// (`E01-E03` → 1,2,3; `E22-E23` → 22,23); three or more numbers are an explicit
+/// list (`E01-02-03` → 1,2,3; `E96-97-98-99-100` verbatim). Defends against a
+/// runaway range.
+fn expand_episode_list(nums: &[u32]) -> Vec<u32> {
+    let mut episodes: Vec<u32> = match nums {
+        [a, b] if *b >= *a && *b - *a < 200 => (*a..=*b).collect(),
+        _ => nums.to_vec(),
+    };
+    episodes.sort_unstable();
+    episodes.dedup();
+    episodes.retain(|n| *n > 0);
+    episodes
+}
+
+fn push_episodes(out: &mut ParsedRelease, season: u32, episodes: Vec<u32>, conf: f32) {
+    for ep in episodes {
+        out.coordinates.push(Coordinates::Episode {
+            season,
+            episode: ep,
+            absolute: None,
+        });
+    }
+    out.set_confidence(ParsedField::Coordinates, Confidence::new(conf));
 }
 
 fn push_season_pack(out: &mut ParsedRelease, season: u32) {

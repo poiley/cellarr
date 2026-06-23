@@ -1,0 +1,749 @@
+# Sonarr release-group vectors.
+# Re-curated FACTS from Sonarr's ReleaseGroupParserFixture [TestCase] rows.
+# expected: group<-releaseGroup. (Rows asserting NO group are omitted -- the
+# corpus schema has no negative assertion.)
+
+[[case]]
+input  = 'Series.2009.S01E14.English.HDTV.XviD-LOL'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'LOL'
+
+[[case]]
+input  = 'Series.Title.S01.EXTRAS.DVDRip.XviD-RUNNER'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'RUNNER'
+
+[[case]]
+input  = '2020.Series.2011.12.02.PDTV.XviD-C4TV'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'C4TV'
+
+[[case]]
+input  = 'The.Series.S03E115.DVDRip.XviD-OSiTV'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'OSiTV'
+
+[[case]]
+input  = 'The.Series.Title.S04E13.720p.WEB-DL.AAC2.0.H.264-Cyphanix'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Cyphanix'
+
+[[case]]
+input  = 'The Series Title 10x11 - Wild Devs Cant Be Broken [rl].avi'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'rl'
+
+[[case]]
+input  = '[ www.Torrenting.com ] - Series.S03E14.720p.HDTV.X264-DIMENSION'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DIMENSION'
+
+[[case]]
+input  = 'Series S02E09 HDTV x264-2HD [eztv]-[rarbg.com]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = '2HD'
+
+[[case]]
+input  = 'The.Series.S09E13.720p.HEVC.x265-MeGusta-Pre'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'MeGusta'
+
+[[case]]
+input  = 'Series Title - S01E01 - Episode Title [RlsGroup]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'RlsGroup'
+
+[[case]]
+input  = 'Series US (2010) S04 (1080p BDRip x265 10bit DTS-HD MA 5 1 - WEM)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'SomeShow.S20E13.1080p.Blu-Ray.DTS-ES.5.1.x264-ROUGH [PublicHD]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'ROUGH'
+
+[[case]]
+input  = 'SomeShow S01E168 1080p WEB-DL AAC 2.0 x264-Erai-raws'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Erai-raws'
+
+[[case]]
+input  = 'The.Good.Series.S05E03.Series.of.Intelligence.1080p.10bit.AMZN.WEB-DL.DDP5.1.HEVC-Vyndros'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Vyndros'
+
+[[case]]
+input  = '[Tenrai-Sensei] Series [BD][1080p][HEVC 10bit x265][Dual Audio]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Tenrai-Sensei'
+
+[[case]]
+input  = '[Erai-raws] Series - 0955 ~ 1005 [1080p]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Erai-raws'
+
+[[case]]
+input  = '[Exiled-Destiny] Series Title'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Exiled-Destiny'
+
+[[case]]
+input  = 'Series.Title.S01E09.1080p.DSNP.WEB-DL.DDP2.0.H.264-VARYG'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'VARYG'
+
+[[case]]
+input  = 'Series (1997) - S01E01-02 - Children of the Gods (Showtime) (1080p.BD.DD5.1.x265-TheSickle[TAoE])'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Title S01 [2160p REMUX] [HEVC DV HYBRID HDR10+ Dolby TrueHD Atmos 7 1 24-bit Audio English]-DataLass'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DataLass'
+
+[[case]]
+input  = 'Series Title S01 REMUX Dual Audio AVC 1080p 8-Bit-ZR-'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'ZR'
+
+[[case]]
+input  = 'Show.Name.2009.S01.1080p.BluRay.DTS5.1.x264-D-Z0N3'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'D-Z0N3'
+
+[[case]]
+input  = 'Series Stampede S01 MULTi 1080p BD x265 Opus AAC -Báleygr'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Báleygr'
+
+[[case]]
+input  = 'Series S01E01 VOSTFR 1080p WEB x265 EAC3 -Hveðrungr'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Hveðrungr'
+
+[[case]]
+input  = 'Show.Name.S01E01.1080p.WEB-DL.H264.Fight-BB.mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Fight-BB'
+
+[[case]]
+input  = 'Show Name (2021) Season 1 S01 (1080p BluRay x265 HEVC 10bit AAC 5.1 Tigole) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Show Name (2021) Season 1 S01 (1080p BluRay x265 HEVC 10bit AAC 2.0 afm72) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Show Name (2021) Season 1 S01 (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Show Name (2021) Season 1 S01 (1080p BluRay x265 HEVC 10bit AAC 2.0 Panda) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Show Name (2020) Season 1 S01 (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 2.0 Ghost) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Show Name (2020) Season 1 S01 (1080p WEB-DL x265 HEVC 10bit AC3 5.1 MONOLITH) [QxR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'The Show S08E09 The Series.1080p.AMZN.WEB-DL.x265.10bit.EAC3.6.0-Qman[UTR]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'UTR'
+
+[[case]]
+input  = 'The Show S03E07 Fire and Series[1080p x265 10bit S87 Joy]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Joy'
+
+[[case]]
+input  = 'The Show (2016) - S02E01 - Soul Series #1 (1080p NF WEBRip x265 ImE)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'ImE'
+
+[[case]]
+input  = 'The Show (2020) - S02E03 - Fighting His Series(1080p ATVP WEB-DL x265 t3nzin)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 't3nzin'
+
+[[case]]
+input  = '[Anime Time] A Show [BD][Dual Audio][1080p][HEVC 10bit x265][AAC][Eng Sub] [Batch] Title)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Anime Time'
+
+[[case]]
+input  = '[Project Angel] Anime Series [DVD 480p] [10-bit x265 HEVC | Opus]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Project Angel'
+
+[[case]]
+input  = '[Hakata Ramen] Show Title - Season 2 - Revival of The Commandments'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Hakata Ramen'
+
+[[case]]
+input  = 'Show Name (2022) S01 (2160p DSNP WEB-DL H265 DV HDR DDP Atmos 5.1 English - HONE)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'HONE'
+
+[[case]]
+input  = 'Show Title (2021) S01 (2160p ATVP WEB-DL Hybrid H265 DV HDR10+ DDP Atmos 5.1 English - HONE)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'HONE'
+
+[[case]]
+input  = 'Series.Title.S01E09.1080p.DSNP.WEB-DL.DDP2.0.H.264-VARYG (Blue Lock, Multi-Subs)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'VARYG'
+
+[[case]]
+input  = 'Series.Title (2014) S09E10 (1080p AMZN WEB-DL x265 HEVC 10bit DDP 5.1 Vyndros)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Vyndros'
+
+[[case]]
+input  = 'Series Title S02E03 Title 4k to 1080p DSNP WEBrip x265 DDP 5 1 Releaser[SEV]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SEV'
+
+[[case]]
+input  = 'Series Title Season 01 S01 1080p AMZN UHD WebRip x265 DDP 5.1 Atmos Releaser-SEV'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SEV'
+
+[[case]]
+input  = 'Series Title - S01.E06 - Title 1080p AMZN WebRip x265 DDP 5.1 Atmos Releaser [SEV]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SEV'
+
+[[case]]
+input  = "Series Title (2005) - S01E01 - A Hard Day's Night (1080p DSNP WEB-DL x265 Garshasp).mkv"
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Garshasp'
+
+[[case]]
+input  = 'Series Title (2015) - S02E04 - Smoke & Mirrors (1080p BluRay x265 Kappa).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Kappa'
+
+[[case]]
+input  = 'Series Title (2020) - S02E03 - A Great Odyssey (1080p BluRay x265 Kappa).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Kappa'
+
+[[case]]
+input  = 'Series Title (2019) - S01E01 - Episode 1 (1080p WEB-DL x265 Natty).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Natty'
+
+[[case]]
+input  = 'Series Title (1999) - S03E01-E02 - Mermaid Man and Barnacle Boy IV & Doing Time (1080p AMZN WEB-DL x265 RCVR).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'RCVR'
+
+[[case]]
+input  = 'Series Title (2021) - S01E02 - Here Goes Nothing (1080p WEB-DL x265 SAMPA).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SAMPA'
+
+[[case]]
+input  = 'Series Title (2021) - S01E01 - Aftermath (1080p DSNP WEB-DL x265 YOGI).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'YOGI'
+
+[[case]]
+input  = 'Series Title (2012) - S01E01 - Episode 1 (1080p BluRay x265 r00t).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'r00t'
+
+[[case]]
+input  = 'Series Title - S01E01 - Girls Gone Wild Exposed (720p x265 EDGE2020).mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'EDGE2020'
+
+[[case]]
+input  = 'Series.Title.S01E02.1080p.BluRay.Remux.AVC.FLAC.2.0-E.N.D'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'E.N.D'
+
+[[case]]
+input  = 'Show Name (2016) Season 1 S01 (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 5 1 RZeroX) QxR'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = 'Series Title S01 1080p Blu-ray Remux AVC FLAC 2.0 - KRaLiMaRKo'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'KRaLiMaRKo'
+
+[[case]]
+input  = 'Series Title S01 1080p Blu-ray Remux AVC DTS-HD MA 2.0 - BluDragon'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'BluDragon'
+
+[[case]]
+input  = 'Example (2013) S01E01 (1080p iP WEBRip x265 SDR AAC 2.0 English - DarQ)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DarQ'
+
+[[case]]
+input  = 'Series.Title.S08E03.720p.WEB.DL.AAC2.0.H.264.KCRT'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'KCRT'
+
+[[case]]
+input  = 'Series Title S02E05 2160p WEB-DL DV HDR ENG DDP5.1 Atmos H265 MP4-BEN THE MEN'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'BEN THE MEN'
+
+[[case]]
+input  = 'Series Title S02E05 2160p AMZN WEB-DL DV HDR10 PLUS DDP5 1 Atmos H265 MKV-BEN THE MEN-xpost'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'BEN THE MEN'
+
+[[case]]
+input  = 'Series.S01E05.1080p.WEB-DL.DDP5.1.H264-BEN.THE.MEN'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'BEN.THE.MEN'
+
+[[case]]
+input  = 'Series (2022) S01 (1080p BluRay x265 SDR DDP 5.1 English - JBENT TAoE)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2005) S21E12 (1080p AMZN WEB-DL x265 SDR DDP 5.1 English - Goki TAoE)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2022) S03E12 (1080p AMZN Webrip x265 10 bit EAC3 5 1 - Ainz)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Things (2016) S04 Part 1 (1080p Webrip NF x265 10bit EAC3 5 1 - AJJMIN) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Soup (2024) S01 (1080p NF Webrip x265 10bit EAC3 5 1 Multi - ANONAZ)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2022) S01 (1080p NF Webrip x265 10bit EAC3 5 1 Atmos - ArcX)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series - King of Titles (2021) S01 (1080p HMAX Webrip x265 10bit AC3 5 1 - bccornfo) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Welcome to Series (2022) S04 (1080p AMZN Webrip x265 10bit EAC3 5 1 - DNU)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Who (2005) S01 (1080p BDRip x265 10bit AC3 5 1 - DrainedDay)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Down (2019) (1080p AMZN Webrip x265 10bit EAC3 5 1 - DUHiT)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2016) S09 (1080p CRAV Webrip x265 10bit EAC3 5 1 - Erie) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Common Series Effects (2025) S01 (1080p AMZN Webrip x265 10bit EAC3 2 0 - Frys) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Murderbot (2025) S01 (2160p HDR10 DV Hybrid ATVP Webrip x265 10bit EAC3 5 1 Atmos - Goki)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series In Real Life (2019) S01 REPACK (1080p DSNP Webrip x265 10bit AAC 2 0 - HxD)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series Discovery (2017) S02 (1080p BDRip x265 10bit DTS-HD MA 5 1 - jb2049) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2021) S03 (1080p DS4K NF Webrip x265 10bit EAC3 5 1 Atmos English - JBENT)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'SuSeriespergirl (2015) S04 (1080p BDRip x265 10bit AC3 5 1 - Nostradamus)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2019) S02 (4Kto1080p ATVP Webrip x265 10bit AC3 5 1 - r0b0t) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'v (1970) S01 (2160p AIUS HDR10 DV Hybrid BDRip x265 10bit DTS-HD MA 5 1 - Species180) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2024) S02 (1080p ATVP Webrip x265 10bit EAC3 5 1 - TheSickle)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2016) S05 Part 02 (1080p NF Webrip x265 10bit EAC3 5 1 - xtrem3x) [TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2013) S01 (1080p BDRip x265 10bit DTS-HD MA 5 1 - WEM)[TAoE]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'The.Series.1989.S00E65.1080p.DSNP.Webrip.x265.10bit.EAC3.5.1.Goki.TAoE'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'TAoE'
+
+[[case]]
+input  = 'Series (2008) S05E01 (1080p BDRip DDP2.0 x265) - Vialle'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Vialle'
+
+[[case]]
+input  = 'The Series (2023) S03E01 (1080p DS4K NF Webrip DV HDR DDP5.1 x265) - Vialle.mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Vialle'
+
+[[case]]
+input  = 'The Series (2025) S03E01 (1080p AMZN WEB-DL x265 SDR DDP 5.1 English - Celdra QxR)'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QxR'
+
+[[case]]
+input  = "The Series (2025) - S03E01 - We're Already Here (1080p AMZN WEB-DL x265 Celdra)"
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Celdra'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEBRip.x264-SKGTV English'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SKGTV'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEBRip.x264-SKGTV_English'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SKGTV'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEBRip.x264-SKGTV.English'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SKGTV'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEB-DL.AAC2.0.H.264-EVL-RP'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'EVL'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEB-DL.AAC2.0.H.264-EVL-RP-RP'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'EVL'
+
+[[case]]
+input  = 'Series.Title.S02E04.720p.WEB-DL.AAC2.0.H.264-EVL-Obfuscated'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'EVL'
+
+[[case]]
+input  = 'Series.Title.S04E04.720p.BluRay.x264-xHD-NZBgeek'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'xHD'
+
+[[case]]
+input  = 'Series.Title.S05E11.720p.HDTV.X264-DIMENSION-NZBgeek'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DIMENSION'
+
+[[case]]
+input  = 'Series.Title.S04E04.720p.BluRay.x264-xHD-1'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'xHD'
+
+[[case]]
+input  = 'Series.Title.S05E11.720p.HDTV.X264-DIMENSION-1'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DIMENSION'
+
+[[case]]
+input  = 'series.title.s40e11.kevin.hart_sia.720p.hdtv.x264-w4f-sample.mkv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'w4f'
+
+[[case]]
+input  = 'The.Series.2017.S05E02.1080p.WEB-DL.DD5.1.H264-EVL-Scrambled'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'EVL'
+
+[[case]]
+input  = 'Series.S01E08.Haunted.Hayride.720p.AMZN.WEBRip.DDP5.1.x264-NTb-postbot'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'Series.S01E08.Haunted.Hayride.720p.AMZN.WEBRip.DDP5.1.x264-NTb-xpost'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'Series.Title.S08E05.The.Forgotten.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-Rakuv'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'The.Series.S30E01.Devs.Not.Dead.1080p.AMZN.WEB-DL.DDP5.1.H264-QOQ-Rakuv02'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'QOQ'
+
+[[case]]
+input  = 'Lie.To.Developers.S01E13.720p.BluRay.x264-SiNNERS-Rakuvfinhel'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'SiNNERS'
+
+[[case]]
+input  = 'Who.is.Sonarr.S01E01.INTERNAL.720p.HDTV.x264-aAF-RakuvUS-Obfuscated'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'aAF'
+
+[[case]]
+input  = 'Deadly.Development.S01E10.Sink.With.Code.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTG-WhiteRev'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTG'
+
+[[case]]
+input  = 'The.Sonarr.Series.S09E12.Developers.REPACK.1080p.AMZN.WEB-DL.DD.5.1.H.264-CasStudio-BUYMORE'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'CasStudio'
+
+[[case]]
+input  = '2.Tired.Developers.S02E24.1080p.AMZN.WEBRip.DD5.1.x264-CasStudio-AsRequested'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'CasStudio'
+
+[[case]]
+input  = 'Series.S04E11.Lines.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-AlternativeToRequested'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'Series.S16E04.Third.Wheel.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-GEROV'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'Series.and.Title.S10E06.Dev.n.Play.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb-Z0iDS3N'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'NTb'
+
+[[case]]
+input  = 'Absolute.Series.S02E06.The.House.of.Sonarr.DVDRip.x264-MaG-Chamele0n'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'MaG'
+
+[[case]]
+input  = 'The.Series.Title.S08E08.1080p.BluRay.x264-ROVERS-4P'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'ROVERS'
+
+[[case]]
+input  = 'Series.Title.S01E02.720p.BluRay.X264-REWARD-4Planet'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'REWARD'
+
+[[case]]
+input  = 'Series.S01E01.Rites.of.Passage.1080p.BluRay.x264-DON-AlteZachen'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'DON'
+
+[[case]]
+input  = 'Series.Title.S04E06.Episode.Name.720p.WEB-DL.DD5.1.H.264-HarrHD-RePACKPOST'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'HarrHD'
+
+[[case]]
+input  = '[FFF] Series Title!! - S01E11 - Someday, With Sonarr'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'FFF'
+
+[[case]]
+input  = '[HorribleSubs] Series Title!! - S01E12 - Sonarr Going Well!!'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'HorribleSubs'
+
+[[case]]
+input  = '[Anime-Koi] Series Title - S01E06 - Guys From Sonarr'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Anime-Koi'
+
+[[case]]
+input  = '[Anime-Koi] Series Title - S01E07 - A High-Grade Sonarr'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Anime-Koi'
+
+[[case]]
+input  = '[Anime-Koi] Series Title 2 - 01 [h264-720p][28D54E2C]'
+source = 'Sonarr ReleaseGroupParserFixture'
+[case.expected]
+group = 'Anime-Koi'
+

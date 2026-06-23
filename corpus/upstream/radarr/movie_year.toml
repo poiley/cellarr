@@ -1,0 +1,245 @@
+# Re-curated input->expected FACTS extracted from Radarr's GPLv3 parser
+# test fixtures (clean-room: facts only, never code; each vector records
+# its `source`). See docs/agents/legal-and-licensing.md and corpus/README.md.
+# Schema mirrors corpus/parse/*.toml (cellarr ParsedRelease subset).
+# Concern: movie year extraction (+ German title/edition/year).
+
+[[case]]
+input  = "1776.1979.EXTENDED.720p.BluRay.X264-AMIABLE"
+source = "Radarr ParserFixture.should_parse_movie_year"
+[case.expected]
+year = 1979
+
+[[case]]
+input  = "Movie Name FRENCH BluRay 720p 2016 kjhlj"
+source = "Radarr ParserFixture.should_parse_movie_year"
+[case.expected]
+year = 2016
+
+[[case]]
+input  = "Der.Movie.German.Bluray.FuckYou.Pso.Why.cant.you.follow.scene.rules.1998"
+source = "Radarr ParserFixture.should_parse_movie_year"
+[case.expected]
+year = 1998
+
+[[case]]
+input  = "Movie Name (1897) [DVD].mp4"
+source = "Radarr ParserFixture.should_parse_movie_year"
+[case.expected]
+year = 1897
+
+[[case]]
+input  = "World Movie Z Movie [2023]"
+source = "Radarr ParserFixture.should_parse_movie_year"
+[case.expected]
+year = 2023
+
+[[case]]
+input  = "Movie.Aufbruch.nach.Pandora.Extended.2009.German.DTS.720p.BluRay.x264-SoW"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Movie Aufbruch nach Pandora"
+edition = "Extended"
+year = 2009
+
+[[case]]
+input  = "Drop.Movie.1994.German.AC3D.DL.720p.BluRay.x264-KLASSiGERHD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Drop Movie"
+year = 1994
+
+[[case]]
+input  = "Kick.Movie.2.2013.German.DTS.DL.720p.BluRay.x264-Pate"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Kick Movie 2"
+year = 2013
+
+[[case]]
+input  = "Movie.Hills.2019.German.DL.AC3.Dubbed.1080p.BluRay.x264-muhHD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Movie Hills"
+year = 2019
+
+[[case]]
+input  = "96.Hours.Movie.3.EXTENDED.2014.German.DL.1080p.BluRay.x264-ENCOUNTERS"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "96 Hours Movie 3"
+edition = "EXTENDED"
+year = 2014
+
+[[case]]
+input  = "Movie.War.Q.EXTENDED.CUT.2013.German.DL.1080p.BluRay.x264-HQX"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Movie War Q"
+edition = "EXTENDED CUT"
+year = 2013
+
+[[case]]
+input  = "Sin.Movie.2005.RECUT.EXTENDED.German.DL.1080p.BluRay.x264-DETAiLS"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Sin Movie"
+edition = "RECUT EXTENDED"
+year = 2005
+
+[[case]]
+input  = "2.Movie.in.L.A.1996.GERMAN.DL.720p.WEB.H264-SOV"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "2 Movie in L.A."
+year = 1996
+
+[[case]]
+input  = "8.2019.GERMAN.720p.BluRay.x264-UNiVERSUM"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "8"
+year = 2019
+
+[[case]]
+input  = "Life.Movie.2014.German.DL.PAL.DVDR-ETM"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Life Movie"
+year = 2014
+
+[[case]]
+input  = "Joe.Movie.2.EXTENDED.EDITION.2015.German.DL.PAL.DVDR-ETM"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Joe Movie 2"
+edition = "EXTENDED EDITION"
+year = 2015
+
+[[case]]
+input  = "Movie.EXTENDED.2011.HDRip.AC3.German.XviD-POE"
+source = "Radarr ParserFixture.should_parse_german_movie"
+[case.expected]
+title = "Movie"
+edition = "EXTENDED"
+year = 2011
+
+[[case]]
+input  = "Movie.Klasse.von.1999.1990.German.720p.HDTV.x264-NORETAiL"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "year in the title"
+[case.expected]
+title = "Movie Klasse von 1999"
+year = 1990
+
+[[case]]
+input  = "Movie.Squad.2016.EXTENDED.German.DL.AC3.BDRip.x264-hqc"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "edition after year"
+[case.expected]
+title = "Movie Squad"
+edition = "EXTENDED"
+year = 2016
+
+[[case]]
+input  = "Movie.and.Movie.2010.Extended.Cut.German.DTS.DL.720p.BluRay.x264-HDS"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "edition after year"
+[case.expected]
+title = "Movie and Movie"
+edition = "Extended Cut"
+year = 2010
+
+[[case]]
+input  = "Der.Movie.James.German.Bluray.FuckYou.Pso.Why.cant.you.follow.scene.rules.1998"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "year at the end"
+[case.expected]
+title = "Der Movie James"
+year = 1998
+
+[[case]]
+input  = "Der.Movie.Eine.Unerwartete.Reise.Extended.German.720p.BluRay.x264-EXQUiSiTE"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year & edition"
+[case.expected]
+title = "Der Movie Eine Unerwartete Reise"
+edition = "Extended"
+
+[[case]]
+input  = "Movie.Weg.des.Kriegers.EXTENDED.German.720p.BluRay.x264-EXQUiSiTE"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year & edition"
+[case.expected]
+title = "Movie Weg des Kriegers"
+edition = "EXTENDED"
+
+[[case]]
+input  = "Die.Unfassbaren.Movie.Name.EXTENDED.German.DTS.720p.BluRay.x264-RHD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year & edition"
+[case.expected]
+title = "Die Unfassbaren Movie Name"
+edition = "EXTENDED"
+
+[[case]]
+input  = "Die Unfassbaren Movie Name EXTENDED German DTS 720p BluRay x264-RHD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year & edition & without dots"
+[case.expected]
+title = "Die Unfassbaren Movie Name"
+edition = "EXTENDED"
+
+[[case]]
+input  = "Passengers.German.DL.AC3.Dubbed..BluRay.x264-PsO"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year"
+[case.expected]
+title = "Passengers"
+
+[[case]]
+input  = "Das.A.Team.Der.Film.Extended.Cut.German.720p.BluRay.x264-ANCIENT"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year"
+[case.expected]
+title = "Das A Team Der Film"
+edition = "Extended Cut"
+
+[[case]]
+input  = "Cars.2.German.DL.720p.BluRay.x264-EmpireHD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "no year"
+[case.expected]
+title = "Cars 2"
+
+[[case]]
+input  = "Die.fantastische.Reise.des.Dr.Dolittle.2020.German.DL.LD.1080p.WEBRip.x264-PRD"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "dot after dr"
+[case.expected]
+title = "Die fantastische Reise des Dr. Dolittle"
+year = 2020
+
+[[case]]
+input  = "Der.Film.deines.Lebens.German.2011.PAL.DVDR-ETM"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "year at wrong position"
+[case.expected]
+title = "Der Film deines Lebens"
+year = 2011
+
+[[case]]
+input  = "Kick.Ass.2.2013.German.DTS.DL.720p.BluRay.x264-Pate_"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "underscore at the end"
+[case.expected]
+title = "Kick Ass 2"
+year = 2013
+
+[[case]]
+input  = "The.Good.German.2006.GERMAN.720p.HDTV.x264-RLsGrp"
+source = "Radarr ParserFixture.should_parse_german_movie"
+notes  = "German in the title"
+[case.expected]
+title = "The Good German"
+year = 2006
