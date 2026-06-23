@@ -14,9 +14,9 @@ group = "SPARKS"
 
 [[case]]
 input  = "Movie.2019.1080p.BluRay.x264-D-Z0N3"
-source = "group containing internal dash"
+source = "group containing internal dash; corrected to full 'D-Z0N3' per Sonarr/Radarr oracle (parity G6)"
 [case.expected]
-group = "Z0N3"
+group = "D-Z0N3"
 
 [[case]]
 input  = "Show.S01E01.1080p.WEB-DL.x264-FLUX.mkv"

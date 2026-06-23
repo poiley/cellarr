@@ -23,3 +23,7 @@ rstest.workspace = true
 proptest.workspace = true
 toml = "0.8"
 serde.workspace = true
+serde_json.workspace = true
+# Oracle harness only (tests/oracle.rs, #[ignore]): blocking HTTP to the live
+# Sonarr/Radarr parse endpoints. Blocking keeps the harness a plain test (no async runtime).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

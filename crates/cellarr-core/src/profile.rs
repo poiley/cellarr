@@ -190,8 +190,20 @@ pub fn resolve_quality(parsed: &ParsedRelease, ranking: &QualityRanking) -> Qual
         // conventional default for an unqualified Bluray.
         (Some(Source::Bluray), _) => "Bluray-1080p",
 
-        // HDTV / WEBRip / WEB-DL with no resolution, or no source at all, cannot
-        // be bucketed.
+        // HDTV with no resolution, or sub-HD HDTV, is SD broadcast (matches the
+        // originals: `...HDTV.x264` → SDTV; `480p.HDTV` → SDTV).
+        (Some(Source::Hdtv), None | Some(Resolution::R480p | Resolution::R576p)) => "SDTV",
+
+        // Source-less, resolution-only releases (common in anime and raw web): the
+        // originals default the medium to HDTV at the advertised resolution, with
+        // sub-HD collapsing to SDTV.
+        (None, Some(Resolution::R480p | Resolution::R576p)) => "SDTV",
+        (None, Some(Resolution::R720p)) => "HDTV-720p",
+        (None, Some(Resolution::R1080p)) => "HDTV-1080p",
+        (None, Some(Resolution::R2160p)) => "HDTV-2160p",
+
+        // WEBRip / WEB-DL with no resolution cannot be bucketed; neither can a
+        // release with no source and no resolution.
         _ => return ranking.unknown(),
     };
 
@@ -631,9 +643,39 @@ mod tests {
     #[test]
     fn resolve_quality_falls_back_to_unknown() {
         let r = QualityRanking::default();
-        let unknown = resolve_quality(&parsed_with(None, Some(Resolution::R1080p)), &r);
+        // Genuinely unbucketable: no source and no resolution.
+        let unknown = resolve_quality(&parsed_with(None, None), &r);
         assert_eq!(unknown.name, "Unknown");
         assert_eq!(unknown.rank, 0);
+    }
+
+    #[test]
+    fn resolve_quality_defaults_resolution_only_to_hdtv() {
+        // Source-less, resolution-only releases (anime/web raws) match the
+        // originals: HDTV at the advertised resolution, sub-HD → SDTV. (Parity G1.)
+        let r = QualityRanking::default();
+        assert_eq!(
+            resolve_quality(&parsed_with(None, Some(Resolution::R1080p)), &r).name,
+            "HDTV-1080p"
+        );
+        assert_eq!(
+            resolve_quality(&parsed_with(None, Some(Resolution::R720p)), &r).name,
+            "HDTV-720p"
+        );
+        assert_eq!(
+            resolve_quality(&parsed_with(None, Some(Resolution::R480p)), &r).name,
+            "SDTV"
+        );
+    }
+
+    #[test]
+    fn resolve_quality_hdtv_without_resolution_is_sdtv() {
+        // `...HDTV.x264` with no resolution token → SDTV. (Parity G2.)
+        let r = QualityRanking::default();
+        assert_eq!(
+            resolve_quality(&parsed_with(Some(Source::Hdtv), None), &r).name,
+            "SDTV"
+        );
     }
 
     #[test]

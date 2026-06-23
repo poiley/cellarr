@@ -92,21 +92,40 @@ test-pg *ARGS:
 
 # --- differential oracle (pinned Sonarr/Radarr in Docker) -----------------------------------
 
-# Run the parity oracle. Per-run compose project + ephemeral ports → many runs coexist.
+# Run the parser parity oracle: bring up pinned Sonarr/Radarr, extract their API
+# keys, point the harness at them, and diff cellarr's parser. Per-run compose
+# project + ephemeral ports → many runs coexist. Results: target/parity/ +
+# docs/parity/. See docs/parity/methodology.md.
 oracle *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     compose="tests/oracle/docker-compose.yml"
-    if [ ! -f "$compose" ]; then echo "oracle compose not present yet (Phase 0 deliverable)"; exit 0; fi
+    if [ ! -f "$compose" ]; then echo "oracle compose not present"; exit 0; fi
     proj="cellarr-oracle-{{run_id}}"
     trap 'docker compose -p "$proj" -f "$compose" down -v >/dev/null 2>&1 || true' EXIT
     docker compose -p "$proj" -f "$compose" up -d
     sonarr="$(docker compose -p "$proj" -f "$compose" port sonarr 8989 | sed 's/.*://')"
     radarr="$(docker compose -p "$proj" -f "$compose" port radarr 7878 | sed 's/.*://')"
-    export CELLARR_ORACLE_SONARR="http://127.0.0.1:${sonarr}"
-    export CELLARR_ORACLE_RADARR="http://127.0.0.1:${radarr}"
+    sc=$(docker compose -p "$proj" -f "$compose" ps -q sonarr)
+    rc=$(docker compose -p "$proj" -f "$compose" ps -q radarr)
+    echo "waiting for Sonarr/Radarr first boot + API keys..."
+    SK=""; RK=""
+    for _ in $(seq 1 60); do
+      SK=$(docker exec "$sc" sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' /config/config.xml 2>/dev/null || true)
+      RK=$(docker exec "$rc" sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' /config/config.xml 2>/dev/null || true)
+      [ -n "$SK" ] && [ -n "$RK" ] && break; sleep 2
+    done
+    [ -z "$SK" ] || [ -z "$RK" ] && { echo "API keys not ready"; exit 1; }
+    export CELLARR_ORACLE_SONARR="http://127.0.0.1:${sonarr}" CELLARR_ORACLE_SONARR_KEY="$SK"
+    export CELLARR_ORACLE_RADARR="http://127.0.0.1:${radarr}" CELLARR_ORACLE_RADARR_KEY="$RK"
+    # wait until both APIs answer
+    for _ in $(seq 1 60); do
+      a=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Api-Key: $SK" "$CELLARR_ORACLE_SONARR/api/v3/system/status" || true)
+      b=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Api-Key: $RK" "$CELLARR_ORACLE_RADARR/api/v3/system/status" || true)
+      [ "$a" = "200" ] && [ "$b" = "200" ] && break; sleep 2
+    done
     echo "oracle {{run_id}}: sonarr=${sonarr} radarr=${radarr}"
-    cargo test --workspace --features oracle -- --ignored oracle {{ARGS}}
+    cargo test -p cellarr-parse --test oracle -- --ignored --nocapture {{ARGS}}
 
 # --- web ------------------------------------------------------------------------------------
 

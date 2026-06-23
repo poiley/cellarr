@@ -1,0 +1,17 @@
+{"cellarr":"title of anime","field":"title","file":"absolute_anime","input":"[Group] Title Of Anime - 5 [480p].mkv","oracle":"∅"}
+{"cellarr":"[5]","field":"absolute","file":"absolute_anime","input":"[Group] Title Of Anime - 5 [480p].mkv","oracle":"∅"}
+{"cellarr":"group","field":"group","file":"absolute_anime","input":"[Group] Title Of Anime - 5 [480p].mkv","oracle":"∅"}
+{"cellarr":"watchmen","field":"title","file":"miniseries","input":"Watchmen.2019.S01E09.2160p.HMAX.WEB-DL.DDP5.1.HDR.HEVC-FLUX","oracle":"watchmen 2019"}
+{"cellarr":"generation kill part 4","field":"title","file":"miniseries","input":"Generation.Kill.Part.4.720p.BluRay.x264-DON","oracle":"generation kill"}
+{"cellarr":"∅","field":"season","file":"miniseries","input":"Generation.Kill.Part.4.720p.BluRay.x264-DON","oracle":"1"}
+{"cellarr":"∅","field":"episodes","file":"miniseries","input":"Generation.Kill.Part.4.720p.BluRay.x264-DON","oracle":"[4]"}
+{"cellarr":"redux","field":"edition","file":"movie_edition","input":"Apocalypse.Now.1979.Redux.1080p.BluRay.x264-DON","oracle":"∅"}
+{"cellarr":"extended","field":"edition","file":"movie_edition","input":"Lord.of.the.Rings.2001.Extended.Edition.2160p.BluRay.x265-TERMiNAL","oracle":"extended edition"}
+{"cellarr":"director's cut","field":"edition","file":"movie_edition","input":"Watchmen.2009.Directors.Cut.1080p.BluRay.x264-METiS","oracle":"directors cut"}
+{"cellarr":"theatrical","field":"edition","file":"movie_edition","input":"The.Thing.1982.Theatrical.Cut.1080p.BluRay.x264-AMIABLE","oracle":"theatrical cut"}
+{"cellarr":"criterion","field":"edition","file":"movie_edition","input":"Seven.Samurai.1954.Criterion.Collection.1080p.BluRay.x264-DON","oracle":"∅"}
+{"cellarr":"extended","field":"edition","file":"movie_edition","input":"Avatar.2009.Extended.Collectors.Edition.1080p.BluRay.x264-GRP","oracle":"extended collectors edition"}
+{"cellarr":"no year movie","field":"title","file":"movie_year","input":"No.Year.Movie.1080p.BluRay.x264-GRP","oracle":"∅"}
+{"cellarr":"grp","field":"group","file":"movie_year","input":"No.Year.Movie.1080p.BluRay.x264-GRP","oracle":"∅"}
+{"cellarr":"bluray-2160p remux","field":"quality","file":"quality","input":"Movie.2019.2160p.BluRay.REMUX.HEVC.TrueHD.7.1.Atmos-FraMeSToR","oracle":"remux-2160p"}
+{"cellarr":"bluray-2160p","field":"quality","file":"quality","input":"Movie.2019.4K.UHD.BluRay.2160p.HDR.HEVC-GRP","oracle":"br-disk"}

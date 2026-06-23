@@ -11,6 +11,7 @@ use regex::Regex;
 
 const PATTERNS: &[(&str, &str)] = &[
     (r"(?i)\b(director'?s?[\s\-]?cut|dc)\b", "Director's Cut"),
+    (r"(?i)\b(final[\s\-]?cut)\b", "Final Cut"),
     (
         r"(?i)\bextended([\s\-]?(cut|edition|version))?\b",
         "Extended",
@@ -82,6 +83,15 @@ mod tests {
             Some("Extended".to_string())
         );
         assert_eq!(ed("Movie.2019.IMAX.2160p"), Some("IMAX".to_string()));
+    }
+
+    #[test]
+    fn final_cut_recognized() {
+        // Parity G5: cellarr previously missed "Final Cut" entirely.
+        assert_eq!(
+            ed("Blade.Runner.1982.The.Final.Cut.1080p.BluRay.x264-AMIABLE"),
+            Some("Final Cut".to_string())
+        );
     }
 
     #[test]

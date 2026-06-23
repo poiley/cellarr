@@ -11,7 +11,8 @@
 
 services:
   sonarr:
-    image: lscr.io/linuxserver/sonarr:4.0.10  # PIN — verify exact digest in Phase 0
+    # PIN — Sonarr 4.0.17.2952, the version parity was measured against (docs/parity/PARITY_REPORT.md).
+    image: lscr.io/linuxserver/sonarr@sha256:02bc962946fef994e67a38152446df25c10a52f8583aefeeb6467f9dd44cab99
     environment:
       - PUID=1000
       - PGID=1000
@@ -26,7 +27,8 @@ services:
       retries: 30
 
   radarr:
-    image: lscr.io/linuxserver/radarr:5.14.0  # PIN — verify exact digest in Phase 0
+    # PIN — Radarr 6.2.1.10461, the version parity was measured against (docs/parity/PARITY_REPORT.md).
+    image: lscr.io/linuxserver/radarr@sha256:1e95b5c13fe015361a9ae1c4d99fc2336816790aaea60fa74b2ffebe076a69e0
     environment:
       - PUID=1000
       - PGID=1000

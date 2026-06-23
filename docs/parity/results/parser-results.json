@@ -1,0 +1,97 @@
+{
+  "by_file": {
+    "absolute_anime": {
+      "exact": 7,
+      "titles": 8
+    },
+    "daily_episode": {
+      "exact": 5,
+      "titles": 5
+    },
+    "language": {
+      "exact": 11,
+      "titles": 11
+    },
+    "miniseries": {
+      "exact": 3,
+      "titles": 5
+    },
+    "movie_edition": {
+      "exact": 4,
+      "titles": 10
+    },
+    "movie_title": {
+      "exact": 10,
+      "titles": 10
+    },
+    "movie_year": {
+      "exact": 7,
+      "titles": 8
+    },
+    "multi_episode": {
+      "exact": 8,
+      "titles": 8
+    },
+    "proper_repack": {
+      "exact": 7,
+      "titles": 7
+    },
+    "quality": {
+      "exact": 10,
+      "titles": 12
+    },
+    "release_group": {
+      "exact": 9,
+      "titles": 9
+    },
+    "season": {
+      "exact": 5,
+      "titles": 5
+    },
+    "single_episode": {
+      "exact": 15,
+      "titles": 15
+    },
+    "unicode": {
+      "exact": 7,
+      "titles": 7
+    }
+  },
+  "exact_rate": 0.9,
+  "exact_titles": 108,
+  "field_compared": {
+    "absolute": 8,
+    "daily_date": 5,
+    "edition": 28,
+    "episodes": 33,
+    "group": 120,
+    "quality": 120,
+    "season": 33,
+    "title": 120,
+    "year": 28
+  },
+  "field_matched": {
+    "absolute": 7,
+    "daily_date": 5,
+    "edition": 22,
+    "episodes": 32,
+    "group": 118,
+    "quality": 118,
+    "season": 32,
+    "title": 116,
+    "year": 28
+  },
+  "field_rates": {
+    "absolute": 0.875,
+    "daily_date": 1.0,
+    "edition": 0.7857142857142857,
+    "episodes": 0.9696969696969697,
+    "group": 0.9833333333333333,
+    "quality": 0.9833333333333333,
+    "season": 0.9696969696969697,
+    "title": 0.9666666666666667,
+    "year": 1.0
+  },
+  "mismatch_count": 17,
+  "total_titles": 120
+}

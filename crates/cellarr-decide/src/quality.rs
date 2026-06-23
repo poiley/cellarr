@@ -83,10 +83,18 @@ mod tests {
     #[test]
     fn unresolvable_parse_is_none() {
         let ranking = QualityRanking::default();
-        // No source -> core returns the Unknown sentinel, which we map to None.
-        assert!(
-            resolve_candidate_quality(&parsed(None, Some(Resolution::R1080p)), &ranking).is_none()
-        );
+        // No source and no resolution -> core returns the Unknown sentinel, which
+        // we map to None. (A resolution-only parse now resolves to HDTV-<res> per
+        // parity G1, so it is no longer the "unresolvable" case.)
+        assert!(resolve_candidate_quality(&parsed(None, None), &ranking).is_none());
+    }
+
+    #[test]
+    fn resolution_only_resolves_to_hdtv() {
+        let ranking = QualityRanking::default();
+        let q = resolve_candidate_quality(&parsed(None, Some(Resolution::R1080p)), &ranking)
+            .expect("resolution-only resolves to HDTV-1080p (parity G1)");
+        assert_eq!(q.name, "HDTV-1080p");
     }
 
     #[test]
