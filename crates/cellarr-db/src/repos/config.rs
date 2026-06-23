@@ -10,7 +10,7 @@
 
 use cellarr_core::{
     DownloadClientConfig, IndexerConfig, Library, LibraryId, MediaType, NotificationConfig,
-    QualityProfileId, RootFolder,
+    QualityProfileId, RemotePathMapping, RootFolder,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -341,6 +341,33 @@ impl ConfigRepo {
         rows.into_iter().map(row_to_json_body).collect()
     }
 
+    /// Delete a download-client configuration by id. Idempotent: returns `true`
+    /// if a row was removed, `false` if no such client existed.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_download_client(&self, id: cellarr_core::DownloadClientId) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM download_client WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     // --- Notifications ------------------------------------------------------
 
     /// Insert or replace a notification configuration.
@@ -399,6 +426,96 @@ impl ConfigRepo {
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_json_body).collect()
+    }
+
+    // --- Remote-path mappings ----------------------------------------------
+
+    /// Insert or replace a remote-path mapping.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on serialization or write failure.
+    pub async fn upsert_remote_path_mapping(&self, mapping: &RemotePathMapping) -> Result<()> {
+        let id = mapping.id.clone();
+        let host = mapping.host.clone();
+        let remote_path = mapping.remote_path.clone();
+        let local_path = mapping.local_path.clone();
+        let body = serde_json::to_string(mapping)?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO remote_path_mapping
+                            (id, host, remote_path, local_path, body)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(id) DO UPDATE SET
+                            host = excluded.host,
+                            remote_path = excluded.remote_path,
+                            local_path = excluded.local_path,
+                            body = excluded.body",
+                    )
+                    .bind(id)
+                    .bind(host)
+                    .bind(remote_path)
+                    .bind(local_path)
+                    .bind(body)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// Fetch a remote-path mapping by id.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn get_remote_path_mapping(&self, id: &str) -> Result<Option<RemotePathMapping>> {
+        let row = sqlx::query("SELECT body FROM remote_path_mapping WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_json_body).transpose()
+    }
+
+    /// All remote-path mappings, by host then remote path (a stable order the
+    /// shared apply step iterates in).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn list_remote_path_mappings(&self) -> Result<Vec<RemotePathMapping>> {
+        let rows =
+            sqlx::query("SELECT body FROM remote_path_mapping ORDER BY host ASC, remote_path ASC")
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter().map(row_to_json_body).collect()
+    }
+
+    /// Delete a remote-path mapping by id. Idempotent: returns `true` if a row
+    /// was removed, `false` if no such mapping existed.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_remote_path_mapping(&self, id: &str) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM remote_path_mapping WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
     }
 }
 

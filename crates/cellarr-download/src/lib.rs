@@ -7,6 +7,9 @@
 //! - [`QbittorrentClient`] — torrent, WebUI API v2, version-aware `SID` login.
 //! - [`SabnzbdClient`] — Usenet, `mode=` HTTP API + `apikey=` + `output=json`.
 //! - [`NzbgetClient`] — Usenet, JSON-RPC positional params + HTTP Basic.
+//! - [`BlackholeClient`] — the *universal* client: a watch/completed folder pair
+//!   that works with **any** download client (no client API at all). See
+//!   [`blackhole`].
 //!
 //! # Design: one narrow HTTP seam, richer-than-core status
 //!
@@ -32,6 +35,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod blackhole;
 pub mod error;
 pub mod http;
 pub mod lifecycle;
@@ -39,6 +43,7 @@ pub mod nzbget;
 pub mod qbittorrent;
 pub mod sabnzbd;
 
+pub use blackhole::{BlackholeClient, BlackholeSettings};
 pub use error::DownloadError;
 pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
 pub use lifecycle::{DownloadProgress, RemovePolicy};
@@ -98,6 +103,29 @@ impl DownloadClient for SabnzbdClient {
 
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
         SabnzbdClient::remove(self, download_id, delete_data).await
+    }
+}
+
+#[async_trait]
+impl DownloadClient for BlackholeClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        BlackholeClient::name(self)
+    }
+
+    async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error> {
+        BlackholeClient::add(self, grab).await
+    }
+
+    async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        Ok(BlackholeClient::progress(self, download_id)
+            .await?
+            .to_core_status())
+    }
+
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        BlackholeClient::remove(self, download_id, delete_data).await
     }
 }
 

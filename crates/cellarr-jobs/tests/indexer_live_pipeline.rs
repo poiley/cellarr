@@ -375,6 +375,8 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         client_id: DownloadClientId::new(),
         category: "cellarr".into(),
         max_track_polls: 5,
+        client_host: String::new(),
+        remote_path_mappings: Vec::new(),
     }
 }
 

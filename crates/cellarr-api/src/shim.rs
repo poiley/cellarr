@@ -140,6 +140,12 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/customFormat/schema", get(custom_format_schema))
         .route("/indexer", get(list_indexers))
         .route("/indexer/schema", get(indexer_schema))
+        .route("/downloadclient", get(list_download_clients))
+        .route("/downloadClient", get(list_download_clients))
+        .route("/downloadclient/schema", get(download_client_schema))
+        .route("/downloadClient/schema", get(download_client_schema))
+        .route("/remotepathmapping", get(list_remote_path_mappings))
+        .route("/remotePathMapping", get(list_remote_path_mappings))
         .route("/series", get(list_series))
         .route("/episode", get(list_episodes))
         .route("/movie", get(list_movies))
@@ -169,6 +175,26 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/indexer/{id}", put(update_indexer))
         .route("/indexer/{id}", delete(delete_indexer))
         .route("/indexer/test", post(test_indexer))
+        .route("/downloadclient", post(create_download_client))
+        .route("/downloadClient", post(create_download_client))
+        .route("/downloadclient/{id}", put(update_download_client))
+        .route("/downloadClient/{id}", put(update_download_client))
+        .route("/downloadclient/{id}", delete(delete_download_client))
+        .route("/downloadClient/{id}", delete(delete_download_client))
+        .route("/downloadclient/test", post(test_download_client))
+        .route("/downloadClient/test", post(test_download_client))
+        .route("/remotepathmapping", post(create_remote_path_mapping))
+        .route("/remotePathMapping", post(create_remote_path_mapping))
+        .route("/remotepathmapping/{id}", put(update_remote_path_mapping))
+        .route("/remotePathMapping/{id}", put(update_remote_path_mapping))
+        .route(
+            "/remotepathmapping/{id}",
+            delete(delete_remote_path_mapping),
+        )
+        .route(
+            "/remotePathMapping/{id}",
+            delete(delete_remote_path_mapping),
+        )
         .layer(middleware::from_fn_with_state(
             fs.state.clone(),
             require_api_key,
@@ -1141,6 +1167,352 @@ async fn test_indexer(Json(body): Json<IndexerBody>) -> ApiResult<Json<Value>> {
     Ok(Json(json!({ "isValid": true, "validationFailures": [] })))
 }
 
+// --- download client -------------------------------------------------------
+
+/// Render a cellarr [`DownloadClientConfig`] into the v3 download-client shape the
+/// ecosystem reads back after a push: identity + a `fields[]` projection of
+/// `settings`, plus `category` surfaced as the `category`/`tvCategory`/
+/// `movieCategory` field clients hard-deref.
+fn v3_download_client(dc: &cellarr_core::DownloadClientConfig) -> Value {
+    let mut fields: Vec<Value> = dc
+        .settings
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .enumerate()
+                .map(|(i, (k, v))| json!({ "order": i, "name": k, "value": v }))
+                .collect()
+        })
+        .unwrap_or_default();
+    // The category lives on its own typed column, not in settings; surface it as
+    // the field the apps read.
+    fields.push(json!({ "order": 100, "name": "category", "value": dc.category }));
+    json!({
+        "id": dc_numeric_id(dc.id),
+        "name": dc.name,
+        "implementation": dc_implementation(&dc.kind, dc.protocol),
+        "implementationName": dc_implementation(&dc.kind, dc.protocol),
+        "configContract": format!("{}Settings", dc_implementation(&dc.kind, dc.protocol)),
+        "protocol": protocol_str(dc.protocol),
+        "priority": dc.priority,
+        "enable": dc.enabled,
+        "fields": fields,
+        "tags": [],
+    })
+}
+
+/// The v3 `implementation` string for a cellarr download-client kind. The
+/// blackhole splits by protocol into the two implementations the ecosystem knows
+/// (`TorrentBlackhole` / `UsenetBlackhole`); other kinds map by name.
+fn dc_implementation(kind: &str, protocol: cellarr_core::Protocol) -> &'static str {
+    match kind {
+        "blackhole" | "torrentblackhole" | "usenetblackhole" => match protocol {
+            cellarr_core::Protocol::Torrent => "TorrentBlackhole",
+            cellarr_core::Protocol::Usenet => "UsenetBlackhole",
+        },
+        "qbittorrent" => "QBittorrent",
+        "sabnzbd" => "Sabnzbd",
+        "nzbget" => "Nzbget",
+        _ => "Blackhole",
+    }
+}
+
+async fn list_download_clients(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let clients = fs.state.db.config().list_download_clients().await?;
+    Ok(Json(clients.iter().map(v3_download_client).collect()))
+}
+
+/// v3 `downloadclient/schema` — the implementation templates the ecosystem
+/// round-trips a pushed client through. cellarr advertises the *universal*
+/// blackhole pair (`TorrentBlackhole` / `UsenetBlackhole`) since it is the one
+/// adapter that works with any client a user runs; the API-driven clients are
+/// configured natively. Each template carries the `watchFolder` / `completedFolder`
+/// fields the blackhole needs, plus the `category` field the apps hard-deref.
+async fn download_client_schema() -> Json<Vec<Value>> {
+    let entry = |impl_name: &str, protocol: &str| {
+        json!({
+            "name": "",
+            "implementation": impl_name,
+            "implementationName": impl_name,
+            "configContract": format!("{impl_name}Settings"),
+            "infoLink": "",
+            "protocol": protocol,
+            "priority": 1,
+            "enable": true,
+            "fields": [
+                json!({ "order": 0, "name": "watchFolder", "label": "Watch Folder", "helpText": "Folder cellarr drops the .torrent/.nzb/.magnet job into for your client to pick up", "type": "textbox", "advanced": false }),
+                json!({ "order": 1, "name": "completedFolder", "label": "Completed Folder", "helpText": "Folder your client drops finished downloads into for cellarr to import", "type": "textbox", "advanced": false }),
+                json!({ "order": 2, "name": "category", "label": "Category", "type": "textbox", "advanced": false }),
+            ],
+            "presets": [],
+            "tags": [],
+        })
+    };
+    Json(vec![
+        entry("TorrentBlackhole", "torrent"),
+        entry("UsenetBlackhole", "usenet"),
+    ])
+}
+
+/// v3 download-client write body (the Sonarr/Radarr-pushed shape). Maps the
+/// `fields[]` back into cellarr's `settings` JSON and the identity onto a
+/// [`DownloadClientConfig`]; `category` is lifted out of the fields into the typed
+/// column.
+#[derive(Debug, Deserialize)]
+struct DownloadClientBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    implementation: Option<String>,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default = "default_true")]
+    enable: bool,
+    #[serde(default)]
+    fields: Vec<FieldBody>,
+}
+
+fn download_client_from_body(
+    body: &DownloadClientBody,
+    id: cellarr_core::DownloadClientId,
+) -> cellarr_core::DownloadClientConfig {
+    let mut settings = serde_json::Map::new();
+    let mut category = String::new();
+    for f in &body.fields {
+        if let Some(name) = &f.name {
+            if name == "category" {
+                category = f.value.as_str().unwrap_or_default().to_string();
+                continue;
+            }
+            settings.insert(name.clone(), f.value.clone());
+        }
+    }
+    let protocol = match body.protocol.as_deref() {
+        Some(p) if p.eq_ignore_ascii_case("usenet") => cellarr_core::Protocol::Usenet,
+        _ => cellarr_core::Protocol::Torrent,
+    };
+    // Normalize the implementation into a cellarr kind. The two blackhole
+    // implementations collapse to one kind ("blackhole"); the protocol carries
+    // the torrent/usenet distinction.
+    let kind = match body.implementation.as_deref() {
+        Some(i) if i.eq_ignore_ascii_case("torrentblackhole") => "blackhole".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("usenetblackhole") => "blackhole".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("qbittorrent") => "qbittorrent".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("sabnzbd") => "sabnzbd".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("nzbget") => "nzbget".to_string(),
+        Some(i) => i.to_ascii_lowercase(),
+        None => "blackhole".to_string(),
+    };
+    cellarr_core::DownloadClientConfig {
+        id,
+        name: body.name.clone().unwrap_or_default(),
+        kind,
+        protocol,
+        enabled: body.enable,
+        priority: body.priority.unwrap_or(1),
+        category,
+        settings: Value::Object(settings),
+    }
+}
+
+async fn create_download_client(
+    State(fs): State<FaceState>,
+    Query(q): Query<ForceSaveQuery>,
+    Json(body): Json<DownloadClientBody>,
+) -> ApiResult<Json<Value>> {
+    if q.force_save == Some(true) {
+        tracing::debug!("download client create with forceSave=true");
+    }
+    let dc = download_client_from_body(&body, cellarr_core::DownloadClientId::new());
+    fs.state.db.config().upsert_download_client(&dc).await?;
+    Ok(Json(v3_download_client(&dc)))
+}
+
+async fn update_download_client(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Query(q): Query<ForceSaveQuery>,
+    Json(body): Json<DownloadClientBody>,
+) -> ApiResult<Json<Value>> {
+    if q.force_save == Some(true) {
+        tracing::debug!("download client update with forceSave=true");
+    }
+    let numeric = parse_i64(&id, "downloadclient")?;
+    let existing = fs
+        .state
+        .db
+        .config()
+        .list_download_clients()
+        .await?
+        .into_iter()
+        .find(|dc| dc_numeric_id(dc.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("download client {id} not found")))?;
+    let dc = download_client_from_body(&body, existing.id);
+    fs.state.db.config().upsert_download_client(&dc).await?;
+    Ok(Json(v3_download_client(&dc)))
+}
+
+async fn delete_download_client(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "downloadclient")?;
+    if let Some(dc) = fs
+        .state
+        .db
+        .config()
+        .list_download_clients()
+        .await?
+        .into_iter()
+        .find(|dc| dc_numeric_id(dc.id) == numeric)
+    {
+        fs.state.db.config().delete_download_client(dc.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// v3 `downloadclient/test` — accepts a well-formed body. The blackhole only
+/// needs a watch folder; we validate that one field is present, matching the
+/// success contract the apps expect before saving.
+async fn test_download_client(Json(body): Json<DownloadClientBody>) -> ApiResult<Json<Value>> {
+    let has_watch = body
+        .fields
+        .iter()
+        .any(|f| f.name.as_deref() == Some("watchFolder") && !f.value.is_null());
+    // API-driven clients carry a host instead; accept either so a pushed
+    // qBittorrent/SABnzbd config also validates.
+    let has_host = body.fields.iter().any(|f| {
+        matches!(
+            f.name.as_deref(),
+            Some("host") | Some("baseUrl") | Some("url")
+        ) && !f.value.is_null()
+    });
+    if !has_watch && !has_host {
+        return Err(ApiError::BadRequest(
+            "download client requires a watchFolder (blackhole) or host".into(),
+        ));
+    }
+    Ok(Json(json!({ "isValid": true, "validationFailures": [] })))
+}
+
+// --- remote path mapping ---------------------------------------------------
+
+/// Render a cellarr [`RemotePathMapping`] into the v3 shape Recyclarr/UoMi read.
+fn v3_remote_path_mapping(m: &cellarr_core::RemotePathMapping) -> Value {
+    json!({
+        "id": rpm_numeric_id(&m.id),
+        "host": m.host,
+        "remotePath": m.remote_path,
+        "localPath": m.local_path,
+    })
+}
+
+async fn list_remote_path_mappings(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let mappings = fs.state.db.config().list_remote_path_mappings().await?;
+    Ok(Json(mappings.iter().map(v3_remote_path_mapping).collect()))
+}
+
+/// v3 remote-path-mapping write body (`host`/`remotePath`/`localPath`).
+#[derive(Debug, Deserialize)]
+struct RemotePathMappingBody {
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(rename = "remotePath", default)]
+    remote_path: Option<String>,
+    #[serde(rename = "localPath", default)]
+    local_path: Option<String>,
+}
+
+async fn create_remote_path_mapping(
+    State(fs): State<FaceState>,
+    Json(body): Json<RemotePathMappingBody>,
+) -> ApiResult<Json<Value>> {
+    let remote_path = body
+        .remote_path
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("remotePath is required".into()))?;
+    let local_path = body
+        .local_path
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("localPath is required".into()))?;
+    let mapping = cellarr_core::RemotePathMapping {
+        id: uuid::Uuid::new_v4().to_string(),
+        host: body.host.clone().unwrap_or_default(),
+        remote_path,
+        local_path,
+    };
+    fs.state
+        .db
+        .config()
+        .upsert_remote_path_mapping(&mapping)
+        .await?;
+    Ok(Json(v3_remote_path_mapping(&mapping)))
+}
+
+async fn update_remote_path_mapping(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<RemotePathMappingBody>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "remotepathmapping")?;
+    let existing = fs
+        .state
+        .db
+        .config()
+        .list_remote_path_mappings()
+        .await?
+        .into_iter()
+        .find(|m| rpm_numeric_id(&m.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("remote path mapping {id} not found")))?;
+    let mapping = cellarr_core::RemotePathMapping {
+        id: existing.id.clone(),
+        host: body.host.clone().unwrap_or(existing.host),
+        remote_path: body
+            .remote_path
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(existing.remote_path),
+        local_path: body
+            .local_path
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(existing.local_path),
+    };
+    fs.state
+        .db
+        .config()
+        .upsert_remote_path_mapping(&mapping)
+        .await?;
+    Ok(Json(v3_remote_path_mapping(&mapping)))
+}
+
+async fn delete_remote_path_mapping(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "remotepathmapping")?;
+    if let Some(m) = fs
+        .state
+        .db
+        .config()
+        .list_remote_path_mappings()
+        .await?
+        .into_iter()
+        .find(|m| rpm_numeric_id(&m.id) == numeric)
+    {
+        fs.state
+            .db
+            .config()
+            .delete_remote_path_mapping(&m.id)
+            .await?;
+    }
+    Ok(Json(json!({})))
+}
+
 // --- lookup ----------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1635,6 +2007,27 @@ fn cf_numeric_id(id: cellarr_core::CustomFormatId) -> i64 {
 /// Project an [`IndexerId`] (uuid) onto a stable positive integer.
 fn ix_numeric_id(id: cellarr_core::IndexerId) -> i64 {
     uuid_to_i64(id.as_uuid())
+}
+
+/// Project a [`DownloadClientId`] (uuid) onto a stable positive integer.
+fn dc_numeric_id(id: cellarr_core::DownloadClientId) -> i64 {
+    uuid_to_i64(id.as_uuid())
+}
+
+/// Project a remote-path-mapping id (a uuid string) onto a stable positive
+/// integer the v3 `id` field requires. A non-uuid id (should not occur for
+/// cellarr-created rows) hashes its bytes so the projection stays stable.
+fn rpm_numeric_id(id: &str) -> i64 {
+    match uuid::Uuid::parse_str(id) {
+        Ok(u) => uuid_to_i64(u),
+        Err(_) => {
+            let mut n: i64 = 0;
+            for b in id.as_bytes().iter().take(8) {
+                n = (n << 8) | i64::from(*b);
+            }
+            n & i64::MAX
+        }
+    }
 }
 
 /// Map a uuid to a stable positive `i64` for v3 integer id fields.

@@ -35,7 +35,10 @@ pub mod release;
 pub mod repo;
 pub mod traits;
 
-pub use config::{DownloadClientConfig, IndexerConfig, NotificationConfig, RootFolder};
+pub use config::{
+    apply_remote_path_mappings, DownloadClientConfig, IndexerConfig, NotificationConfig,
+    RemotePathMapping, RootFolder,
+};
 pub use decision::{
     Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,
 };

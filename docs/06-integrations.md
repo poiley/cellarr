@@ -49,8 +49,34 @@ optionally *consume* an existing Prowlarr as an indexer source for migrating use
 ## Download clients
 
 Compile in the high-value clients in `cellarr-download`: **qBittorrent, Deluge, Transmission**
-(torrent) and **SABnzbd, NZBGet** (Usenet). Others (rTorrent, Transmission-rpc variants, blackhole
-watch-folders) follow the same trait.
+(torrent) and **SABnzbd, NZBGet** (Usenet). Others (rTorrent, Transmission-rpc variants) follow the
+same trait. The **blackhole / watch-folder** adapter is also built — it is the universal client (see
+below).
+
+There is no Torznab/Cardigann-style unifying protocol across download clients, and only a handful of
+clients matter, so the per-client adapters are the right design — a declarative "Cardigann for
+clients" would be a false abstraction. The two genuine *generic* wins are built explicitly: the
+blackhole adapter and a shared remote-path-mapping layer.
+
+### Blackhole / watch-folder (the universal client)
+`BlackholeClient` implements the same `DownloadClient` trait with **no client API at all** — it is
+the lowest common denominator every torrent client and Usenet tool already supports, a watched
+folder. `add` drops the release (`.torrent`/`.nzb` fetched from the grab URL, or a `.magnet` written
+verbatim) into a configured **watch folder**; the user's own client — whatever it is, including
+clients cellarr ships no adapter for — is pointed at that folder, downloads the job, and drops the
+finished content into a configured **completed folder**. `status` is filesystem-derived: `Downloading`
+until a matching output appears in the completed folder, then `Completed` with the on-disk
+`content_path` Import reads. The download id is deterministic (the sanitized release title). Configure
+it like any client via `/api/v3/downloadclient` — implementation `TorrentBlackhole` / `UsenetBlackhole`,
+fields `watchFolder` / `completedFolder`.
+
+### Remote-path mapping (shared layer)
+When the download client and cellarr see paths differently (different hosts/mounts), a
+`RemotePathMapping { host, remote_path, local_path }` rewrites the client-reported `content_path`
+(`/downloads/x` → `/data/downloads/x`) **before Import**. It is applied in **one shared place** (the
+jobs runner), so the rewrite is never duplicated per adapter and every client — including the
+blackhole — benefits. Sonarr/Radarr-compatible CRUD lives at `/api/v3/remotepathmapping` (both faces)
+since Recyclarr/UoMi and users expect it.
 
 The uniform lifecycle every adapter implements:
 1. **Add** the release with an assigned **category/label** (e.g. `cellarr-tv`, `cellarr-movies`) so

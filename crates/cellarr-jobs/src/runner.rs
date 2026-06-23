@@ -107,6 +107,19 @@ pub struct RunnerConfig {
     pub category: String,
     /// How many times to poll the download client before giving up tracking.
     pub max_track_polls: u32,
+    /// The download client's host, used to scope which [remote-path
+    /// mappings](RunnerConfig::remote_path_mappings) apply (the Sonarr/Radarr
+    /// convention: a mapping names the client host it rewrites paths for). Empty
+    /// when the client runs alongside cellarr (no mapping needed).
+    #[allow(clippy::doc_markdown)]
+    pub client_host: String,
+    /// Remote-path mappings applied — in one shared place — to the client's
+    /// reported `content_path` before Import, so a path the client reports under
+    /// its own mount (`/downloads/x`) is rewritten to where cellarr sees it
+    /// (`/data/downloads/x`). Empty (the default) is a no-op. This is the single
+    /// site the rewrite happens regardless of which download client produced the
+    /// path; see [`cellarr_core::apply_remote_path_mappings`].
+    pub remote_path_mappings: Vec<cellarr_core::RemotePathMapping>,
 }
 
 /// Drives candidates through the pipeline state machine.
@@ -408,7 +421,16 @@ where
 
         // --- Track: poll to completion, read content_path -----------------
         let content_path = match self.track(&download_id).await {
-            Ok(Some(path)) => path,
+            Ok(Some(path)) => {
+                // Shared remote-path remapping: the client reports the path from
+                // its own vantage point; rewrite it to where cellarr can see it
+                // before Import. Applied here, once, for every download client.
+                cellarr_core::apply_remote_path_mappings(
+                    &self.config.remote_path_mappings,
+                    &self.config.client_host,
+                    &path,
+                )
+            }
             Ok(None) => {
                 return self
                     .fail_grab(

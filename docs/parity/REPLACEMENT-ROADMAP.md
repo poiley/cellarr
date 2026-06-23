@@ -53,7 +53,7 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 | Decision engine (grab/upgrade/reject/cutoff) | ✅ logic + tests | precedence proven via inputs; live-search oracle deferred |
 | Indexers (Torznab/Newznab) | 🟡 adapter + fixtures | not wired to `/api/v3/indexer`; no live search yet |
 | Cardigann definitions | 🟡 engine skeleton | breadth + live trackers untested |
-| Download clients | ✅ wired live (qBit) + import handoff | live qBit add/category/track/remove (v5.2.2, Phase D); completed→import handoff in the runner; remote-path-map deferred |
+| Download clients | ✅ wired live (qBit) + import handoff; blackhole + remote-path landed | live qBit add/category/track/remove (v5.2.2, Phase D); completed→import handoff in the runner; **blackhole/watch-folder universal adapter** (implements core `DownloadClient`; `add` writes `.torrent`/`.nzb`/`.magnet` to watch dir, `status` flips to Completed+content_path when output lands in completed dir; in `/api/v3/downloadclient/schema` as `TorrentBlackhole`/`UsenetBlackhole`); **remote-path mapping as a shared layer** (`cellarr_core::apply_remote_path_mappings`, applied once in the jobs runner before `plan_import`; CRUD at `/api/v3/remotepathmapping` on both faces) |
 | Import / rename / hardlink | ✅ logic + crash-safety + `st_dev` warn | same-filesystem (`st_dev`) detection + loud cross-fs health warning shipped (Phase D, differentiator) |
 | Metadata / identify | 🟡 TV live & wired; movies blocked-on-key | TheTVDB lookup live through v3 shim (real `tvdbId`/title, verified Breaking Bad=81189); TMDb needs `CELLARR_TMDB__API_KEY` |
 | Anime (absolute/XEM/AniDB) | 🟡 extract + remap path; live TheXEM provider wired | remap backed by live TheTVDB+TheXEM (`TvdbSceneMappings`); pipeline invocation gated on identity-link query; corpus depth |
@@ -160,9 +160,20 @@ Shipped:
     scoping**, bounded status-track, and remove all passed (`LIVE_RESULT=PASS`), within the 120s hard
     bound, container torn down. The script **never waits for a torrent to finish** — only for it to
     appear under its category — so it cannot wedge.
-- **Deferred (small follow-ups):** remote-path mapping translation (when the client reports a
-  container-internal path that differs from cellarr's view) is not yet applied — today the reported
-  `content_path` is used as-is; SABnzbd completed-handling parity (repair/unpack wait) is modeled in
+- **Landed (2026-06-23):** the two genuine generic-download wins are built and verified hermetically.
+  (1) **Blackhole / watch-folder adapter** — the *universal* client (`BlackholeClient`) that speaks no
+  client API: `add` writes a magnet verbatim or fetches a `.torrent`/`.nzb` (via the shared HTTP seam)
+  into the watch dir; `status` is filesystem-derived (Completed + `content_path` once the matching
+  output appears in the completed dir). It implements the core `DownloadClient` trait so the runner
+  uses it like any client, and the Track→Import handoff imports the real file (integration test asserts
+  the imported file on disk). Advertised in `/api/v3/downloadclient/schema` as `TorrentBlackhole` /
+  `UsenetBlackhole` with `watchFolder` / `completedFolder` fields. (2) **Remote-path mapping** — a
+  *shared* layer (`cellarr_core::apply_remote_path_mappings`) applied in **one place**, the jobs runner,
+  right after Track reads the client-reported `content_path` and before `plan_import` (boundary-aware
+  prefix rewrite, host-scoped, first-match-wins, unmapped passes through). CRUD lives at
+  `/api/v3/remotepathmapping` on both the Sonarr and Radarr faces (live-verified returning JSON, not the
+  SPA 404).
+- **Deferred (small follow-ups):** SABnzbd completed-handling parity (repair/unpack wait) is modeled in
   the adapter but not yet exercised in the live import e2e.
 
 ### Phase E — Metadata / identify (the licensing fork) — 🟡 TV LIVE & WIRED (2026-06-23)
@@ -219,7 +230,7 @@ Shipped:
 - [ ] **Recyclarr / Configarr** — `customformat`(+schema), `qualityprofile`(+schema,formatItems), `qualitydefinition`, vocab alignment (Phase A,B)
 - [ ] **Notifiarr** — poll endpoints + `eventType` webhook + `Test` (Phase A,F)
 - [ ] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar`, counts via `totalRecords` (Phase A)
-- [x] **Download clients** — live qBit with categories + completed-download handling + import handoff; cross-fs health warning (Phase D). SAB live import + remote-path-map deferred.
+- [x] **Download clients** — live qBit with categories + completed-download handling + import handoff; cross-fs health warning (Phase D). **Blackhole / watch-folder universal adapter** (core `DownloadClient`; add→watch-dir, status→completed-dir, Track→Import handoff verified on disk; in `/api/v3/downloadclient/schema`) and **shared remote-path mapping** (`apply_remote_path_mappings` applied once in the runner before Import; `/api/v3/remotepathmapping` CRUD on both faces) landed 2026-06-23. SAB live import deferred.
 - [ ] **Notifications** — Connect webhook + common connectors (Phase F)
 
 ---

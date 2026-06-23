@@ -451,6 +451,205 @@ async fn indexer_test_validates_body() {
     assert_eq!(bad.status(), 400);
 }
 
+// --- downloadclient (blackhole) CRUD + schema + test ----------------------
+
+#[tokio::test]
+async fn downloadclient_schema_has_blackhole_implementations() {
+    let server = start_open().await;
+    let body: Value = server
+        .client()
+        .get(server.url("/api/v3/downloadclient/schema"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    let impls: BTreeSet<String> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["implementation"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        impls.contains("TorrentBlackhole"),
+        "missing TorrentBlackhole"
+    );
+    assert!(impls.contains("UsenetBlackhole"), "missing UsenetBlackhole");
+    // The blackhole template carries the watch/completed folder fields.
+    let torrent = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["implementation"] == "TorrentBlackhole")
+        .unwrap();
+    let field_names: BTreeSet<String> = torrent["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(field_names.contains("watchFolder"));
+    assert!(field_names.contains("completedFolder"));
+}
+
+#[tokio::test]
+async fn downloadclient_push_round_trips_blackhole() {
+    let server = start_authed().await;
+    let dc = serde_json::json!({
+        "name": "My Blackhole",
+        "implementation": "TorrentBlackhole",
+        "protocol": "torrent",
+        "priority": 1,
+        "enable": true,
+        "fields": [
+            { "name": "watchFolder", "value": "/data/watch" },
+            { "name": "completedFolder", "value": "/data/completed" },
+            { "name": "category", "value": "cellarr" }
+        ]
+    });
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/downloadclient?forceSave=true"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&dc)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(created["name"], "My Blackhole");
+    assert_eq!(created["implementation"], "TorrentBlackhole");
+    assert!(created.get("id").is_some());
+    let names: BTreeSet<String> = created["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains("watchFolder"));
+    assert!(names.contains("completedFolder"));
+    assert!(names.contains("category"));
+
+    // It appears in the list.
+    let list: Value = server
+        .client()
+        .get(server.url("/api/v3/downloadclient"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn downloadclient_test_validates_body() {
+    let server = start_authed().await;
+    let ok: Value = server
+        .client()
+        .post(server.url("/api/v3/downloadclient/test"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&serde_json::json!({
+            "implementation": "TorrentBlackhole",
+            "fields": [{ "name": "watchFolder", "value": "/data/watch" }]
+        }))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(ok["isValid"], true);
+
+    let bad = server
+        .client()
+        .post(server.url("/api/v3/downloadclient/test"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&serde_json::json!({ "implementation": "TorrentBlackhole", "fields": [] }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(bad.status(), 400);
+}
+
+// --- remotepathmapping CRUD ------------------------------------------------
+
+#[tokio::test]
+async fn remotepathmapping_crud_lifecycle() {
+    let server = start_authed().await;
+
+    // Create.
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/remotepathmapping"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&serde_json::json!({
+            "host": "qbit.local",
+            "remotePath": "/downloads/",
+            "localPath": "/data/downloads/"
+        }))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(created["host"], "qbit.local");
+    assert_eq!(created["remotePath"], "/downloads/");
+    assert_eq!(created["localPath"], "/data/downloads/");
+    let id = created["id"].as_i64().expect("numeric id");
+
+    // List shows it.
+    let list: Value = server
+        .client()
+        .get(server.url("/api/v3/remotepathmapping"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // Delete (idempotent).
+    let del = server
+        .client()
+        .delete(server.url(&format!("/api/v3/remotepathmapping/{id}")))
+        .header("X-Api-Key", TEST_API_KEY)
+        .send()
+        .await
+        .expect("request");
+    assert!(del.status().is_success());
+
+    let list: Value = server
+        .client()
+        .get(server.url("/api/v3/remotepathmapping"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(list.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn remotepathmapping_requires_paths() {
+    let server = start_authed().await;
+    let bad = server
+        .client()
+        .post(server.url("/api/v3/remotepathmapping"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&serde_json::json!({ "host": "x", "remotePath": "/downloads" }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(bad.status(), 400);
+}
+
 // --- rootfolder / tag / health / qualitydefinition / wanted / GET command --
 
 #[tokio::test]
