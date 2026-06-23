@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 cellarr-core.workspace = true
 cellarr-db.workspace = true
+cellarr-fs.workspace = true
 cellarr-jobs.workspace = true
 axum = { workspace = true }
 tokio.workspace = true

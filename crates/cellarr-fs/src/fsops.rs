@@ -408,6 +408,20 @@ mod tests {
         assert_eq!(fs::read(&dst).unwrap(), b"shared");
         // Both names exist (seeding copy preserved).
         assert!(src.exists() && dst.exists());
+
+        // The defining property of a hardlink: src and dst are the SAME inode
+        // with a link count of 2 (two names for one file). This is what makes
+        // the import instant and disk-free, and it is the assertion the
+        // differentiator hinges on — not merely "the bytes matched".
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let sm = fs::metadata(&src).unwrap();
+            let dm = fs::metadata(&dst).unwrap();
+            assert_eq!(sm.ino(), dm.ino(), "hardlink must share the inode");
+            assert_eq!(sm.dev(), dm.dev(), "hardlink must be on one device");
+            assert_eq!(dm.nlink(), 2, "two names must point at one inode");
+        }
     }
 
     #[tokio::test]

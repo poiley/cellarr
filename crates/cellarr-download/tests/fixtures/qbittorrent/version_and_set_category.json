@@ -1,0 +1,44 @@
+{
+  "scenario": "qBittorrent app/version probe then torrents/setCategory re-files a torrent under cellarr's label (SID cookie resent on every call)",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/auth/login",
+        "header_equals": { "referer": "http://localhost:8080", "origin": "http://localhost:8080" },
+        "body_contains": "username=admin"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "SID=probesid; HttpOnly; path=/" },
+        "body": "Ok."
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/api/v2/app/version",
+        "header_equals": { "cookie": "SID=probesid" }
+      },
+      "response": { "status": 200, "headers": {}, "body": "v5.1.2" }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/setCategory",
+        "header_equals": { "cookie": "SID=probesid" },
+        "body_contains": "hashes=deadbeefcafef00d",
+        "url_contains_2": ""
+      },
+      "response": { "status": 200, "headers": {}, "body": "" }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/setCategory",
+        "body_contains": "category=cellarr-tv"
+      },
+      "response": { "status": 409, "headers": {}, "body": "Incorrect category name" }
+    }
+  ]
+}

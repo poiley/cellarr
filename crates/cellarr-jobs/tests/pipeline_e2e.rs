@@ -503,6 +503,101 @@ async fn tv_episode_release_drives_discover_to_imported_and_lands_on_disk() {
     )));
 }
 
+/// The completed-download → import handoff: a PRE-STAGED "completed" download
+/// directory (no real download) flows through the runner's Track→Import stage
+/// into cellarr-fs's stage→verify→commit, and — because the downloads dir and
+/// the library are on the same filesystem — the imported file is a **hardlink**
+/// of the download (same inode, link count 2), preserving the seeding copy and
+/// costing no extra disk. This is the differentiator the whole task hinges on:
+/// we assert the inode identity, not merely "a file with the same bytes exists".
+#[cfg(unix)]
+#[tokio::test]
+async fn completed_download_imports_as_a_hardlink_on_the_same_filesystem() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+
+    // PRE-STAGE a completed download as a directory of dummy media files — the
+    // exact shape a torrent client hands off (a single content folder). Nothing
+    // is downloaded; these are written bytes the fake client points `track` at.
+    let completed = tmp
+        .path()
+        .join("downloads/complete/The.Matrix.1999.1080p.BluRay");
+    std::fs::create_dir_all(&completed).unwrap();
+    let media = completed.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&media, b"dummy completed media payload").unwrap();
+
+    // Library root under the SAME tempdir → same filesystem as downloads, so a
+    // hardlink is feasible.
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_node(
+        &db,
+        MediaType::Movie,
+        cellarr_core::ContentKind::Movie,
+        Coordinates::Movie,
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        Some(MovieMeta {
+            title: "The Matrix".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        None,
+        "The Matrix",
+    );
+
+    let indexer = FakeIndexer {
+        releases: vec![movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP")],
+    };
+    // The client "completes" pointing at the pre-staged completed directory.
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+
+    let destinations = match outcome {
+        RunOutcome::Imported { destinations, .. } => destinations,
+        other => panic!("expected Imported, got {other:?}"),
+    };
+    assert_eq!(destinations.len(), 1);
+    let dest = PathBuf::from(&destinations[0]);
+    assert!(dest.exists(), "imported file must exist at {dest:?}");
+
+    // The defining hardlink assertions: the imported library file and the
+    // still-present download share ONE inode (link count 2). If the import had
+    // silently copied, these inodes would differ and nlink would be 1.
+    let src_meta = std::fs::metadata(&media).unwrap();
+    let dst_meta = std::fs::metadata(&dest).unwrap();
+    assert_eq!(
+        src_meta.ino(),
+        dst_meta.ino(),
+        "import on same-fs must hardlink (shared inode), not copy"
+    );
+    assert_eq!(src_meta.dev(), dst_meta.dev(), "same device expected");
+    assert_eq!(
+        dst_meta.nlink(),
+        2,
+        "the download (seeding copy) and the library file are two names for one inode"
+    );
+    // The seeding copy is preserved (the original download still exists).
+    assert!(media.exists(), "the seeding copy must be preserved");
+}
+
 #[tokio::test]
 async fn junk_low_quality_release_is_rejected_with_a_logged_reason_and_no_file_moved() {
     let tmp = tempfile::tempdir().unwrap();

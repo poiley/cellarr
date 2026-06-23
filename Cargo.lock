@@ -380,6 +380,7 @@ dependencies = [
  "axum",
  "cellarr-core",
  "cellarr-db",
+ "cellarr-fs",
  "cellarr-jobs",
  "futures",
  "reqwest",

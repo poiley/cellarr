@@ -13,10 +13,20 @@
 //! observable), and body — and nothing else.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::error::DownloadError;
+
+/// The default per-call HTTP timeout for the live transport.
+///
+/// Download-client calls are local/LAN and must never wedge the pipeline: a
+/// single request that hangs (an unresponsive WebUI, a half-open connection)
+/// is bounded here so every adapter call fails fast rather than blocking a job
+/// indefinitely (see `docs/06-integrations.md` — status tracking must not be a
+/// tight or unbounded loop).
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One HTTP request as the adapter wants it sent.
 ///
@@ -112,11 +122,26 @@ impl ReqwestTransport {
     /// We do **not** enable `reqwest`'s cookie store: the qBittorrent adapter
     /// manages its `SID` cookie explicitly so the contract tests can observe it
     /// on the wire, which is exactly the behavior that broke in qBittorrent 5.x.
+    ///
+    /// A [`DEFAULT_TIMEOUT`] is applied to every request so a single hung call
+    /// can never wedge a tracking job; build with [`with_timeout`](Self::with_timeout)
+    /// to override it.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        Self::with_timeout(DEFAULT_TIMEOUT)
+    }
+
+    /// Build a transport whose every request is bounded by `timeout`.
+    #[must_use]
+    pub fn with_timeout(timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout)
+            .build()
+            // A client with an explicit timeout is always buildable; fall back
+            // to the default client rather than panic in the unreachable case.
+            .unwrap_or_default();
+        Self { client }
     }
 
     /// Build a transport over a caller-supplied `reqwest` client.

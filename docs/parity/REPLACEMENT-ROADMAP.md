@@ -53,8 +53,8 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 | Decision engine (grab/upgrade/reject/cutoff) | ✅ logic + tests | precedence proven via inputs; live-search oracle deferred |
 | Indexers (Torznab/Newznab) | 🟡 adapter + fixtures | not wired to `/api/v3/indexer`; no live search yet |
 | Cardigann definitions | 🟡 engine skeleton | breadth + live trackers untested |
-| Download clients | 🟡 adapters + fixtures | not wired live; categories/CDH/remote-path-map to verify e2e |
-| Import / rename / hardlink | ✅ logic + crash-safety | **add same-filesystem (`st_dev`) detection + health warn** (differentiator) |
+| Download clients | ✅ wired live (qBit) + import handoff | live qBit add/category/track/remove (v5.2.2, Phase D); completed→import handoff in the runner; remote-path-map deferred |
+| Import / rename / hardlink | ✅ logic + crash-safety + `st_dev` warn | same-filesystem (`st_dev`) detection + loud cross-fs health warning shipped (Phase D, differentiator) |
 | Metadata / identify | 🟡 TV live & wired; movies blocked-on-key | TheTVDB lookup live through v3 shim (real `tvdbId`/title, verified Breaking Bad=81189); TMDb needs `CELLARR_TMDB__API_KEY` |
 | Anime (absolute/XEM/AniDB) | 🟡 extract + remap path; live TheXEM provider wired | remap backed by live TheTVDB+TheXEM (`TvdbSceneMappings`); pipeline invocation gated on identity-link query; corpus depth |
 | Daily shows | ✅ parse + date | timezone handling to verify |
@@ -118,11 +118,52 @@ a 401 fail-fast path.
 - Live search uses a mock Torznab (real private trackers need creds — out of scope); RSS-sync cadence
   wiring is a small follow-up.
 
-### Phase D — Download + import live (end-to-end acquisition)
+### Phase D — Download + import live (end-to-end acquisition) — ✅ IMPLEMENTED (2026-06-23)
+Original scope (for reference):
 - Wire download-client adapters live (categories, CDH, remote-path mappings); run the full pipeline
   against a real qBittorrent/SABnzbd; add **same-filesystem `st_dev` detection + health warning**.
 - **Exit gate:** a real release goes search → grab → download → import → renamed-on-disk against a
   live client, with correct hardlink behavior and a health alert when `/downloads` and library differ.
+
+Shipped:
+- **Completed-download → import handoff is wired in `cellarr-jobs`** (`runner.rs`
+  `grab_track_import` → `track` → `import`): the runner polls the download client (bounded
+  `max_track_polls`, no tight loop), reads the **`content_path` the client reports** on completion,
+  then drives cellarr-fs's `plan_import` → `execute_import` (stage→verify→commit→log). The second
+  parse (re-parse of the actual file names) gates a force-fit; an import failure holds for review
+  (never a destructive write). A directory hand-off (the torrent client's content folder) is walked
+  for its media files.
+- **Same-filesystem (`st_dev`) detection + the loud cross-filesystem health warning** — the deliberate
+  differentiator (§6). cellarr-fs already hardlinks within one filesystem and copies+fsyncs+atomically
+  renames across (`fsops.rs`); the new `cellarr-fs::check_same_filesystem` / `FilesystemWarning`
+  compares the configured downloads dir's `st_dev` against every library root and raises a loud
+  `ImportMechanismCheck` warning for each off-device root. Wired into **both faces** of
+  `/api/v3/health` (the shim) **and** the native system-health snapshot via
+  `cellarr_api::fs_health::filesystem_warnings`, and `warn!`-logged on every observation. The
+  downloads dir is read from each enabled download client's `settings` JSON
+  (`download_dir`/`downloadDir`/`save_path`).
+- **Exit-gate evidence:**
+  - The completed-download → import handoff is proven by the centerpiece e2e
+    (`cellarr-jobs/tests/pipeline_e2e.rs`): movie + TV releases drive Discover→Imported with files
+    landing at the renamed on-disk paths, **plus** a new
+    `completed_download_imports_as_a_hardlink_on_the_same_filesystem` test that PRE-STAGES a
+    "completed" download directory (no download) and asserts the imported library file is a **hardlink**
+    of the download (same inode, `nlink == 2`, seeding copy preserved).
+  - The cross-filesystem warning is proven end-to-end (`cellarr-api/tests/fs_health_v3.rs`): a
+    same-fs layout raises nothing; a **genuine second filesystem** (a macOS RAM disk, self-skips when
+    unavailable, torn down robustly so it never leaks) makes `/api/v3/health` return the loud
+    `ImportMechanismCheck` warning. Unit-tested deterministically too
+    (`cellarr-fs::health` cross-device branch).
+  - The **live qBittorrent** path was re-run once via
+    `crates/cellarr-download/scripts/qbittorrent-live.sh` against an ephemeral
+    `linuxserver/qbittorrent` v5.2.2 container: auth (incl. the 5.x 401 quirk), add, **category
+    scoping**, bounded status-track, and remove all passed (`LIVE_RESULT=PASS`), within the 120s hard
+    bound, container torn down. The script **never waits for a torrent to finish** — only for it to
+    appear under its category — so it cannot wedge.
+- **Deferred (small follow-ups):** remote-path mapping translation (when the client reports a
+  container-internal path that differs from cellarr's view) is not yet applied — today the reported
+  `content_path` is used as-is; SABnzbd completed-handling parity (repair/unpack wait) is modeled in
+  the adapter but not yet exercised in the live import e2e.
 
 ### Phase E — Metadata / identify (the licensing fork) — 🟡 TV LIVE & WIRED (2026-06-23)
 - Wire TMDb (movies) live; for TV pick a path for TheTVDB v4 (licensed proxy / per-user PIN / run our
@@ -178,7 +219,7 @@ a 401 fail-fast path.
 - [ ] **Recyclarr / Configarr** — `customformat`(+schema), `qualityprofile`(+schema,formatItems), `qualitydefinition`, vocab alignment (Phase A,B)
 - [ ] **Notifiarr** — poll endpoints + `eventType` webhook + `Test` (Phase A,F)
 - [ ] **Dashboards (Homepage/Homarr)** — `wanted/missing`, `queue`, `calendar`, counts via `totalRecords` (Phase A)
-- [ ] **Download clients** — live qBit/SAB with categories + CDH (Phase D)
+- [x] **Download clients** — live qBit with categories + completed-download handling + import handoff; cross-fs health warning (Phase D). SAB live import + remote-path-map deferred.
 - [ ] **Notifications** — Connect webhook + common connectors (Phase F)
 
 ---

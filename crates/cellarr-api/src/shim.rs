@@ -352,6 +352,20 @@ async fn health(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
             "wikiUrl": "",
         }));
     }
+
+    // The loud cross-filesystem warning: a configured downloads dir on a
+    // different filesystem from a library root means imports silently fall back
+    // to a full copy instead of a hardlink (the #1 user footgun the originals
+    // hide). Surfaced here on every v3 face and `warn!`-logged.
+    for w in crate::fs_health::filesystem_warnings(&fs.state.db).await? {
+        out.push(json!({
+            "source": w.source(),
+            "type": "warning",
+            "message": w.message(),
+            "wikiUrl": "",
+        }));
+    }
+
     Ok(Json(out))
 }
 

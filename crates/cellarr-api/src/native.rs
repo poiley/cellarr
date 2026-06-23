@@ -77,6 +77,19 @@ struct SystemStatus {
     library_count: usize,
     indexer_count: usize,
     download_client_count: usize,
+    /// Loud filesystem health warnings — currently the cross-filesystem
+    /// (silent-copy-fallback) case where a configured downloads dir and a
+    /// library root are on different filesystems, so imports cannot hardlink.
+    /// Empty when the layout is healthy.
+    filesystem_warnings: Vec<HealthWarning>,
+}
+
+/// A native-shaped health warning record (the v3 shim renders the same data in
+/// its `{ source, type, message, wikiUrl }` shape).
+#[derive(Debug, Serialize)]
+struct HealthWarning {
+    source: &'static str,
+    message: String,
 }
 
 async fn system_status(State(state): State<AppState>) -> ApiResult<Json<SystemStatus>> {
@@ -84,6 +97,14 @@ async fn system_status(State(state): State<AppState>) -> ApiResult<Json<SystemSt
     let libraries = cfg.list_libraries().await?;
     let indexers = cfg.list_indexers().await?;
     let clients = cfg.list_download_clients().await?;
+    let filesystem_warnings = crate::fs_health::filesystem_warnings(&state.db)
+        .await?
+        .into_iter()
+        .map(|w| HealthWarning {
+            source: w.source(),
+            message: w.message(),
+        })
+        .collect();
     Ok(Json(SystemStatus {
         app_name: "cellarr",
         version: env!("CARGO_PKG_VERSION"),
@@ -91,6 +112,7 @@ async fn system_status(State(state): State<AppState>) -> ApiResult<Json<SystemSt
         library_count: libraries.len(),
         indexer_count: indexers.len(),
         download_client_count: clients.len(),
+        filesystem_warnings,
     }))
 }
 

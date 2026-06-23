@@ -15,6 +15,8 @@
 //! - [`execute_import`] — the **Verify→Commit→Cleanup** steps, crash-safe.
 //! - [`render_name`] — the deterministic rename engine.
 //! - [`hardlink_or_copy`] — the durable placement primitive.
+//! - [`check_same_filesystem`] — the loud cross-filesystem (silent-copy-fallback)
+//!   health warning surfaced on `/api/v3/health`.
 //!
 //! See `docs/specs/cellarr-fs.md`.
 
@@ -22,6 +24,7 @@
 
 mod error;
 mod fsops;
+mod health;
 mod import;
 mod rename;
 mod scan;
@@ -30,6 +33,7 @@ pub use error::{FsError, Result};
 pub use fsops::{
     create_dir_all, file_size, hardlink_or_copy, remove_durable, same_filesystem, LinkOutcome,
 };
+pub use health::{check_same_filesystem, FilesystemWarning};
 pub use import::{
     execute_import, execute_import_with, plan_import, CommitHooks, ImportResult, MoveResult,
     NoHooks, PlacedAs,

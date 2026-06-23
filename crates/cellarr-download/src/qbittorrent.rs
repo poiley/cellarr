@@ -3,19 +3,24 @@
 //! Implements the uniform lifecycle over qBittorrent's `/api/v2/` surface, with
 //! the auth/version quirks treated as first-class (see `docs/06-integrations.md`):
 //!
-//! - **Cookie/`SID` auth.** `POST /api/v2/auth/login` returns a `SID` in a
-//!   `Set-Cookie` header; every subsequent call must resend it as `Cookie: SID=…`.
-//!   We manage the cookie explicitly (rather than via a `reqwest` cookie jar) so
-//!   contract tests can see it on the wire — the exact thing that broke in 5.x.
+//! - **Cookie/session auth.** `POST /api/v2/auth/login` returns a session cookie
+//!   in a `Set-Cookie` header; every subsequent call must resend it. We manage the
+//!   cookie explicitly (rather than via a `reqwest` cookie jar) so contract tests
+//!   can see it on the wire — the exact thing that broke in 5.x. **The cookie name
+//!   is version-divergent:** pre-5.x issues `SID`, while qBittorrent 5.x renamed it
+//!   to `QBT_SID` / `QBT_SID_<port>`. We therefore capture whichever session cookie
+//!   the server sets (name and value) and resend it verbatim, rather than assuming
+//!   the name is `SID`.
 //! - **`Referer`/`Origin`.** qBittorrent's CSRF protection rejects requests whose
 //!   `Referer`/`Origin` don't match the WebUI host, so the adapter always sends
 //!   both, set to the configured base URL.
 //! - **Version-aware login success check.** Pre-5.x and most 5.x builds answer a
-//!   successful login with the body `Ok.`. A late-2025 5.x dev build changed that
-//!   body, which broke success checks that *only* matched `Ok.`. We therefore
-//!   treat login as successful when the response is 2xx **and** a `SID` cookie was
-//!   issued, falling back to the `Ok.` body only when no cookie is surfaced —
-//!   robust across both behaviours.
+//!   successful login with `200 Ok.`. qBittorrent 5.x instead answers `204 No
+//!   Content` with the session cookie and an empty body, which broke success
+//!   checks that *only* matched the `Ok.` body. We therefore treat login as
+//!   successful when the response is 2xx **and** a session cookie was issued,
+//!   falling back to the `Ok.` body only when no cookie is surfaced — robust across
+//!   `200 Ok.` and `204`-plus-cookie behaviours alike.
 //!
 //! Category scoping: every add sets `category` to cellarr's label, and status
 //! refuses to report on a torrent filed under a foreign category.
@@ -47,8 +52,11 @@ pub struct QbittorrentClient {
     settings: QbittorrentSettings,
     category: String,
     transport: Box<dyn HttpTransport>,
-    /// The current `SID` value, learned at login and resent on every call.
-    sid: Mutex<Option<String>>,
+    /// The current session cookie as a ready-to-send `name=value` pair, learned at
+    /// login and resent on every call. The name is version-divergent (`SID` pre-5.x,
+    /// `QBT_SID`/`QBT_SID_<port>` on 5.x), so we keep the whole pair rather than
+    /// reconstructing `SID=…`.
+    session_cookie: Mutex<Option<String>>,
 }
 
 /// One torrent row from `GET /api/v2/torrents/info`.
@@ -99,7 +107,7 @@ impl QbittorrentClient {
             settings,
             category: category.into(),
             transport,
-            sid: Mutex::new(None),
+            session_cookie: Mutex::new(None),
         }
     }
 
@@ -120,28 +128,36 @@ impl QbittorrentClient {
     }
 
     /// Apply the CSRF-defeating `Referer`/`Origin` headers plus the current
-    /// `SID` cookie, if we have one.
+    /// session cookie, if we have one.
     fn with_session(&self, mut req: HttpRequest) -> HttpRequest {
         req = req
             .header("Referer", self.base().to_string())
             .header("Origin", self.base().to_string());
-        if let Ok(guard) = self.sid.lock() {
-            if let Some(sid) = guard.as_ref() {
-                req = req.header("Cookie", format!("SID={sid}"));
+        if let Ok(guard) = self.session_cookie.lock() {
+            if let Some(cookie) = guard.as_ref() {
+                req = req.header("Cookie", cookie.clone());
             }
         }
         req
     }
 
-    /// Extract a `SID` value from a `Set-Cookie` header, if present.
+    /// Extract the session cookie as a ready-to-send `name=value` pair from a
+    /// `Set-Cookie` header, if present.
+    ///
+    /// Accepts the pre-5.x `SID` cookie and the 5.x `QBT_SID` / `QBT_SID_<port>`
+    /// cookies — anything whose name is `SID` or begins with `QBT_SID` — and
+    /// returns the literal pair so the caller can resend it verbatim without
+    /// hard-coding the (version-divergent) cookie name.
     fn parse_sid(resp: &HttpResponse) -> Option<String> {
         let set_cookie = resp.header("set-cookie")?;
         for part in set_cookie.split(';') {
             let part = part.trim();
-            if let Some(value) = part.strip_prefix("SID=") {
-                if !value.is_empty() {
-                    return Some(value.to_string());
-                }
+            let Some((name, value)) = part.split_once('=') else {
+                continue;
+            };
+            let is_session = name == "SID" || name.starts_with("QBT_SID");
+            if is_session && !value.is_empty() {
+                return Some(format!("{name}={value}"));
             }
         }
         None
@@ -150,9 +166,11 @@ impl QbittorrentClient {
     /// Log in, storing the `SID` for subsequent calls.
     ///
     /// Version-aware success check: a login is accepted when the response is 2xx
-    /// and either a `SID` cookie was issued (works across the late-2025 5.x body
-    /// change) or — when no cookie is surfaced by the transport — the legacy
-    /// `Ok.` body is present. A 403 or a `Fails.` body is an auth failure.
+    /// and either a session cookie was issued — which covers both `200 Ok.` and the
+    /// 5.x `204 No Content` flow — or, when no cookie is surfaced by the transport,
+    /// the legacy `Ok.` body is present. A 401/403 or a `Fails.` body is an auth
+    /// failure. (qBittorrent 5.x answers bad credentials with `401 Unauthorized`,
+    /// where pre-5.x answered `200 Fails.`.)
     async fn login(&self) -> Result<(), DownloadError> {
         let body = format!(
             "username={}&password={}",
@@ -166,6 +184,11 @@ impl QbittorrentClient {
             .body(body);
         let resp = self.transport.send(req).await?;
 
+        if resp.status == 401 {
+            return Err(DownloadError::Auth(
+                "qBittorrent login failed (401 — bad username/password on 5.x)".into(),
+            ));
+        }
         if resp.status == 403 {
             return Err(DownloadError::Auth(
                 "qBittorrent rejected login (403 — banned or bad Referer/Origin)".into(),
@@ -183,27 +206,30 @@ impl QbittorrentClient {
             ));
         }
 
-        let sid = Self::parse_sid(&resp);
-        match sid {
-            Some(sid) => {
-                if let Ok(mut guard) = self.sid.lock() {
-                    *guard = Some(sid);
+        match Self::parse_sid(&resp) {
+            Some(cookie) => {
+                if let Ok(mut guard) = self.session_cookie.lock() {
+                    *guard = Some(cookie);
                 }
                 Ok(())
             }
             // No cookie surfaced: fall back to the legacy body check. This keeps
             // us working with transports that don't expose Set-Cookie, while the
-            // cookie path above is what survives the 5.x body change.
+            // cookie path above is what survives the 5.x cookie-name/body change.
             None if resp.body.trim() == "Ok." => Ok(()),
             None => Err(DownloadError::Auth(
-                "qBittorrent login succeeded with neither a SID cookie nor an Ok. body".into(),
+                "qBittorrent login succeeded with neither a session cookie nor an Ok. body".into(),
             )),
         }
     }
 
     /// Ensure we have a session, logging in if needed.
     async fn ensure_session(&self) -> Result<(), DownloadError> {
-        let have = self.sid.lock().map(|g| g.is_some()).unwrap_or(false);
+        let have = self
+            .session_cookie
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
         if !have {
             self.login().await?;
         }
@@ -216,10 +242,11 @@ impl QbittorrentClient {
         let url = format!("{}/api/v2/torrents/info?hashes={}", self.base(), hash);
         let req = self.with_session(HttpRequest::new("GET", url));
         let resp = self.transport.send(req).await?;
-        if resp.status == 403 {
-            return Err(DownloadError::Auth(
-                "qBittorrent session rejected (403); re-login required".into(),
-            ));
+        if resp.status == 401 || resp.status == 403 {
+            return Err(DownloadError::Auth(format!(
+                "qBittorrent session rejected ({}); re-login required",
+                resp.status
+            )));
         }
         if !resp.is_success() {
             return Err(DownloadError::Api(format!(
@@ -255,10 +282,11 @@ impl QbittorrentClient {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body);
         let resp = self.transport.send(req).await?;
-        if resp.status == 403 {
-            return Err(DownloadError::Auth(
-                "qBittorrent rejected add (403); re-login required".into(),
-            ));
+        if resp.status == 401 || resp.status == 403 {
+            return Err(DownloadError::Auth(format!(
+                "qBittorrent rejected add ({}); re-login required",
+                resp.status
+            )));
         }
         if !resp.is_success() || resp.body.trim() == "Fails." {
             return Err(DownloadError::Api(format!(
@@ -273,6 +301,76 @@ impl QbittorrentClient {
                     .into(),
             )
         })
+    }
+
+    /// Read the qBittorrent application version (e.g. `v5.1.2`) via
+    /// `GET /api/v2/app/version`.
+    ///
+    /// Used for version/quirk detection and surfaced to the UI. Logs in first so
+    /// the call is authenticated (the localhost auth-bypass only covers loopback,
+    /// not LAN/container callers — see `docs/06-integrations.md`).
+    pub async fn version(&self) -> Result<String, DownloadError> {
+        self.ensure_session().await?;
+        let req = self.with_session(HttpRequest::new(
+            "GET",
+            format!("{}/api/v2/app/version", self.base()),
+        ));
+        let resp = self.transport.send(req).await?;
+        if resp.status == 401 || resp.status == 403 {
+            return Err(DownloadError::Auth(format!(
+                "qBittorrent session rejected ({}) on app/version",
+                resp.status
+            )));
+        }
+        if !resp.is_success() {
+            return Err(DownloadError::Api(format!(
+                "app/version returned status {}",
+                resp.status
+            )));
+        }
+        Ok(resp.body.trim().to_string())
+    }
+
+    /// Move a torrent into a category via `POST /api/v2/torrents/setCategory`.
+    ///
+    /// Used to (re-)file a download under cellarr's label — e.g. to claim a
+    /// torrent that was added without a category, or to re-scope one. The
+    /// endpoint answers `409 Conflict` when the category does not yet exist; we
+    /// surface that as an [`DownloadError::Api`] so the caller can create the
+    /// category first rather than silently failing.
+    pub async fn set_category(&self, hash: &str, category: &str) -> Result<(), DownloadError> {
+        self.ensure_session().await?;
+        let body = format!(
+            "hashes={}&category={}",
+            urlencode(hash),
+            urlencode(category)
+        );
+        let req = self
+            .with_session(HttpRequest::new(
+                "POST",
+                format!("{}/api/v2/torrents/setCategory", self.base()),
+            ))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body);
+        let resp = self.transport.send(req).await?;
+        if resp.status == 401 || resp.status == 403 {
+            return Err(DownloadError::Auth(format!(
+                "qBittorrent rejected setCategory ({}); re-login required",
+                resp.status
+            )));
+        }
+        if resp.status == 409 {
+            return Err(DownloadError::Api(format!(
+                "torrents/setCategory: category {category:?} does not exist (409)"
+            )));
+        }
+        if !resp.is_success() {
+            return Err(DownloadError::Api(format!(
+                "torrents/setCategory returned status {}",
+                resp.status
+            )));
+        }
+        Ok(())
     }
 
     /// Poll the detailed progress of a torrent by infohash.
@@ -406,5 +504,54 @@ mod tests {
     #[test]
     fn urlencode_escapes_reserved() {
         assert_eq!(urlencode("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    fn resp_with_set_cookie(set_cookie: &str) -> HttpResponse {
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("set-cookie".into(), set_cookie.into());
+        HttpResponse {
+            status: 200,
+            headers,
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn parses_legacy_sid_cookie_as_pair() {
+        let resp = resp_with_set_cookie("SID=abc123; HttpOnly; path=/");
+        assert_eq!(
+            QbittorrentClient::parse_sid(&resp).as_deref(),
+            Some("SID=abc123")
+        );
+    }
+
+    #[test]
+    fn parses_5x_qbt_sid_port_cookie_as_pair() {
+        // qBittorrent 5.x renamed the session cookie to QBT_SID_<port>; the value
+        // can itself contain '=' / '+' (base64), so we keep the literal pair.
+        let resp = resp_with_set_cookie(
+            "QBT_SID_8080=sGPxtCf2VEb8P6+qDMSfu2RME/t90o7p; HttpOnly; SameSite=Lax; path=/",
+        );
+        assert_eq!(
+            QbittorrentClient::parse_sid(&resp).as_deref(),
+            Some("QBT_SID_8080=sGPxtCf2VEb8P6+qDMSfu2RME/t90o7p")
+        );
+    }
+
+    #[test]
+    fn parse_sid_ignores_attribute_only_parts() {
+        // A Set-Cookie whose first pair is not the session cookie, plus valueless
+        // attributes, must not short-circuit the scan.
+        let resp = resp_with_set_cookie("Other=x; Secure; QBT_SID=zzz; HttpOnly");
+        assert_eq!(
+            QbittorrentClient::parse_sid(&resp).as_deref(),
+            Some("QBT_SID=zzz")
+        );
+    }
+
+    #[test]
+    fn parse_sid_none_when_no_session_cookie() {
+        let resp = resp_with_set_cookie("foo=bar; HttpOnly");
+        assert!(QbittorrentClient::parse_sid(&resp).is_none());
     }
 }

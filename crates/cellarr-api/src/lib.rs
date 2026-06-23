@@ -20,6 +20,7 @@ pub mod auth;
 pub mod commands;
 pub mod error;
 pub mod events;
+pub mod fs_health;
 pub mod metadata;
 pub mod native;
 pub mod openapi;

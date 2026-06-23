@@ -89,6 +89,30 @@ async fn accepts_5x_changed_login_body_via_sid_cookie() {
 }
 
 #[tokio::test]
+async fn version_probe_and_set_category_send_sid_and_map_409() {
+    let (client, transport) = client("qbittorrent/version_and_set_category.json", "cellarr-tv");
+
+    let version = client.version().await.expect("version");
+    assert_eq!(version, "v5.1.2");
+
+    // A successful re-file.
+    client
+        .set_category("deadbeefcafef00d", "cellarr-tv")
+        .await
+        .expect("set_category ok");
+
+    // A 409 (category does not exist) surfaces as a typed API error so the
+    // caller can create the category first rather than silently failing.
+    let err = client
+        .set_category("deadbeefcafef00d", "cellarr-tv")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DownloadError::Api(_)), "got {err:?}");
+
+    transport.assert_drained();
+}
+
+#[tokio::test]
 async fn login_fails_body_maps_to_auth_error() {
     let (client, _t) = client("qbittorrent/login_fails.json", "cellarr-tv");
     let err = client.status("whatever").await.unwrap_err();
