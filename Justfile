@@ -7,6 +7,10 @@
 
 set shell := ["bash", "-uc"]
 
+# Toolchains are mise-managed (.mise.toml) and not globally installed; put mise's shims on PATH
+# so `cargo`/`npm`/`node` resolve inside recipes (mise selects the pinned version per .mise.toml).
+export PATH := env_var('HOME') + "/.local/share/mise/shims:" + env_var('PATH')
+
 # RUN_ID: explicit env wins, else the git worktree's folder name (sanitized).
 run_id := env_var_or_default("CELLARR_RUN_ID", `basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" | tr -c 'a-zA-Z0-9_' '_' | sed 's/_*$//'`)
 
@@ -56,9 +60,20 @@ lint:
 
 # Repository tests against an EPHEMERAL, per-run Postgres (unique container + ephemeral host port).
 # Multiple runs never collide: container is named cellarr-pg-<RUN_ID>.
+#
+# DEFERRED in v1: Postgres is a post-v1 opt-in (SQLite is the v1 default — docs/08-database.md,
+# docs/14-roadmap.md). The `postgres` cargo feature currently only enables the sqlx driver; the
+# repository layer is not yet PG-dialect complete, so this harness is gated off by default. Set
+# CELLARR_ENABLE_PG_TESTS=1 once the PG repositories land. The full harness below is kept ready.
 test-pg *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ "${CELLARR_ENABLE_PG_TESTS:-0}" != "1" ]; then
+        echo "test-pg: Postgres backend is deferred to post-v1 (SQLite is the v1 default)."
+        echo "         The repository layer is SQLite-only for now; skipping."
+        echo "         Set CELLARR_ENABLE_PG_TESTS=1 to run this once PG repos land."
+        exit 0
+    fi
     if [ ! -f Cargo.toml ]; then echo "no crates yet (pre Phase 0)"; exit 0; fi
     name="cellarr-pg-{{run_id}}"
     trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
