@@ -326,8 +326,10 @@ CF-matching + CF-score parity 100% (corpus) vs live Sonarr.
   `blocklist`, `importlist`(+exclusion), `remotepathmapping`, iCal feed.
 - **Parsing & decisions:** 90% parser parity; quality vocab covers both apps; CF matching + scoring
   100% (the G-CF1 case-insensitivity fix prevents silent TRaSH-CF failure).
-- **Metadata (TV):** TheTVDB v4 **live** (user-PIN model; the key alone sufficed) — lookups resolve
-  real `tvdbId`/title (Breaking Bad → 81189, verified live).
+- **Metadata (TV + movies): both live.** TheTVDB v4 **live** (user-PIN model; the key alone sufficed)
+  — lookups resolve real `tvdbId`/title (Breaking Bad → 81189). **TMDb (movies) live** too
+  (`CELLARR_TMDB__API_KEY`): The Matrix → 603, Dune → 438631, verified through the Radarr face, with
+  a trailing-year retry so "Dune 2021" resolves without regressing "Blade Runner 2049".
 - **Acquisition:** indexers persist + run Torznab search through the pipeline; qBittorrent live
   (add/category/status/remove); import = stage→verify→commit→log with hardlink + the **loud cross-
   filesystem health warning** (a deliberate differentiator); **blackhole** universal adapter +
@@ -339,8 +341,6 @@ CF-matching + CF-score parity 100% (corpus) vs live Sonarr.
   SRCL UI (light/dark/system), the decision-log explainability surface.
 
 ### DEFERRED — with reason (honest, not hidden)
-- **TMDb movie metadata** — no `CELLARR_TMDB__API_KEY` provided. Live client path exists + is
-  record/replay-green; movie lookup degrades gracefully to empty + logged reason. Add a key to enable.
 - **Live private indexers/trackers** — need credentials; out of scope. Validated via a local mock
   Torznab server end-to-end instead.
 - **Full live-Prowlarr-container round-trip** — the container path wedged a verify agent (host

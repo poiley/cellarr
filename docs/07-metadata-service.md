@@ -94,10 +94,15 @@ object-safe seams so no consumer depends on a provider's schema:
   booting the daemon with the `.env` key and resolving the Sonarr-face
   `series/lookup` for "Breaking Bad" to `tvdbId 81189` (`cellarr-cli`
   `live_lookup_e2e` test + manual `curl`).
-- **TMDb (movies): blocked-on-key.** The live client path exists and is
-  record/replay-green, but no `CELLARR_TMDB__API_KEY` is provisioned, so movie
-  metadata is intentionally **unavailable**: `movie/lookup` degrades gracefully to
-  an empty result with a logged reason. Provide a TMDb key to enable and live-test.
+- **TMDb (movies): live & verified.** v3 `api_key` (`CELLARR_TMDB__API_KEY` in the
+  gitignored `.env`). Verified live by booting the daemon and resolving the
+  Radarr-face `movie/lookup`: "The Matrix" → tmdbId 603 (1999), "Dune" → 438631,
+  "Inception" → 27205, "Blade Runner 2049" → 335984. A trailing release **year in
+  the search term** ("Dune 2021") is handled by a **retry-on-empty**: search the
+  term verbatim first, and only if that's empty *and* the term ends in a 4-digit
+  year, retry with TMDb's dedicated `&year=` filter — so "Dune 2021" resolves while
+  "Blade Runner 2049"/"1917" (year-in-title) are never stripped. With no key the
+  source still degrades gracefully (empty + logged reason).
 
 ## Testing
 

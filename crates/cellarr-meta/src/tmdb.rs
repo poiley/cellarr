@@ -70,16 +70,43 @@ impl<F: Fetcher> TmdbSource<F> {
     }
 
     /// The raw search payload (used by both `search` and the trait's JSON form).
+    ///
+    /// First searches the term verbatim. If that returns nothing **and** the term
+    /// ends in a 4-digit year (e.g. `"Dune 2021"`), it retries with the year moved
+    /// to TMDb's dedicated `&year=` filter (`query=Dune&year=2021`) — TMDb's text
+    /// search treats `"Dune 2021"` as a literal title and finds nothing, while the
+    /// split form resolves it. The fallback is **retry-on-empty**, so a year that
+    /// is genuinely part of a title (`"Blade Runner 2049"`, `"1917"`) is never
+    /// stripped — those return results on the first pass and the retry never fires.
     async fn search_raw(&self, query: &str) -> Result<serde_json::Value, MetaError> {
+        let value = self.search_raw_inner(query, None).await?;
+        if search_has_results(&value) {
+            return Ok(value);
+        }
+        if let (title, Some(year)) = split_trailing_year(query) {
+            return self.search_raw_inner(title, Some(year)).await;
+        }
+        Ok(value)
+    }
+
+    /// One TMDb `search/movie` call (optionally with a `&year=` filter).
+    async fn search_raw_inner(
+        &self,
+        title: &str,
+        year: Option<u16>,
+    ) -> Result<serde_json::Value, MetaError> {
         let key = self.api_key()?;
-        let url = format!(
+        let mut url = format!(
             "{}/search/movie?api_key={}&query={}",
             self.config.base_url,
             key,
-            urlencode(query)
+            urlencode(title)
         );
+        if let Some(y) = year {
+            url.push_str(&format!("&year={y}"));
+        }
         let body = self
-            .cached_get(&format!("tmdb:search:{query}"), url)
+            .cached_get(&format!("tmdb:search:{title}:{year:?}"), url)
             .await?;
         serde_json::from_str(&body).map_err(|e| MetaError::Decode {
             src: SOURCE,
@@ -182,6 +209,36 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Whether a TMDb `search/movie` payload has at least one result.
+fn search_has_results(value: &serde_json::Value) -> bool {
+    value
+        .get("results")
+        .and_then(|r| r.as_array())
+        .is_some_and(|a| !a.is_empty())
+}
+
+/// Split a trailing 4-digit year off a search term: `"Dune 2021"` → `("Dune",
+/// Some(2021))`. Returns `(term, None)` when the term has no multi-word trailing
+/// year (so a bare `"2012"` / `"1917"` title is left intact — there must be a
+/// title before the year). Only used as a retry when the verbatim search was
+/// empty, so a year that is part of a title never gets stripped in practice.
+fn split_trailing_year(term: &str) -> (&str, Option<u16>) {
+    let trimmed = term.trim_end();
+    let Some(idx) = trimmed.rfind(' ') else {
+        return (term, None);
+    };
+    let (head, last) = trimmed.split_at(idx);
+    let last = last.trim();
+    let head = head.trim_end();
+    if head.is_empty() || last.len() != 4 || !last.bytes().all(|b| b.is_ascii_digit()) {
+        return (term, None);
+    }
+    match last.parse::<u16>() {
+        Ok(y) if (1900..=2100).contains(&y) => (head, Some(y)),
+        _ => (term, None),
+    }
+}
+
 fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
     let id = item.get("id")?;
     let source_id = id
@@ -266,4 +323,29 @@ fn year_from_date(date: Option<&serde_json::Value>) -> Option<u16> {
         .filter(|s| s.len() >= 4)
         .and_then(|s| s.get(0..4))
         .and_then(|y| y.parse().ok())
+}
+
+#[cfg(test)]
+mod year_split_tests {
+    use super::split_trailing_year;
+
+    #[test]
+    fn splits_a_trailing_release_year() {
+        assert_eq!(split_trailing_year("Dune 2021"), ("Dune", Some(2021)));
+        assert_eq!(
+            split_trailing_year("The Matrix 1999"),
+            ("The Matrix", Some(1999))
+        );
+    }
+
+    #[test]
+    fn leaves_year_that_is_the_whole_title_or_in_title() {
+        // A bare numeric title has no preceding title -> untouched.
+        assert_eq!(split_trailing_year("2012"), ("2012", None));
+        assert_eq!(split_trailing_year("1917"), ("1917", None));
+        // No trailing year at all.
+        assert_eq!(split_trailing_year("Inception"), ("Inception", None));
+        // Out of plausible range.
+        assert_eq!(split_trailing_year("Title 3000"), ("Title 3000", None));
+    }
 }
