@@ -1,0 +1,6 @@
+.row {
+  display: flex;
+  justify-content: space-between;
+  outline: 0;
+  border: 0;
+}

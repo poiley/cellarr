@@ -16,6 +16,21 @@ conventions, not a unilateral act. See [../10-ui.md](../10-ui.md). SRCL is **MIT
   `global-fonts.css` and `colors.json`-derived tokens so the terminal aesthetic is exact — including
   its `body.theme-light` / `body.theme-dark` (and `tint-*`) classes, which are the theming mechanism.
 
+**Decision (scaffold):** cellarr **vendors** SRCL. `reference/www-sacred`'s `components/`, `common/`,
+`modules/`, `public/`, `global.css`, and `global-fonts.css` are copied into `web/` and are the **only**
+source of UI primitives. The tsconfig path aliases (`@root`, `@common`, `@components`, `@modules`)
+match SRCL's so vendored sources resolve unchanged; cellarr adds `@app/*` and `@lib/*` for its own
+glue. Vendoring is chosen for version stability and because the daemon embeds a static build — no
+runtime npm resolution. The SRCL-only rule is enforced by `npm run lint:srcl-only`
+(`web/scripts/lint-srcl-only.mjs`), which fails the build if anything under `web/app` imports a UI
+primitive from outside `@components/*` (allowlist: `@components`/`@common`/`@modules`/`@root`, the
+theme controller `@lib/theme` + `@lib/ThemeProvider`, the API client `@lib/api/*`, the app's own
+`@app/*` glue, relative imports, `react`/`react-dom`/`next`, and CSS).
+
+**Build → embed:** `web/` is a Next.js app with `output: 'export'`; `npm run build` runs `next build`
+then `web/scripts/export-to-dist.mjs` mirrors the export from `out/` into `web/dist`, which
+`cellarr-api` embeds via `rust-embed` (the daemon falls back to `index.html` for client routes).
+
 ## Theming (required): light, dark, system default
 - Support **both** SRCL themes and **default to the OS preference** with a persisted manual override
   (System / Light / Dark). Implement via SRCL's body classes — see [../10-ui.md](../10-ui.md) §Theming.

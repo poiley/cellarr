@@ -1,0 +1,32 @@
+{
+  "name": "cellarr-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "cellarr web UI — a Next.js app composed exclusively from vendored SRCL components.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint:srcl-only": "node scripts/lint-srcl-only.mjs",
+    "build": "next build && node scripts/export-to-dist.mjs"
+  },
+  "dependencies": {
+    "next": "^16.2.6",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
