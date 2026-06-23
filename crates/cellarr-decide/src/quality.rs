@@ -52,6 +52,9 @@ pub fn on_disk_from_media_file(file: &MediaFile) -> OnDiskFile {
         file_id: file.id,
         quality_rank: file.quality.rank,
         custom_format_score: file.custom_format_score.unwrap_or(0),
+        // Carry the persisted release type through so the decision can recognize
+        // an already-held full-season pack without re-parsing any title.
+        release_type: file.release_type,
     }
 }
 
@@ -109,6 +112,7 @@ mod tests {
             languages: vec![],
             media_info: None,
             custom_format_score: Some(125),
+            release_type: None,
         };
         let on_disk = on_disk_from_media_file(&file);
         assert_eq!(on_disk.file_id, file.id);
@@ -127,7 +131,15 @@ mod tests {
             languages: vec![],
             media_info: None,
             custom_format_score: None,
+            release_type: Some(cellarr_core::ReleaseType::FullSeason),
         };
-        assert_eq!(on_disk_from_media_file(&file).custom_format_score, 0);
+        let projected = on_disk_from_media_file(&file);
+        assert_eq!(projected.custom_format_score, 0);
+        // The persisted release type is carried onto the OnDiskFile the decision
+        // engine compares (so it can recognize an already-held full-season pack).
+        assert_eq!(
+            projected.release_type,
+            Some(cellarr_core::ReleaseType::FullSeason)
+        );
     }
 }

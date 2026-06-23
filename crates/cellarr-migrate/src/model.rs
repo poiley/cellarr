@@ -170,6 +170,7 @@ mod tests {
                     languages: vec![],
                     media_info: None,
                     custom_format_score: None,
+                    release_type: None,
                 },
                 // Links to content index 0 within its own install.
                 content_indices: vec![0],

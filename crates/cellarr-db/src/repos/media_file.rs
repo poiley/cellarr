@@ -64,12 +64,14 @@ fn row_to_media_file(row: sqlx::sqlite::SqliteRow) -> Result<MediaFile> {
     let quality: String = row.try_get("quality")?;
     let media_info: Option<String> = row.try_get("media_info")?;
     let custom_format_score: Option<i64> = row.try_get("custom_format_score")?;
+    let release_type: Option<String> = row.try_get("release_type")?;
 
     let languages: Vec<String> = serde_json::from_str(&languages)?;
     let quality: Quality = serde_json::from_str(&quality)?;
     let media_info = media_info
         .map(|m| serde_json::from_str(&m).map_err(DbError::from))
         .transpose()?;
+    let release_type = crate::repos::grab::release_type_from_str(release_type)?;
 
     Ok(MediaFile {
         id: MediaFileId::from_uuid(parse_uuid("id", &id)?),
@@ -80,6 +82,7 @@ fn row_to_media_file(row: sqlx::sqlite::SqliteRow) -> Result<MediaFile> {
         languages,
         media_info,
         custom_format_score: custom_format_score.map(|s| s as i32),
+        release_type,
     })
 }
 
@@ -102,6 +105,7 @@ impl MediaFileRepository for MediaFileRepo {
             .map(serde_json::to_string)
             .transpose()?;
         let custom_format_score = file.custom_format_score.map(i64::from);
+        let release_type = crate::repos::grab::release_type_to_str(file.release_type)?;
 
         self.writer
             .submit(move |conn| {
@@ -109,8 +113,8 @@ impl MediaFileRepository for MediaFileRepo {
                     sqlx::query(
                         "INSERT INTO media_file
                             (id, path, size, languages, quality, quality_rank,
-                             media_info, custom_format_score)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                             media_info, custom_format_score, release_type)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     )
                     .bind(id)
                     .bind(path)
@@ -120,6 +124,7 @@ impl MediaFileRepository for MediaFileRepo {
                     .bind(quality_rank)
                     .bind(media_info)
                     .bind(custom_format_score)
+                    .bind(release_type)
                     .execute(&mut *conn)
                     .await?;
                     Ok(())
@@ -130,7 +135,8 @@ impl MediaFileRepository for MediaFileRepo {
 
     async fn get(&self, id: MediaFileId) -> Result<Option<MediaFile>> {
         let row = sqlx::query(
-            "SELECT id, path, size, languages, quality, media_info, custom_format_score
+            "SELECT id, path, size, languages, quality, media_info, custom_format_score,
+                    release_type
              FROM media_file WHERE id = ?1",
         )
         .bind(id.to_string())
@@ -142,7 +148,7 @@ impl MediaFileRepository for MediaFileRepo {
     async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>> {
         let rows = sqlx::query(
             "SELECT m.id, m.path, m.size, m.languages, m.quality, m.media_info,
-                    m.custom_format_score
+                    m.custom_format_score, m.release_type
              FROM media_file m
              JOIN content_file cf ON cf.media_file_id = m.id
              WHERE cf.content_id = ?1

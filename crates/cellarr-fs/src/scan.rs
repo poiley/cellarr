@@ -51,6 +51,9 @@ impl InventoryEntry {
             languages: Vec::new(),
             media_info: None,
             custom_format_score: None,
+            // A scanned-in-place file has no grab provenance, so its release type
+            // is unknown until a deeper identify/reconcile pass attributes it.
+            release_type: None,
         }
     }
 }

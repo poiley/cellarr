@@ -600,6 +600,150 @@ async fn completed_download_imports_as_a_hardlink_on_the_same_filesystem() {
     assert!(media.exists(), "the seeding copy must be preserved");
 }
 
+/// Durable release-type, end to end: a season-pack grab persists its release type
+/// (on the grab, the resulting media_file, and history), and a SECOND reconcile
+/// cycle reads the PERSISTED type back and does NOT re-grab the identical pack.
+///
+/// This is the season-pack re-grab-loop fix. The first run imports the pack and
+/// writes a `media_file` carrying `ReleaseType::FullSeason`; the second run
+/// re-discovers the same pack, the decision reads the persisted full-season state
+/// via `on_disk_for` (never re-parsing the title), and rejects it as
+/// already-held. If the type were re-parsed (or the import left no on-disk
+/// record), the second run would grab again — the infinite loop this guards.
+#[tokio::test]
+async fn season_pack_persists_release_type_and_reconcile_does_not_regrab() {
+    use cellarr_core::repo::{GrabRepository, MediaFileRepository};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+
+    // A pre-staged completed season-pack download. One representative episode file
+    // (per-episode fan-out naming is the naming agent's remit; here we exercise
+    // the durable-release-type path, which is independent of file count).
+    let completed = tmp
+        .path()
+        .join("downloads/complete/The.Show.S02.1080p.WEB-DL");
+    std::fs::create_dir_all(&completed).unwrap();
+    let media = completed.join("The.Show.S02E01.1080p.WEB-DL.x264-GROUP.mkv");
+    std::fs::write(&media, b"synthetic season pack episode").unwrap();
+
+    let library_root = tmp.path().join("library/tv");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    // The acquisition target is an episode node the season pack satisfies.
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 2,
+            episode: 5,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2018),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+
+    // The indexer advertises a whole-season pack (parses to Coordinates::SeasonPack
+    // -> ReleaseType::FullSeason).
+    let indexer = FakeIndexer {
+        releases: vec![tv_release("The.Show.S02.1080p.WEB-DL.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S02.{Extension}",
+    );
+
+    // --- First run: grab + import the season pack ----------------------------
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let first = runner.run(&node).await.unwrap();
+    let grab_id = match first {
+        RunOutcome::Imported { grab_id, .. } => grab_id,
+        other => panic!("first run should import the season pack, got {other:?}"),
+    };
+
+    // The grab persisted ReleaseType::FullSeason.
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        grab.request.release_type,
+        Some(cellarr_core::ReleaseType::FullSeason),
+        "the grab must persist its derived full-season release type"
+    );
+
+    // The imported media_file(s) persisted the full-season type too — this is the
+    // durable on-disk state the reconcile decision reads.
+    let files = MediaFileRepository::list_for_content(&db.media_files(), node.id)
+        .await
+        .unwrap();
+    assert!(
+        !files.is_empty(),
+        "import must persist a media_file for the node"
+    );
+    assert!(
+        files
+            .iter()
+            .all(|f| f.release_type == Some(cellarr_core::ReleaseType::FullSeason)),
+        "every imported file must carry the persisted full-season release type"
+    );
+
+    // History recorded the grab with its release type.
+    let history = HistoryRepository::for_content(&db.history(), node.id)
+        .await
+        .unwrap();
+    assert!(
+        history.iter().any(|h| matches!(
+            h.event,
+            cellarr_core::history::HistoryEvent::Grabbed {
+                release_type: Some(cellarr_core::ReleaseType::FullSeason),
+                ..
+            }
+        )),
+        "history must record the grab's full-season release type"
+    );
+
+    let grabs_after_first = grab_count(&db).await;
+
+    // --- Second run (reconcile cycle): same pack must NOT be re-grabbed -------
+    let runner2 = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let second = runner2.run(&node).await.unwrap();
+    match &second {
+        RunOutcome::Rejected { reason } => {
+            assert!(
+                reason.contains("not an upgrade"),
+                "reconcile should reject the already-held pack, got: {reason}"
+            );
+        }
+        other => panic!("reconcile must NOT re-grab the already-held season pack; got {other:?}"),
+    }
+
+    // The decisive assertion: no new grab row was created on the reconcile cycle
+    // (the re-grab loop is closed).
+    assert_eq!(
+        grab_count(&db).await,
+        grabs_after_first,
+        "a reconcile cycle must not create a second grab for the same season pack"
+    );
+}
+
 #[tokio::test]
 async fn junk_low_quality_release_is_rejected_with_a_logged_reason_and_no_file_moved() {
     let tmp = tempfile::tempdir().unwrap();
@@ -698,6 +842,16 @@ fn walkdir(root: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// The number of `grab` rows in the database (used to prove a reconcile cycle
+/// created no new grab).
+async fn grab_count(db: &Database) -> i64 {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grab")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    row.0
 }
 
 /// Find a run id that produced a Reject decision (the negative test only runs one

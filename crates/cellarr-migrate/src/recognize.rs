@@ -123,6 +123,7 @@ mod tests {
                     languages: vec![],
                     media_info: None,
                     custom_format_score: None,
+                    release_type: None,
                 },
                 content_indices: vec![0],
             }],

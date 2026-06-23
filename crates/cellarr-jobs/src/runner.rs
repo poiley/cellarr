@@ -144,6 +144,12 @@ where
     /// transitions. `None` (the default) sends nothing — the offline/test path —
     /// so the pipeline never depends on webhook wiring.
     notifier: Option<WebhookNotifier>,
+    /// The anime scene-mapping provider, used at Identify to remap an absolute
+    /// episode number to its season/episode (TheXEM, behind the seam). `None`
+    /// (the default) means no remap is attempted — a release that still carries an
+    /// absolute coordinate is then surfaced for manual resolution rather than
+    /// guessed, so the absence of a provider is safe.
+    scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
 }
 
 impl<'a, I, D, C> PipelineRunner<'a, I, D, C>
@@ -169,7 +175,21 @@ where
             clock,
             config,
             notifier: None,
+            scene_provider: None,
         }
+    }
+
+    /// Attach an anime scene-mapping provider so the Identify path remaps an
+    /// absolute episode number to its season/episode (the TheXEM call-site).
+    /// Builder form so the base [`PipelineRunner::new`] stays offline (no remap,
+    /// absolute releases surfaced for manual resolution) and live wiring opts in.
+    #[must_use]
+    pub fn with_scene_provider(
+        mut self,
+        provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
+    ) -> Self {
+        self.scene_provider = Some(provider);
+        self
     }
 
     /// Attach a Connect-webhook dispatcher so Grab/Import/Rename transitions fire
@@ -226,6 +246,28 @@ where
             // subsequent candidates the machine logically re-enters at Parse —
             // we keep `stage` at the furthest point reached so transitions stay
             // legal and the log reads as one run.)
+
+            // --- Identify: anime absolute->episode remap (the XEM call-site) --
+            // An anime release advertises an *absolute* episode number; the
+            // library is addressed by season/episode. Reconcile it here, via the
+            // series' scene mapping, BEFORE delegating to the media module (which
+            // only matches canonical Episode coordinates). An unmapped absolute is
+            // surfaced for manual resolution — never guessed (library-safety).
+            let parsed = match self.remap_absolute_coords(content, parsed).await {
+                Ok(p) => p,
+                Err(reason) => {
+                    self.log(
+                        run_id,
+                        Stage::Identify,
+                        Stage::HeldForReview,
+                        TransitionKind::Hold,
+                        None,
+                        Some(reason.clone()),
+                    )
+                    .await?;
+                    return Ok(RunOutcome::HeldForReview { reason });
+                }
+            };
 
             // --- Identify (delegated to the media module) -----------------
             let matches = match self.identify(content, &parsed).await {
@@ -337,6 +379,85 @@ where
             .map_err(|e| JobError::stage(Stage::Discover, e))
     }
 
+    /// Reconcile any anime absolute coordinate in `parsed` to a canonical
+    /// season/episode via the series' scene mapping — the wired-up XEM call-site.
+    ///
+    /// Behavior:
+    /// - No absolute coordinate, or a non-TV node: the parse is returned
+    ///   unchanged (fast path; nothing to remap).
+    /// - An absolute coordinate present: resolve the node's series TVDB id through
+    ///   the identity-link db query, then remap through the scene provider. On
+    ///   success the absolute coordinate is replaced in-place by the resolved
+    ///   `Episode { season, episode, absolute: Some(n) }`.
+    /// - Unresolvable (no scene provider configured, no series TVDB id linked, or
+    ///   no mapping covers the number): returns `Err(reason)` so the caller holds
+    ///   the run for manual resolution. The absolute is **never guessed** onto a
+    ///   season/episode (the library-safety rule).
+    async fn remap_absolute_coords(
+        &self,
+        content: &ContentRef,
+        mut parsed: ParsedRelease,
+    ) -> std::result::Result<ParsedRelease, String> {
+        use cellarr_core::Coordinates;
+        // Fast path: nothing absolute to reconcile.
+        if !parsed
+            .coordinates
+            .iter()
+            .any(|c| matches!(c, Coordinates::Absolute { .. }))
+        {
+            return Ok(parsed);
+        }
+
+        // No provider wired: an absolute release cannot be safely placed. Surface
+        // it rather than guess.
+        let Some(provider) = self.scene_provider.as_ref() else {
+            return Err(
+                "anime absolute release needs scene mapping but no provider is configured \
+                 (surfaced for manual resolution)"
+                    .to_string(),
+            );
+        };
+
+        // The identity-link query that gates the remap: a content node -> its
+        // series' TVDB id, read from the metadata identity tables.
+        let tvdb_id = self
+            .db
+            .content()
+            .series_tvdb_id(content.id)
+            .await
+            .map_err(|e| format!("series identity lookup failed: {e}"))?;
+        let Some(tvdb_id) = tvdb_id else {
+            return Err(
+                "anime absolute release: series has no linked TVDB id, cannot resolve absolute \
+                 numbering (surfaced for manual resolution)"
+                    .to_string(),
+            );
+        };
+        let series_external_id = tvdb_id.to_string();
+
+        // Remap each absolute coordinate; anything unmapped/malformed is held.
+        let mut remapped = Vec::with_capacity(parsed.coordinates.len());
+        for coord in &parsed.coordinates {
+            match coord {
+                Coordinates::Absolute { .. } => {
+                    let placed = cellarr_media::remap_absolute_dyn(
+                        provider.as_ref(),
+                        &series_external_id,
+                        coord,
+                    )
+                    .await
+                    .map_err(|e| {
+                        format!("anime absolute remap surfaced for manual resolution: {e}")
+                    })?;
+                    remapped.push(placed);
+                }
+                other => remapped.push(other.clone()),
+            }
+        }
+        parsed.coordinates = remapped;
+        Ok(parsed)
+    }
+
     async fn identify(
         &self,
         content: &ContentRef,
@@ -402,8 +523,67 @@ where
                 file_id: f.id,
                 quality_rank: f.quality.rank,
                 custom_format_score: f.custom_format_score.unwrap_or(0),
+                // Read the PERSISTED release type back from the media_file row so
+                // the reconcile/upgrade decision never re-parses the title (the
+                // season-pack re-grab-loop fix).
+                release_type: f.release_type,
             })
             .max_by_key(|d| (d.quality_rank, d.custom_format_score)))
+    }
+
+    /// Persist a `media_file` row per imported destination and link each to the
+    /// content node, recording the durable `release_type` and the quality the
+    /// grab was graded on.
+    ///
+    /// This writes the authoritative on-disk state the reconcile/upgrade decision
+    /// later reads through [`on_disk_for`](Self::on_disk_for) — so the type is
+    /// read back, never re-parsed. Without it the imported file is invisible to
+    /// the next cycle, which re-discovers the same release and re-grabs it forever
+    /// (the loop this whole field exists to prevent).
+    async fn persist_imported_files(
+        &self,
+        matched_ref: &ContentRef,
+        title_parsed: &ParsedRelease,
+        release_type: cellarr_core::ReleaseType,
+        destinations: &[String],
+    ) -> Result<()> {
+        use cellarr_core::repo::MediaFileRepository;
+        // The quality the decision engine graded the grab on, single-sourced from
+        // core's catalogue. A parse it cannot bucket lands on the Unknown
+        // sentinel, which still records the file as present (so the node is no
+        // longer "missing") without claiming a quality it does not have.
+        let quality = cellarr_core::resolve_quality(title_parsed, &self.config.ranking);
+        // Distinct destination paths only: several planned moves can render to the
+        // same on-disk path (e.g. a season pack whose per-episode naming is not
+        // yet wired), and `media_file.path` is unique. One path is one file row.
+        let mut seen_paths = std::collections::BTreeSet::new();
+        for dest in destinations {
+            if !seen_paths.insert(dest.clone()) {
+                continue;
+            }
+            let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+            let file = cellarr_core::MediaFile {
+                id: cellarr_core::MediaFileId::new(),
+                path: dest.clone(),
+                size,
+                quality: quality.clone(),
+                languages: title_parsed.languages.clone(),
+                media_info: None,
+                custom_format_score: None,
+                release_type: Some(release_type),
+            };
+            self.db
+                .media_files()
+                .create(&file)
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?;
+            self.db
+                .media_files()
+                .link(matched_ref.id, file.id)
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -419,12 +599,17 @@ where
         _score: Score,
     ) -> Result<RunOutcome> {
         // --- Grab: persist the grab, hand to the download client ----------
+        // Derive the durable release type from the title parse ONCE, here, and
+        // persist it on the grab. Everything downstream (media_file, history,
+        // reconcile) reads this back instead of re-parsing the title.
+        let release_type = cellarr_core::ReleaseType::from_parsed(parsed);
         let request = GrabRequest {
             content_ref: matched_ref.clone(),
             release: release.clone(),
             indexer_id: self.config.indexer_id,
             client_id: self.config.client_id,
             category: self.config.category.clone(),
+            release_type: Some(release_type),
         };
         let grab_id = self
             .db
@@ -455,8 +640,15 @@ where
         };
         self.set_grab_status(grab_id, GrabStatus::Sent).await?;
         self.set_download_id(grab_id, &download_id).await?;
-        self.append_history(run_id, content.id, HistoryEvent::Grabbed { grab_id })
-            .await?;
+        self.append_history(
+            run_id,
+            content.id,
+            HistoryEvent::Grabbed {
+                grab_id,
+                release_type: Some(release_type),
+            },
+        )
+        .await?;
 
         // Fire the Connect `Grab` webhook (eventType: Grab) carrying the subject
         // + the grabbed release object Bazarr-push/Notifiarr read.
@@ -518,6 +710,16 @@ where
         {
             Ok(destinations) => {
                 self.set_grab_status(grab_id, GrabStatus::Imported).await?;
+                // Persist a media_file row for each imported destination, carrying
+                // the durable release type, and link it to the content node. This
+                // is what makes the import "stick" in the authoritative state: the
+                // next reconcile cycle reads these rows (with their persisted
+                // release type + quality) via `on_disk_for` and the decision
+                // recognizes an already-held full-season pack — closing the
+                // re-grab loop. Computed from the title parse (the quality the
+                // decision already graded the grab on).
+                self.persist_imported_files(matched_ref, parsed, release_type, &destinations)
+                    .await?;
                 // The `Download` (import) webhook fires on the Import->Rename
                 // advance; the `Rename` webhook fires on Rename->Notify. Both
                 // carry the destination files the receiver reads. (Sonarr/Radarr
@@ -1014,8 +1216,22 @@ fn coords_agree(
     use cellarr_core::Coordinates as Co;
     match file {
         Co::Movie => true,
-        Co::Episode { season, episode, .. } => title_coords.iter().any(|tc| {
-            matches!(tc, Co::Episode { season: ts, episode: te, .. } if ts == season && te == episode)
+        Co::Episode {
+            season, episode, ..
+        } => title_coords.iter().any(|tc| match tc {
+            // A direct episode match (the file is the episode the title named).
+            Co::Episode {
+                season: ts,
+                episode: te,
+                ..
+            } => ts == season && te == episode,
+            // A season pack legitimately contains that season's episodes: a file
+            // parsed as S02E01 does NOT contradict a grab whose intent was the
+            // whole of season 2. We agree on the season (the unit the pack was
+            // grabbed for) rather than holding every season-pack import for
+            // review. The episode-level placement is handled downstream.
+            Co::SeasonPack { season: ts } => u32::from(*ts) == *season,
+            _ => false,
         }),
         other => title_coords.contains(&other),
     }

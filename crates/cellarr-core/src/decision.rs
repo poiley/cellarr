@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ContentId, DownloadClientId, GrabId, IndexerId, MediaFileId};
 use crate::media::ContentRef;
-use crate::release::Release;
+use crate::release::{Release, ReleaseType};
 
 /// The total custom-format score plus the quality rank that produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +100,13 @@ pub struct GrabRequest {
     /// The category/label cellarr will tag the download with so it only touches
     /// its own downloads.
     pub category: String,
+    /// The durable release type derived from the parse at grab time
+    /// ([`ReleaseType::from_parsed`]). Persisted so the reconcile/upgrade path
+    /// reads it back instead of re-parsing the title each cycle — the season-pack
+    /// re-grab-loop fix. `None` only for legacy grabs written before this field
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_type: Option<ReleaseType>,
 }
 
 /// The lifecycle state of a persisted [`Grab`].

@@ -304,6 +304,14 @@ pub struct MediaFile {
     /// decision engine has evaluated it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_format_score: Option<i32>,
+    /// The durable release type the file was imported as
+    /// ([`crate::ReleaseType`]), carried from the grab. The reconcile/upgrade
+    /// decision reads this back instead of re-parsing the release title, so a
+    /// re-discovered full-season pack of equal standing is recognized as already
+    /// held and not re-grabbed (the season-pack re-grab-loop fix). `None` for
+    /// files written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_type: Option<crate::ReleaseType>,
 }
 
 /// A typed collection of content of a single media type.

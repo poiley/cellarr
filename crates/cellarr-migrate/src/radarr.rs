@@ -171,6 +171,9 @@ async fn read_movie_file(
         languages: Vec::new(),
         media_info: None,
         custom_format_score: None,
+        // An imported existing file has no grab provenance; its release type is
+        // unknown until a later reconcile pass attributes one.
+        release_type: None,
     }))
 }
 

@@ -35,6 +35,12 @@ pub enum HistoryEvent {
     Grabbed {
         /// The resulting grab.
         grab_id: GrabId,
+        /// The durable release type the grab was made as ([`crate::ReleaseType`]),
+        /// recorded so the history stream itself shows whether a full-season pack
+        /// was grabbed without re-deriving it from the title. `None` for legacy
+        /// records written before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release_type: Option<crate::ReleaseType>,
     },
     /// A grabbed download completed.
     DownloadCompleted {

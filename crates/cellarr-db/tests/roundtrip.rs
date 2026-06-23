@@ -131,6 +131,7 @@ async fn monitored_missing_excludes_nodes_with_files_and_containers() {
         languages: vec![],
         media_info: None,
         custom_format_score: None,
+        release_type: None,
     };
     media_files.create(&file).await.expect("create file");
     media_files.link(have.id, file.id).await.expect("link file");
@@ -174,6 +175,9 @@ async fn grab_create_and_get_round_trip() {
         indexer_id: IndexerId::new(),
         client_id: DownloadClientId::new(),
         category: "cellarr-movies".to_string(),
+        // The durable release type round-trips through the new grab column
+        // (asserted by the full `fetched == request` equality below).
+        release_type: Some(cellarr_core::ReleaseType::Movie),
     };
 
     let id = grabs.create(&request).await.expect("create grab");
@@ -221,6 +225,7 @@ async fn grab_status_transitions_and_download_id() {
         indexer_id: IndexerId::new(),
         client_id: DownloadClientId::new(),
         category: "cellarr-movies".to_string(),
+        release_type: None,
     };
     let id = grabs.create(&request).await.expect("create");
 
@@ -293,6 +298,9 @@ async fn media_file_create_get_and_list_for_content() {
         languages: vec!["en".to_string(), "ja".to_string()],
         media_info: Some(serde_json::json!({"video": "h264", "runtime": 1320})),
         custom_format_score: Some(25),
+        // A multi-episode file; the durable release type round-trips through the
+        // new column (asserted by the `got == file` equality below).
+        release_type: Some(cellarr_core::ReleaseType::MultiEpisode),
     };
     media_files.create(&file).await.expect("create");
 
@@ -534,7 +542,10 @@ async fn history_append_and_query_in_order() {
         at: OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
         content_id,
         run_id,
-        event: HistoryEvent::Grabbed { grab_id },
+        event: HistoryEvent::Grabbed {
+            grab_id,
+            release_type: Some(cellarr_core::ReleaseType::FullSeason),
+        },
     };
     let second = HistoryRecord {
         at: OffsetDateTime::from_unix_timestamp(1_700_000_100).unwrap(),

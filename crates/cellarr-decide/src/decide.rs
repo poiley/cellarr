@@ -13,7 +13,7 @@
 
 use cellarr_core::{
     ContentRef, CustomFormat, Decision, MediaFileId, ParsedRelease, ProperRepack, Quality,
-    QualityProfile, QualityRanking, RejectReason, Release, Score, Verdict,
+    QualityProfile, QualityRanking, RejectReason, Release, ReleaseType, Score, Verdict,
 };
 
 use crate::error::DecideError;
@@ -35,6 +35,13 @@ pub struct OnDiskFile {
     pub quality_rank: u32,
     /// The file's total custom-format score.
     pub custom_format_score: i32,
+    /// The **persisted** release type the on-disk file was imported as, read back
+    /// from the `media_file` row (never re-derived from a title). When the file is
+    /// a [`ReleaseType::FullSeason`] and a re-discovered candidate is the same
+    /// full season at no better standing, the decision short-circuits to a stable
+    /// reject — this is the season-pack re-grab-loop fix. `None` for files written
+    /// before the field existed (then the prior quality/CF logic applies).
+    pub release_type: Option<ReleaseType>,
 }
 
 /// How proper/repack releases are handled.
@@ -151,6 +158,22 @@ fn decide_against_existing(
         custom_format_score: existing.custom_format_score,
     };
     let to = standing.as_score();
+
+    // 0: already-held full-season guard (the re-grab-loop fix). If the on-disk
+    // file was imported as a full-season pack (read from its PERSISTED release
+    // type, not re-parsed) and the re-discovered candidate is the same full
+    // season at no strictly-better standing, this is the identical pack we
+    // already hold — reject stably so a reconcile cycle cannot loop on it. A
+    // genuinely better candidate (higher quality or CF score) still falls through
+    // to the normal upgrade logic below, so real upgrades are never suppressed.
+    let candidate_type = ReleaseType::from_parsed(parsed);
+    if existing.release_type == Some(ReleaseType::FullSeason)
+        && candidate_type == ReleaseType::FullSeason
+        && standing.quality.rank <= existing.quality_rank
+        && standing.cf_score <= existing.custom_format_score
+    {
+        return reject(RejectReason::NotAnUpgrade);
+    }
 
     // 2 + 4: quality rank dominates. A strictly higher quality is always an
     // upgrade (when upgrades are allowed and the quality cutoff is unmet); a

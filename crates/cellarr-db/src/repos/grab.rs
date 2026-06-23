@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use cellarr_core::repo::GrabRepository;
-use cellarr_core::{ContentRef, Grab, GrabId, GrabRequest, GrabStatus, Release};
+use cellarr_core::{ContentRef, Grab, GrabId, GrabRequest, GrabStatus, Release, ReleaseType};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -25,6 +25,26 @@ fn status_to_str(status: GrabStatus) -> Result<String> {
 /// Parse a stored `grab.status` string back into a [`GrabStatus`].
 fn status_from_str(status: &str) -> Result<GrabStatus> {
     serde_json::from_value(serde_json::Value::String(status.to_string())).map_err(DbError::from)
+}
+
+/// Serialize an optional [`ReleaseType`] to its stored scalar string, or `None`.
+///
+/// `ReleaseType` serializes to a bare JSON string (e.g. `"full_season"`); we
+/// store that scalar in the nullable `release_type` TEXT column.
+pub(crate) fn release_type_to_str(rt: Option<ReleaseType>) -> Result<Option<String>> {
+    rt.map(|rt| {
+        Ok(serde_json::to_value(rt)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    })
+    .transpose()
+}
+
+/// Parse a stored `release_type` scalar back into a [`ReleaseType`], when present.
+pub(crate) fn release_type_from_str(rt: Option<String>) -> Result<Option<ReleaseType>> {
+    rt.map(|rt| serde_json::from_value(serde_json::Value::String(rt)).map_err(DbError::from))
+        .transpose()
 }
 
 /// Reads/writes for grabs handed to download clients.
@@ -55,6 +75,8 @@ impl GrabRepository for GrabRepo {
         let created_at = format_time(OffsetDateTime::now_utc())?;
         // New grabs start at the core-defined initial state.
         let status = status_to_str(GrabStatus::Pending)?;
+        // The durable release type derived from the parse at grab time.
+        let release_type = release_type_to_str(request.release_type)?;
 
         self.writer
             .submit(move |conn| {
@@ -62,8 +84,8 @@ impl GrabRepository for GrabRepo {
                     sqlx::query(
                         "INSERT INTO grab
                             (id, content_ref, release, indexer_id, client_id, category,
-                             download_id, status, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
+                             download_id, status, created_at, release_type)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)",
                     )
                     .bind(id_str)
                     .bind(content_ref)
@@ -73,6 +95,7 @@ impl GrabRepository for GrabRepo {
                     .bind(category)
                     .bind(status)
                     .bind(created_at)
+                    .bind(release_type)
                     .execute(&mut *conn)
                     .await?;
                     Ok(())
@@ -84,7 +107,8 @@ impl GrabRepository for GrabRepo {
 
     async fn get(&self, id: GrabId) -> Result<Option<Grab>> {
         let row = sqlx::query(
-            "SELECT content_ref, release, indexer_id, client_id, category, download_id, status
+            "SELECT content_ref, release, indexer_id, client_id, category, download_id, status,
+                    release_type
              FROM grab WHERE id = ?1",
         )
         .bind(id.to_string())
@@ -100,6 +124,7 @@ impl GrabRepository for GrabRepo {
         let category: String = row.try_get("category")?;
         let download_id: Option<String> = row.try_get("download_id")?;
         let status: String = row.try_get("status")?;
+        let release_type: Option<String> = row.try_get("release_type")?;
 
         let content_ref: ContentRef = serde_json::from_str(&content_ref)?;
         let release: Release = serde_json::from_str(&release)?;
@@ -108,6 +133,7 @@ impl GrabRepository for GrabRepo {
         let client_id =
             serde_json::from_value(serde_json::Value::String(client_id)).map_err(DbError::from)?;
         let status = status_from_str(&status)?;
+        let release_type = release_type_from_str(release_type)?;
 
         Ok(Some(Grab {
             id,
@@ -117,6 +143,7 @@ impl GrabRepository for GrabRepo {
                 indexer_id,
                 client_id,
                 category,
+                release_type,
             },
             download_id,
             status,

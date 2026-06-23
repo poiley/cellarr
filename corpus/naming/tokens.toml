@@ -1,0 +1,154 @@
+# Naming vectors: full naming-token coverage.
+#
+# These pin every token the rename engine must understand beyond the basic
+# series/season/episode set: padding specifiers ({Season:00}, {episode:00},
+# {absolute:000}), air dates, the Quality Full / Quality Title pair, best-effort
+# MediaInfo tokens, Custom Formats, external IDs (ImdbId / TmdbId / TvdbId), and
+# the optional leading-dash {-Release Group} token.
+#
+# Re-curated from the originals' token vocabulary; token *values* are supplied by
+# the MediaModule, the engine only formats/sanitizes them. Where a token is a raw
+# number the engine zero-pads it per the format's `:00` / `:000` specifier — the
+# module never has to know the user's chosen padding.
+
+# --- padding specifiers ---
+
+[[case]]
+source = "derived from Sonarr {season:00}/{episode:00} padding tokens"
+notes  = "raw '2' and '6' padded to two digits by the format specifier"
+format = "{Series Title}/Season {Season:00}/S{Season:00}E{episode:00}"
+[case.tokens]
+"Series Title" = "The Expanse"
+"Season"       = "2"
+"episode"      = "6"
+[case.expected]
+path = "The Expanse/Season 02/S02E06"
+
+[[case]]
+source = "derived from Sonarr {absolute:000} anime token"
+notes  = "absolute episode number padded to three digits"
+format = "{Series Title} - {absolute:000}"
+[case.tokens]
+"Series Title" = "One Piece"
+"absolute"     = "71"
+[case.expected]
+path = "One Piece - 071"
+
+# --- air date (daily episodes) ---
+
+[[case]]
+source = "derived from Sonarr {Air-Date} daily-episode token"
+notes  = "air date is an opaque ISO value; dashes are legal and preserved"
+format = "{Series Title}/{Series Title} - {Air-Date}"
+[case.tokens]
+"Series Title" = "The Daily Show"
+"Air-Date"     = "2024-03-14"
+[case.expected]
+path = "The Daily Show/The Daily Show - 2024-03-14"
+
+# --- quality tokens ---
+
+[[case]]
+source = "derived from Radarr {Quality Full} vs {Quality Title}"
+notes  = "Quality Full includes the proper/repack marker; Quality Title is the bare name"
+format = "{Movie Title} ({Release Year}) [{Quality Full}] {{{Quality Title}}}"
+[case.tokens]
+"Movie Title"   = "Dune"
+"Release Year"  = "2021"
+"Quality Full"  = "Bluray-2160p Proper"
+"Quality Title" = "Bluray-2160p"
+[case.expected]
+path = "Dune (2021) [Bluray-2160p Proper] {Bluray-2160p}"
+
+# --- mediainfo (best-effort from probe) ---
+
+[[case]]
+source = "derived from Sonarr {MediaInfo VideoCodec}/{MediaInfo AudioCodec} tokens"
+notes  = "best-effort probe values substituted verbatim"
+format = "{Series Title} - S{Season:00}E{episode:00} [{MediaInfo VideoCodec} {MediaInfo AudioCodec} {MediaInfo AudioChannels}]"
+[case.tokens]
+"Series Title"          = "Andor"
+"Season"                = "1"
+"episode"               = "5"
+"MediaInfo VideoCodec"  = "x265"
+"MediaInfo AudioCodec"  = "EAC3 Atmos"
+"MediaInfo AudioChannels" = "5.1"
+[case.expected]
+path = "Andor - S01E05 [x265 EAC3 Atmos 5.1]"
+
+# --- custom formats ---
+
+[[case]]
+source = "derived from Radarr {Custom Formats} token"
+notes  = "custom-format names joined by the module; substituted verbatim"
+format = "{Movie Title} ({Release Year}) {Custom Formats}"
+[case.tokens]
+"Movie Title"    = "Sicario"
+"Release Year"   = "2015"
+"Custom Formats" = "IMAX HDR10"
+[case.expected]
+path = "Sicario (2015) IMAX HDR10"
+
+# --- external ids ---
+
+[[case]]
+source = "derived from Radarr {ImdbId}/{TmdbId} folder tokens (Plex/Jellyfin agents)"
+notes  = "id tokens carried through verbatim for metadata-agent matching"
+format = "{Movie Title} ({Release Year}) {{imdb-{ImdbId}}} {{tmdb-{TmdbId}}}"
+[case.tokens]
+"Movie Title"  = "Arrival"
+"Release Year" = "2016"
+"ImdbId"       = "tt2543164"
+"TmdbId"       = "329865"
+[case.expected]
+path = "Arrival (2016) {imdb-tt2543164} {tmdb-329865}"
+
+[[case]]
+source = "derived from Sonarr {TvdbId} series-folder token"
+notes  = "TvdbId folder suffix for the Sonarr/Plex agent convention"
+format = "{Series Title} {{tvdb-{TvdbId}}}"
+[case.tokens]
+"Series Title" = "Severance"
+"TvdbId"       = "371980"
+[case.expected]
+path = "Severance {tvdb-371980}"
+
+# --- optional leading-dash release group ---
+
+[[case]]
+source = "derived from Sonarr/Radarr optional {-Release Group} token (present)"
+notes  = "renders ' -Group' only when the group is non-empty"
+format = "{Series Title} - S{Season:00}E{episode:00} - {Quality Title}{-Release Group}"
+[case.tokens]
+"Series Title"  = "Severance"
+"Season"        = "1"
+"episode"       = "9"
+"Quality Title" = "Bluray-1080p"
+"Release Group" = "NTb"
+[case.expected]
+path = "Severance - S01E09 - Bluray-1080p -NTb"
+
+[[case]]
+source = "derived from Sonarr/Radarr optional {-Release Group} token (absent)"
+notes  = "no dangling ' -' when the group is missing entirely"
+format = "{Series Title} - S{Season:00}E{episode:00} - {Quality Title}{-Release Group}"
+[case.tokens]
+"Series Title"  = "Severance"
+"Season"        = "1"
+"episode"       = "9"
+"Quality Title" = "Bluray-1080p"
+[case.expected]
+path = "Severance - S01E09 - Bluray-1080p"
+
+# --- edition tags ---
+
+[[case]]
+source = "derived from Radarr {Edition Tags} token"
+notes  = "edition tag rendered in braces inside the file name"
+format = "{Movie Title} ({Release Year}) {{edition-{Edition Tags}}}"
+[case.tokens]
+"Movie Title"  = "Blade Runner"
+"Release Year" = "1982"
+"Edition Tags" = "Final Cut"
+[case.expected]
+path = "Blade Runner (1982) {edition-Final Cut}"

@@ -87,6 +87,72 @@ impl ContentRepo {
             .transpose()
     }
 
+    /// Resolve a content node to the **TVDB id of the series it belongs to**.
+    ///
+    /// This is the identity-link query the anime absolute→episode remap is gated
+    /// on: Identify needs the series' external id to select the right scene
+    /// mapping. It walks the structural tree up from `id` to the series root
+    /// (following `parent_id`), reads that node's `title_id`, and looks up
+    /// `series_meta.tvdb_id` for it.
+    ///
+    /// Returns `None` when the node has no series ancestor, the series is not yet
+    /// identity-linked (`title_id` is null), or the linked `series_meta` carries
+    /// no `tvdb_id`. A `None` here means "identity unresolved" — the caller
+    /// surfaces the absolute number for manual resolution rather than guessing
+    /// (the library-safety rule), never an error.
+    ///
+    /// The walk is bounded by a depth cap so a malformed cycle in the adjacency
+    /// list can never spin forever (the TV tree is at most series→season→episode,
+    /// so a handful of hops suffices).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn series_tvdb_id(&self, id: ContentId) -> Result<Option<i64>> {
+        // Walk to the root of this node's tree. The series node is the root of a
+        // TV content tree (series→season→episode); a depth cap guards against a
+        // malformed parent cycle.
+        const MAX_DEPTH: usize = 8;
+        let mut current = id;
+        let mut title_id: Option<String> = None;
+        for _ in 0..MAX_DEPTH {
+            let row = sqlx::query("SELECT parent_id, title_id FROM content WHERE id = ?1")
+                .bind(current.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+            let Some(row) = row else {
+                // The node (or a parent link) does not exist; unresolved.
+                return Ok(None);
+            };
+            let parent_id: Option<String> = row.try_get("parent_id")?;
+            let node_title_id: Option<String> = row.try_get("title_id")?;
+            match parent_id {
+                Some(parent) => {
+                    // Not the root yet; keep the deepest title_id we have seen as a
+                    // fallback but prefer the root series node's link.
+                    current = ContentId::from_uuid(parse_uuid("parent_id", &parent)?);
+                }
+                None => {
+                    // Reached the series root; its title_id is the series identity.
+                    title_id = node_title_id;
+                    break;
+                }
+            }
+        }
+
+        let Some(title_id) = title_id else {
+            return Ok(None);
+        };
+
+        let row = sqlx::query("SELECT tvdb_id FROM series_meta WHERE title_id = ?1")
+            .bind(title_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(row) => Ok(row.try_get::<Option<i64>, _>("tvdb_id")?),
+            None => Ok(None),
+        }
+    }
+
     /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]).
     ///
     /// # Errors

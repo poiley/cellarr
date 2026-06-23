@@ -182,5 +182,6 @@ fn grab(download_url: &str, category: &str, protocol: Protocol) -> GrabRequest {
         indexer_id,
         client_id: DownloadClientId::new(),
         category: category.into(),
+        release_type: None,
     }
 }

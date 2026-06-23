@@ -74,6 +74,7 @@ fn on_disk(quality_rank: u32, cf_score: i32) -> OnDiskFile {
         file_id: MediaFileId::new(),
         quality_rank,
         custom_format_score: cf_score,
+        release_type: None,
     }
 }
 
@@ -304,5 +305,87 @@ fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
         matches!(do_not.verdict, Verdict::Reject { .. }),
         "DoNotPrefer policy should reject a PROPER at equal standing, got {:?}",
         do_not.verdict
+    );
+}
+
+/// A re-discovered full-season pack that is already held (its persisted release
+/// type is `FullSeason`) at no better standing must be a stable reject — the
+/// season-pack re-grab-loop fix. The decision reads the PERSISTED release type
+/// off the on-disk file; it never re-parses the title to rediscover it.
+#[test]
+fn an_already_held_full_season_pack_at_equal_standing_is_not_regrabbed() {
+    use cellarr_core::{MediaFileId, ReleaseType};
+
+    let ranking = QualityRanking::default();
+    let formats: Vec<CustomFormat> = vec![];
+    let prof = profile(&[rank::WEBDL_1080P], rank::REMUX_2160P, 100_000);
+
+    // The candidate is the same season pack again (WEBDL-1080p).
+    let rel = release("The.Show.S02.1080p.WEB-DL-GROUP", &[]);
+    let p = parsed(Source::WebDl, Resolution::R1080p);
+
+    // The on-disk file was imported as a full-season pack at the same standing.
+    let existing = OnDiskFile {
+        file_id: MediaFileId::new(),
+        quality_rank: rank::WEBDL_1080P,
+        custom_format_score: 0,
+        release_type: Some(ReleaseType::FullSeason),
+    };
+
+    let decision = decide(
+        content_ref(),
+        &rel,
+        &p,
+        Some(existing),
+        &ctx(&prof, &formats, &ranking),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(decision.verdict, Verdict::Reject { .. }),
+        "an identical, already-held full-season pack must be rejected (no loop), got {:?}",
+        decision.verdict
+    );
+}
+
+/// The guard is narrow: a genuinely better candidate (higher quality) still
+/// upgrades over an existing full-season pack, so real upgrades are never
+/// suppressed by the loop guard.
+#[test]
+fn a_better_quality_pack_still_upgrades_over_an_existing_full_season() {
+    use cellarr_core::{MediaFileId, ReleaseType};
+
+    let ranking = QualityRanking::default();
+    let formats: Vec<CustomFormat> = vec![];
+    let prof = profile(
+        &[rank::WEBDL_1080P, rank::BLURAY_2160P],
+        rank::REMUX_2160P,
+        100_000,
+    );
+
+    // A strictly higher-quality season pack than the one on disk.
+    let rel = release("The.Show.S02.2160p.BluRay-GROUP", &[]);
+    let p = parsed(Source::Bluray, Resolution::R2160p);
+
+    let existing = OnDiskFile {
+        file_id: MediaFileId::new(),
+        quality_rank: rank::WEBDL_1080P,
+        custom_format_score: 0,
+        release_type: Some(ReleaseType::FullSeason),
+    };
+
+    let decision = decide(
+        content_ref(),
+        &rel,
+        &p,
+        Some(existing),
+        &ctx(&prof, &formats, &ranking),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(decision.verdict, Verdict::Upgrade { .. }),
+        "a higher-quality season pack must still upgrade, got {:?}",
+        decision.verdict
     );
 }

@@ -266,6 +266,7 @@ fn decision_vectors() {
             file_id: MediaFileId::new(),
             quality_rank: d.quality_rank,
             custom_format_score: d.cf_score,
+            release_type: None,
         });
 
         let ctx = DecisionContext {

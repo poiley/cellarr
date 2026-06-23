@@ -38,5 +38,8 @@ pub use import::{
     execute_import, execute_import_with, plan_import, CommitHooks, ImportResult, MoveResult,
     NoHooks, PlacedAs,
 };
-pub use rename::render_name;
+pub use rename::{
+    render_name, render_name_with, ColonReplacement, MultiEpisodeStyle, RenderOptions,
+    TargetPlatform,
+};
 pub use scan::{scan, Inventory, InventoryEntry};

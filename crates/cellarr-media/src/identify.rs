@@ -118,6 +118,108 @@ pub trait SceneMappingProvider: Send + Sync {
     ) -> Result<Option<SceneMapping>, Self::Error>;
 }
 
+/// A boxed, type-erased scene-mapping-provider error (the dyn facade's uniform
+/// error), mirroring [`crate::registry::BoxError`].
+pub type SceneBoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Object-safe facade over [`SceneMappingProvider`] with a uniform boxed error.
+///
+/// [`SceneMappingProvider`] carries an associated `Error`, so it cannot be stored
+/// behind a single `dyn` when the holder (the jobs runner) must not be generic
+/// over the concrete provider. This facade boxes the error; a blanket impl adapts
+/// any [`SceneMappingProvider`] to it (the same pattern as
+/// [`crate::DynMediaModule`]), so the live `cellarr-meta` provider keeps its
+/// precise typed error while the runner holds `dyn DynSceneMappingProvider`.
+#[async_trait]
+pub trait DynSceneMappingProvider: Send + Sync {
+    /// See [`SceneMappingProvider::scene_mapping`].
+    async fn scene_mapping(
+        &self,
+        series_external_id: &str,
+    ) -> Result<Option<SceneMapping>, SceneBoxError>;
+}
+
+#[async_trait]
+impl<P> DynSceneMappingProvider for P
+where
+    P: SceneMappingProvider,
+{
+    async fn scene_mapping(
+        &self,
+        series_external_id: &str,
+    ) -> Result<Option<SceneMapping>, SceneBoxError> {
+        SceneMappingProvider::scene_mapping(self, series_external_id)
+            .await
+            .map_err(|e| Box::new(e) as SceneBoxError)
+    }
+}
+
+/// Remap an absolute coordinate through a type-erased
+/// [`DynSceneMappingProvider`].
+///
+/// This is the object-safe entry point the jobs runner uses (it holds a
+/// `dyn DynSceneMappingProvider`, not a concrete one). It mirrors
+/// [`remap_absolute`] exactly — non-absolute coordinates pass through, an
+/// uncovered absolute is [`MediaError::UnmappedAbsolute`] (surfaced, never
+/// guessed) — but reports the provider error as a boxed error.
+///
+/// # Errors
+/// - [`MediaError::UnmappedAbsolute`] / [`MediaError::MalformedSceneMapping`] as
+///   in [`remap_absolute`].
+/// - the provider's boxed error when the lookup fails.
+pub async fn remap_absolute_dyn(
+    provider: &dyn DynSceneMappingProvider,
+    series_external_id: &str,
+    coords: &Coordinates,
+) -> Result<Coordinates, IdentifyError<SceneBoxErrorWrapper>> {
+    let Coordinates::Absolute { number } = coords else {
+        return Ok(coords.clone());
+    };
+    let number = *number;
+
+    let mapping = provider
+        .scene_mapping(series_external_id)
+        .await
+        .map_err(|e| IdentifyError::Provider(SceneBoxErrorWrapper(e)))?
+        .ok_or_else(|| {
+            IdentifyError::Media(MediaError::UnmappedAbsolute {
+                series: series_external_id.to_string(),
+                absolute: number,
+            })
+        })?;
+
+    let placement = mapping.place(number).map_err(IdentifyError::Media)?;
+    let (season, episode) = placement.ok_or_else(|| {
+        IdentifyError::Media(MediaError::UnmappedAbsolute {
+            series: mapping.series.clone(),
+            absolute: number,
+        })
+    })?;
+
+    Ok(Coordinates::Episode {
+        season,
+        episode,
+        absolute: Some(number),
+    })
+}
+
+/// Newtype so a boxed provider error satisfies [`IdentifyError`]'s
+/// `std::error::Error` bound (a bare `Box<dyn Error>` does not implement `Error`).
+#[derive(Debug)]
+pub struct SceneBoxErrorWrapper(pub SceneBoxError);
+
+impl std::fmt::Display for SceneBoxErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for SceneBoxErrorWrapper {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
 /// Remap a single coordinate to its canonical form for the pipeline.
 ///
 /// - [`Coordinates::Absolute`] is reconciled to [`Coordinates::Episode`] via the

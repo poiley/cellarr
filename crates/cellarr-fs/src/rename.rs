@@ -14,23 +14,48 @@
 //! sanitized independently so a token value containing `/` cannot escape its
 //! segment and create unexpected directories.
 //!
+//! ### Format specifiers (padding)
+//! A token may carry a colon-introduced format specifier of zero-pad digits, e.g.
+//! `{Season:00}`, `{episode:00}`, `{absolute:000}`. When the token's value is a
+//! plain integer it is left-padded with zeros to the requested width; a
+//! non-numeric value (or a value that already exceeds the width) is emitted
+//! verbatim. This is how a module can supply raw numbers (`Season = "2"`) and let
+//! the *format* decide the on-disk padding, matching the originals' `{season:00}`
+//! convention.
+//!
+//! ### The leading-dash group token
+//! A token name written with a leading dash — `{-Release Group}` — renders as a
+//! ` -GroupName` suffix *only when the group is present and non-empty*, and
+//! collapses to nothing when it is absent. This mirrors the originals' optional
+//! `{-Release Group}` token so a release with no group does not leave a dangling
+//! ` -` in the name.
+//!
+//! ## Multi-episode style
+//! A single file can cover several consecutive episodes. The
+//! [`MultiEpisodeStyle`] controls how the season/episode block for such a file is
+//! rendered (`S01E01-E03`, `E01E02E03`, `S01E01.S01E02`, …). The engine derives
+//! the block from the *raw* `Season` + `Episodes` tokens (`Episodes` is a
+//! comma-separated list of episode numbers) so the module never has to know the
+//! user's chosen style — it just lists the episodes the file contains.
+//!
 //! ## Sanitization (per platform)
-//! Filesystems disagree on what bytes are legal in a name. We sanitize for the
-//! *most restrictive* target we support (Windows/exFAT) by default so a library
+//! Filesystems disagree on what bytes are legal in a name. By default we sanitize
+//! for the *most restrictive* target we support (Windows/exFAT) so a library
 //! authored on Linux still moves cleanly to a Windows share — the originals
 //! learned this the hard way. Reserved characters (`< > : " | ? *` and the
 //! control range), reserved device names (`CON`, `PRN`, …), and trailing dots or
-//! spaces are all handled.
+//! spaces are all handled. [`RenderOptions`] tunes the colon replacement and the
+//! target platform.
 
 use cellarr_core::NamingTokens;
 
 use crate::error::{FsError, Result};
 
 /// Characters that are illegal in a path *segment* on at least one supported
-/// platform. We strip the union so names are portable across Linux, macOS, and
-/// Windows/SMB shares. The forward slash is handled separately as a segment
-/// boundary, never as a sanitizable character within a segment.
-const ILLEGAL_SEGMENT_CHARS: &[char] = &['<', '>', ':', '"', '\\', '|', '?', '*'];
+/// platform, excluding the colon (handled separately so its replacement is
+/// configurable). The forward slash is handled as a segment boundary, never as a
+/// sanitizable character within a segment.
+const ILLEGAL_SEGMENT_CHARS: &[char] = &['<', '>', '"', '\\', '|', '?', '*'];
 
 /// Windows reserves these device names regardless of extension. A segment equal
 /// to one of these (case-insensitively, ignoring any extension) gets a marker
@@ -45,8 +70,101 @@ const RESERVED_DEVICE_NAMES: &[&str] = &[
 /// default of preserving readability without introducing new illegal characters.
 const SPACE: char = ' ';
 
-/// Render a naming `format` against `tokens`, producing a sanitized relative
-/// path.
+/// How a colon (`:`) in a token *value* is rewritten when sanitizing for a
+/// platform that forbids it (Windows/macOS-SMB). The colon is special-cased
+/// because the originals expose it as a user-tunable "colon replacement" setting:
+/// some libraries want `Title - Subtitle`, others `Title Subtitle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColonReplacement {
+    /// `A: B` → `A B` — replace the colon with a single space (then collapse).
+    /// The originals' default and ours.
+    #[default]
+    Space,
+    /// `A: B` → `A - B` — replace the colon (with surrounding spaces normalized)
+    /// with a spaced dash, preserving the visual separation.
+    Dash,
+    /// `A: B` → `AB` — delete the colon outright (then collapse spaces).
+    Delete,
+    /// `A: B` → `A- B` — Smart: a colon flanked by spaces becomes ` - `, a colon
+    /// with no trailing space becomes `-`. Mirrors the originals' "Smart" mode.
+    Smart,
+    /// Keep the colon verbatim. Valid only when the target platform permits it
+    /// (Linux); on a colon-hostile platform this falls back to [`Space`].
+    Keep,
+}
+
+/// The most-restrictive platform the rendered path must remain legal on.
+///
+/// Naming is sanitized for this target. The default — [`Windows`] — is the
+/// strictest and keeps a library portable to an SMB/exFAT share even when authored
+/// on Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetPlatform {
+    /// Windows/exFAT/SMB — forbids `< > : " \ | ? *`, control codes, reserved
+    /// device names, and trailing dots/spaces. The portable default.
+    #[default]
+    Windows,
+    /// POSIX/Linux — only `/` and NUL are truly illegal. The colon is permitted,
+    /// so [`ColonReplacement::Keep`] is honored here.
+    Posix,
+}
+
+impl TargetPlatform {
+    /// Whether a literal colon is legal in a name on this platform.
+    fn allows_colon(self) -> bool {
+        matches!(self, TargetPlatform::Posix)
+    }
+}
+
+/// How a file that covers several consecutive episodes renders its season/episode
+/// block. The default is [`PrefixedRange`](MultiEpisodeStyle::PrefixedRange), the
+/// TRaSH-recommended style.
+///
+/// Examples below assume season 1, episodes 1–3, padded to two digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MultiEpisodeStyle {
+    /// `S01E01-E03` — the season block once, then the episode range with an `E`
+    /// prefix on the last episode. The default (TRaSH).
+    #[default]
+    PrefixedRange,
+    /// `S01E01-03` — the range without the trailing `E` prefix.
+    Range,
+    /// `S01E01E02E03` — every episode listed, each with its own `E` prefix.
+    Extend,
+    /// `S01E01.S01E02.S01E03` — the full `SxxExx` block duplicated per episode,
+    /// dot-joined.
+    Duplicate,
+    /// `S01E01E02E03` — like Extend; the season appears once and each episode is
+    /// repeated with an `E` prefix. (Distinct config knob; same shape as Extend
+    /// for contiguous runs.)
+    Repeat,
+    /// `S01E01-E02-E03` — scene-style, every adjacent pair joined by `-E`.
+    Scene,
+}
+
+/// Tunables for [`render_name_with`]. The defaults reproduce [`render_name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RenderOptions {
+    /// The strictest platform the result must stay legal on.
+    pub platform: TargetPlatform,
+    /// How a colon in a token value is rewritten when the platform forbids it.
+    pub colon: ColonReplacement,
+    /// How a multi-episode block is rendered.
+    pub multi_episode: MultiEpisodeStyle,
+}
+
+/// Render a naming `format` against `tokens` with the default options.
+///
+/// Equivalent to [`render_name_with`] with [`RenderOptions::default`] (portable
+/// Windows-safe sanitization, space colon-replacement, PrefixedRange multi-ep).
+///
+/// # Errors
+/// See [`render_name_with`].
+pub fn render_name(format: &str, tokens: &NamingTokens) -> Result<String> {
+    render_name_with(format, tokens, RenderOptions::default())
+}
+
+/// Render a naming `format` against `tokens`, producing a sanitized relative path.
 ///
 /// The returned string uses `/` separators (the caller joins it onto a root).
 /// Each segment is sanitized independently; empty segments (e.g. a token that
@@ -55,15 +173,21 @@ const SPACE: char = ' ';
 ///
 /// # Errors
 /// - [`FsError::MissingToken`] if the format references a token the module did
-///   not supply (we refuse to silently produce a misnamed file).
+///   not supply (we refuse to silently produce a misnamed file). The optional
+///   `{-Release Group}` token is exempt: it renders to nothing when absent.
 /// - [`FsError::InvalidName`] if, after rendering and sanitizing, the result is
-///   empty (no usable name at all).
-pub fn render_name(format: &str, tokens: &NamingTokens) -> Result<String> {
-    let rendered = substitute(format, tokens)?;
+///   empty (no usable name at all), or the format is malformed (unterminated
+///   token, stray brace).
+pub fn render_name_with(
+    format: &str,
+    tokens: &NamingTokens,
+    opts: RenderOptions,
+) -> Result<String> {
+    let rendered = substitute(format, tokens, opts)?;
 
     let segments: Vec<String> = rendered
         .split('/')
-        .map(sanitize_segment)
+        .map(|seg| sanitize_segment(seg, opts))
         .filter(|s| !s.is_empty())
         .collect();
 
@@ -76,8 +200,10 @@ pub fn render_name(format: &str, tokens: &NamingTokens) -> Result<String> {
     Ok(segments.join("/"))
 }
 
-/// Substitute `{Token}` placeholders. Supports `{{`/`}}` for literal braces.
-fn substitute(format: &str, tokens: &NamingTokens) -> Result<String> {
+/// Substitute `{Token}` placeholders. Supports `{{`/`}}` for literal braces, a
+/// `:spec` zero-pad specifier, the optional `{-Token}` suffix form, and the
+/// engine-computed `{Episode Block}` multi-episode token.
+fn substitute(format: &str, tokens: &NamingTokens, opts: RenderOptions) -> Result<String> {
     let mut out = String::with_capacity(format.len());
     let mut chars = format.char_indices().peekable();
 
@@ -103,18 +229,7 @@ fn substitute(format: &str, tokens: &NamingTokens) -> Result<String> {
                         detail: format!("unterminated token in format {format:?}"),
                     });
                 }
-                let value = lookup(tokens, name.trim()).ok_or_else(|| FsError::MissingToken {
-                    token: name.trim().to_string(),
-                })?;
-                // A slash inside a *token value* (e.g. an artist "AC/DC") must
-                // not create a new directory level — only slashes written in the
-                // format itself are structural. Neutralize value slashes here so
-                // segment splitting downstream sees only format separators.
-                if value.contains('/') {
-                    out.push_str(&value.replace('/', " "));
-                } else {
-                    out.push_str(value);
-                }
+                render_token(&mut out, name.trim(), tokens, opts)?;
             }
             '}' => {
                 if matches!(chars.peek(), Some((_, '}'))) {
@@ -133,6 +248,169 @@ fn substitute(format: &str, tokens: &NamingTokens) -> Result<String> {
     Ok(out)
 }
 
+/// Resolve and append a single `{...}` token's value to `out`.
+fn render_token(
+    out: &mut String,
+    raw: &str,
+    tokens: &NamingTokens,
+    opts: RenderOptions,
+) -> Result<()> {
+    // Split an optional `:spec` format specifier (zero-pad width) off the name.
+    let (name_part, spec) = match raw.split_once(':') {
+        Some((n, s)) => (n.trim(), Some(s.trim())),
+        None => (raw, None),
+    };
+
+    // The engine-computed multi-episode block: built from raw Season + Episodes
+    // per the configured style, not looked up as a single value.
+    if name_part.eq_ignore_ascii_case("Episode Block") {
+        let block = render_episode_block(tokens, spec, opts)?;
+        out.push_str(&block);
+        return Ok(());
+    }
+
+    // The optional leading-dash group token: ` -Group` when present, else nothing.
+    if let Some(group_name) = name_part.strip_prefix('-') {
+        let group_name = group_name.trim();
+        if let Some(value) = lookup(tokens, group_name) {
+            let value = value.trim();
+            if !value.is_empty() {
+                out.push_str(" -");
+                push_value(out, value);
+            }
+        }
+        // Absent or empty -> render nothing. Never an error: it is optional.
+        return Ok(());
+    }
+
+    let value = lookup(tokens, name_part).ok_or_else(|| FsError::MissingToken {
+        token: name_part.to_string(),
+    })?;
+
+    let formatted = apply_spec(value, spec);
+    push_value(out, &formatted);
+    Ok(())
+}
+
+/// Push a token value into the output, neutralizing any `/` so a value cannot
+/// create a directory level (only format separators are structural).
+fn push_value(out: &mut String, value: &str) {
+    if value.contains('/') {
+        out.push_str(&value.replace('/', " "));
+    } else {
+        out.push_str(value);
+    }
+}
+
+/// Apply a `:spec` format specifier to a value. The only spec we honor is a run
+/// of zero-pad digits (`00`, `000`): left-pad an integer value to that width. A
+/// non-numeric value, or one already at/over the width, is returned verbatim.
+fn apply_spec(value: &str, spec: Option<&str>) -> String {
+    let Some(spec) = spec else {
+        return value.to_string();
+    };
+    let width = zero_pad_width(spec);
+    let Some(width) = width else {
+        // Unrecognized spec: emit the value untouched rather than guess.
+        return value.to_string();
+    };
+    pad_number(value, width)
+}
+
+/// Interpret a spec as a zero-pad width. `"00"` -> 2, `"000"` -> 3. Anything that
+/// is not a run of `0`s (e.g. an empty spec or arbitrary text) is rejected.
+fn zero_pad_width(spec: &str) -> Option<usize> {
+    if !spec.is_empty() && spec.chars().all(|c| c == '0') {
+        Some(spec.len())
+    } else {
+        None
+    }
+}
+
+/// Left-pad a value with zeros to `width` *iff* it parses as a non-negative
+/// integer; otherwise return it unchanged.
+fn pad_number(value: &str, width: usize) -> String {
+    match value.trim().parse::<u64>() {
+        Ok(n) => format!("{n:0width$}"),
+        Err(_) => value.to_string(),
+    }
+}
+
+/// Build the season/episode block for a (possibly multi-)episode file from the
+/// raw `Season` + `Episodes` tokens and the configured [`MultiEpisodeStyle`].
+///
+/// `Season` is required. `Episodes` is a comma-separated list of episode numbers
+/// (`"1"`, `"1,2,3"`); a single `Episode` token is accepted as a fallback for the
+/// single-episode case. The `spec` (e.g. `00`) zero-pads both the season and each
+/// episode number consistently.
+fn render_episode_block(
+    tokens: &NamingTokens,
+    spec: Option<&str>,
+    opts: RenderOptions,
+) -> Result<String> {
+    let season = lookup(tokens, "Season").ok_or_else(|| FsError::MissingToken {
+        token: "Season".to_string(),
+    })?;
+
+    let episodes_raw = lookup(tokens, "Episodes")
+        .or_else(|| lookup(tokens, "Episode"))
+        .ok_or_else(|| FsError::MissingToken {
+            token: "Episodes".to_string(),
+        })?;
+
+    let episodes: Vec<String> = episodes_raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|e| pad_number(e, zero_pad_width(spec.unwrap_or("")).unwrap_or(0)))
+        .collect();
+
+    if episodes.is_empty() {
+        return Err(FsError::InvalidName {
+            detail: "Episodes token held no episode numbers".to_string(),
+        });
+    }
+
+    let season = pad_number(season, zero_pad_width(spec.unwrap_or("")).unwrap_or(0));
+    let s = format!("S{season}");
+
+    // Single episode: every style reduces to SxxEyy.
+    if episodes.len() == 1 {
+        return Ok(format!("{s}E{}", episodes[0]));
+    }
+
+    let first = &episodes[0];
+    let last = &episodes[episodes.len() - 1];
+
+    let block = match opts.multi_episode {
+        MultiEpisodeStyle::PrefixedRange => format!("{s}E{first}-E{last}"),
+        MultiEpisodeStyle::Range => format!("{s}E{first}-{last}"),
+        MultiEpisodeStyle::Extend | MultiEpisodeStyle::Repeat => {
+            let mut b = s.clone();
+            for e in &episodes {
+                b.push('E');
+                b.push_str(e);
+            }
+            b
+        }
+        MultiEpisodeStyle::Duplicate => episodes
+            .iter()
+            .map(|e| format!("{s}E{e}"))
+            .collect::<Vec<_>>()
+            .join("."),
+        MultiEpisodeStyle::Scene => {
+            let mut b = format!("{s}E{first}");
+            for e in &episodes[1..] {
+                b.push_str("-E");
+                b.push_str(e);
+            }
+            b
+        }
+    };
+
+    Ok(block)
+}
+
 /// Look up a token by name. The lookup is exact (token names come from the media
 /// module's own vocabulary, not free text), so a typo in a format surfaces as a
 /// [`FsError::MissingToken`] rather than silently rendering nothing.
@@ -144,14 +422,16 @@ fn lookup<'a>(tokens: &'a NamingTokens, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// Sanitize a single path segment for portability across all supported
-/// platforms. Returns an empty string for segments that reduce to nothing so the
-/// caller can drop them.
-fn sanitize_segment(segment: &str) -> String {
-    // Replace illegal characters and control codes. We replace (rather than
-    // delete) with a space so "A:B" becomes "A B" instead of "AB", preserving
-    // word boundaries — the behavior the originals settled on.
-    let mut cleaned: String = segment
+/// Sanitize a single path segment for portability across the target platform.
+/// Returns an empty string for segments that reduce to nothing so the caller can
+/// drop them.
+fn sanitize_segment(segment: &str, opts: RenderOptions) -> String {
+    // The colon is handled first, with its configurable replacement, *before* the
+    // generic illegal-character pass so a Dash/Smart replacement can insert its
+    // own dash without that dash being seen as illegal.
+    let colon_handled = replace_colons(segment, opts);
+
+    let mut cleaned: String = colon_handled
         .chars()
         .map(|c| {
             if ILLEGAL_SEGMENT_CHARS.contains(&c) || c.is_control() {
@@ -165,8 +445,8 @@ fn sanitize_segment(segment: &str) -> String {
     // Collapse runs of whitespace introduced by replacement, then trim.
     cleaned = collapse_whitespace(&cleaned);
 
-    // Windows forbids trailing dots and spaces on a name; strip them. A name
-    // that was *only* dots/spaces collapses to empty and is dropped upstream.
+    // Windows forbids trailing dots and spaces on a name; strip them. A name that
+    // was *only* dots/spaces collapses to empty and is dropped upstream.
     let trimmed = cleaned.trim_matches(|c: char| c == '.' || c == ' ');
     let mut result = trimmed.to_string();
 
@@ -175,6 +455,51 @@ fn sanitize_segment(segment: &str) -> String {
     }
 
     result
+}
+
+/// Rewrite colons in a segment per the configured [`ColonReplacement`], honoring
+/// the platform (a colon-tolerant platform with [`ColonReplacement::Keep`] leaves
+/// them be).
+fn replace_colons(segment: &str, opts: RenderOptions) -> String {
+    if !segment.contains(':') {
+        return segment.to_string();
+    }
+
+    let keep = matches!(opts.colon, ColonReplacement::Keep) && opts.platform.allows_colon();
+    if keep {
+        return segment.to_string();
+    }
+
+    match opts.colon {
+        ColonReplacement::Delete => segment.replace(':', ""),
+        ColonReplacement::Dash => {
+            // Normalize ` : ` / `: ` / `:` to a spaced dash; whitespace is
+            // collapsed downstream so a single rule suffices.
+            segment.replace(':', " - ")
+        }
+        ColonReplacement::Smart => {
+            // ` : ` -> ` - `, but `:` with no trailing space -> `-` (e.g. ratios
+            // like "16:9" stay tight: "16-9").
+            let mut out = String::with_capacity(segment.len());
+            let chars: Vec<char> = segment.chars().collect();
+            for (i, &c) in chars.iter().enumerate() {
+                if c == ':' {
+                    let next_is_space =
+                        chars.get(i + 1).map(|n| n.is_whitespace()).unwrap_or(false);
+                    if next_is_space {
+                        out.push_str(" -");
+                    } else {
+                        out.push('-');
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        // Space (and Keep on a colon-hostile platform) -> a single space.
+        ColonReplacement::Space | ColonReplacement::Keep => segment.replace(':', " "),
+    }
 }
 
 /// Collapse internal runs of spaces/tabs to a single space and trim the ends.
@@ -242,11 +567,8 @@ mod tests {
 
     #[test]
     fn token_value_with_slash_cannot_escape_its_segment() {
-        // A title containing a slash must not create a new directory level.
         let t = tk(&[("Title", "AC/DC Live")]);
         let out = render_name("Music/{Title}", &t).unwrap();
-        // The value's slash is neutralized to a space; only the format's slash
-        // is structural, so this is exactly two segments.
         assert_eq!(out, "Music/AC DC Live");
     }
 
@@ -294,5 +616,199 @@ mod tests {
         let a = render_name("{A}/{B}", &t).unwrap();
         let b = render_name("{A}/{B}", &t).unwrap();
         assert_eq!(a, b);
+    }
+
+    // --- format specifiers (padding) ---
+
+    #[test]
+    fn zero_pad_specifier_pads_numbers() {
+        let t = tk(&[("Season", "2"), ("Episode", "6"), ("Absolute", "71")]);
+        let out = render_name("S{Season:00}E{Episode:00} {Absolute:000}", &t).unwrap();
+        assert_eq!(out, "S02E06 071");
+    }
+
+    #[test]
+    fn zero_pad_leaves_non_numeric_and_wider_values_alone() {
+        let t = tk(&[("Episode", "123")]);
+        // already 3 digits, width 2 -> unchanged
+        assert_eq!(render_name("{Episode:00}", &t).unwrap(), "123");
+        let t2 = tk(&[("Tag", "Final")]);
+        assert_eq!(render_name("{Tag:00}", &t2).unwrap(), "Final");
+    }
+
+    #[test]
+    fn unknown_specifier_is_ignored() {
+        let t = tk(&[("X", "value")]);
+        assert_eq!(render_name("{X:weird}", &t).unwrap(), "value");
+    }
+
+    // --- leading-dash optional group ---
+
+    #[test]
+    fn dash_group_renders_when_present() {
+        let t = tk(&[("Title", "Movie"), ("Release Group", "NTb")]);
+        let out = render_name("{Title}{-Release Group}", &t).unwrap();
+        assert_eq!(out, "Movie -NTb");
+    }
+
+    #[test]
+    fn dash_group_collapses_when_absent() {
+        let t = tk(&[("Title", "Movie")]);
+        let out = render_name("{Title}{-Release Group}", &t).unwrap();
+        assert_eq!(out, "Movie");
+    }
+
+    #[test]
+    fn dash_group_collapses_when_empty() {
+        let t = tk(&[("Title", "Movie"), ("Release Group", "")]);
+        let out = render_name("{Title}{-Release Group}", &t).unwrap();
+        assert_eq!(out, "Movie");
+    }
+
+    // --- multi-episode styles ---
+
+    fn ep_tokens() -> NamingTokens {
+        tk(&[("Season", "1"), ("Episodes", "1,2,3")])
+    }
+
+    fn render_block(style: MultiEpisodeStyle) -> String {
+        let opts = RenderOptions {
+            multi_episode: style,
+            ..Default::default()
+        };
+        render_name_with("{Episode Block:00}", &ep_tokens(), opts).unwrap()
+    }
+
+    #[test]
+    fn multi_ep_prefixed_range_is_default() {
+        assert_eq!(render_block(MultiEpisodeStyle::PrefixedRange), "S01E01-E03");
+        // default options also yield PrefixedRange
+        assert_eq!(
+            render_name("{Episode Block:00}", &ep_tokens()).unwrap(),
+            "S01E01-E03"
+        );
+    }
+
+    #[test]
+    fn multi_ep_range() {
+        assert_eq!(render_block(MultiEpisodeStyle::Range), "S01E01-03");
+    }
+
+    #[test]
+    fn multi_ep_extend_and_repeat() {
+        assert_eq!(render_block(MultiEpisodeStyle::Extend), "S01E01E02E03");
+        assert_eq!(render_block(MultiEpisodeStyle::Repeat), "S01E01E02E03");
+    }
+
+    #[test]
+    fn multi_ep_duplicate() {
+        assert_eq!(
+            render_block(MultiEpisodeStyle::Duplicate),
+            "S01E01.S01E02.S01E03"
+        );
+    }
+
+    #[test]
+    fn multi_ep_scene() {
+        assert_eq!(render_block(MultiEpisodeStyle::Scene), "S01E01-E02-E03");
+    }
+
+    #[test]
+    fn single_episode_block_reduces_to_sxxeyy_for_every_style() {
+        let t = tk(&[("Season", "2"), ("Episodes", "6")]);
+        for style in [
+            MultiEpisodeStyle::PrefixedRange,
+            MultiEpisodeStyle::Range,
+            MultiEpisodeStyle::Extend,
+            MultiEpisodeStyle::Repeat,
+            MultiEpisodeStyle::Duplicate,
+            MultiEpisodeStyle::Scene,
+        ] {
+            let opts = RenderOptions {
+                multi_episode: style,
+                ..Default::default()
+            };
+            assert_eq!(
+                render_name_with("{Episode Block:00}", &t, opts).unwrap(),
+                "S02E06"
+            );
+        }
+    }
+
+    #[test]
+    fn episode_block_uses_single_episode_token_as_fallback() {
+        // No Episodes/Episode token at all -> MissingToken.
+        let bare = tk(&[("Season", "3")]);
+        let err = render_name("{Episode Block:00}", &bare).unwrap_err();
+        assert!(matches!(err, FsError::MissingToken { token } if token == "Episodes"));
+
+        // The single `Episode` token is accepted as a fallback for `Episodes`.
+        let t = tk(&[("Season", "3"), ("Episode", "14")]);
+        assert_eq!(render_name("{Episode Block:00}", &t).unwrap(), "S03E14");
+    }
+
+    // --- colon replacement modes ---
+
+    fn render_colon(colon: ColonReplacement, platform: TargetPlatform, value: &str) -> String {
+        let opts = RenderOptions {
+            colon,
+            platform,
+            ..Default::default()
+        };
+        render_name_with("{Title}", &tk(&[("Title", value)]), opts).unwrap()
+    }
+
+    #[test]
+    fn colon_space_is_default() {
+        assert_eq!(
+            render_colon(ColonReplacement::Space, TargetPlatform::Windows, "A: B"),
+            "A B"
+        );
+    }
+
+    #[test]
+    fn colon_dash() {
+        assert_eq!(
+            render_colon(ColonReplacement::Dash, TargetPlatform::Windows, "A: B"),
+            "A - B"
+        );
+    }
+
+    #[test]
+    fn colon_delete() {
+        assert_eq!(
+            render_colon(ColonReplacement::Delete, TargetPlatform::Windows, "A: B"),
+            "A B"
+        );
+        // delete with no space leaves words joined
+        assert_eq!(
+            render_colon(ColonReplacement::Delete, TargetPlatform::Windows, "16:9"),
+            "169"
+        );
+    }
+
+    #[test]
+    fn colon_smart_distinguishes_spaced_from_tight() {
+        assert_eq!(
+            render_colon(ColonReplacement::Smart, TargetPlatform::Windows, "A: B"),
+            "A - B"
+        );
+        assert_eq!(
+            render_colon(ColonReplacement::Smart, TargetPlatform::Windows, "16:9"),
+            "16-9"
+        );
+    }
+
+    #[test]
+    fn colon_kept_on_posix_but_replaced_on_windows() {
+        assert_eq!(
+            render_colon(ColonReplacement::Keep, TargetPlatform::Posix, "A: B"),
+            "A: B"
+        );
+        // Keep on a colon-hostile platform falls back to a space.
+        assert_eq!(
+            render_colon(ColonReplacement::Keep, TargetPlatform::Windows, "A: B"),
+            "A B"
+        );
     }
 }

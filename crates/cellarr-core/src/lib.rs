@@ -66,7 +66,7 @@ pub use profile::{
     condition_matches, custom_format_matches, resolve_quality, Condition, ConditionKind,
     CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking,
 };
-pub use release::{ContentMatch, ParsedCandidate, Protocol, Release};
+pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType};
 pub use repo::{
     ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository,
     MediaFileRepository, ProfileRepository,

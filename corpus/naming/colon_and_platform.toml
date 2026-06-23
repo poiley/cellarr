@@ -1,0 +1,83 @@
+# Naming vectors: configurable colon replacement and target platform.
+#
+# A colon is legal on Linux but forbidden on Windows/exFAT/SMB. The originals
+# expose a user-tunable "colon replacement" setting; cellarr reproduces it as a
+# per-render option (default: replace with a space). These vectors pin each mode
+# against the same colon-bearing title, plus the POSIX "keep" path.
+#
+# Re-curated from the originals' colon-replacement behavior.
+
+[[case]]
+source = "derived from *arr colon-replacement = Space (default)"
+notes  = "': ' becomes a single space"
+format = "{Movie Title} ({Year})"
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission Impossible (1996)"
+
+[[case]]
+source = "derived from *arr colon-replacement = Dash"
+notes  = "colon becomes a spaced dash"
+format = "{Movie Title} ({Year})"
+options = { colon = "dash" }
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission - Impossible (1996)"
+
+[[case]]
+source = "derived from *arr colon-replacement = Delete"
+notes  = "colon removed; trailing space remains then collapses"
+format = "{Movie Title} ({Year})"
+options = { colon = "delete" }
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission Impossible (1996)"
+
+[[case]]
+source = "derived from *arr colon-replacement = Smart (spaced colon)"
+notes  = "': ' -> ' - ' under Smart"
+format = "{Movie Title} ({Year})"
+options = { colon = "smart" }
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission - Impossible (1996)"
+
+[[case]]
+source = "derived from *arr colon-replacement = Smart (tight colon / ratio)"
+notes  = "':' with no trailing space stays tight as '-' (e.g. an aspect ratio)"
+format = "{Title}"
+options = { colon = "smart" }
+[case.tokens]
+"Title" = "Format 16:9 Remaster"
+[case.expected]
+path = "Format 16-9 Remaster"
+
+[[case]]
+source = "derived from POSIX target where the colon is legal"
+notes  = "on a POSIX library the colon is kept verbatim"
+format = "{Movie Title} ({Year})"
+options = { platform = "posix", colon = "keep" }
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission: Impossible (1996)"
+
+[[case]]
+source = "derived from Windows fallback when 'keep' is requested but illegal"
+notes  = "'keep' on a colon-hostile platform falls back to a space, never an illegal name"
+format = "{Movie Title} ({Year})"
+options = { platform = "windows", colon = "keep" }
+[case.tokens]
+"Movie Title" = "Mission: Impossible"
+"Year"        = "1996"
+[case.expected]
+path = "Mission Impossible (1996)"

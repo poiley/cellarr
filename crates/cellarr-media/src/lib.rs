@@ -37,7 +37,10 @@ pub mod registry;
 
 pub use content::{ContentCandidate, ContentLookup};
 pub use error::MediaError;
-pub use identify::{remap_absolute, IdentifyError, SceneMapping, SceneMappingProvider, SceneRange};
+pub use identify::{
+    remap_absolute, remap_absolute_dyn, DynSceneMappingProvider, IdentifyError, SceneBoxError,
+    SceneBoxErrorWrapper, SceneMapping, SceneMappingProvider, SceneRange,
+};
 pub use meta::{MetadataLookup, MovieMeta, SeriesMeta};
 pub use module::{ModuleError, MovieModule, TvModule, AMBIGUOUS_CONFIDENCE};
 pub use registry::{BoxError, DynMediaModule, MediaRegistry};
