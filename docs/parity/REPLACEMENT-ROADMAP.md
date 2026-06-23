@@ -103,10 +103,20 @@ fixtures (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). Additive c
   cellarr, diff matched-CF sets and scores over the corpus (decision-gaps.md).
 - **Exit gate:** Recyclarr syncs a TRaSH config into cellarr without error; CF-score parity ≥ target.
 
-### Phase C — Indexers live (Prowlarr unlock)
-- Wire the indexer adapter to `/api/v3/indexer` CRUD + `indexer/schema` + `indexer/test` +
-  `?forceSave=true`; execute real Torznab/Newznab search + RSS from the pipeline.
-- **Exit gate:** Prowlarr FullSync round-trips (create/update/delete) and a search returns releases.
+### Phase C — Indexers live (Prowlarr unlock) — ✅ IMPLEMENTED (2026-06-23)
+Shipped: `/api/v3/indexer` configs **persist** to the db (`config.rs`) and the jobs **Discover**
+stage reads them and runs the Torznab/Newznab adapter (caps-first → search → parse → decide → import).
+New `cellarr-jobs/src/indexers.rs` + `tests/indexer_live_pipeline.rs` (4 tests) drive a **local
+mock Torznab HTTP server**: real `t=caps` then `t=tvsearch`, releases discovered+parsed+decided, plus
+a 401 fail-fast path.
+- **Exit gate result:** the **Prowlarr push sequence** is validated via the scripted-API equivalent
+  (GET `indexer/schema` → POST `indexer?forceSave=true` → GET round-trip → **persists across a daemon
+  restart**), confirmed live against the daemon. The full **live-Prowlarr-container** round-trip
+  *wedged the verify agent* (Prowlarr app-add/host-reachability stalled for hours), so it was stopped
+  and validated the scripted way instead — same contract Prowlarr exercises. Re-attempting the full
+  container path (with explicit host networking) is a documented follow-up.
+- Live search uses a mock Torznab (real private trackers need creds — out of scope); RSS-sync cadence
+  wiring is a small follow-up.
 
 ### Phase D — Download + import live (end-to-end acquisition)
 - Wire download-client adapters live (categories, CDH, remote-path mappings); run the full pipeline

@@ -27,12 +27,14 @@
 
 pub mod clock;
 pub mod error;
+pub mod indexers;
 pub mod job;
 pub mod runner;
 pub mod scheduler;
 
 pub use clock::{Clock, LogicalClock, SystemClock};
 pub use error::{BoxError, JobError, Result};
+pub use indexers::{DbIndexerSet, IndexerSetError, NabAdapter};
 pub use job::{
     Job, JobKind, JobState, JobStore, MemoryJobStore, MemoryStoreError, RetryPolicy, Schedule,
 };

@@ -469,6 +469,60 @@ async fn config_aggregates_round_trip() {
 }
 
 #[tokio::test]
+async fn indexer_delete_and_enabled_filter() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+
+    let enabled_lo = IndexerConfig {
+        id: IndexerId::new(),
+        name: "Alpha".to_string(),
+        kind: "torznab".to_string(),
+        protocol: Protocol::Torrent,
+        enabled: true,
+        priority: 5,
+        settings: serde_json::json!({"baseUrl": "https://a/api"}),
+    };
+    let enabled_hi = IndexerConfig {
+        id: IndexerId::new(),
+        name: "Bravo".to_string(),
+        kind: "newznab".to_string(),
+        protocol: Protocol::Usenet,
+        enabled: true,
+        priority: 1,
+        settings: serde_json::json!({"baseUrl": "https://b/api"}),
+    };
+    let disabled = IndexerConfig {
+        id: IndexerId::new(),
+        name: "Charlie".to_string(),
+        kind: "torznab".to_string(),
+        protocol: Protocol::Torrent,
+        enabled: false,
+        priority: 2,
+        settings: serde_json::json!({"baseUrl": "https://c/api"}),
+    };
+    for ix in [&enabled_lo, &enabled_hi, &disabled] {
+        config.upsert_indexer(ix).await.expect("upsert");
+    }
+
+    // Enabled-only, ascending priority (Bravo prio 1 before Alpha prio 5); the
+    // disabled one is excluded.
+    let enabled = config.list_enabled_indexers().await.expect("enabled");
+    let names: Vec<&str> = enabled.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, vec!["Bravo", "Alpha"]);
+
+    // Delete returns true for an existing row, false (idempotent) when re-run.
+    assert!(config.delete_indexer(enabled_lo.id).await.expect("del"));
+    assert!(!config.delete_indexer(enabled_lo.id).await.expect("del2"));
+    assert!(config
+        .get_indexer(enabled_lo.id)
+        .await
+        .expect("get")
+        .is_none());
+    // The others survive.
+    assert_eq!(config.list_indexers().await.expect("list").len(), 2);
+}
+
+#[tokio::test]
 async fn history_append_and_query_in_order() {
     let (_dir, db) = temp_db().await;
     let history = db.history();

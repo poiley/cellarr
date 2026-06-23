@@ -226,6 +226,48 @@ impl ConfigRepo {
         rows.into_iter().map(row_to_json_body).collect()
     }
 
+    /// All *enabled* indexer configurations, ordered by ascending priority (the
+    /// *arr convention: lower priority is preferred), then name. This is the set
+    /// the discovery pipeline fans a search across.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn list_enabled_indexers(&self) -> Result<Vec<IndexerConfig>> {
+        let rows = sqlx::query(
+            "SELECT body FROM indexer WHERE enabled = 1 ORDER BY priority ASC, name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_json_body).collect()
+    }
+
+    /// Delete an indexer configuration by id. Idempotent: returns `true` if a row
+    /// was removed, `false` if no such indexer existed.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_indexer(&self, id: cellarr_core::IndexerId) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM indexer WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     // --- Download clients ---------------------------------------------------
 
     /// Insert or replace a download-client configuration.

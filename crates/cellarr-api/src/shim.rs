@@ -132,6 +132,8 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/qualityProfile/schema", get(quality_profile_schema))
         .route("/qualitydefinition", get(quality_definitions))
         .route("/qualityDefinition", get(quality_definitions))
+        .route("/languageprofile", get(language_profiles))
+        .route("/languageProfile", get(language_profiles))
         .route("/customformat", get(list_custom_formats))
         .route("/customFormat", get(list_custom_formats))
         .route("/customformat/schema", get(custom_format_schema))
@@ -616,6 +618,34 @@ async fn quality_definitions(State(fs): State<FaceState>) -> Json<Vec<Value>> {
     Json(out)
 }
 
+// --- languageprofile -------------------------------------------------------
+
+/// v3 `languageprofile` — a Sonarr-only resource. Prowlarr's Sonarr application
+/// proxy fetches it during its app-add handshake and dereferences the result, so
+/// a missing/`404` body makes Prowlarr fail the "test" with a null-reference
+/// error (Radarr has no language profiles, which is why only the Sonarr-app path
+/// hit this). We answer with Sonarr v4's built-in default profile (id 1,
+/// "English"), which is all Prowlarr needs to complete the handshake. On the
+/// Radarr face the resource stays absent (returns an empty list) so the surface
+/// matches the real app it emulates.
+async fn language_profiles(State(fs): State<FaceState>) -> Json<Vec<Value>> {
+    if !matches!(fs.face.fixed_media(), Some(MediaType::Tv) | None) {
+        return Json(Vec::new());
+    }
+    // The English language identity Sonarr ships (id 1) plus the catch-all
+    // "Any"/Original markers the apps include in a profile's language list.
+    Json(vec![json!({
+        "id": 1,
+        "name": "English",
+        "upgradeAllowed": true,
+        "cutoff": { "id": 1, "name": "English" },
+        "languages": [
+            { "language": { "id": -1, "name": "Any" }, "allowed": true },
+            { "language": { "id": 1, "name": "English" }, "allowed": true },
+        ],
+    })])
+}
+
 // --- customformat ----------------------------------------------------------
 
 /// The v3 custom-format specification implementation name for a cellarr
@@ -879,10 +909,63 @@ async fn list_indexers(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>
     Ok(Json(indexers.iter().map(v3_indexer).collect()))
 }
 
-/// v3 `indexer/schema` — at minimum a Torznab and a Newznab template, which
-/// Prowlarr round-trips its pushed indexer through.
-async fn indexer_schema() -> Json<Vec<Value>> {
+/// v3 `indexer/schema` — the Torznab and Newznab templates Prowlarr round-trips
+/// its pushed indexer through.
+///
+/// The field set is not cosmetic: when Prowlarr adds a Sonarr/Radarr application
+/// it fetches this schema, picks the Torznab (torrent) or Newznab (usenet)
+/// template, and **hard-dereferences** a fixed list of fields by name
+/// (`Build{Sonarr,Radarr}Indexer`): `baseUrl`, `apiPath`, `apiKey`, `categories`,
+/// and — for the Sonarr face — `animeCategories`, plus the torrent
+/// `minimumSeeders` / `seedCriteria.*` fields. A missing field there is a
+/// `NullReferenceException` on Prowlarr's side that surfaces as "cannot connect to
+/// Sonarr" during the app-add test. So each template must carry the full field set
+/// the real app exposes for its protocol, gated by face (Sonarr ships the anime
+/// fields; Radarr ships `multiLanguages`/`removeYear`).
+async fn indexer_schema(State(fs): State<FaceState>) -> Json<Vec<Value>> {
+    // The torrent-only fields both apps hard-deref when building a torrent
+    // indexer (seed criteria + minimum seeders). Always present on the Torznab
+    // template; harmless on Newznab.
+    let torrent_fields = || -> Vec<Value> {
+        vec![
+            json!({ "order": 20, "name": "minimumSeeders", "label": "Minimum Seeders", "type": "number", "advanced": true, "value": 1 }),
+            json!({ "order": 21, "name": "seedCriteria.seedRatio", "label": "Seed Ratio", "type": "number", "advanced": true }),
+            json!({ "order": 22, "name": "seedCriteria.seedTime", "label": "Seed Time", "type": "number", "advanced": true, "unit": "minutes" }),
+            json!({ "order": 23, "name": "seedCriteria.seasonPackSeedTime", "label": "Season-Pack Seed Time", "type": "number", "advanced": true, "unit": "minutes" }),
+            json!({ "order": 24, "name": "rejectBlocklistedTorrentHashesWhileGrabbing", "label": "Reject Blocklisted Torrent Hashes While Grabbing", "type": "checkbox", "advanced": true, "value": false }),
+        ]
+    };
+
+    // The face-specific extra fields the app's indexer builder expects.
+    let face_fields = || -> Vec<Value> {
+        // The bare Cellarr face presents both apps; expose the union so either
+        // app's builder finds its fields.
+        let sonarr = matches!(fs.face.fixed_media(), Some(MediaType::Tv) | None);
+        let radarr = matches!(fs.face.fixed_media(), Some(MediaType::Movie) | None);
+        let mut v = Vec::new();
+        if sonarr {
+            v.push(json!({ "order": 10, "name": "animeCategories", "label": "Anime Categories", "type": "select", "advanced": false }));
+            v.push(json!({ "order": 11, "name": "animeStandardFormatSearch", "label": "Anime Standard Format Search", "type": "checkbox", "advanced": true, "value": false }));
+        }
+        if radarr {
+            v.push(json!({ "order": 12, "name": "multiLanguages", "label": "Multi Languages", "type": "select", "advanced": true }));
+            v.push(json!({ "order": 13, "name": "removeYear", "label": "Remove Year", "type": "checkbox", "advanced": true, "value": false }));
+        }
+        v
+    };
+
     let entry = |impl_name: &str, protocol: &str| {
+        let mut fields = vec![
+            json!({ "order": 0, "name": "baseUrl", "label": "URL", "type": "textbox", "advanced": false }),
+            json!({ "order": 1, "name": "apiPath", "label": "API Path", "value": "/api", "type": "textbox", "advanced": true }),
+            json!({ "order": 2, "name": "apiKey", "label": "API Key", "type": "textbox", "advanced": false, "privacy": "apiKey" }),
+            json!({ "order": 3, "name": "categories", "label": "Categories", "type": "select", "advanced": false }),
+            json!({ "order": 4, "name": "additionalParameters", "label": "Additional Parameters", "type": "textbox", "advanced": true }),
+        ];
+        fields.extend(face_fields());
+        if protocol == "torrent" {
+            fields.extend(torrent_fields());
+        }
         json!({
             "name": "",
             "implementation": impl_name,
@@ -896,12 +979,7 @@ async fn indexer_schema() -> Json<Vec<Value>> {
             "enableInteractiveSearch": true,
             "supportsRss": true,
             "supportsSearch": true,
-            "fields": [
-                { "order": 0, "name": "baseUrl", "label": "URL", "type": "textbox", "advanced": false },
-                { "order": 1, "name": "apiPath", "label": "API Path", "value": "/api", "type": "textbox", "advanced": true },
-                { "order": 2, "name": "apiKey", "label": "API Key", "type": "textbox", "advanced": false, "privacy": "apiKey" },
-                { "order": 3, "name": "categories", "label": "Categories", "type": "select", "advanced": false }
-            ],
+            "fields": fields,
             "presets": [],
             "tags": [],
         })
@@ -1014,11 +1092,24 @@ async fn update_indexer(
 }
 
 async fn delete_indexer(
-    State(_fs): State<FaceState>,
+    State(fs): State<FaceState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    // No indexer delete in the persistence layer yet; accept idempotently.
-    parse_i64(&id, "indexer")?;
+    // Map the v3 integer id back to the stored uuid and delete it. A missing
+    // indexer is accepted idempotently (the *arr clients expect delete to 200
+    // even on a re-issued delete).
+    let numeric = parse_i64(&id, "indexer")?;
+    if let Some(ix) = fs
+        .state
+        .db
+        .config()
+        .list_indexers()
+        .await?
+        .into_iter()
+        .find(|ix| ix_numeric_id(ix.id) == numeric)
+    {
+        fs.state.db.config().delete_indexer(ix.id).await?;
+    }
     Ok(Json(json!({})))
 }
 
