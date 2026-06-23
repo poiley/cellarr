@@ -48,8 +48,11 @@ clean, SRCL-only UI lint clean.
   reports the deferral; the harness is preserved behind `CELLARR_ENABLE_PG_TESTS=1`. See
   [`docs/08-database.md`](docs/08-database.md).
 - **Music & books media types** — designed for in the model; post-v1 per [`docs/00-vision.md`](docs/00-vision.md).
-- **Differential-oracle parity runs** — the harness/plan exists ([`docs/11-testing.md`](docs/11-testing.md));
-  running real pinned Sonarr/Radarr in Docker to measure parity % is a quality activity not yet executed.
+- **Differential-oracle parity** — DONE for the parser: pinned Sonarr 4.0.17 + Radarr 6.2.1 diffed
+  against cellarr over the corpus → **90% exact** (up from 76.7%), mechanical gaps fixed, all
+  remaining gaps catalogued in [`docs/parity/`](docs/parity/README.md). Reproduce with `just oracle`.
+  Still open: the **CF-score / decision oracle** (import a TRaSH set both sides, diff scores) and the
+  **identify/matching oracle** (needs populated libraries) — see [`docs/parity/decision-gaps.md`](docs/parity/decision-gaps.md).
 - **Live-service smoke suites** — integrations are tested via record/replay fixtures (offline);
   opt-in live drift suites against real indexers/clients/metadata are not wired.
 - **LLM & WASM plugins** — implemented but feature-gated off by default (kept out of the lean single binary).
