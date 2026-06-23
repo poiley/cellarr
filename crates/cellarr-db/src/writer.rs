@@ -41,17 +41,47 @@ pub struct WriterHandle {
     tx: mpsc::Sender<WriteMessage>,
 }
 
+/// Control side of the writer task, held by [`crate::Database`] (once, behind an
+/// `Arc`) so shutdown can stop the actor **explicitly** and wait for it to drop
+/// its connection — independent of how many [`WriterHandle`] clones exist.
+///
+/// This is the crux of clean shutdown: `SqlitePool::close()` waits for every
+/// outstanding connection to be returned, and the actor holds one for its whole
+/// life. Relying on all handle clones dropping is unworkable (the pool, the
+/// scheduler, and per-repo borrows all clone the handle). So we signal the actor
+/// directly and `join` it before closing the pool.
+pub struct WriterShutdown {
+    stop: Option<oneshot::Sender<()>>,
+    join: tokio::task::JoinHandle<()>,
+}
+
+impl WriterShutdown {
+    /// Signal the writer actor to stop and wait for it to finish (dropping its
+    /// connection back to the pool). Idempotent-safe: callable once; the
+    /// [`crate::Database`] guards against double-invocation.
+    pub async fn shutdown(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        // The actor returns promptly once signalled; awaiting it guarantees its
+        // pooled connection has been released before the caller closes the pool.
+        let _ = self.join.await;
+    }
+}
+
 impl WriterHandle {
-    /// Spawn the writer task on the current runtime and return its handle.
+    /// Spawn the writer task on the current runtime.
     ///
     /// The task acquires one connection from `pool` and keeps it for its
     /// lifetime so writes are strictly serialized. `bound` is the channel
-    /// capacity (backpressure for write bursts).
+    /// capacity (backpressure for write bursts). Returns the cloneable submit
+    /// handle plus the single [`WriterShutdown`] control.
     #[must_use]
-    pub fn spawn(pool: SqlitePool, bound: usize) -> Self {
+    pub fn spawn(pool: SqlitePool, bound: usize) -> (Self, WriterShutdown) {
         let (tx, mut rx) = mpsc::channel::<WriteMessage>(bound);
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
 
-        tokio::spawn(async move {
+        let join = tokio::spawn(async move {
             // Hold a dedicated connection for the actor's life; this is the one
             // and only writer, which is exactly the SQLite single-writer model.
             let mut conn = match pool.acquire().await {
@@ -65,14 +95,34 @@ impl WriterHandle {
                 }
             };
 
-            while let Some(WriteMessage { job, reply }) = rx.recv().await {
-                let outcome = run_in_immediate(&mut conn, job).await;
-                // The receiver may have given up; ignore a closed reply channel.
-                let _ = reply.send(outcome);
+            loop {
+                tokio::select! {
+                    // Bias toward draining queued writes before honoring a stop,
+                    // so an in-flight burst isn't dropped at shutdown.
+                    biased;
+                    msg = rx.recv() => match msg {
+                        Some(WriteMessage { job, reply }) => {
+                            let outcome = run_in_immediate(&mut conn, job).await;
+                            // The receiver may have given up; ignore a closed channel.
+                            let _ = reply.send(outcome);
+                        }
+                        // All submit handles dropped: nothing more can arrive.
+                        None => break,
+                    },
+                    _ = &mut stop_rx => break,
+                }
             }
+            // `conn` drops here, returning the writer's connection to the pool so
+            // a subsequent `pool.close()` can complete.
         });
 
-        Self { tx }
+        (
+            Self { tx },
+            WriterShutdown {
+                stop: Some(stop_tx),
+                join,
+            },
+        )
     }
 
     /// Submit a write job and await its result.

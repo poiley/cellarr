@@ -6,16 +6,18 @@
 //! writer reality: WAL journaling, a nonzero `busy_timeout`, and foreign keys on.
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use tokio::sync::Mutex;
 
 use crate::error::Result;
 use crate::repos::{
     CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo, MediaFileRepo,
     ProfileRepo,
 };
-use crate::writer::WriterHandle;
+use crate::writer::{WriterHandle, WriterShutdown};
 
 /// Default bound on the writer channel: enough to absorb normal write bursts
 /// without unbounded memory growth.
@@ -30,6 +32,10 @@ const DEFAULT_WRITER_BOUND: usize = 256;
 pub struct Database {
     pool: SqlitePool,
     writer: WriterHandle,
+    // Shared, take-once shutdown control for the writer actor. Behind an `Arc<Mutex<Option<_>>>`
+    // so every `Database` clone observes the same control and `shutdown` runs at most once
+    // regardless of which clone calls it.
+    shutdown: Arc<Mutex<Option<WriterShutdown>>>,
 }
 
 impl Database {
@@ -67,8 +73,12 @@ impl Database {
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        let writer = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
-        Ok(Self { pool, writer })
+        let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
+        Ok(Self {
+            pool,
+            writer,
+            shutdown: Arc::new(Mutex::new(Some(shutdown))),
+        })
     }
 
     async fn connect_with(options: SqliteConnectOptions) -> Result<Self> {
@@ -77,8 +87,27 @@ impl Database {
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        let writer = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
-        Ok(Self { pool, writer })
+        let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
+        Ok(Self {
+            pool,
+            writer,
+            shutdown: Arc::new(Mutex::new(Some(shutdown))),
+        })
+    }
+
+    /// Shut the database down cleanly: stop the writer actor (so it releases its
+    /// dedicated connection), then close the pool — leaving a consistent DB with
+    /// no half-applied transaction. Safe to call on any clone and more than once
+    /// (only the first call does the work).
+    ///
+    /// This is the correct teardown; **do not** call `pool().close()` directly
+    /// while a `Database` is alive — the writer actor holds a connection the pool
+    /// would wait on forever (a deadlock).
+    pub async fn shutdown(&self) {
+        if let Some(ctrl) = self.shutdown.lock().await.take() {
+            ctrl.shutdown().await;
+        }
+        self.pool.close().await;
     }
 
     /// The read pool. Repositories use this for queries; callers needing an

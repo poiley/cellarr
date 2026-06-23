@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "cellarr_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cellarr"
 path = "src/main.rs"
@@ -31,3 +35,11 @@ figment.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+reqwest = { workspace = true }
+serde_json.workspace = true
