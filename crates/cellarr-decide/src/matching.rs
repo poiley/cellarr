@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use cellarr_core::{
     condition_matches, Condition, ConditionKind, CustomFormat, ParsedRelease, Release,
 };
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use crate::error::DecideError;
 
@@ -43,8 +43,16 @@ impl<'a> MatchContext<'a> {
             for condition in &format.conditions {
                 if let ConditionKind::ReleaseTitle { pattern } = &condition.kind {
                     if !regexes.contains_key(pattern) {
-                        let re =
-                            Regex::new(pattern).map_err(|source| DecideError::InvalidRegex {
+                        // Custom-format title regexes are matched CASE-INSENSITIVELY,
+                        // matching Sonarr/Radarr (which compile CF regexes with
+                        // IgnoreCase). TRaSH custom formats are written lowercase and
+                        // rely on this; without it cellarr would match almost no
+                        // real-world CFs (e.g. "HEVC"/"REPACK"/"AMZN") and make wrong
+                        // grab decisions. Verified by the CF-matching oracle.
+                        let re = RegexBuilder::new(pattern)
+                            .case_insensitive(true)
+                            .build()
+                            .map_err(|source| DecideError::InvalidRegex {
                                 format: format.name.clone(),
                                 source,
                             })?;
@@ -123,5 +131,61 @@ impl<'a> MatchContext<'a> {
             // semantics drifting out of sync.
             _ => condition_matches(condition, parsed, None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::{Confidence, CustomFormatId, IndexerId, ParsedField, Protocol};
+
+    fn title_cf(name: &str, pattern: &str) -> CustomFormat {
+        CustomFormat {
+            id: CustomFormatId::new(),
+            name: name.to_string(),
+            conditions: vec![Condition {
+                kind: ConditionKind::ReleaseTitle {
+                    pattern: pattern.to_string(),
+                },
+                required: true,
+                negate: false,
+            }],
+            score: 0,
+        }
+    }
+
+    fn rel(title: &str) -> (Release, ParsedRelease) {
+        let mut p = ParsedRelease::new(title);
+        p.set_confidence(ParsedField::Resolution, Confidence::new(0.9));
+        (
+            Release {
+                indexer_id: IndexerId::new(),
+                title: title.to_string(),
+                download_url: String::new(),
+                guid: None,
+                protocol: Protocol::Torrent,
+                size: None,
+                seeders: None,
+                indexer_flags: vec![],
+            },
+            p,
+        )
+    }
+
+    #[test]
+    fn release_title_regex_is_case_insensitive() {
+        // TRaSH CFs are written lowercase and rely on case-insensitive matching,
+        // as Sonarr/Radarr do. Verified against the live apps by the CF oracle.
+        let fmts = vec![
+            title_cf("hevc", r"(x265|h265|hevc)"),
+            title_cf("proper", r"\bproper\b"),
+        ];
+        let ctx = MatchContext::new(&fmts).expect("compiles");
+        let (r, p) = rel("Show.S01E01.PROPER.1080p.WEB-DL.HEVC-GRP");
+        assert!(
+            ctx.matches(&fmts[0], &r, &p),
+            "uppercase HEVC must match lowercase pattern"
+        );
+        assert!(ctx.matches(&fmts[1], &r, &p), "uppercase PROPER must match");
     }
 }

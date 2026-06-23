@@ -17,3 +17,7 @@ thiserror.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
 toml = "0.8"
+# CF-matching oracle only (tests/oracle_cf.rs, #[ignore]): parse corpus titles and
+# diff cellarr's custom-format matching against a live Sonarr's /api/v3/parse.
+cellarr-parse.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

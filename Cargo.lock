@@ -462,7 +462,9 @@ name = "cellarr-decide"
 version = "0.0.0"
 dependencies = [
  "cellarr-core",
+ "cellarr-parse",
  "regex",
+ "reqwest",
  "rstest",
  "serde",
  "serde_json",

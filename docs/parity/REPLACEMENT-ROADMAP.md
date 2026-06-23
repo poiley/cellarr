@@ -47,8 +47,8 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 |------|----------------|----------------|
 | Release parsing | 🟡 90% exact | PARITY_REPORT; G3/G4/G7/G8 deferred (parser-gaps.md) |
 | Quality bucketing | 🟡 98.3% logic | quality-vocab.md: missing 576p/Raw-HD + movie low-tiers; remux naming (per-app) |
-| Custom formats (matching) | 🟡 implemented, unmeasured | decision-gaps.md: CF-matching oracle is the next run |
-| CF scoring + precedence | 🟡 implemented, unit-tested | needs CF-score oracle + `formatItems` in shim |
+| Custom formats (matching) | ✅ 100% (oracle) | decision-gaps.md: caught + fixed case-insensitivity (G-CF1: TRaSH CFs would have silently failed) |
+| CF scoring + precedence | 🟡 logic + unit-tested; matching=100% | score follows from matching; needs `formatItems` in shim + score-confirm oracle |
 | Quality profiles | 🟡 core + UI | shim `qualityprofile` missing `formatItems`; no `/schema` |
 | Decision engine (grab/upgrade/reject/cutoff) | ✅ logic + tests | precedence proven via inputs; live-search oracle deferred |
 | Indexers (Torznab/Newznab) | 🟡 adapter + fixtures | not wired to `/api/v3/indexer`; no live search yet |

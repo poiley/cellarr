@@ -13,20 +13,27 @@ decide?" endpoint. This file records what's measurable, what isn't, and the plan
 There is **no** endpoint for the actual download decision (grab vs upgrade vs reject vs cutoff-met);
 that logic runs only during a live search/grab against configured indexers + a populated library.
 
-## Measurable now (cheap, high value) — NOT yet run
-1. **Quality-bucket parity** — already covered by the parser oracle: **98.3%**
-   ([PARITY_REPORT.md](PARITY_REPORT.md)). The two open items are vocabulary, not logic
-   (G7 Remux naming, G8 BR-DISK) — see [parser-gaps.md](parser-gaps.md).
-2. **Custom-format score parity** — feasible and the clear next step:
-   - Import a known **TRaSH-Guides** CF set into Sonarr/Radarr via `POST /api/v3/customformat`
-     (and the matching quality profile), and the **same** set into cellarr (it already has a TRaSH
-     importer — `cellarr-decide::trash`).
-   - For each release title, compare the app's `customFormatScore` (from `/api/v3/parse`) against
-     `cellarr-decide::score(parsed, profile, cfs)`.
-   - This directly oracles CF condition matching + scoring — the part of the decision engine most
-     likely to diverge, and the part users tune most.
-   - **Status: designed, not executed.** With zero CFs configured both sides score 0 (a meaningless
-     match), so this needs the CF import step first. Tracked as the next decision-parity task.
+## Measured
+1. **Quality-bucket parity** — covered by the parser oracle: **98.3%**
+   ([PARITY_REPORT.md](PARITY_REPORT.md)). Open items are vocabulary, not logic (G7 Remux naming,
+   G8 BR-DISK) — see [quality-vocab.md](quality-vocab.md).
+2. **Custom-format MATCHING parity — RUN: 100% (120/120) after a fix.** Harness:
+   `cellarr-decide/tests/oracle_cf.rs` (run via `just oracle-cf`). One CF set (8 ReleaseTitle-regex
+   formats covering repack/proper, x265/HEVC, remux, atmos, DV/HDR, AMZN, MULTi, 10bit) is configured
+   in a live Sonarr **and** imported into cellarr via `import_trash_custom_formats`; we diff the
+   matched-CF set per corpus title.
+   - **First run: 78.3% (94/120).** Every mismatch was `cellarr=∅, sonarr=[CF]` on UPPERCASE tokens
+     (HEVC, REPACK, AMZN, HDR, Atmos, MULTi).
+   - **Root cause — G-CF1 (high impact):** cellarr matched CF ReleaseTitle regexes **case-sensitively**,
+     while Sonarr/Radarr compile CF regexes with **IgnoreCase**. TRaSH CFs are written lowercase and
+     rely on this — so cellarr would have matched almost no real-world CFs and made **wrong grab
+     decisions**. This is exactly the kind of silent, high-blast-radius bug the oracle exists to catch.
+   - **Fix:** compile CF title regexes with `RegexBuilder::case_insensitive(true)`
+     (`cellarr-decide::matching`) + a regression unit test. **Re-run: 100% (0 mismatches).**
+3. **Custom-format SCORE parity** — once matching is exact (it is) and the quality profile assigns the
+   same per-CF scores, score parity follows from matching parity (score = Σ matched-CF scores). A
+   direct score oracle (configure a profile with scores both sides, diff `customFormatScore`) is the
+   small remaining confirmation; matching — the hard part — is done.
 
 ## Hard / needs more than a black-box endpoint
 3. **Precedence parity** (quality-rank dominates CF score; upgrade only when both cutoffs unmet;
@@ -50,7 +57,9 @@ in the apps to compare against — a distinct oracle (configure the same series/
 `/api/v3/parse`'s matched `episodes`/`movie`). Designed, not built. Tracked here so it isn't lost.
 
 ## Summary of what's left for full decision parity
-- [ ] CF-score oracle: import a TRaSH set into apps + cellarr, diff `customFormatScore` over releases. **(next)**
+- [x] **CF-matching oracle: RUN → 100%** after the case-insensitivity fix (G-CF1).
+- [ ] CF-score confirmation: assign per-CF scores in a profile both sides, diff `customFormatScore`
+  (follows from matching; small).
 - [ ] Quality vocabulary alignment (G7/G8) so quality-name parity is 100%, not 98.3%.
 - [ ] Precedence: keep input-level proxy; optionally build the live-search oracle later.
-- [ ] Identify/matching oracle (needs populated libraries).
+- [ ] Identify/matching oracle (needs populated libraries + metadata keys — see roadmap Phase E).

@@ -127,6 +127,28 @@ oracle *ARGS:
     echo "oracle {{run_id}}: sonarr=${sonarr} radarr=${radarr}"
     cargo test -p cellarr-parse --test oracle -- --ignored --nocapture {{ARGS}}
 
+# Custom-format MATCHING oracle: configure a CF set in a live Sonarr, import the same
+# into cellarr, and diff matched-CF sets over the corpus. See docs/parity/decision-gaps.md.
+oracle-cf *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="cellarr-oracle-cf-{{run_id}}"
+    trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker run -d --name "$name" -p 0:8989 --tmpfs /config \
+        lscr.io/linuxserver/sonarr@sha256:02bc962946fef994e67a38152446df25c10a52f8583aefeeb6467f9dd44cab99 >/dev/null
+    port=$(docker port "$name" 8989/tcp | head -1 | sed 's/.*://')
+    for _ in $(seq 1 60); do
+      SK=$(docker exec "$name" sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' /config/config.xml 2>/dev/null || true)
+      [ -n "${SK:-}" ] && break; sleep 2
+    done
+    for _ in $(seq 1 60); do
+      a=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Api-Key: $SK" "http://127.0.0.1:${port}/api/v3/system/status" || true)
+      [ "$a" = "200" ] && break; sleep 2
+    done
+    export CELLARR_ORACLE_SONARR="http://127.0.0.1:${port}" CELLARR_ORACLE_SONARR_KEY="$SK"
+    cargo test -p cellarr-decide --test oracle_cf -- --ignored --nocapture {{ARGS}}
+
 # --- web ------------------------------------------------------------------------------------
 
 # Typecheck + component tests + the SRCL-only lint.
