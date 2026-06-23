@@ -26,6 +26,9 @@ profiles + a release to evaluate) — tracked separately in [decision-gaps.md](d
 | [parser-gaps.md](parser-gaps.md) | **The catalogue.** Every parser difference found, by category, with examples. The master gap list. |
 | [decision-gaps.md](decision-gaps.md) | Decision-engine parity: approach, what's measurable, gaps. |
 | [PARITY_REPORT.md](PARITY_REPORT.md) | The measured numbers per category + run metadata. Regenerated each run. |
+| [api-v3-gaps.md](api-v3-gaps.md) | `/api/v3` ecosystem-compatibility parity (what Prowlarr/Overseerr/Bazarr/Recyclarr need vs cellarr). |
+| [quality-vocab.md](quality-vocab.md) | Quality-name vocabulary diff vs Sonarr/Radarr. |
+| **[REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md)** | **The plan: every functional area, parity status, and phased steps to a Sonarr+Radarr drop-in.** |
 
 ## Status
 - [x] Oracle stood up: pinned Sonarr 4.0.17 + Radarr 6.2.1 (see oracle-setup.md)
@@ -34,6 +37,12 @@ profiles + a release to evaluate) — tracked separately in [decision-gaps.md](d
 - [x] Parser gaps catalogued + classified (parser-gaps.md): G1/G2/G5-FinalCut/G6 fixed; G3/G4/G7/G8 documented
 - [x] Decision-engine oracle assessed (decision-gaps.md): CF-score oracle is the defined next step
 - [x] Gaps triaged (fixed mechanical gaps; deferred judgment-call & vocabulary gaps with notes)
-- [ ] **Next:** CF-score oracle (import TRaSH set into apps + cellarr, diff scores); quality vocab (G7/G8); identify/matching oracle
+- [x] **Full-surface parity checked:** `/api/v3` ecosystem coverage (api-v3-gaps.md), quality
+  vocabulary (quality-vocab.md), decision-engine assessment (decision-gaps.md), integrations (via
+  grounded inventory) — beyond the parser
+- [x] **Replacement roadmap written** ([REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md)): every area,
+  status, phased plan to a Sonarr+Radarr drop-in
+- [ ] **Execution next:** Phase A (`/api/v3` breadth) → B (CF-score oracle + vocab) → C/D (live
+  indexers + download/import) → E (metadata/TheTVDB decision) → F/G
 
 _Last updated: 2026-06-23._
