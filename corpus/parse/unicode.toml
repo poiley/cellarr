@@ -1,0 +1,56 @@
+# Unicode / non-ASCII titles. The parser must not panic and should still
+# extract quality/numbering around a unicode title. Clean-room facts.
+
+[[case]]
+input  = "Amélie.2001.1080p.BluRay.x264-AMIABLE"
+source = "accented title (é)"
+[case.expected]
+year       = 2001
+resolution = "1080p"
+source     = "bluray"
+
+[[case]]
+input  = "進撃の巨人.S01E01.1080p.WEB-DL.x264-GRP"
+source = "Japanese title (CJK) with western numbering"
+[case.expected]
+season     = 1
+episode    = 1
+resolution = "1080p"
+
+[[case]]
+input  = "Æon.Flux.2005.720p.BluRay.x264-GRP"
+source = "ligature in title"
+[case.expected]
+year = 2005
+codec = "x264"
+
+[[case]]
+input  = "Город.2019.1080p.WEB-DL.x264-GRP"
+source = "Cyrillic title"
+[case.expected]
+year       = 2019
+resolution = "1080p"
+
+[[case]]
+input  = "Naïve.Movie.2018.1080p.BluRay.DTS.x264-GRP"
+source = "diaeresis in title with DTS audio"
+[case.expected]
+year  = 2018
+audio = ["DTS"]
+
+[[case]]
+input  = "Pokémon.S01E05.480p.DVDRip.XviD-GRP"
+source = "accented franchise name"
+[case.expected]
+season  = 1
+episode = 5
+source  = "dvd"
+
+[[case]]
+input  = "中文标题.2020.2160p.WEB-DL.HDR.HEVC-GRP"
+source = "Chinese title, 4K HDR"
+[case.expected]
+year       = 2020
+resolution = "2160p"
+codec      = "x265"
+hdr        = ["hdr10"]

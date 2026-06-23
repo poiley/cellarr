@@ -1,0 +1,241 @@
+# Custom-format MATCH vectors for cellarr-decide.
+#
+# Each case feeds a release (raw title + parsed facts + indexer/size signals) and
+# a single custom format, and asserts whether the format matches. Semantics under
+# test: OR by default, `required` = AND, `negate` = absence, plus the condition
+# kinds that need the full Release (release-title regex, indexer flag, size).
+#
+# Provenance is required on every case. These facts are re-curated clean-room from
+# the documented TRaSH/Recyclarr custom-format model and the *arr specification
+# semantics; no upstream fixture file is copied.
+
+[[case]]
+name   = "or_default_any_optional_matches"
+source = "derived from TRaSH custom-format OR semantics (docs/05-decision-engine.md)"
+notes  = "two optional source conditions; one matches -> format matches"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "web-dl"
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+[case.expected]
+matches = true
+
+[[case]]
+name   = "or_default_none_matches"
+source = "derived from TRaSH custom-format OR semantics"
+notes  = "only optional conditions, none match -> no match"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "web-dl"
+[case.expected]
+matches = false
+
+[[case]]
+name   = "required_and_all_present"
+source = "derived from TRaSH `required` = AND semantics"
+notes  = "both required conditions present -> match"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind     = "source"
+source   = "bluray"
+required = true
+[[case.format.condition]]
+kind       = "resolution"
+resolution = "r1080p"
+required   = true
+[case.expected]
+matches = true
+
+[[case]]
+name   = "required_and_one_missing"
+source = "derived from TRaSH `required` = AND semantics"
+notes  = "one required condition missing -> no match even if the other holds"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind     = "source"
+source   = "bluray"
+required = true
+[[case.format.condition]]
+kind       = "resolution"
+resolution = "r2160p"
+required   = true
+[case.expected]
+matches = false
+
+[[case]]
+name   = "negate_matches_on_absence"
+source = "derived from TRaSH `negate` = absence semantics"
+notes  = "'source is NOT web-dl' is true for a bluray release"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "web-dl"
+negate = true
+[case.expected]
+matches = true
+
+[[case]]
+name   = "negate_fails_when_present"
+source = "derived from TRaSH `negate` = absence semantics"
+notes  = "'source is NOT bluray' is false for a bluray release"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+negate = true
+[case.expected]
+matches = false
+
+[[case]]
+name   = "release_title_regex_matches"
+source = "derived from TRaSH ReleaseTitleSpecification (regex over raw title)"
+notes  = "decide owns the regex dependency; matched against the raw release title"
+title  = "Movie.2024.PROPER.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 25
+[[case.format.condition]]
+kind    = "release_title"
+pattern = "(?i)\\bproper\\b"
+[case.expected]
+matches = true
+
+[[case]]
+name   = "release_title_regex_no_match"
+source = "derived from TRaSH ReleaseTitleSpecification"
+notes  = "pattern absent from the raw title -> no match"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = 25
+[[case.format.condition]]
+kind    = "release_title"
+pattern = "(?i)\\bproper\\b"
+[case.expected]
+matches = false
+
+[[case]]
+name   = "indexer_flag_freeleech_matches"
+source = "derived from TRaSH IndexerFlagSpecification; flag lives on the Release"
+notes  = "freeleech flag present (case-insensitive) -> match"
+title  = "Show.S01E01.1080p.WEB-DL.x264-GROUP"
+flags  = ["FreeLeech"]
+[case.parsed]
+source     = "web-dl"
+resolution = "r1080p"
+[case.format]
+score = 50
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.expected]
+matches = true
+
+[[case]]
+name   = "size_within_range_matches"
+source = "derived from TRaSH SizeSpecification; size lives on the Release"
+notes  = "inclusive min/max in bytes"
+title  = "Show.S01E01.1080p.WEB-DL.x264-GROUP"
+size   = 5000000000
+[case.parsed]
+source     = "web-dl"
+resolution = "r1080p"
+[case.format]
+score = 10
+[[case.format.condition]]
+kind = "size"
+min  = 1000000000
+max  = 8000000000
+[case.expected]
+matches = true
+
+[[case]]
+name   = "size_above_max_no_match"
+source = "derived from TRaSH SizeSpecification"
+notes  = "above the inclusive maximum -> no match"
+title  = "Show.S01E01.1080p.WEB-DL.x264-GROUP"
+size   = 9000000000
+[case.parsed]
+source     = "web-dl"
+resolution = "r1080p"
+[case.format]
+score = 10
+[[case.format.condition]]
+kind = "size"
+min  = 1000000000
+max  = 8000000000
+[case.expected]
+matches = false
+
+[[case]]
+name   = "required_negate_hard_guard_absent_cam"
+source = "derived from TRaSH negative-guard custom formats (e.g. -10000 CAM guard)"
+notes  = "required+negate 'must NOT be CAM'; absent -> guard condition satisfied, format matches"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.format]
+score = -10000
+[[case.format.condition]]
+kind     = "source"
+source   = "cam"
+required = true
+negate   = true
+[case.expected]
+matches = true
+
+[[case]]
+name   = "group_match_case_insensitive"
+source = "derived from TRaSH ReleaseGroupSpecification"
+notes  = "release group compared case-insensitively"
+title  = "Show.S01E01.1080p.BluRay.x264-group"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+group      = "GROUP"
+[case.format]
+score = 5
+[[case.format.condition]]
+kind = "release_group"
+name = "group"
+[case.expected]
+matches = true

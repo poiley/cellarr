@@ -1,0 +1,32 @@
+# Naming vectors: multiple episodes contained in a single file.
+#
+# When one file covers several consecutive episodes, the standard *arr behavior
+# is a contiguous range token (e.g. "E06-E07") rather than repeating the series
+# title. The MediaModule emits the pre-formatted "Episode Range" token; the
+# rename engine treats it as an opaque value and substitutes it verbatim. These
+# vectors pin that the engine never re-derives numbering — it only substitutes.
+#
+# Re-curated from Sonarr multi-episode (anthology / double-length) naming.
+
+[[case]]
+source = "derived from Sonarr MultiEpisode naming (contiguous range)"
+notes  = "two episodes, one file; range token 'E06-E07'"
+format = "{Series Title}/Season {Season}/{Series Title} - S{Season}{Episode Range} - {Episode Titles}"
+[case.tokens]
+"Series Title"  = "Game of Thrones"
+"Season"        = "03"
+"Episode Range" = "E09-E10"
+"Episode Titles" = "The Rains of Castamere + Mhysa"
+[case.expected]
+path = "Game of Thrones/Season 03/Game of Thrones - S03E09-E10 - The Rains of Castamere + Mhysa"
+
+[[case]]
+source = "derived from Sonarr triple-episode handling"
+notes  = "three episodes, one file"
+format = "{Series Title}/Season {Season}/{Series Title} - S{Season}{Episode Range}"
+[case.tokens]
+"Series Title"  = "Avatar The Last Airbender"
+"Season"        = "03"
+"Episode Range" = "E18-E19-E20"
+[case.expected]
+path = "Avatar The Last Airbender/Season 03/Avatar The Last Airbender - S03E18-E19-E20"

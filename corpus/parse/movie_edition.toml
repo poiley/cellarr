@@ -1,0 +1,68 @@
+# Movie edition extraction. Clean-room facts from common edition tags.
+
+[[case]]
+input  = "Blade.Runner.1982.The.Final.Cut.1080p.BluRay.x264-AMIABLE"
+source = "Final Cut maps to Director's Cut family in practice; pin title+year"
+[case.expected]
+title = "Blade Runner"
+year  = 1982
+
+[[case]]
+input  = "Apocalypse.Now.1979.Redux.1080p.BluRay.x264-DON"
+source = "Redux edition"
+[case.expected]
+title   = "Apocalypse Now"
+year    = 1979
+edition = "Redux"
+
+[[case]]
+input  = "Aliens.1986.Special.Edition.1080p.BluRay.x264-AMIABLE"
+source = "Special Edition"
+[case.expected]
+title   = "Aliens"
+year    = 1986
+edition = "Special Edition"
+
+[[case]]
+input  = "Lord.of.the.Rings.2001.Extended.Edition.2160p.BluRay.x265-TERMiNAL"
+source = "Extended Edition"
+[case.expected]
+year    = 2001
+edition = "Extended"
+
+[[case]]
+input  = "Dune.2021.IMAX.Enhanced.2160p.WEB-DL.HDR.HEVC-EVO"
+source = "IMAX edition"
+[case.expected]
+year    = 2021
+edition = "IMAX"
+
+[[case]]
+input  = "Watchmen.2009.Directors.Cut.1080p.BluRay.x264-METiS"
+source = "Director's Cut"
+[case.expected]
+edition = "Director's Cut"
+
+[[case]]
+input  = "Donnie.Darko.2001.UNRATED.1080p.BluRay.x264-AMIABLE"
+source = "Unrated"
+[case.expected]
+edition = "Unrated"
+
+[[case]]
+input  = "The.Thing.1982.Theatrical.Cut.1080p.BluRay.x264-AMIABLE"
+source = "Theatrical Cut"
+[case.expected]
+edition = "Theatrical"
+
+[[case]]
+input  = "Seven.Samurai.1954.Criterion.Collection.1080p.BluRay.x264-DON"
+source = "Criterion Collection"
+[case.expected]
+edition = "Criterion"
+
+[[case]]
+input  = "Avatar.2009.Extended.Collectors.Edition.1080p.BluRay.x264-GRP"
+source = "Extended takes precedence (appears first)"
+[case.expected]
+edition = "Extended"

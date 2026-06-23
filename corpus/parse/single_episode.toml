@@ -1,0 +1,190 @@
+# Single-episode release names → expected season/episode + quality.
+# Clean-room: individual input→output facts, re-curated from common scene/p2p
+# naming conventions (the same conventions the *arr fixtures encode).
+
+[[case]]
+input  = "The.Show.S02E15.1080p.BluRay.x264-GROUP"
+source = "derived from common SxxExx scene convention"
+notes  = "release group after final dash"
+[case.expected]
+title       = "The Show"
+season      = 2
+episode     = 15
+resolution  = "1080p"
+source      = "bluray"
+codec       = "x264"
+group       = "GROUP"
+
+[[case]]
+input  = "Breaking.Bad.S01E01.720p.HDTV.x264-CTU"
+source = "derived from common SxxExx scene convention"
+[case.expected]
+title      = "Breaking Bad"
+season     = 1
+episode    = 1
+resolution = "720p"
+source     = "hdtv"
+codec      = "x264"
+group      = "CTU"
+
+[[case]]
+input  = "Game.of.Thrones.S08E06.1080p.WEB-DL.DD5.1.H.264-GoT"
+source = "derived from common SxxExx scene convention"
+notes  = "dotted H.264 codec spelling; AC3/DD5.1 audio"
+[case.expected]
+title      = "Game of Thrones"
+season     = 8
+episode    = 6
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x264"
+group      = "GoT"
+audio      = ["AC3"]
+
+[[case]]
+input  = "The.Mandalorian.S02E08.2160p.WEB-DL.DDP5.1.Atmos.HDR.HEVC-CAKES"
+source = "derived from common SxxExx scene convention"
+notes  = "2160p, EAC3/DDP, Atmos, HDR, HEVC"
+[case.expected]
+title      = "The Mandalorian"
+season     = 2
+episode    = 8
+resolution = "2160p"
+source     = "web-dl"
+codec      = "x265"
+group      = "CAKES"
+audio      = ["EAC3", "Atmos"]
+hdr        = ["hdr10"]
+
+[[case]]
+input  = "Some.Show.s03e09.480p.WEBRip.x264-RARBG"
+source = "lowercase sxxexx form"
+[case.expected]
+title      = "Some Show"
+season     = 3
+episode    = 9
+resolution = "480p"
+source     = "webrip"
+codec      = "x264"
+group      = "RARBG"
+
+[[case]]
+input  = "Show.Name.1x05.720p.HDTV.x264-LOL"
+source = "alternate NxN numbering form"
+[case.expected]
+title      = "Show Name"
+season     = 1
+episode    = 5
+resolution = "720p"
+source     = "hdtv"
+codec      = "x264"
+group      = "LOL"
+
+[[case]]
+input  = "The.Office.US.S05E14.HDTV.XviD-XOR"
+source = "legacy XviD codec; country tag in title"
+[case.expected]
+season = 5
+episode = 14
+source = "hdtv"
+codec  = "other"
+group  = "XOR"
+
+[[case]]
+input  = "Westworld.S01E10.PROPER.1080p.BluRay.x265-RBG"
+source = "proper single episode"
+[case.expected]
+title         = "Westworld"
+season        = 1
+episode       = 10
+resolution    = "1080p"
+source        = "bluray"
+codec         = "x265"
+proper_repack = "proper"
+group         = "RBG"
+
+[[case]]
+input  = "Chernobyl.S01E05.REPACK.1080p.WEB-DL.x264-NTb"
+source = "repack single episode"
+[case.expected]
+title         = "Chernobyl"
+season        = 1
+episode       = 5
+resolution    = "1080p"
+source        = "web-dl"
+codec         = "x264"
+proper_repack = "repack"
+group         = "NTb"
+
+[[case]]
+input  = "Severance.S01E01.1080p.ATVP.WEB-DL.DDP5.1.H.265-FLUX"
+source = "streaming-platform tag (ATVP) before source"
+[case.expected]
+title      = "Severance"
+season     = 1
+episode    = 1
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x265"
+group      = "FLUX"
+
+[[case]]
+input  = "Stranger.Things.S04E09.2160p.NF.WEB-DL.DDP5.1.DV.HDR.HEVC-NOSiViD"
+source = "Dolby Vision + HDR hybrid 4K"
+[case.expected]
+title      = "Stranger Things"
+season     = 4
+episode    = 9
+resolution = "2160p"
+source     = "web-dl"
+codec      = "x265"
+hdr        = ["dolbyvision", "hdr10"]
+
+[[case]]
+input  = "Sherlock.S01E02.1080p.BluRay.DTS.x264-DON"
+source = "DTS audio"
+[case.expected]
+title  = "Sherlock"
+season = 1
+episode = 2
+source = "bluray"
+codec  = "x264"
+audio  = ["DTS"]
+group  = "DON"
+
+[[case]]
+input  = "Dark.S02E08.GERMAN.1080p.WEB.h264-WvF"
+source = "foreign-language single episode; bare WEB"
+[case.expected]
+title      = "Dark"
+season     = 2
+episode    = 8
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x264"
+languages  = ["German"]
+group      = "WvF"
+
+[[case]]
+input  = "The.Wire.S03E11.DVDRip.XviD-TVA"
+source = "DVD source, legacy codec"
+[case.expected]
+title  = "The Wire"
+season = 3
+episode = 11
+source = "dvd"
+codec  = "other"
+group  = "TVA"
+
+[[case]]
+input  = "Better.Call.Saul.S06E13.1080p.AMZN.WEBRip.DDP5.1.x264-NTb"
+source = "AMZN webrip, EAC3 audio"
+[case.expected]
+title      = "Better Call Saul"
+season     = 6
+episode    = 13
+resolution = "1080p"
+source     = "webrip"
+codec      = "x264"
+group      = "NTb"
+audio      = ["EAC3"]

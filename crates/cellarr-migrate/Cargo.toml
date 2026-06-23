@@ -1,0 +1,15 @@
+[package]
+name = "cellarr-migrate"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cellarr-core.workspace = true
+cellarr-db.workspace = true
+cellarr-decide.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+thiserror.workspace = true

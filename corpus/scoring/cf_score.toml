@@ -1,0 +1,118 @@
+# Custom-format SCORE vectors for cellarr-decide.
+#
+# A release's score is the SUM of the scores of every matching custom format.
+# Each case lists several custom formats and the expected total for one release.
+#
+# Provenance is required. Re-curated clean-room from the documented TRaSH scoring
+# model (sum of matching CF scores; large negatives act as never-download guards).
+
+[[case]]
+name   = "sum_of_two_matching_formats"
+source = "derived from TRaSH 'sum of matching CF scores' rule"
+notes  = "both formats match -> 100 + 50"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[[case.format]]
+name  = "is-bluray"
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+[[case.format]]
+name  = "freeleech"
+score = 50
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.expected]
+score = 150
+
+[[case]]
+name   = "non_matching_format_contributes_zero"
+source = "derived from TRaSH scoring rule"
+notes  = "only the bluray format matches; the web-dl format does not"
+title  = "Show.S01E01.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[[case.format]]
+name  = "is-bluray"
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+[[case.format]]
+name  = "is-webdl"
+score = 75
+[[case.format.condition]]
+kind   = "source"
+source = "web-dl"
+[case.expected]
+score = 100
+
+[[case]]
+name   = "negative_guard_dominates_total"
+source = "derived from TRaSH never-download guard (large negative score)"
+notes  = "a matching -10000 guard sinks the total below any min-score gate"
+title  = "Show.S01E01.1080p.CAM.x264-GROUP"
+[case.parsed]
+source     = "cam"
+resolution = "r1080p"
+[[case.format]]
+name  = "good-res"
+score = 100
+[[case.format.condition]]
+kind       = "resolution"
+resolution = "r1080p"
+[[case.format]]
+name  = "cam-guard"
+score = -10000
+[[case.format.condition]]
+kind   = "source"
+source = "cam"
+[case.expected]
+score = -9900
+
+[[case]]
+name   = "no_format_matches_zero_total"
+source = "derived from TRaSH scoring rule"
+notes  = "nothing matches -> 0"
+title  = "Show.S01E01.720p.HDTV.x264-GROUP"
+[case.parsed]
+source     = "hdtv"
+resolution = "r720p"
+[[case.format]]
+name  = "is-bluray"
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+[case.expected]
+score = 0
+
+[[case]]
+name   = "title_regex_format_adds_score"
+source = "derived from TRaSH ReleaseTitleSpecification scoring"
+notes  = "PROPER in the raw title adds the proper format's score"
+title  = "Movie.2024.PROPER.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+proper     = "proper"
+[[case.format]]
+name  = "is-bluray"
+score = 100
+[[case.format.condition]]
+kind   = "source"
+source = "bluray"
+[[case.format]]
+name  = "proper"
+score = 5
+[[case.format.condition]]
+kind    = "release_title"
+pattern = "(?i)\\bproper\\b"
+[case.expected]
+score = 105

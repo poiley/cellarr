@@ -1,0 +1,33 @@
+[package]
+name = "cellarr-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "cellarr"
+path = "src/main.rs"
+
+[dependencies]
+cellarr-core.workspace = true
+cellarr-db.workspace = true
+cellarr-parse.workspace = true
+cellarr-decide.workspace = true
+cellarr-media.workspace = true
+cellarr-indexers.workspace = true
+cellarr-download.workspace = true
+cellarr-fs.workspace = true
+cellarr-jobs.workspace = true
+cellarr-meta.workspace = true
+cellarr-llm.workspace = true
+cellarr-plugins.workspace = true
+cellarr-api.workspace = true
+cellarr-migrate.workspace = true
+tokio.workspace = true
+clap.workspace = true
+figment.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,59 @@
+# Naming vectors: unicode preservation and illegal-character sanitization.
+#
+# The rename engine must keep a library portable across Linux, macOS, and
+# Windows/SMB shares. These vectors pin the cross-platform sanitization rules:
+# Windows-reserved characters (< > : " \ | ? *) and control codes are replaced
+# with spaces (preserving word boundaries, then collapsed), reserved device
+# names are disambiguated, trailing dots/spaces are stripped, and legitimate
+# Unicode (accents, CJK, emoji) is preserved unchanged.
+#
+# Re-curated from the originals' file-name cleansing behavior, generalized to the
+# most-restrictive supported target.
+
+[[case]]
+source = "derived from *arr CleanFileName (reserved char replacement)"
+notes  = "colon and question mark are illegal on Windows; become spaces"
+format = "{Movie Title} ({Year})"
+[case.tokens]
+"Movie Title" = "Quo Vadis, Aida?"
+"Year"        = "2020"
+[case.expected]
+path = "Quo Vadis, Aida (2020)"
+
+[[case]]
+source = "derived from *arr CleanFileName (slash inside a title)"
+notes  = "a slash in a token value must not create a directory level"
+format = "{Artist}/{Album}"
+[case.tokens]
+"Artist" = "AC/DC"
+"Album"  = "Back in Black"
+[case.expected]
+path = "AC DC/Back in Black"
+
+[[case]]
+source = "derived from cross-platform portability requirement"
+notes  = "accents and CJK are valid; preserved verbatim"
+format = "{Movie Title} ({Year})"
+[case.tokens]
+"Movie Title" = "Amélie 千と千尋"
+"Year"        = "2001"
+[case.expected]
+path = "Amélie 千と千尋 (2001)"
+
+[[case]]
+source = "derived from Windows reserved device-name rule"
+notes  = "a segment named like a device (CON, NUL, ...) gets an underscore"
+format = "{Title}"
+[case.tokens]
+"Title" = "NUL"
+[case.expected]
+path = "NUL_"
+
+[[case]]
+source = "derived from Windows trailing dot/space prohibition"
+notes  = "trailing dot and space are stripped from a segment"
+format = "{Title}"
+[case.tokens]
+"Title" = "The Movie. "
+[case.expected]
+path = "The Movie"

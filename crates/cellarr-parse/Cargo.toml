@@ -1,0 +1,26 @@
+[package]
+name = "cellarr-parse"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+llm = ["dep:cellarr-llm"]
+
+[dependencies]
+cellarr-core.workspace = true
+cellarr-llm = { workspace = true, optional = true }
+regex.workspace = true
+fancy-regex.workspace = true
+once_cell.workspace = true
+rayon.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+proptest.workspace = true
+toml = "0.8"
+serde.workspace = true

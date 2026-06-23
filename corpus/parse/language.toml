@@ -1,0 +1,67 @@
+# Language-tag extraction. Clean-room facts from common scene language tags.
+
+[[case]]
+input  = "Movie.2019.MULTi.1080p.BluRay.x264-FHD"
+source = "MULTi tag"
+[case.expected]
+languages = ["Multi"]
+
+[[case]]
+input  = "Film.2019.TRUEFRENCH.1080p.BluRay.x264-GRP"
+source = "TRUEFRENCH maps to French"
+[case.expected]
+languages = ["French"]
+
+[[case]]
+input  = "Film.2019.VOSTFR.1080p.WEB-DL.x264-GRP"
+source = "VOSTFR subtitled-French tag"
+[case.expected]
+languages = ["VOSTFR"]
+
+[[case]]
+input  = "Movie.2019.GERMAN.DL.1080p.BluRay.x264-GRP"
+source = "German dual-language"
+[case.expected]
+languages = ["German"]
+
+[[case]]
+input  = "Pelicula.2019.SPANISH.1080p.BluRay.x264-GRP"
+source = "Spanish"
+[case.expected]
+languages = ["Spanish"]
+
+[[case]]
+input  = "Film.2019.ITALIAN.1080p.BluRay.x264-GRP"
+source = "Italian"
+[case.expected]
+languages = ["Italian"]
+
+[[case]]
+input  = "Movie.2019.RUSSIAN.1080p.WEB-DL.x264-GRP"
+source = "Russian"
+[case.expected]
+languages = ["Russian"]
+
+[[case]]
+input  = "Movie.2019.NORDIC.1080p.WEB-DL.x264-GRP"
+source = "Nordic multi-sub pack"
+[case.expected]
+languages = ["Nordic"]
+
+[[case]]
+input  = "Show.S01E01.KOREAN.1080p.NF.WEB-DL.x264-GRP"
+source = "Korean episode"
+[case.expected]
+languages = ["Korean"]
+
+[[case]]
+input  = "Movie.2019.MULTi.TRUEFRENCH.1080p.BluRay.x264-GRP"
+source = "two language tags present"
+[case.expected]
+languages = ["Multi", "French"]
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.x264-GRP"
+source = "no language tag (must stay empty, not guessed)"
+[case.expected]
+resolution = "1080p"

@@ -1,0 +1,57 @@
+# Release-group extraction edge cases. Clean-room facts.
+
+[[case]]
+input  = "Show.S01E01.1080p.WEB-DL.x264-NTb"
+source = "trailing dash group"
+[case.expected]
+group = "NTb"
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.x264-SPARKS"
+source = "trailing dash group, all caps"
+[case.expected]
+group = "SPARKS"
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.x264-D-Z0N3"
+source = "group containing internal dash"
+[case.expected]
+group = "Z0N3"
+
+[[case]]
+input  = "Show.S01E01.1080p.WEB-DL.x264-FLUX.mkv"
+source = "group before a file extension"
+[case.expected]
+group = "FLUX"
+
+[[case]]
+input  = "[HorribleSubs] Show - 01 [720p].mkv"
+source = "leading bracket fansub group"
+[case.expected]
+group = "HorribleSubs"
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.x264-RARBG"
+source = "well-known p2p group"
+[case.expected]
+group = "RARBG"
+
+[[case]]
+input  = "Show.S01E01.1080p.WEB-DL"
+source = "no group present (WEB-DL is not a group)"
+[case.expected]
+season  = 1
+episode = 1
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.x264"
+source = "no trailing dash, no group"
+[case.expected]
+resolution = "1080p"
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.DD5.1.x264-playHD"
+source = "mixed-case group with audio before it"
+[case.expected]
+group = "playHD"
+audio = ["AC3"]

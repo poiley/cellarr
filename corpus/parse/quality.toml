@@ -1,0 +1,92 @@
+# Quality (resolution + source + codec) extraction across the spectrum.
+# Clean-room facts.
+
+[[case]]
+input  = "Movie.2019.480p.DVDRip.XviD-GRP"
+source = "SD DVD rip"
+[case.expected]
+resolution = "480p"
+source     = "dvd"
+codec      = "other"
+
+[[case]]
+input  = "Movie.2019.576p.PAL.DVD.x264-GRP"
+source = "576p PAL DVD"
+[case.expected]
+resolution = "576p"
+source     = "dvd"
+codec      = "x264"
+
+[[case]]
+input  = "Movie.2019.720p.BRRip.x264-GRP"
+source = "BRRip is bluray-derived"
+[case.expected]
+resolution = "720p"
+source     = "bluray"
+codec      = "x264"
+
+[[case]]
+input  = "Movie.2019.1080p.WEBRip.x265-GRP"
+source = "1080p WEBRip x265"
+[case.expected]
+resolution = "1080p"
+source     = "webrip"
+codec      = "x265"
+
+[[case]]
+input  = "Movie.2019.2160p.BluRay.REMUX.HEVC.TrueHD.7.1.Atmos-FraMeSToR"
+source = "4K remux with object audio"
+[case.expected]
+resolution = "2160p"
+source     = "remux"
+codec      = "x265"
+audio      = ["TrueHD", "Atmos"]
+
+[[case]]
+input  = "Movie.2019.4K.UHD.BluRay.2160p.HDR.HEVC-GRP"
+source = "4K alias plus explicit 2160p"
+[case.expected]
+resolution = "2160p"
+source     = "bluray"
+codec      = "x265"
+hdr        = ["hdr10"]
+
+[[case]]
+input  = "Old.Movie.2001.CAM.x264-GRP"
+source = "cam source (lowest quality)"
+[case.expected]
+source = "cam"
+codec  = "x264"
+
+[[case]]
+input  = "Old.Movie.2001.HDCAM.x264-GRP"
+source = "HDCAM is still cam-tier"
+[case.expected]
+source = "cam"
+
+[[case]]
+input  = "Show.S01E01.PDTV.XviD-GRP"
+source = "PDTV is SDTV-tier"
+[case.expected]
+source = "sdtv"
+codec  = "other"
+
+[[case]]
+input  = "Movie.2019.1080p.BluRay.AV1-GRP"
+source = "AV1 codec"
+[case.expected]
+resolution = "1080p"
+codec      = "av1"
+
+[[case]]
+input  = "Movie.2019.1080p.WEB-DL.DDP5.1.H.265-GRP"
+source = "dotted H.265 spelling maps to x265"
+[case.expected]
+codec  = "x265"
+source = "web-dl"
+
+[[case]]
+input  = "Movie.2019.2160p.DV.HDR10Plus.WEB-DL.HEVC-GRP"
+source = "HDR10+ and Dolby Vision both present"
+[case.expected]
+hdr = ["dolbyvision", "hdr10plus"]

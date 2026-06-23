@@ -1,0 +1,97 @@
+# Movie title extraction (title + group + quality, year covered elsewhere too).
+# Clean-room facts from common movie scene/p2p conventions.
+
+[[case]]
+input  = "Inception.2010.1080p.BluRay.x264-SPARKS"
+source = "canonical movie form"
+[case.expected]
+title      = "Inception"
+year       = 2010
+resolution = "1080p"
+source     = "bluray"
+codec      = "x264"
+group      = "SPARKS"
+
+[[case]]
+input  = "The.Dark.Knight.2008.2160p.UHD.BluRay.x265-TERMiNAL"
+source = "4K UHD BluRay movie"
+[case.expected]
+title      = "The Dark Knight"
+year       = 2008
+resolution = "2160p"
+source     = "bluray"
+codec      = "x265"
+group      = "TERMiNAL"
+
+[[case]]
+input  = "Mad.Max.Fury.Road.2015.1080p.BluRay.DTS.x264-HDMaNiAcS"
+source = "multi-word title, DTS"
+[case.expected]
+title  = "Mad Max Fury Road"
+year   = 2015
+audio  = ["DTS"]
+group  = "HDMaNiAcS"
+
+[[case]]
+input  = "Blade.Runner.2049.2017.2160p.WEB-DL.DDP5.1.Atmos.HDR.HEVC-MZABI"
+source = "title containing a number (2049), separate year"
+[case.expected]
+title      = "Blade Runner 2049"
+year       = 2017
+resolution = "2160p"
+source     = "web-dl"
+codec      = "x265"
+audio      = ["Atmos"]
+hdr        = ["hdr10"]
+
+[[case]]
+input  = "1917.2019.1080p.BluRay.x264-AAA"
+source = "title that is purely a number"
+[case.expected]
+year       = 2019
+resolution = "1080p"
+source     = "bluray"
+
+[[case]]
+input  = "Parasite.2019.1080p.BluRay.x264.KOREAN-WiKi"
+source = "language tag before group"
+[case.expected]
+title     = "Parasite"
+year      = 2019
+languages = ["Korean"]
+
+[[case]]
+input  = "Dune.2021.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.HEVC-EVO"
+source = "Dolby Vision movie"
+[case.expected]
+title      = "Dune"
+year       = 2021
+resolution = "2160p"
+codec      = "x265"
+hdr        = ["dolbyvision", "hdr10"]
+
+[[case]]
+input  = "Spirited.Away.2001.JAPANESE.1080p.BluRay.x264.DTS-WiKi"
+source = "Japanese movie"
+[case.expected]
+title     = "Spirited Away"
+year      = 2001
+languages = ["Japanese"]
+audio     = ["DTS"]
+
+[[case]]
+input  = "Amelie.2001.MULTi.1080p.BluRay.x264-FHD"
+source = "MULTi language tag"
+[case.expected]
+title     = "Amelie"
+year      = 2001
+languages = ["Multi"]
+
+[[case]]
+input  = "Heat.1995.REMASTERED.1080p.BluRay.x264-AMIABLE"
+source = "remastered edition movie"
+[case.expected]
+title   = "Heat"
+year    = 1995
+edition = "Remastered"
+group   = "AMIABLE"

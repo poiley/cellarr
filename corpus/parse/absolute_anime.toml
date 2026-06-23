@@ -1,0 +1,73 @@
+# Anime releases using absolute episode numbers. The parser extracts the
+# absolute number and the (bracketed) group; season/episode mapping happens at
+# Identify with scene-mapping data. Clean-room fansub/scene facts.
+
+[[case]]
+input  = "[SubsPlease] Show Title - 1071 (1080p) [ABCD1234].mkv"
+source = "modern fansub absolute, CRC suffix"
+notes  = "leading bracketed group; absolute after dash; CRC ignored"
+[case.expected]
+title    = "Show Title"
+group    = "SubsPlease"
+absolute = 1071
+resolution = "1080p"
+
+[[case]]
+input  = "[HorribleSubs] Another Anime - 12 [720p].mkv"
+source = "classic HorribleSubs absolute"
+[case.expected]
+title    = "Another Anime"
+group    = "HorribleSubs"
+absolute = 12
+resolution = "720p"
+
+[[case]]
+input  = "[Erai-raws] Long Title Name - 086 [1080p][Multiple Subtitle].mkv"
+source = "Erai-raws absolute"
+[case.expected]
+title    = "Long Title Name"
+group    = "Erai-raws"
+absolute = 86
+resolution = "1080p"
+
+[[case]]
+input  = "[Judas] Some Show - 24v2 (BD 1080p) [HEVC].mkv"
+source = "versioned absolute (v2) on BluRay"
+[case.expected]
+group    = "Judas"
+absolute = 24
+source   = "bluray"
+codec    = "x265"
+
+[[case]]
+input  = "[Anime-Group] Title - 1000 [1080p][AAC].mkv"
+source = "milestone four-digit absolute"
+[case.expected]
+group    = "Anime-Group"
+absolute = 1000
+audio    = ["AAC"]
+
+[[case]]
+input  = "Show.Name.-.071.1080p.WEB-DL.AAC.x264-GRP"
+source = "scene-style anime absolute (no bracket group)"
+[case.expected]
+absolute   = 71
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x264"
+
+[[case]]
+input  = "[Group] Title Of Anime - 5 [480p].mkv"
+source = "single-digit absolute early episode"
+[case.expected]
+group    = "Group"
+absolute = 5
+resolution = "480p"
+
+[[case]]
+input  = "[SubsPlease] Title - 100 (720p) [DEADBEEF].mkv"
+source = "three-digit absolute"
+[case.expected]
+group    = "SubsPlease"
+absolute = 100
+resolution = "720p"

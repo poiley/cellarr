@@ -1,0 +1,52 @@
+# Miniseries / limited series. Many are released as Part N or as a season-1
+# pack. Clean-room facts. Parts that scene-name as Sxx are addressed that way.
+
+[[case]]
+input  = "Chernobyl.S01E03.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb"
+source = "miniseries episode (HBO limited series)"
+[case.expected]
+title      = "Chernobyl"
+season     = 1
+episode    = 3
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x264"
+group      = "NTb"
+
+[[case]]
+input  = "Band.of.Brothers.S01E05.720p.BluRay.x264-SiNNERS"
+source = "war miniseries"
+[case.expected]
+title  = "Band of Brothers"
+season = 1
+episode = 5
+source = "bluray"
+group  = "SiNNERS"
+
+[[case]]
+input  = "The.Queens.Gambit.S01.1080p.NF.WEB-DL.DDP5.1.x264-NTG"
+source = "limited series as season pack"
+[case.expected]
+title       = "The Queens Gambit"
+season      = 1
+season_pack = true
+resolution  = "1080p"
+source      = "web-dl"
+
+[[case]]
+input  = "Watchmen.2019.S01E09.2160p.HMAX.WEB-DL.DDP5.1.HDR.HEVC-FLUX"
+source = "miniseries with year in title"
+[case.expected]
+season     = 1
+episode    = 9
+resolution = "2160p"
+codec      = "x265"
+hdr        = ["hdr10"]
+
+[[case]]
+input  = "Generation.Kill.Part.4.720p.BluRay.x264-DON"
+source = "Part N miniseries form (no S/E surfaced)"
+[case.expected]
+resolution = "720p"
+source     = "bluray"
+group      = "DON"

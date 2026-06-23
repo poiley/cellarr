@@ -1,0 +1,28 @@
+# Naming vectors: movie on-disk paths.
+#
+# Re-curated from Radarr standard movie naming. A movie is its own unit (no
+# season/episode), commonly placed in a per-movie folder named with the year for
+# disambiguation, with quality/edition tokens.
+
+[[case]]
+source = "derived from Radarr standard movie folder + file naming"
+notes  = "year-disambiguated folder; edition omitted when absent"
+format = "{Movie Title} ({Year})/{Movie Title} ({Year}) - {Quality}"
+[case.tokens]
+"Movie Title" = "Blade Runner 2049"
+"Year"        = "2017"
+"Quality"     = "2160p BluRay x265"
+[case.expected]
+path = "Blade Runner 2049 (2017)/Blade Runner 2049 (2017) - 2160p BluRay x265"
+
+[[case]]
+source = "derived from Radarr edition tag handling"
+notes  = "edition rendered in braces inside the filename"
+format = "{Movie Title} ({Year})/{Movie Title} ({Year}) {Edition} - {Quality}"
+[case.tokens]
+"Movie Title" = "Blade Runner"
+"Year"        = "1982"
+"Edition"     = "{Final Cut}"
+"Quality"     = "1080p"
+[case.expected]
+path = "Blade Runner (1982)/Blade Runner (1982) {Final Cut} - 1080p"

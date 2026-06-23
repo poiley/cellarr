@@ -1,0 +1,54 @@
+# Year-extraction edge cases for movies (parens, title-is-a-year, ranges).
+# Clean-room facts.
+
+[[case]]
+input  = "Movie Title (2008) 1080p BluRay"
+source = "parenthesised year (UI/Plex naming form)"
+[case.expected]
+title = "Movie Title"
+year  = 2008
+
+[[case]]
+input  = "2012.2009.1080p.BluRay.x264-REFiNED"
+source = "title '2012' with release year 2009"
+[case.expected]
+year = 2009
+
+[[case]]
+input  = "1984.1984.720p.BluRay.x264-AMIABLE"
+source = "title is the same as a plausible year"
+[case.expected]
+year = 1984
+
+[[case]]
+input  = "Blade.Runner.2049.2017.1080p.BluRay.x264-GECKOS"
+source = "title number must not be read as the year"
+[case.expected]
+year = 2017
+
+[[case]]
+input  = "The.Matrix.1999.1080p.BluRay.x264-AMIABLE"
+source = "late-90s year"
+[case.expected]
+title = "The Matrix"
+year  = 1999
+
+[[case]]
+input  = "WALL-E.2008.1080p.BluRay.x264-REFiNED"
+source = "title with hyphen, year after"
+[case.expected]
+year = 2008
+
+[[case]]
+input  = "No.Year.Movie.1080p.BluRay.x264-GRP"
+source = "no year present"
+[case.expected]
+resolution = "1080p"
+group      = "GRP"
+
+[[case]]
+input  = "Oldboy.2003.KOREAN.1080p.BluRay.x264-CiNEFiLE"
+source = "older year with language"
+[case.expected]
+year      = 2003
+languages = ["Korean"]

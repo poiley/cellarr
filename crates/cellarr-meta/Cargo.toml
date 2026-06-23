@@ -1,0 +1,22 @@
+[package]
+name = "cellarr-meta"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+standalone = ["dep:axum"]
+
+[dependencies]
+cellarr-core.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+moka.workspace = true
+governor.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+quick-xml = { version = "0.37", features = ["serialize"] }
+axum = { workspace = true, optional = true }

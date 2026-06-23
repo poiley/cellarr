@@ -1,0 +1,45 @@
+# Proper / repack marker extraction. Clean-room facts.
+
+[[case]]
+input  = "Show.S01E01.PROPER.1080p.WEB-DL.x264-GRP"
+source = "proper episode"
+[case.expected]
+proper_repack = "proper"
+
+[[case]]
+input  = "Show.S01E01.REPACK.1080p.WEB-DL.x264-GRP"
+source = "repack episode"
+[case.expected]
+proper_repack = "repack"
+
+[[case]]
+input  = "Show.S01E01.REPACK2.1080p.WEB-DL.x264-GRP"
+source = "numbered repack (second repack)"
+[case.expected]
+proper_repack = "repack"
+
+[[case]]
+input  = "Movie.2019.PROPER.1080p.BluRay.x264-GRP"
+source = "proper movie"
+[case.expected]
+proper_repack = "proper"
+year          = 2019
+
+[[case]]
+input  = "Show.S01E01.RERIP.720p.HDTV.x264-GRP"
+source = "rerip is a repack-class fix"
+[case.expected]
+proper_repack = "repack"
+
+[[case]]
+input  = "Show.S01E01.PROPER.REPACK.1080p.WEB-DL-GRP"
+source = "both present: repack is the more specific marker"
+[case.expected]
+proper_repack = "repack"
+
+[[case]]
+input  = "Show.S01E01.1080p.WEB-DL.x264-GRP"
+source = "neither marker present"
+[case.expected]
+season  = 1
+episode = 1

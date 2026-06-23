@@ -1,0 +1,51 @@
+# Season packs and season ranges. Season packs surface a single season
+# coordinate with the episode-0 sentinel ("whole season"). Clean-room facts.
+
+[[case]]
+input  = "Show.Name.S03.1080p.WEB-DL.x264-GROUP"
+source = "Sxx season pack"
+[case.expected]
+title       = "Show Name"
+season      = 3
+season_pack = true
+resolution  = "1080p"
+source      = "web-dl"
+codec       = "x264"
+group       = "GROUP"
+
+[[case]]
+input  = "The.Show.Season.2.1080p.BluRay.x264-DON"
+source = "Season N word form"
+[case.expected]
+title       = "The Show"
+season      = 2
+season_pack = true
+resolution  = "1080p"
+source      = "bluray"
+
+[[case]]
+input  = "Show.S01.COMPLETE.720p.HDTV.x264-GRP"
+source = "complete season pack"
+[case.expected]
+season      = 1
+season_pack = true
+resolution  = "720p"
+source      = "hdtv"
+
+[[case]]
+input  = "Series.Title.S05.2160p.WEB-DL.DDP5.1.HDR.HEVC-FLUX"
+source = "4K HDR season pack"
+[case.expected]
+season      = 5
+season_pack = true
+resolution  = "2160p"
+codec       = "x265"
+hdr         = ["hdr10"]
+
+[[case]]
+input  = "Some.Show.Series.3.1080p.WEB-DL.x264-GRP"
+source = "British 'Series N' form"
+[case.expected]
+season      = 3
+season_pack = true
+resolution  = "1080p"

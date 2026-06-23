@@ -1,0 +1,52 @@
+# Daily / date-addressed episodes (talk shows, news).
+# These are addressed by air date; the parser surfaces no S/E coordinates and
+# leaves date→episode mapping to Identify. Clean-room date-form facts.
+
+[[case]]
+input  = "The.Daily.Show.2019.03.14.1080p.WEB-DL.x264-GROUP"
+source = "YYYY.MM.DD daily form"
+[case.expected]
+daily      = true
+year       = 2019
+resolution = "1080p"
+source     = "web-dl"
+codec      = "x264"
+group      = "GROUP"
+
+[[case]]
+input  = "Late.Night.2021.11.02.720p.HDTV.x264-CROOKS"
+source = "daily late-night form"
+[case.expected]
+daily  = true
+year   = 2021
+source = "hdtv"
+codec  = "x264"
+group  = "CROOKS"
+
+[[case]]
+input  = "Conan.2020.01.07.HDTV.x264-SORNY"
+source = "daily, no resolution token"
+[case.expected]
+daily  = true
+year   = 2020
+source = "hdtv"
+group  = "SORNY"
+
+[[case]]
+input  = "The.Tonight.Show.2022.06.30.Guest.Name.1080p.WEB.h264-XYZ"
+source = "daily with subtitle text after date"
+[case.expected]
+daily      = true
+year       = 2022
+resolution = "1080p"
+source     = "web-dl"
+
+[[case]]
+input  = "Jimmy.Kimmel.2018.12.25.480p.HDTV.x264-aAF"
+source = "SD daily"
+[case.expected]
+daily  = true
+year   = 2018
+resolution = "480p"
+source = "hdtv"
+group  = "aAF"

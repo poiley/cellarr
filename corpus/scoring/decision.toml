@@ -1,0 +1,362 @@
+# DECISION vectors for cellarr-decide.
+#
+# Each case drives `decide(candidate, on_disk, profile)` and asserts the verdict
+# kind ("grab" | "upgrade" | "reject") and, for rejects, the reason kind. The
+# candidate's (source, resolution) is mapped to a quality rank by the default
+# ranking (see crates/cellarr-decide/src/quality.rs).
+#
+# Profile fields:
+#   allowed                 = allowed quality ranks
+#   upgrades_allowed        = bool
+#   cutoff_quality          = quality rank at which upgrading stops
+#   min_cf_score            = reject below this total CF score
+#   upgrade_until_cf_score  = stop chasing CF score once reached
+#   required_languages      = optional list
+#
+# on_disk (optional): { quality_rank, cf_score }
+#
+# Provenance required. Re-curated clean-room from the documented precedence
+# contract (docs/05-decision-engine.md): hard rejects first; quality dominates;
+# CF score breaks ties; both cutoffs to stop; proper/repack policy.
+
+# --- Hard rejects -----------------------------------------------------------
+
+[[case]]
+name   = "reject_disallowed_quality"
+source = "precedence rule 1: disallowed quality"
+notes  = "DVD (rank 2) not in an allowed set of {10}"
+title  = "Movie.2024.DVD.x264-GROUP"
+[case.parsed]
+source     = "dvd"
+resolution = "r480p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[case.expected]
+verdict = "reject"
+reason  = "quality_not_allowed"
+
+[[case]]
+name   = "reject_unknown_quality"
+source = "precedence rule 1: unresolvable quality is not allowed"
+notes  = "no source/resolution -> cannot resolve a rank"
+title  = "Some.Weird.Release-GROUP"
+[case.parsed]
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[case.expected]
+verdict = "reject"
+reason  = "quality_not_allowed"
+
+[[case]]
+name   = "reject_below_min_cf_score"
+source = "precedence rule 1: below minimum CF score"
+notes  = "matching -10000 CAM guard sinks total below min 0"
+title  = "Movie.2024.CAMRip.x264-GROUP"
+[case.parsed]
+source     = "cam"
+resolution = "r480p"
+[case.profile]
+allowed                = [0, 10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[[case.format]]
+name  = "cam-guard"
+score = -10000
+[[case.format.condition]]
+kind   = "source"
+source = "cam"
+[case.expected]
+verdict = "reject"
+reason  = "below_minimum_custom_format_score"
+
+[[case]]
+name   = "reject_blocklisted"
+source = "precedence rule 1: blocklisted release"
+notes  = "blocklist membership supplied by the caller"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+blocklisted = true
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[case.expected]
+verdict = "reject"
+reason  = "blocklisted"
+
+[[case]]
+name   = "reject_language_requirement_unmet"
+source = "precedence rule 1: unmet language requirement"
+notes  = "profile requires 'en' but the parse carries only 'de'"
+title  = "Film.2024.German.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+languages  = ["de"]
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+required_languages     = ["en"]
+[case.expected]
+verdict = "reject"
+reason  = "language_requirement_unmet"
+
+# --- Fresh grabs ------------------------------------------------------------
+
+[[case]]
+name   = "grab_when_nothing_on_disk"
+source = "no file on disk and quality allowed"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[case.expected]
+verdict = "grab"
+
+# --- Quality dominates ------------------------------------------------------
+
+[[case]]
+name   = "upgrade_higher_quality_even_with_lower_cf"
+source = "precedence rule 2: quality rank dominates"
+notes  = "candidate Bluray-2160p (rank 15) over on-disk Bluray-1080p (rank 10) even though cf 0 < 80"
+title  = "Movie.2024.2160p.BluRay.x265-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r2160p"
+[case.profile]
+allowed                = [10, 15]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[case.on_disk]
+quality_rank = 10
+cf_score     = 80
+[case.expected]
+verdict = "upgrade"
+
+[[case]]
+name   = "reject_lower_quality_despite_higher_cf"
+source = "precedence rule 2: never downgrade quality to chase CF score"
+notes  = "candidate WEBDL-1080p (rank 9, cf 500) is NOT an upgrade over Bluray-1080p (rank 10, cf 0)"
+title  = "Movie.2024.1080p.WEB-DL.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "web-dl"
+resolution = "r1080p"
+[case.profile]
+allowed                = [9, 10]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[[case.format]]
+name  = "great-flag"
+score = 500
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "reject"
+reason  = "not_an_upgrade"
+
+# --- CF score breaks ties within equal quality ------------------------------
+
+[[case]]
+name   = "upgrade_equal_quality_higher_cf"
+source = "precedence rule 3: CF score breaks ties at equal quality"
+notes  = "same Bluray-1080p but candidate cf 100 > on-disk cf 0"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[[case.format]]
+name  = "freeleech"
+score = 100
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "upgrade"
+
+[[case]]
+name   = "reject_equal_quality_equal_cf"
+source = "precedence rule 3: no churn at equal quality and equal CF score"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "reject"
+reason  = "not_an_upgrade"
+
+# --- Both cutoffs to stop ---------------------------------------------------
+
+[[case]]
+name   = "reject_both_cutoffs_met"
+source = "precedence rule 4: stop once BOTH cutoffs are met"
+notes  = "on-disk quality >= cutoff AND cf_score >= upgrade-until; even a higher-cf candidate is rejected"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 100
+[[case.format]]
+name  = "freeleech"
+score = 200
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.on_disk]
+quality_rank = 10
+cf_score     = 100
+[case.expected]
+verdict = "reject"
+reason  = "cutoff_already_met"
+
+[[case]]
+name   = "upgrade_cf_cutoff_unmet_quality_cutoff_met"
+source = "precedence rule 4: only ONE cutoff met -> still upgradeable on the unmet axis"
+notes  = "quality cutoff met but cf below upgrade-until and candidate cf higher -> upgrade"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 10
+min_cf_score           = 0
+upgrade_until_cf_score = 200
+[[case.format]]
+name  = "freeleech"
+score = 150
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "upgrade"
+
+[[case]]
+name   = "reject_upgrades_disabled"
+source = "precedence rule 4: upgrades disabled means no replacement"
+title  = "Movie.2024.1080p.BluRay.x264-GROUP"
+flags  = ["freeleech"]
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = false
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[[case.format]]
+name  = "freeleech"
+score = 100
+[[case.format.condition]]
+kind = "indexer_flag"
+flag = "freeleech"
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "reject"
+reason  = "not_an_upgrade"
+
+# --- Proper / repack policy -------------------------------------------------
+
+[[case]]
+name   = "upgrade_proper_at_equal_quality_and_cf"
+source = "precedence rule 5: prefer proper/repack at equal quality and CF score"
+title  = "Movie.2024.PROPER.1080p.BluRay.x264-GROUP"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+proper     = "proper"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "upgrade"
+
+[[case]]
+name   = "reject_non_proper_at_equal_quality_and_cf"
+source = "precedence rule 5: a plain re-release at equal standing is not an upgrade"
+title  = "Movie.2024.1080p.BluRay.x264-OTHER"
+[case.parsed]
+source     = "bluray"
+resolution = "r1080p"
+[case.profile]
+allowed                = [10]
+upgrades_allowed       = true
+cutoff_quality         = 16
+min_cf_score           = 0
+upgrade_until_cf_score = 1000
+[case.on_disk]
+quality_rank = 10
+cf_score     = 0
+[case.expected]
+verdict = "reject"
+reason  = "not_an_upgrade"

@@ -1,0 +1,18 @@
+[package]
+name = "cellarr-plugins"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
+[dependencies]
+cellarr-core.workspace = true
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
+serde.workspace = true
+thiserror.workspace = true
