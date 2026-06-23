@@ -3,6 +3,12 @@
 **/*.rs.bk
 # sqlx offline data is COMMITTED (do not ignore .sqlx)
 
+# cargo-mutants incremental output (do not commit)
+mutants.out/
+**/mutants.out/
+mutants.out.old/
+**/mutants.out.old/
+
 # Node / web
 node_modules/
 web/.next/

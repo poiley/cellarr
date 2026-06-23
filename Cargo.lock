@@ -467,6 +467,7 @@ dependencies = [
  "cellarr-core",
  "cellarr-parse",
  "fancy-regex",
+ "proptest",
  "reqwest",
  "rstest",
  "serde",
@@ -494,6 +495,7 @@ name = "cellarr-fs"
 version = "0.0.0"
 dependencies = [
  "cellarr-core",
+ "proptest",
  "rayon",
  "rstest",
  "serde",

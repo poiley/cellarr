@@ -426,4 +426,233 @@ mod tests {
             }]
         );
     }
+
+    // --- guard-boundary tests (pin operators a mutation run found unguarded) ---
+
+    /// A `YYYY NN NN` triple is a Daily date only when BOTH the month is 01-12
+    /// AND the day is 01-31. A plausible-looking but invalid date (month 13, or
+    /// day 32) must NOT be treated as a daily episode — it falls through so the
+    /// digits can be parsed by a later rule (or left unaddressed). This pins the
+    /// `&&` in the date guard: if it were `||`, an out-of-range month with an
+    /// in-range day would wrongly emit a Daily coordinate.
+    #[test]
+    fn an_out_of_range_date_is_not_a_daily_episode() {
+        // month 13 is impossible; day 14 is fine — `&&` must still reject.
+        assert!(
+            !coords("Show.2019.13.14.1080p.WEB-DL-GRP")
+                .iter()
+                .any(|c| matches!(c, Coordinates::Daily { .. })),
+            "month 13 must not yield a Daily coordinate"
+        );
+        // day 32 is impossible; month 03 is fine — `&&` must still reject.
+        assert!(
+            !coords("Show.2019.03.32.1080p.WEB-DL-GRP")
+                .iter()
+                .any(|c| matches!(c, Coordinates::Daily { .. })),
+            "day 32 must not yield a Daily coordinate"
+        );
+    }
+
+    /// The word-form `Season N Episode A-B` range is honored only when it is a
+    /// real ascending range (`a > 0 && b >= a && b - a < 500`). A descending
+    /// range (`B < A`) is not a valid episode span and must NOT expand; it falls
+    /// through to the season-pack reading. This pins the `b >= a` bound: were it
+    /// `b < a`, a descending range would (wrongly) be accepted, and were `>=`
+    /// loosened the boundary case would slip.
+    #[test]
+    fn descending_word_episode_range_is_rejected() {
+        let got = coords("Show Season 1 Episode 5-4 x264");
+        assert!(
+            !got.iter().any(|c| matches!(c, Coordinates::Episode { .. })),
+            "a descending episode range must not produce Episode coordinates, got {got:?}"
+        );
+    }
+
+    /// The word-range guard also requires a positive first episode (`a > 0`): an
+    /// `Episode 0-3` span is rejected (episode 0 is not a real episode number) and
+    /// falls through to the season-pack reading. This pins the `a > 0` term of the
+    /// guard — both the `>` operator and the `&&` joining it: an `a >= 0` or an
+    /// `||` mutant would (wrongly) accept the range and emit episodes 0..3.
+    #[test]
+    fn word_episode_range_starting_at_zero_is_rejected() {
+        let got = coords("Show Season 1 Episode 0-3 x264");
+        assert!(
+            !got.iter().any(|c| matches!(c, Coordinates::Episode { .. })),
+            "an Episode 0-N range must not produce Episode coordinates, got {got:?}"
+        );
+    }
+
+    /// The season-range guard requires a positive first season (`from > 0`): an
+    /// `S00-S03` span is not expanded into four packs; it falls through to the
+    /// single short-`S00` reading. This pins the `from > 0` term — a `from >= 0`
+    /// mutant would expand a zero-based range.
+    #[test]
+    fn season_range_starting_at_zero_is_not_expanded() {
+        // Only the single fall-through SeasonPack { season: 0 }, not 0,1,2,3.
+        assert_eq!(
+            coords("Show.S00-S03.1080p.WEB-DL-GRP"),
+            vec![Coordinates::SeasonPack { season: 0 }]
+        );
+    }
+
+    /// Both anime-absolute forms require a positive number (`n > 0`): an explicit
+    /// ` - 0` (dash form) or a bracketed ` 0 ` (bare form) is not a real absolute
+    /// episode and must yield NO Absolute coordinate. This pins the `n > 0` guard
+    /// in both the bare (line 244) and dash (line 252) absolute branches.
+    #[test]
+    fn absolute_zero_is_rejected_in_both_forms() {
+        assert!(
+            !coords("[Grp] Show - 0 (1080p).mkv")
+                .iter()
+                .any(|c| matches!(c, Coordinates::Absolute { .. })),
+            "absolute 0 (bracketed/bare form) must be rejected"
+        );
+        assert!(
+            !coords("Some Show - 0 [1080p]")
+                .iter()
+                .any(|c| matches!(c, Coordinates::Absolute { .. })),
+            "absolute 0 (dash form) must be rejected"
+        );
+    }
+
+    /// The positive control for the word-range guard: an ascending in-range span
+    /// expands to every episode inclusive. Together with the descending-range
+    /// test this makes the `a > 0 && b >= a` guard load-bearing in both
+    /// directions.
+    #[test]
+    fn ascending_word_episode_range_expands_inclusive() {
+        assert_eq!(
+            coords("Show Season 1 Episode 5-7 x264"),
+            vec![
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 5,
+                    absolute: None
+                },
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 6,
+                    absolute: None
+                },
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 7,
+                    absolute: None
+                },
+            ]
+        );
+    }
+
+    /// A two-episode NxN multi block (`2x04-x05`) must yield BOTH episodes. The
+    /// NxN-multi branch only commits when it produced at least two episodes
+    /// (`episodes.len() >= 2`); this pins that `>= 2` bound — a `< 2` mutant would
+    /// drop the multi block and fall through to the single-NxN reading (one
+    /// episode), which this assertion rejects.
+    #[test]
+    fn nxn_multi_block_yields_both_episodes() {
+        assert_eq!(
+            coords("Show.2x04-x05.720p.HDTV"),
+            vec![
+                Coordinates::Episode {
+                    season: 2,
+                    episode: 4,
+                    absolute: None
+                },
+                Coordinates::Episode {
+                    season: 2,
+                    episode: 5,
+                    absolute: None
+                },
+            ]
+        );
+    }
+
+    /// A season range `S01-S03` emits one season-pack per covered season, but only
+    /// when the span is sane (`from > 0 && to >= from && to - from < 100`). A span
+    /// of 199 seasons (`S01-S200`) is a runaway and must NOT expand into 200
+    /// packs; it falls through to the single season-pack reading. This pins the
+    /// `to - from < 100` runaway guard.
+    #[test]
+    fn season_range_expands_only_within_the_runaway_guard() {
+        // In-range: S01-S03 -> exactly three packs.
+        assert_eq!(
+            coords("Show.S01-S03.1080p.WEB-DL-GRP"),
+            vec![
+                Coordinates::SeasonPack { season: 1 },
+                Coordinates::SeasonPack { season: 2 },
+                Coordinates::SeasonPack { season: 3 },
+            ]
+        );
+        // Runaway: S01-S200 must NOT produce a 200-season expansion.
+        let runaway = coords("Show.S01-S200.1080p.WEB-DL-GRP");
+        assert!(
+            runaway.len() < 100,
+            "a 199-season span must not expand into a giant pack list, got {} packs",
+            runaway.len()
+        );
+    }
+
+    /// The dash-form anime absolute is bounded `n > 0 && n < 5000`: a four-digit
+    /// number like 071 is accepted, but a number at/above 5000 is not a plausible
+    /// absolute episode and must be ignored. This pins the `n < 5000` upper bound
+    /// of the dash absolute. (No fansub bracket, so only the dash form can fire.)
+    #[test]
+    fn dash_absolute_is_bounded_below_5000() {
+        assert_eq!(
+            coords("Some Show - 071 [1080p]"),
+            vec![Coordinates::Absolute { number: 71 }]
+        );
+        assert!(
+            !coords("Some Show - 7000 [1080p]")
+                .iter()
+                .any(|c| matches!(c, Coordinates::Absolute { .. })),
+            "an absolute >= 5000 must be rejected by the dash-form bound"
+        );
+    }
+
+    /// `expand_episode_list` treats a two-number block as an inclusive range only
+    /// when the span is bounded (`b - a < 200`); a larger gap is read as an
+    /// explicit two-item list, never expanded. This pins the `< 200` runaway guard
+    /// in the expander: `S01E01-E250` must be exactly [1, 250], not 250 episodes.
+    #[test]
+    fn two_number_block_with_a_huge_gap_is_a_list_not_a_range() {
+        assert_eq!(
+            coords("Show.S01E01-E250.720p.HDTV"),
+            vec![
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 1,
+                    absolute: None
+                },
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 250,
+                    absolute: None
+                },
+            ]
+        );
+    }
+
+    /// `expand_episode_list` drops episode number 0 (`retain(|n| *n > 0)`): a
+    /// multi block that includes `E00` (a specials marker some scene names use)
+    /// must not surface episode 0 as a real episode. This pins the `*n > 0`
+    /// retain predicate — a `>= 0` mutant would keep the bogus episode 0.
+    #[test]
+    fn episode_zero_is_dropped_from_a_multi_block() {
+        assert_eq!(
+            coords("Show.S01E00E01E02.720p.HDTV"),
+            vec![
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 1,
+                    absolute: None
+                },
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 2,
+                    absolute: None
+                },
+            ]
+        );
+    }
 }

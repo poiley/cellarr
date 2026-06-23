@@ -19,6 +19,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+proptest.workspace = true
 serde_json.workspace = true
 toml = "0.8"
 # CF-matching oracle only (tests/oracle_cf.rs, #[ignore]): parse corpus titles and

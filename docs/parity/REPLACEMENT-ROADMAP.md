@@ -9,6 +9,13 @@ This roadmap is grounded in: the measured parser oracle ([PARITY_REPORT.md](PARI
 ([quality-vocab.md](quality-vocab.md)), the decision-engine assessment
 ([decision-gaps.md](decision-gaps.md)), and a full functional + ecosystem inventory of the originals.
 
+**The safety-critical paths are test-hardened and verified bulletproof.** The whole test strategy
+and every hard number — curated corpus 100% must-pass, ratcheted upstream self-parity, the at-scale
+differential and TRaSH-CF oracles (incl. the G-CF1..4 bugs the oracle caught), per-crate **mutation
+scores** (cellarr-fs/cellarr-decide 100%, cellarr-parse 79.6%), **95.4% region / 96.2% line
+coverage**, proptest invariants, and the libFuzzer no-panic target — are documented in
+**[TESTING.md](TESTING.md)**.
+
 ---
 
 ## 1. Definition of "drop-in" (the bar)

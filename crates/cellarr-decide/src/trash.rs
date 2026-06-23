@@ -455,4 +455,160 @@ mod tests {
             "index 7 must mean different sources on Sonarr vs Radarr"
         );
     }
+
+    fn spec_with_value(value: serde_json::Value) -> TrashSpecification {
+        TrashSpecification {
+            implementation: "X".to_string(),
+            required: false,
+            negate: false,
+            fields: TrashFields {
+                value: Some(value),
+                min: None,
+                max: None,
+            },
+        }
+    }
+
+    fn spec_no_value() -> TrashSpecification {
+        TrashSpecification {
+            implementation: "X".to_string(),
+            required: false,
+            negate: false,
+            fields: TrashFields {
+                value: None,
+                min: None,
+                max: None,
+            },
+        }
+    }
+
+    #[test]
+    fn unknown_source_index_falls_back_to_lowest_source() {
+        // An unrecognized index must NOT silently map onto a real high source and
+        // over-match; it falls back to the lowest (Cam) on both dialects.
+        assert_eq!(
+            source_from_index(&source_spec(99), TrashApp::Sonarr),
+            Source::Cam
+        );
+        assert_eq!(
+            source_from_index(&source_spec(0), TrashApp::Radarr),
+            Source::Cam
+        );
+        // A spec carrying NO value at all is also the lowest source, never a panic.
+        assert_eq!(
+            source_from_index(&spec_no_value(), TrashApp::Sonarr),
+            Source::Cam
+        );
+    }
+
+    #[test]
+    fn value_str_stringifies_non_string_json() {
+        // A string round-trips verbatim.
+        assert_eq!(
+            value_str(&spec_with_value(serde_json::json!("hello"))),
+            "hello"
+        );
+        // A number is stringified (an integer language id still survives).
+        assert_eq!(value_str(&spec_with_value(serde_json::json!(42))), "42");
+        // A non-string, non-number JSON value (e.g. bool) is stringified via its
+        // Display, not dropped.
+        assert_eq!(value_str(&spec_with_value(serde_json::json!(true))), "true");
+        // Absent value -> empty string, never a panic.
+        assert_eq!(value_str(&spec_no_value()), "");
+    }
+
+    #[test]
+    fn value_i64_parses_numbers_and_numeric_strings() {
+        assert_eq!(value_i64(&spec_with_value(serde_json::json!(7))), Some(7));
+        // TRaSH sometimes encodes the index as a numeric STRING; it must parse.
+        assert_eq!(value_i64(&spec_with_value(serde_json::json!("9"))), Some(9));
+        // A non-numeric string is None, not a panic.
+        assert_eq!(value_i64(&spec_with_value(serde_json::json!("nope"))), None);
+        assert_eq!(value_i64(&spec_no_value()), None);
+    }
+
+    #[test]
+    fn resolution_from_index_maps_heights_and_defaults() {
+        assert_eq!(resolution_from_index(&source_spec(720)), Resolution::R720p);
+        assert_eq!(
+            resolution_from_index(&source_spec(1080)),
+            Resolution::R1080p
+        );
+        assert_eq!(
+            resolution_from_index(&source_spec(2160)),
+            Resolution::R2160p
+        );
+        assert_eq!(resolution_from_index(&source_spec(576)), Resolution::R576p);
+        // An unknown height falls back to the lowest resolution (480p).
+        assert_eq!(resolution_from_index(&source_spec(123)), Resolution::R480p);
+    }
+
+    #[test]
+    fn modifier_from_value_is_case_insensitive_with_proper_default() {
+        assert_eq!(
+            modifier_from_value(&spec_with_value(serde_json::json!("REPACK"))),
+            ProperRepack::Repack
+        );
+        assert_eq!(
+            modifier_from_value(&spec_with_value(serde_json::json!("repack"))),
+            ProperRepack::Repack
+        );
+        // Anything that is not a repack (including "proper") is Proper.
+        assert_eq!(
+            modifier_from_value(&spec_with_value(serde_json::json!("Proper"))),
+            ProperRepack::Proper
+        );
+        assert_eq!(modifier_from_value(&spec_no_value()), ProperRepack::Proper);
+    }
+
+    #[test]
+    fn codec_from_value_maps_aliases() {
+        for s in ["x264", "h264", "avc", "AVC"] {
+            assert_eq!(
+                codec_from_value(&spec_with_value(serde_json::json!(s))),
+                VideoCodec::X264,
+                "{s} must map to X264"
+            );
+        }
+        for s in ["x265", "h265", "hevc"] {
+            assert_eq!(
+                codec_from_value(&spec_with_value(serde_json::json!(s))),
+                VideoCodec::X265
+            );
+        }
+        assert_eq!(
+            codec_from_value(&spec_with_value(serde_json::json!("av1"))),
+            VideoCodec::Av1
+        );
+        // An unknown codec is Other, never a panic.
+        assert_eq!(
+            codec_from_value(&spec_with_value(serde_json::json!("mpeg2"))),
+            VideoCodec::Other
+        );
+    }
+
+    #[test]
+    fn hdr_from_value_maps_aliases() {
+        for s in ["hdr10plus", "hdr10+", "HDR10PLUS"] {
+            assert_eq!(
+                hdr_from_value(&spec_with_value(serde_json::json!(s))),
+                HdrFormat::Hdr10Plus
+            );
+        }
+        for s in ["dolbyvision", "dv"] {
+            assert_eq!(
+                hdr_from_value(&spec_with_value(serde_json::json!(s))),
+                HdrFormat::DolbyVision
+            );
+        }
+        assert_eq!(
+            hdr_from_value(&spec_with_value(serde_json::json!("hlg"))),
+            HdrFormat::Hlg
+        );
+        // The default HDR bucket is plain HDR10.
+        assert_eq!(
+            hdr_from_value(&spec_with_value(serde_json::json!("something"))),
+            HdrFormat::Hdr10
+        );
+    }
 }

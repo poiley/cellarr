@@ -10,15 +10,21 @@ The single daemon boots with zero config, runs the full acquisition pipeline, se
 and `/api/v3`-compatible APIs over REST + WebSocket, and serves the theme-aware SRCL UI — all from
 one binary. Verified in a real browser (light/dark via system default, live API data).
 
-Gate: `just ci` passes — **cargo 303 tests + web 92 tests**, `clippy -D warnings` clean, `fmt`
+Gate: `just ci` passes — **cargo 529 tests + web 92 tests**, `clippy -D warnings` clean, `fmt`
 clean, SRCL-only UI lint clean.
+
+**Test-hardening is complete and verified bulletproof** — curated corpus 100% must-pass, ratcheted
+upstream self-parity, at-scale differential + TRaSH-CF oracles, **100% mutation score on
+cellarr-fs and cellarr-decide** (79.6% on cellarr-parse), **95.4% region / 96.2% line coverage** on
+the three critical crates, plus proptest invariants and a libFuzzer no-panic target. The full
+strategy and every hard number live in **[`docs/parity/TESTING.md`](docs/parity/TESTING.md)**.
 
 ## Implemented & tested
 
 | Area | Crate / dir | Notes |
 |------|-------------|-------|
 | Shared types, traits, pipeline state machine | `cellarr-core` | media-type-agnostic `ContentRef`/`Coordinates`; seam traits |
-| Release-name parser | `cellarr-parse` | extractor pipeline; ~120 corpus vectors; proptest no-panic |
+| Release-name parser | `cellarr-parse` | extractor pipeline; 131 curated + 1,555 upstream corpus vectors; proptest + libFuzzer no-panic |
 | Decision engine | `cellarr-decide` | quality profiles + custom formats + precedence; TRaSH import |
 | Persistence | `cellarr-db` | SQLite (WAL) + writer-actor + migrations + repos |
 | Library file ops | `cellarr-fs` | stage→verify→commit→log import with crash-safety tests |

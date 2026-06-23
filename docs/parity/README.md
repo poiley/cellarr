@@ -29,6 +29,7 @@ profiles + a release to evaluate) — tracked separately in [decision-gaps.md](d
 | [api-v3-gaps.md](api-v3-gaps.md) | `/api/v3` ecosystem-compatibility parity (what Prowlarr/Overseerr/Bazarr/Recyclarr need vs cellarr). |
 | [quality-vocab.md](quality-vocab.md) | Quality-name vocabulary diff vs Sonarr/Radarr. |
 | **[REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md)** | **The plan: every functional area, parity status, and phased steps to a Sonarr+Radarr drop-in.** |
+| **[TESTING.md](TESTING.md)** | **The test strategy + hard numbers: curated/upstream corpus, oracles, mutation scores, coverage, proptest, fuzz.** |
 
 ## Status
 - [x] Oracle stood up: pinned Sonarr 4.0.17 + Radarr 6.2.1 (see oracle-setup.md)

@@ -642,6 +642,21 @@ mod tests {
         assert_eq!(render_name("{X:weird}", &t).unwrap(), "value");
     }
 
+    #[test]
+    fn non_zero_specifier_does_not_zero_pad_a_numeric_value() {
+        // A spec is a zero-pad width ONLY when it is a run of `0`s. A non-`0`
+        // spec (here "77") must be rejected and the value emitted verbatim — it
+        // must NOT be misread as "width 2". With a NUMERIC value this is the case
+        // that distinguishes the real `&& all-zeros` rule from an `|| all-zeros`
+        // relaxation, which would pad "5" to "05".
+        let t = tk(&[("N", "5")]);
+        assert_eq!(render_name("{N:77}", &t).unwrap(), "5");
+        // And an all-zeros spec of the same width DOES pad, proving the width is
+        // honored when the spec is legitimate.
+        let t2 = tk(&[("N", "5")]);
+        assert_eq!(render_name("{N:00}", &t2).unwrap(), "05");
+    }
+
     // --- leading-dash optional group ---
 
     #[test]

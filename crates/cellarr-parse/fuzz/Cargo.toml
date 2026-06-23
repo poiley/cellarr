@@ -1,0 +1,35 @@
+# libFuzzer harness for cellarr-parse. NOT part of the cargo workspace and NOT
+# run by the default test suite: building it requires a nightly toolchain
+# (cargo-fuzz / -Z sanitizer). It is a separate package so `cargo test
+# --workspace` never depends on nightly. Run it explicitly:
+#
+#   cargo +nightly fuzz run parse_title -- -max_total_time=60
+#
+# The proptest in `tests/proptest_no_panic.rs` provides the always-on,
+# stable-toolchain coverage of the same "parse_title never panics" invariant.
+# Standalone package: an empty [workspace] table detaches this manifest from the
+# parent cellarr workspace so cargo-fuzz (nightly) can build it independently and
+# `cargo +stable test --workspace` never reaches it.
+[workspace]
+
+[package]
+name = "cellarr-parse-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.cellarr-parse]
+path = ".."
+
+[[bin]]
+name = "parse_title"
+path = "fuzz_targets/parse_title.rs"
+test = false
+doc = false
+bench = false

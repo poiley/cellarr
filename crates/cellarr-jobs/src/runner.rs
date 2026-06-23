@@ -1240,3 +1240,230 @@ fn coords_agree(
 /// Make [`PipelineRunner`] usable behind an `Arc` of its seams (the scheduler
 /// holds shared seams). A thin owned-handle variant.
 pub type SharedRegistry = Arc<MediaRegistry>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::Coordinates as Co;
+
+    // --- reason_text: every reject reason renders human text -----------------
+
+    #[test]
+    fn reason_text_covers_every_reject_reason() {
+        use cellarr_core::RejectReason as R;
+        // Each branch must produce non-empty, distinct text so the decision log is
+        // readable. (A missing arm would fail to compile, but this also pins the
+        // strings against accidental blanking.)
+        let cases = [
+            reason_text(&R::QualityNotAllowed),
+            reason_text(&R::BelowMinimumCustomFormatScore),
+            reason_text(&R::Blocklisted),
+            reason_text(&R::SizeOutOfRange),
+            reason_text(&R::LanguageRequirementUnmet),
+            reason_text(&R::CutoffAlreadyMet),
+            reason_text(&R::NotAnUpgrade),
+        ];
+        for text in &cases {
+            assert!(!text.is_empty(), "reject reason text must not be empty");
+        }
+        // The free-form `Other` carries its own detail verbatim.
+        assert_eq!(
+            reason_text(&R::Other {
+                detail: "custom detail".into()
+            }),
+            "custom detail"
+        );
+    }
+
+    // --- with_ext_token: appends the extension without disturbing tokens ------
+
+    #[test]
+    fn with_ext_token_appends_extension_preserving_existing() {
+        let base = NamingTokens {
+            tokens: vec![
+                ("Series Title".to_string(), "Show".to_string()),
+                ("Season".to_string(), "1".to_string()),
+            ],
+        };
+        let with_ext = with_ext_token(&base, "mkv");
+        // The original tokens are preserved in order...
+        assert_eq!(with_ext.tokens[0].0, "Series Title");
+        assert_eq!(with_ext.tokens[1].0, "Season");
+        // ...and the Extension token is appended last.
+        let ext = with_ext.tokens.last().unwrap();
+        assert_eq!(ext.0, "Extension");
+        assert_eq!(ext.1, "mkv");
+        // The source tokens are untouched (no extension leaked in).
+        assert_eq!(base.tokens.len(), 2);
+    }
+
+    // --- coords_agree: the library-safety second-parse agreement -------------
+
+    fn ep(season: u32, episode: u32) -> Co {
+        Co::Episode {
+            season,
+            episode,
+            absolute: None,
+        }
+    }
+
+    #[test]
+    fn coords_agree_movie_always_agrees() {
+        // A file parsed as a movie never contradicts any grab intent.
+        let title = [ep(2, 5)];
+        let refs: Vec<&Co> = title.iter().collect();
+        assert!(coords_agree(&refs, &Co::Movie));
+    }
+
+    #[test]
+    fn coords_agree_episode_matches_same_season_and_episode_only() {
+        let title = [ep(2, 5)];
+        let refs: Vec<&Co> = title.iter().collect();
+        assert!(coords_agree(&refs, &ep(2, 5)), "exact match agrees");
+        assert!(
+            !coords_agree(&refs, &ep(2, 6)),
+            "different episode must NOT agree"
+        );
+        assert!(
+            !coords_agree(&refs, &ep(3, 5)),
+            "different season must NOT agree"
+        );
+    }
+
+    #[test]
+    fn coords_agree_season_pack_intent_accepts_any_episode_of_that_season() {
+        // A grab whose intent was the whole of season 2 (a season pack) must NOT
+        // hold a file parsed as S02E01 — the pack legitimately contains it. But a
+        // file from a DIFFERENT season is a real disagreement.
+        let title = [Co::SeasonPack { season: 2 }];
+        let refs: Vec<&Co> = title.iter().collect();
+        assert!(
+            coords_agree(&refs, &ep(2, 1)),
+            "an episode of the packed season agrees with the season-pack intent"
+        );
+        assert!(
+            coords_agree(&refs, &ep(2, 13)),
+            "any episode of the packed season agrees"
+        );
+        assert!(
+            !coords_agree(&refs, &ep(3, 1)),
+            "an episode of a DIFFERENT season must not agree with the pack intent"
+        );
+    }
+
+    #[test]
+    fn coords_agree_non_episode_non_movie_requires_exact_membership() {
+        // For coordinate kinds that are neither Movie nor Episode (e.g. a track),
+        // agreement is exact membership in the title coordinates.
+        let track = Co::Track { disc: 1, track: 4 };
+        let title = [track.clone()];
+        let refs: Vec<&Co> = title.iter().collect();
+        assert!(coords_agree(&refs, &track));
+        assert!(!coords_agree(&refs, &Co::Track { disc: 1, track: 5 }));
+    }
+
+    // --- verify_second_parse: holds on a true disagreement, passes otherwise --
+
+    fn parsed_with_coords(coords: Vec<Co>) -> ParsedRelease {
+        let mut p = ParsedRelease::new("x");
+        p.coordinates = coords;
+        p
+    }
+
+    #[test]
+    fn verify_second_parse_passes_when_title_has_no_coordinates() {
+        // No title coordinates -> nothing to contradict (movies, bare names).
+        let title = parsed_with_coords(vec![]);
+        let sources = [std::path::PathBuf::from("Some.Movie.2020.1080p.mkv")];
+        assert!(verify_second_parse(&title, &sources).is_ok());
+    }
+
+    #[test]
+    fn verify_second_parse_passes_when_file_name_carries_no_numbering() {
+        // The title names S02E05 but the on-disk file is bare; with no file-side
+        // coordinates there is nothing to contradict, so it passes.
+        let title = parsed_with_coords(vec![ep(2, 5)]);
+        let sources = [std::path::PathBuf::from("bare_filename.mkv")];
+        assert!(verify_second_parse(&title, &sources).is_ok());
+    }
+
+    #[test]
+    fn verify_second_parse_agrees_on_matching_episode() {
+        let title = parsed_with_coords(vec![ep(2, 5)]);
+        let sources = [std::path::PathBuf::from("The.Show.S02E05.1080p.WEB-DL.mkv")];
+        assert!(
+            verify_second_parse(&title, &sources).is_ok(),
+            "the file name names the same episode the grab intended"
+        );
+    }
+
+    #[test]
+    fn verify_second_parse_holds_on_a_real_episode_disagreement() {
+        // The grab intent was S02E05 but the on-disk file is S07E11 — a genuine
+        // mismatch that must HOLD the import rather than force-fit a misnamed move.
+        let title = parsed_with_coords(vec![ep(2, 5)]);
+        let sources = [std::path::PathBuf::from(
+            "Wrong.Show.S07E11.1080p.WEB-DL.mkv",
+        )];
+        let err = verify_second_parse(&title, &sources)
+            .expect_err("a season/episode disagreement must hold the import");
+        assert!(
+            err.contains("disagrees"),
+            "the hold reason names the conflict"
+        );
+    }
+
+    #[test]
+    fn verify_second_parse_season_pack_intent_accepts_per_episode_files() {
+        // A season-pack grab whose files are individual episodes of that season
+        // must import without holding (the pack contains them).
+        let title = parsed_with_coords(vec![Co::SeasonPack { season: 2 }]);
+        let sources = [
+            std::path::PathBuf::from("The.Show.S02E01.1080p.WEB-DL.mkv"),
+            std::path::PathBuf::from("The.Show.S02E02.1080p.WEB-DL.mkv"),
+        ];
+        assert!(verify_second_parse(&title, &sources).is_ok());
+
+        // ...but a file from a different season inside the same batch holds.
+        let mixed = [
+            std::path::PathBuf::from("The.Show.S02E01.1080p.WEB-DL.mkv"),
+            std::path::PathBuf::from("The.Show.S05E01.1080p.WEB-DL.mkv"),
+        ];
+        assert!(verify_second_parse(&title, &mixed).is_err());
+    }
+
+    // --- collect_sources: a file vs a directory ------------------------------
+
+    #[test]
+    fn collect_sources_returns_a_single_file_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("movie.mkv");
+        std::fs::write(&file, b"data").unwrap();
+        let sources = collect_sources(&file).unwrap();
+        assert_eq!(sources, vec![file]);
+    }
+
+    #[test]
+    fn collect_sources_walks_a_directory_and_sorts_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create out of lexical order to prove the result is sorted.
+        for name in ["c.mkv", "a.mkv", "b.mkv"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // A nested directory is NOT descended into (one level only).
+        let sub = dir.path().join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("deep.mkv"), b"x").unwrap();
+
+        let sources = collect_sources(dir.path()).unwrap();
+        let names: Vec<String> = sources
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.mkv", "b.mkv", "c.mkv"],
+            "only top-level files, sorted, no recursion into subdir"
+        );
+    }
+}
