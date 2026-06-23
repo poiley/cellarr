@@ -417,6 +417,7 @@ dependencies = [
  "cellarr-parse",
  "cellarr-plugins",
  "clap",
+ "dotenvy",
  "figment",
  "reqwest",
  "serde",

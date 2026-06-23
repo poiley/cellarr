@@ -32,6 +32,12 @@ pub enum ApiError {
     /// A failure submitting a command to the job scheduler.
     #[error("{0}")]
     Command(String),
+    /// A configured upstream (a metadata source) was reachable but failed the
+    /// request (transport/decode/HTTP). Distinct from [`Internal`](Self::Internal)
+    /// so a client can tell "the external source is misbehaving" from "cellarr
+    /// has a bug". Detail is logged; a generic message is returned.
+    #[error("upstream metadata source error")]
+    Upstream(String),
     /// Anything unanticipated. Detail is logged, not returned.
     #[error("internal error")]
     Internal(String),
@@ -48,6 +54,7 @@ impl ApiError {
             ApiError::Db(_) => "db_error",
             ApiError::Domain(_) => "domain_error",
             ApiError::Command(_) => "command_failed",
+            ApiError::Upstream(_) => "upstream_error",
             ApiError::Internal(_) => "internal_error",
         }
     }
@@ -59,6 +66,7 @@ impl ApiError {
             ApiError::BadRequest(_) | ApiError::Domain(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
             ApiError::Db(_) | ApiError::Command(_) | ApiError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -81,6 +89,9 @@ impl IntoResponse for ApiError {
             ApiError::Db(e) => tracing::error!(error = %e, "database error serving request"),
             ApiError::Internal(detail) => tracing::error!(detail, "internal error serving request"),
             ApiError::Command(detail) => tracing::warn!(detail, "command submission failed"),
+            ApiError::Upstream(detail) => {
+                tracing::warn!(detail, "upstream metadata source error serving request")
+            }
             _ => {}
         }
         let body = ErrorBody {

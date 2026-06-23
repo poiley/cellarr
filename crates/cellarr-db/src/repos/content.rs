@@ -68,6 +68,25 @@ impl ContentRepo {
             .collect()
     }
 
+    /// Recover the searchable title indexed for a node, if one was indexed.
+    ///
+    /// The `content` row carries no title column (titles live in the FTS index),
+    /// so this is the reverse of [`index_title`](Self::index_title): it lets the
+    /// list resources surface a node's real title instead of its UUID. `None`
+    /// means the node has no indexed title (it was never identified/added with a
+    /// title), and the caller falls back to the id.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn title_for(&self, id: ContentId) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT title FROM content_fts WHERE content_id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| r.try_get::<String, _>("title").map_err(DbError::from))
+            .transpose()
+    }
+
     /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]).
     ///
     /// # Errors

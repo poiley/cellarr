@@ -20,6 +20,7 @@ pub mod auth;
 pub mod commands;
 pub mod error;
 pub mod events;
+pub mod metadata;
 pub mod native;
 pub mod openapi;
 pub mod shim;
@@ -33,6 +34,7 @@ use tower_http::trace::TraceLayer;
 pub use auth::AuthConfig;
 pub use error::{ApiError, ApiResult};
 pub use events::{DomainEvent, EventBus};
+pub use metadata::{LookupCandidate, LookupOutcome, MetadataLookup, MetadataLookupError};
 pub use state::AppState;
 
 /// Build the complete application router.

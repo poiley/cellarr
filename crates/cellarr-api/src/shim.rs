@@ -1066,17 +1066,96 @@ async fn lookup(
     if term.is_empty() {
         return Ok(Json(Vec::new()));
     }
-    let content = state.db.content();
-    let ids = content.search(term).await?;
-    let mut out = Vec::new();
-    for id in ids {
-        if let Some(node) = content.get_node(id).await? {
-            if node.media_type == surface {
-                out.push(v3_resource_item(state, &node, term).await?);
+
+    // Resolve real identities from the metadata source (TheTVDB for TV, TMDb for
+    // movies). This is what makes a lookup return a candidate with the correct
+    // external id + human title rather than the search term echoed back — the
+    // Phase A deferred gap. With no source configured we degrade gracefully: an
+    // empty list, never a 500.
+    let Some(meta) = state.metadata.as_ref() else {
+        tracing::debug!(
+            ?surface,
+            "lookup: no metadata source configured; returning empty result"
+        );
+        return Ok(Json(Vec::new()));
+    };
+
+    let outcome = meta
+        .search(surface, term)
+        .await
+        .map_err(|e| ApiError::Upstream(e.to_string()))?;
+
+    let candidates = match outcome {
+        crate::metadata::LookupOutcome::Resolved(c) => c,
+        crate::metadata::LookupOutcome::Unavailable(reason) => {
+            // No source for this media type (e.g. movies without a TMDb key):
+            // clearly degrade rather than error, so a client (Overseerr) treats
+            // the type as "metadata unavailable" and carries on.
+            tracing::info!(
+                ?surface,
+                reason,
+                "lookup: metadata unavailable; returning empty result"
+            );
+            return Ok(Json(Vec::new()));
+        }
+    };
+
+    let out = candidates.iter().map(v3_lookup_item).collect::<Vec<_>>();
+    Ok(Json(out))
+}
+
+/// Render a resolved metadata [`LookupCandidate`] into a v3 lookup resource.
+///
+/// A lookup candidate is *not* yet in the library, so it carries the resolved
+/// identity (title/year/external ids) without file-state — the shape Overseerr
+/// reads to offer "add". The external ids land in the field the addressed media
+/// type keys on: `tvdbId` for series, `tmdbId`/`imdbId` for movies.
+fn v3_lookup_item(c: &crate::metadata::LookupCandidate) -> Value {
+    let mut base = json!({
+        "title": c.title,
+        "titleSlug": slug(&c.title),
+        "year": c.year.unwrap_or(0),
+        "overview": c.overview.clone().unwrap_or_default(),
+        "monitored": false,
+        "hasFile": false,
+        "tags": [],
+    });
+    match c.media_type {
+        MediaType::Tv => {
+            let tvdb_id = c
+                .external_id("tvdb")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            merge_into(
+                &mut base,
+                json!({
+                    "tvdbId": tvdb_id,
+                    "seriesType": "standard",
+                    "status": "continuing",
+                }),
+            );
+            if let Some(imdb) = c.external_id("imdb") {
+                merge_into(&mut base, json!({ "imdbId": imdb }));
+            }
+        }
+        _ => {
+            let tmdb_id = c
+                .external_id("tmdb")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            merge_into(
+                &mut base,
+                json!({
+                    "tmdbId": tmdb_id,
+                    "status": "released",
+                }),
+            );
+            if let Some(imdb) = c.external_id("imdb") {
+                merge_into(&mut base, json!({ "imdbId": imdb }));
             }
         }
     }
-    Ok(Json(out))
+    base
 }
 
 // --- library list resources ------------------------------------------------
@@ -1161,10 +1240,14 @@ async fn list_resources(fs: &FaceState, surface: MediaType) -> ApiResult<Vec<Val
             continue;
         }
         for node in content.roots(lib.id).await? {
-            // The FTS index has no reverse lookup, so a node's title text is not
-            // recoverable here; fall back to its id. (Reported as a core gap —
-            // a title column on the resolved-identity row would close it.)
-            let title = node.id.to_string();
+            // Surface the real indexed title for an identified node (one added /
+            // identified with a title); fall back to the id only when the node
+            // has no indexed title yet. This closes the Phase A "UUID title"
+            // deferred gap for identified items.
+            let title = content
+                .title_for(node.id)
+                .await?
+                .unwrap_or_else(|| node.id.to_string());
             out.push(v3_resource_item(&fs.state, &node, &title).await?);
         }
     }

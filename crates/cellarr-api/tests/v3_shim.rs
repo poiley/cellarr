@@ -8,8 +8,11 @@
 
 mod common;
 
-use common::{seed_library, start_authed, start_open, TEST_API_KEY};
+use common::{
+    seed_library, start_authed, start_open, start_with_metadata, MockMetadata, TEST_API_KEY,
+};
 use serde_json::Value;
+use std::sync::Arc;
 
 // --- system/status ---------------------------------------------------------
 
@@ -98,16 +101,14 @@ async fn qualityprofile_has_v3_shape_for_tv() {
 
 #[tokio::test]
 async fn movie_lookup_returns_radarr_shaped_results() {
-    let server = start_authed().await;
-    let lib = seed_library(&server.state, cellarr_core::MediaType::Movie, "Movies").await;
-
-    // Add a movie so a lookup can find it (also exercises POST /movie auth).
-    add_item(&server, "/api/v3/movie", "Blade Runner 2049", lib).await;
+    // Lookup resolves through the metadata seam (not the local DB): a real tmdbId
+    // and human title, not the echoed term.
+    let server = start_with_metadata(Arc::new(MockMetadata)).await;
+    seed_library(&server.state, cellarr_core::MediaType::Movie, "Movies").await;
 
     let results: Value = server
         .client()
         .get(server.url("/api/v3/movie/lookup?term=Blade"))
-        .header("X-Api-Key", TEST_API_KEY)
         .send()
         .await
         .expect("request")
@@ -117,24 +118,28 @@ async fn movie_lookup_returns_radarr_shaped_results() {
     let arr = results.as_array().expect("array");
     assert!(!arr.is_empty(), "lookup found nothing");
     let item = &arr[0];
-    // Radarr lookup item fields.
-    assert!(item.get("title").is_some());
-    assert!(item.get("tmdbId").is_some());
-    assert!(item.get("titleSlug").is_some());
-    // Radarr items do NOT carry the Sonarr-only tvdbId.
+    // Radarr lookup item fields, with the resolved identity.
+    assert_eq!(
+        item.get("title").and_then(Value::as_str),
+        Some("Blade Runner 2049")
+    );
+    assert_eq!(item.get("tmdbId").and_then(Value::as_i64), Some(335984));
+    assert_eq!(
+        item.get("titleSlug").and_then(Value::as_str),
+        Some("blade-runner-2049")
+    );
+    // A movie candidate does NOT carry the Sonarr-only tvdbId.
     assert!(item.get("tvdbId").is_none());
 }
 
 #[tokio::test]
 async fn series_lookup_returns_sonarr_shaped_results() {
-    let server = start_authed().await;
-    let lib = seed_library(&server.state, cellarr_core::MediaType::Tv, "Shows").await;
-    add_item(&server, "/api/v3/series", "The Expanse", lib).await;
+    let server = start_with_metadata(Arc::new(MockMetadata)).await;
+    seed_library(&server.state, cellarr_core::MediaType::Tv, "Shows").await;
 
     let results: Value = server
         .client()
         .get(server.url("/api/v3/series/lookup?term=Expanse"))
-        .header("X-Api-Key", TEST_API_KEY)
         .send()
         .await
         .expect("request")
@@ -144,11 +149,14 @@ async fn series_lookup_returns_sonarr_shaped_results() {
     let arr = results.as_array().expect("array");
     assert!(!arr.is_empty(), "lookup found nothing");
     let item = &arr[0];
-    // Sonarr lookup item fields.
-    assert!(item.get("title").is_some());
-    assert!(item.get("tvdbId").is_some());
+    // Sonarr lookup item fields, with the resolved identity (real tvdbId + title).
+    assert_eq!(
+        item.get("title").and_then(Value::as_str),
+        Some("The Expanse")
+    );
+    assert_eq!(item.get("tvdbId").and_then(Value::as_i64), Some(280619));
     assert!(item.get("seriesType").is_some());
-    // Sonarr items do NOT carry the Radarr-only tmdbId.
+    // A series candidate does NOT carry the Radarr-only tmdbId.
     assert!(item.get("tmdbId").is_none());
 }
 

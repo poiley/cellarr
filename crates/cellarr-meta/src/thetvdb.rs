@@ -6,13 +6,16 @@
 //! it has no offline dumps, so the source caches hard and reports
 //! [`MetaError::NoCredential`] when no key is configured.
 //!
-//! Auth in the real API is a bearer token obtained from `/login`; for the
-//! record/replay path the [`Fetcher`] seam serves recorded bodies, so the
-//! adapter's testable normalization logic runs without a token exchange. The
-//! configured key is sent as a bearer header on live requests.
+//! Auth in the real API is a bearer token obtained from `POST /login` with the
+//! configured `apikey` (and, for the user-supported model, a subscriber `pin`).
+//! The token is cached for the lifetime of the source and reused across requests;
+//! on a 401 it is dropped and re-minted once. For the record/replay path the
+//! [`Fetcher`] seam serves recorded GET bodies, so the adapter's testable
+//! normalization logic runs without a token exchange.
 
 use async_trait::async_trait;
 use cellarr_core::{MediaType, MetadataSource};
+use tokio::sync::Mutex;
 
 use crate::cache::MetaCache;
 use crate::config::TheTvdbConfig;
@@ -30,6 +33,10 @@ pub struct TheTvdbSource<F: Fetcher> {
     config: TheTvdbConfig,
     cache: MetaCache,
     limiter: RateLimiter,
+    /// The cached bearer token from `/login`, minted lazily on first use and
+    /// reused thereafter. `None` until the first successful login. Guarded by an
+    /// async mutex so concurrent callers mint at most one token.
+    token: Mutex<Option<String>>,
 }
 
 impl<F: Fetcher> TheTvdbSource<F> {
@@ -43,38 +50,119 @@ impl<F: Fetcher> TheTvdbSource<F> {
             config,
             cache,
             limiter,
+            token: Mutex::new(None),
         }
     }
 
-    fn bearer(&self) -> Result<String, MetaError> {
-        self.config
+    /// Whether a credential is configured at all (offline degradation gate).
+    #[must_use]
+    pub fn has_credential(&self) -> bool {
+        self.config.api_key.is_some()
+    }
+
+    /// Exchange the configured api key (+ optional pin) for a bearer token via
+    /// `POST /v4/login`, caching it for reuse. Re-login overwrites the cache.
+    ///
+    /// The api key and pin are sent only in the request body and never logged.
+    async fn login(&self) -> Result<String, MetaError> {
+        let api_key = self
+            .config
             .api_key
             .as_deref()
-            .map(|k| format!("Bearer {k}"))
-            .ok_or(MetaError::NoCredential { src: SOURCE })
+            .ok_or(MetaError::NoCredential { src: SOURCE })?;
+
+        let mut body = serde_json::Map::new();
+        body.insert("apikey".to_string(), serde_json::Value::from(api_key));
+        if let Some(pin) = self.config.pin.as_deref().filter(|p| !p.is_empty()) {
+            body.insert("pin".to_string(), serde_json::Value::from(pin));
+        }
+        let body = serde_json::Value::Object(body);
+
+        let url = format!("{}/login", self.config.base_url);
+        self.limiter.until_ready().await;
+        let resp = self
+            .fetcher
+            .post_json(&url, &body, &[("Content-Type", "application/json")])
+            .await?;
+        if !resp.is_success() {
+            return Err(MetaError::Http {
+                src: SOURCE,
+                status: resp.status,
+            });
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&resp.body).map_err(|e| MetaError::Decode {
+                src: SOURCE,
+                detail: e.to_string(),
+            })?;
+        let token = parsed
+            .get("data")
+            .and_then(|d| d.get("token"))
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| MetaError::Decode {
+                src: SOURCE,
+                detail: "login response missing data.token".to_string(),
+            })?
+            .to_string();
+        Ok(token)
+    }
+
+    /// Return a cached token, minting one via [`login`](Self::login) if absent.
+    async fn bearer(&self) -> Result<String, MetaError> {
+        let mut guard = self.token.lock().await;
+        if let Some(tok) = guard.as_ref() {
+            return Ok(tok.clone());
+        }
+        let tok = self.login().await?;
+        *guard = Some(tok.clone());
+        Ok(tok)
+    }
+
+    /// Drop the cached token so the next request re-logs in (used after a 401).
+    async fn invalidate_token(&self) {
+        *self.token.lock().await = None;
     }
 
     async fn cached_get(&self, cache_key: &str, url: String) -> Result<String, MetaError> {
-        let bearer = self.bearer()?;
         self.cache
-            .get_or_try_insert_with(cache_key, async {
-                self.limiter.until_ready().await;
-                let resp = self
-                    .fetcher
-                    .get(&url, &[("Authorization", bearer.as_str())])
-                    .await?;
-                if !resp.is_success() {
-                    return Err(MetaError::Http {
-                        src: SOURCE,
-                        status: resp.status,
-                    });
-                }
-                String::from_utf8(resp.body).map_err(|e| MetaError::Decode {
-                    src: SOURCE,
-                    detail: e.to_string(),
-                })
-            })
+            .get_or_try_insert_with(cache_key, async { self.authed_get(&url).await })
             .await
+    }
+
+    /// A single authenticated GET that retries once on a 401 by re-minting the
+    /// token (handles expiry/rotation transparently).
+    async fn authed_get(&self, url: &str) -> Result<String, MetaError> {
+        let token = self.bearer().await?;
+        let auth = format!("Bearer {token}");
+        self.limiter.until_ready().await;
+        let resp = self
+            .fetcher
+            .get(url, &[("Authorization", auth.as_str())])
+            .await?;
+
+        let resp = if resp.status == 401 {
+            // Token expired/invalid: drop it, log in again, retry once.
+            self.invalidate_token().await;
+            let token = self.bearer().await?;
+            let auth = format!("Bearer {token}");
+            self.limiter.until_ready().await;
+            self.fetcher
+                .get(url, &[("Authorization", auth.as_str())])
+                .await?
+        } else {
+            resp
+        };
+
+        if !resp.is_success() {
+            return Err(MetaError::Http {
+                src: SOURCE,
+                status: resp.status,
+            });
+        }
+        String::from_utf8(resp.body).map_err(|e| MetaError::Decode {
+            src: SOURCE,
+            detail: e.to_string(),
+        })
     }
 
     async fn search_raw(&self, query: &str) -> Result<serde_json::Value, MetaError> {
@@ -117,16 +205,53 @@ impl<F: Fetcher> TheTvdbSource<F> {
         })
     }
 
+    /// Fetch the default-order English episode list for a series.
+    ///
+    /// The `/extended` payload carries identity, remote ids, and artwork but not
+    /// always the full episode list, so episodes are fetched from the dedicated
+    /// `/series/{id}/episodes/default/eng` endpoint and merged. A 404/empty here
+    /// is not fatal — the series identity still normalizes.
+    async fn fetch_episodes(&self, id: &str) -> Vec<ChildNode> {
+        let url = format!(
+            "{}/series/{}/episodes/default/eng",
+            self.config.base_url, id
+        );
+        let body = match self.cached_get(&format!("tvdb:episodes:{id}"), url).await {
+            Ok(b) => b,
+            Err(_) => return Vec::new(),
+        };
+        let value: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        // The episodes endpoint nests the list under `data.episodes`.
+        value
+            .get("data")
+            .and_then(|d| d.get("episodes"))
+            .and_then(|e| e.as_array())
+            .map(|eps| eps.iter().filter_map(normalize_episode).collect())
+            .unwrap_or_default()
+    }
+
     /// Fetch and normalize a series with its season/episode child structure.
+    ///
+    /// Combines `/series/{id}/extended` (identity, ids, artwork) with the
+    /// default-order English episode list; the episode endpoint is only consulted
+    /// when `/extended` did not already carry episodes (the recorded fixtures
+    /// embed them).
     ///
     /// # Errors
     /// As [`TheTvdbSource::search_normalized`].
     pub async fn fetch_normalized(&self, id: &str) -> Result<Metadata, MetaError> {
         let value = self.fetch_raw(id).await?;
-        normalize_series(&value).ok_or_else(|| MetaError::Decode {
+        let mut meta = normalize_series(&value).ok_or_else(|| MetaError::Decode {
             src: SOURCE,
             detail: "series response missing required fields".to_string(),
-        })
+        })?;
+        if meta.children.is_empty() {
+            meta.children = self.fetch_episodes(id).await;
+        }
+        Ok(meta)
     }
 
     /// Artwork references for a series.

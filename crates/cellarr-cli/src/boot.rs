@@ -68,12 +68,28 @@ impl Daemon {
             "media registry built"
         );
 
+        // 2b. Metadata sources (bring-your-own-key, from `.env`/`CELLARR_*`).
+        //     Construct the live TheTVDB (TV) + TMDb (movie) sources behind the
+        //     API's metadata seam, so the v3 lookup/list resources resolve real
+        //     titles + external ids. With no key a source reports unavailable and
+        //     the daemon degrades gracefully (offline is non-negotiable). Keys are
+        //     never logged.
+        let metadata = std::sync::Arc::new(crate::metadata::LiveMetadata::from_config(config));
+        info!(
+            thetvdb_configured = config.tvdb.api_key.is_some(),
+            thetvdb_pin = config.tvdb.pin.is_some(),
+            tmdb_configured = config.tmdb.api_key.is_some(),
+            "metadata sources initialized"
+        );
+
         // 3. State (which builds the command scheduler over a shared event bus).
+        //    The live metadata seam is attached so `series/lookup`/`movie/lookup`
+        //    resolve real identities.
         let auth = match &config.api.api_key {
             Some(key) => AuthConfig::with_key(key.clone()),
             None => AuthConfig::disabled(),
         };
-        let state = AppState::new(db, auth);
+        let state = AppState::new(db, auth).with_metadata(metadata);
 
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;

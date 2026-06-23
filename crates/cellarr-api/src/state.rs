@@ -12,6 +12,7 @@ use cellarr_db::Database;
 use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, ApiScheduler};
 use crate::events::EventBus;
+use crate::metadata::MetadataLookup;
 use crate::tags::TagStore;
 
 /// The injected dependency bundle for the API.
@@ -29,6 +30,11 @@ pub struct AppState {
     /// shim's `tag` CRUD (which Overseerr/Bazarr round-trip) is backed by this
     /// small in-process store rather than touching the persistence layer.
     pub tags: TagStore,
+    /// The metadata-lookup seam the shim's `series/lookup`/`movie/lookup`
+    /// resolve real identities through. `None` means no metadata wiring is
+    /// configured at all (every lookup then reports unavailable); the wiring
+    /// crate injects a live implementation over `cellarr-meta`.
+    pub metadata: Option<Arc<dyn MetadataLookup>>,
 }
 
 impl AppState {
@@ -44,6 +50,17 @@ impl AppState {
             scheduler,
             auth: Arc::new(auth),
             tags: TagStore::default(),
+            metadata: None,
         }
+    }
+
+    /// Attach a metadata-lookup source (the live `cellarr-meta` wiring), so the
+    /// v3 lookup/list resources resolve real titles and external ids. Builder
+    /// form so the base [`AppState::new`] stays zero-config (offline) and tests
+    /// can opt a mock in.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Arc<dyn MetadataLookup>) -> Self {
+        self.metadata = Some(metadata);
+        self
     }
 }

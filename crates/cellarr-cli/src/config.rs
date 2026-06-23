@@ -37,6 +37,12 @@ pub struct Config {
     pub log: LogConfig,
     /// Metrics settings — **off by default** (never required, per the spec).
     pub metrics: MetricsConfig,
+    /// TheTVDB (TV metadata) credentials. Populated from `CELLARR_TVDB__*`
+    /// (typically the gitignored `.env`); absent keys leave the source
+    /// unavailable and the daemon degrades gracefully.
+    pub tvdb: TvdbConfig,
+    /// TMDb (movie metadata) credentials, from `CELLARR_TMDB__*`.
+    pub tmdb: TmdbConfig,
 }
 
 /// HTTP API server settings.
@@ -72,6 +78,48 @@ pub struct MetricsConfig {
     pub enabled: bool,
 }
 
+/// TheTVDB v4 credentials (bring-your-own-key, user-supported model).
+///
+/// The api key and optional subscriber pin reach this struct from the
+/// `CELLARR_TVDB__API_KEY` / `CELLARR_TVDB__PIN` env vars (loaded from `.env` at
+/// startup). They are deliberately *not* surfaced in [`Debug`] output so a config
+/// dump never leaks the key.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TvdbConfig {
+    /// The TheTVDB v4 api key. `None` → the source is unavailable; the daemon
+    /// still boots (offline is non-negotiable).
+    pub api_key: Option<String>,
+    /// Optional subscriber PIN required by the user-supported key model.
+    pub pin: Option<String>,
+}
+
+impl std::fmt::Debug for TvdbConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the key or pin — only whether each is present.
+        f.debug_struct("TvdbConfig")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("pin", &self.pin.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// TMDb credentials (bring-your-own-key).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmdbConfig {
+    /// The TMDb v4 read token or v3 api key. `None` → source unavailable.
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for TmdbConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TmdbConfig")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -79,6 +127,8 @@ impl Default for Config {
             api: ApiConfig::default(),
             log: LogConfig::default(),
             metrics: MetricsConfig::default(),
+            tvdb: TvdbConfig::default(),
+            tmdb: TmdbConfig::default(),
         }
     }
 }
@@ -119,6 +169,7 @@ impl Config {
     /// fails to deserialize into [`Config`]. Boxed because `figment::Error` is
     /// large and this sits on a `Result` the binary propagates.
     pub fn load(config_path: Option<&Path>) -> Result<Self, Box<figment::Error>> {
+        load_dotenv();
         Self::figment(config_path).extract().map_err(Box::new)
     }
 
@@ -140,6 +191,42 @@ impl Config {
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.data_dir.join("cellarr.sqlite")
+    }
+
+    /// Build the runtime [`cellarr_meta::TheTvdbConfig`] from the loaded config,
+    /// carrying the api key and optional pin onto the source's defaults (base
+    /// url, cache TTL, conservative rate limit).
+    #[must_use]
+    pub fn thetvdb_source_config(&self) -> cellarr_meta::TheTvdbConfig {
+        cellarr_meta::TheTvdbConfig {
+            api_key: self.tvdb.api_key.clone(),
+            pin: self.tvdb.pin.clone(),
+            ..cellarr_meta::TheTvdbConfig::default()
+        }
+    }
+
+    /// Build the runtime [`cellarr_meta::TmdbConfig`] from the loaded config.
+    #[must_use]
+    pub fn tmdb_source_config(&self) -> cellarr_meta::TmdbConfig {
+        cellarr_meta::TmdbConfig {
+            api_key: self.tmdb.api_key.clone(),
+            ..cellarr_meta::TmdbConfig::default()
+        }
+    }
+}
+
+/// Load a `.env` file into the process environment **before** figment reads the
+/// `CELLARR_*` env layer, so the gitignored `.env` (where bring-your-own-key
+/// secrets live) reaches config without exporting them in the shell.
+///
+/// Missing `.env` is not an error (zero-config startup); existing process env
+/// always wins over the file so an explicit export can override. The key value
+/// is never logged.
+fn load_dotenv() {
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::debug!(path = %path.display(), "loaded .env"),
+        Err(e) if e.not_found() => {}
+        Err(e) => tracing::warn!(error = %e, "failed to load .env"),
     }
 }
 

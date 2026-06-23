@@ -61,6 +61,44 @@ A **cache layer** (`moka` in-process + a persisted cache table) sits in front wi
 - **TMDb / TheTVDB / AniDB**: live-only; cache hard. Document the key/subscription requirements
   plainly so users aren't surprised.
 
+## Wiring into the daemon and the `/api/v3` shim (Phase E)
+
+The normalized sources are connected to the rest of the daemon through two thin,
+object-safe seams so no consumer depends on a provider's schema:
+
+- **API lookup seam — `cellarr_api::MetadataLookup`.** The v3 shim's
+  `series/lookup` / `movie/lookup` resolve identities through this seam, held on
+  `AppState.metadata`. The wiring crate (`cellarr-cli`) implements it
+  (`LiveMetadata`) over the live `TheTvdbSource` (TV) and `TmdbSource` (movies),
+  built from `.env`/`CELLARR_*` keys at boot. A lookup carries the **real**
+  `title`, `titleSlug`, `tvdbId`/`tmdbId`, `imdbId`, and `year` — never the search
+  term echoed back, never a UUID. With no key for a media type the seam returns
+  `LookupOutcome::Unavailable(reason)` and the shim renders an **empty, clearly
+  logged** result (HTTP 200, not a 500) — offline is non-negotiable. A configured
+  source that genuinely fails mid-call surfaces as a `502`-style structured
+  `upstream_error`, distinct from an internal bug.
+- **Identify scene-mapping seam — `cellarr_media::SceneMappingProvider`.** The
+  anime absolute→episode remap (`cellarr_media::remap_absolute`) reads TheXEM
+  mappings (keyed by TVDB id) through this seam. `cellarr-cli`'s
+  `TvdbSceneMappings` implements it over `TheTvdbSource::scene_map`, distilling the
+  live TheXEM rules into the media crate's range shape. Absent/unmapped numbers
+  surface for manual resolution — never guessed (library-safety rule). *(The
+  pipeline-level call site that supplies a node's resolved TVDB id is still gated
+  on a `cellarr-db` identity-link query; the live remap path itself is wired and
+  tested over recorded bytes.)*
+
+### Per-source status (as wired)
+
+- **TheTVDB v4 (TV): live & verified.** User-supported PIN model
+  (`CELLARR_TVDB__API_KEY` + optional `CELLARR_TVDB__PIN`). Verified end to end by
+  booting the daemon with the `.env` key and resolving the Sonarr-face
+  `series/lookup` for "Breaking Bad" to `tvdbId 81189` (`cellarr-cli`
+  `live_lookup_e2e` test + manual `curl`).
+- **TMDb (movies): blocked-on-key.** The live client path exists and is
+  record/replay-green, but no `CELLARR_TMDB__API_KEY` is provisioned, so movie
+  metadata is intentionally **unavailable**: `movie/lookup` degrades gracefully to
+  an empty result with a logged reason. Provide a TMDb key to enable and live-test.
+
 ## Testing
 
 - **Record/replay** every source: recorded API responses → asserted normalization into the common

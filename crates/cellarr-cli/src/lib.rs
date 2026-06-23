@@ -10,4 +10,5 @@
 
 pub mod boot;
 pub mod config;
+pub mod metadata;
 pub mod registry;

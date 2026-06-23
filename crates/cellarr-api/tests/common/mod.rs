@@ -41,13 +41,31 @@ pub async fn start_authed() -> TestServer {
     start_with(AuthConfig::with_key(TEST_API_KEY)).await
 }
 
+/// Spin up an open server with a metadata-lookup source attached, so the v3
+/// lookup resources resolve real identities through it.
+pub async fn start_with_metadata(
+    metadata: std::sync::Arc<dyn cellarr_api::MetadataLookup>,
+) -> TestServer {
+    start_with_inner(AuthConfig::disabled(), Some(metadata)).await
+}
+
 async fn start_with(auth: AuthConfig) -> TestServer {
+    start_with_inner(auth, None).await
+}
+
+async fn start_with_inner(
+    auth: AuthConfig,
+    metadata: Option<std::sync::Arc<dyn cellarr_api::MetadataLookup>>,
+) -> TestServer {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("cellarr-test.db");
     let db = Database::open(db_path.to_str().expect("utf-8 path"))
         .await
         .expect("open file db");
-    let state = AppState::new(db, auth);
+    let state = match metadata {
+        Some(m) => AppState::new(db, auth).with_metadata(m),
+        None => AppState::new(db, auth),
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -144,6 +162,46 @@ pub async fn seed_indexer(state: &AppState, name: &str) -> IndexerConfig {
         .await
         .expect("seed indexer");
     indexer
+}
+
+// --- metadata mock ---------------------------------------------------------
+
+/// A mock metadata source for shim lookup tests: resolves TV via a Breaking-Bad
+/// style record (real tvdbId + title) and movies via a Blade-Runner style record
+/// (real tmdbId), keyed off a substring of the term so the resolved title is
+/// provably NOT the echoed term. Mirrors the live `cellarr-meta` wiring's seam.
+pub struct MockMetadata;
+
+#[async_trait::async_trait]
+impl cellarr_api::MetadataLookup for MockMetadata {
+    async fn search(
+        &self,
+        media_type: MediaType,
+        term: &str,
+    ) -> Result<cellarr_api::LookupOutcome, cellarr_api::MetadataLookupError> {
+        use cellarr_api::{LookupCandidate, LookupOutcome};
+        let t = term.to_lowercase();
+        let resolved = match media_type {
+            MediaType::Tv if t.contains("expanse") => vec![LookupCandidate {
+                source_id: "280619".to_string(),
+                media_type: MediaType::Tv,
+                title: "The Expanse".to_string(),
+                year: Some(2015),
+                overview: None,
+                external_ids: vec![("tvdb".to_string(), "280619".to_string())],
+            }],
+            MediaType::Movie if t.contains("blade") => vec![LookupCandidate {
+                source_id: "335984".to_string(),
+                media_type: MediaType::Movie,
+                title: "Blade Runner 2049".to_string(),
+                year: Some(2017),
+                overview: None,
+                external_ids: vec![("tmdb".to_string(), "335984".to_string())],
+            }],
+            _ => vec![],
+        };
+        Ok(LookupOutcome::Resolved(resolved))
+    }
 }
 
 /// Insert a download client config and return it.

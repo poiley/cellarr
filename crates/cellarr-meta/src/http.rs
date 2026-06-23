@@ -40,6 +40,24 @@ impl HttpResponse {
 pub trait Fetcher: Send + Sync {
     /// Issue a GET to `url` with the given headers (as `(name, value)` pairs).
     async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, MetaError>;
+
+    /// Issue a POST to `url` with a JSON body and the given headers.
+    ///
+    /// Only the credential-bearing auth handshakes need this (TheTVDB v4's
+    /// `/login`), so it carries a default that errors — the [`RecordedFetcher`]
+    /// used by the offline tests never logs in (it serves recorded GET bodies),
+    /// and overriding it for the live [`ReqwestFetcher`] is all that is required.
+    async fn post_json(
+        &self,
+        _url: &str,
+        _body: &serde_json::Value,
+        _headers: &[(&str, &str)],
+    ) -> Result<HttpResponse, MetaError> {
+        Err(MetaError::Transport {
+            src: "fetcher",
+            detail: "POST is not supported by this transport".to_string(),
+        })
+    }
 }
 
 /// The live transport, backed by `reqwest`.
@@ -72,6 +90,32 @@ impl ReqwestFetcher {
 impl Fetcher for ReqwestFetcher {
     async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, MetaError> {
         let mut req = self.client.get(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = req.send().await.map_err(|e| MetaError::Transport {
+            src: self.source,
+            detail: e.to_string(),
+        })?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| MetaError::Transport {
+                src: self.source,
+                detail: e.to_string(),
+            })?
+            .to_vec();
+        Ok(HttpResponse { status, body })
+    }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<HttpResponse, MetaError> {
+        let mut req = self.client.post(url).json(body);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -140,6 +184,32 @@ impl RecordedFetcher {
 
 #[async_trait]
 impl Fetcher for RecordedFetcher {
+    /// Recorded auth handshake. The offline seam does not mint real tokens, so a
+    /// POST (TheTVDB's `/login`) returns a fixed synthetic token envelope: the
+    /// adapter's token-exchange path runs end to end against recorded bytes,
+    /// while subsequent GETs are still served from the registered routes. A
+    /// route explicitly registered for the URL (e.g. to simulate a 401 login)
+    /// takes precedence.
+    async fn post_json(
+        &self,
+        url: &str,
+        _body: &serde_json::Value,
+        _headers: &[(&str, &str)],
+    ) -> Result<HttpResponse, MetaError> {
+        let best = self
+            .routes
+            .iter()
+            .filter(|(prefix, _)| url.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _)| prefix.len());
+        if let Some((_, resp)) = best {
+            return Ok(resp.clone());
+        }
+        Ok(HttpResponse {
+            status: 200,
+            body: br#"{"status":"success","data":{"token":"recorded-token"}}"#.to_vec(),
+        })
+    }
+
     async fn get(&self, url: &str, _headers: &[(&str, &str)]) -> Result<HttpResponse, MetaError> {
         // Longest matching prefix wins so a more specific route (e.g. an
         // episodes endpoint) is preferred over a broader series one.

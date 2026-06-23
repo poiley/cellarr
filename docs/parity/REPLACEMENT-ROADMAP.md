@@ -55,8 +55,8 @@ Legend: ✅ done/measured · 🟡 partial · 🔴 missing · 🔵 blocked on ext
 | Cardigann definitions | 🟡 engine skeleton | breadth + live trackers untested |
 | Download clients | 🟡 adapters + fixtures | not wired live; categories/CDH/remote-path-map to verify e2e |
 | Import / rename / hardlink | ✅ logic + crash-safety | **add same-filesystem (`st_dev`) detection + health warn** (differentiator) |
-| Metadata / identify | 🔵 trait + record/replay | needs TMDb/TheTVDB keys; **TheTVDB v4 licensing is the hard dependency** |
-| Anime (absolute/XEM/AniDB) | 🟡 extract + remap path | mapping data wiring + corpus depth; version-tied upgrade pitfalls |
+| Metadata / identify | 🟡 TV live & wired; movies blocked-on-key | TheTVDB lookup live through v3 shim (real `tvdbId`/title, verified Breaking Bad=81189); TMDb needs `CELLARR_TMDB__API_KEY` |
+| Anime (absolute/XEM/AniDB) | 🟡 extract + remap path; live TheXEM provider wired | remap backed by live TheTVDB+TheXEM (`TvdbSceneMappings`); pipeline invocation gated on identity-link query; corpus depth |
 | Daily shows | ✅ parse + date | timezone handling to verify |
 | Season packs / multi-ep | 🟡 modeled | persist release-type as durable state (avoid re-grab loops) |
 | Calendar / iCal | 🟡 `calendar` JSON | iCal/ICS feed missing |
@@ -114,7 +114,7 @@ fixtures (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). Additive c
 - **Exit gate:** a real release goes search → grab → download → import → renamed-on-disk against a
   live client, with correct hardlink behavior and a health alert when `/downloads` and library differ.
 
-### Phase E — Metadata / identify (the licensing fork)
+### Phase E — Metadata / identify (the licensing fork) — 🟡 TV LIVE & WIRED (2026-06-23)
 - Wire TMDb (movies) live; for TV pick a path for TheTVDB v4 (licensed proxy / per-user PIN / run our
   own Skyhook-equivalent / lead with TMDb-TV or TVmaze). Run the **identify oracle** with populated
   libraries (compare matched IDs).
@@ -123,8 +123,31 @@ fixtures (`crates/cellarr-api/tests/fixtures/`, `tests/v3_faces.rs`). Additive c
   into TheTVDB v4 with a project API key + per-user subscriber PIN), and **build a self-hosted
   Skyhook-equivalent metadata proxy later** (no public Sonarr Skyhook source exists to reference, so
   it's a from-scratch effort, deferred). Key stored in gitignored `.env`
-  (`CELLARR_TVDB__API_KEY`/`CELLARR_TVDB__PIN`); see `.env.example`. TMDb (movies) still needs a key
-  to live-test.
+  (`CELLARR_TVDB__API_KEY`/`CELLARR_TVDB__PIN`); see `.env.example`.
+- ✅ **TV identity wired live end-to-end (2026-06-23):**
+  - `cellarr-meta`'s `TheTvdbSource` is bound through the API via a thin object-safe
+    `cellarr_api::MetadataLookup` seam (`AppState.metadata`); the wiring lives in
+    `cellarr-cli` (`LiveMetadata`), constructed from `.env` keys at boot.
+  - The v3 shim's `series/lookup`/`movie/lookup` now **resolve real identities** (human `title`,
+    `titleSlug`, `tvdbId`/`tmdbId`, `year`) from metadata instead of echoing the search term or a
+    UUID — **closing the Phase A "UUID title" deferred gap** for identified items. `series`/`movie`
+    list resources surface a node's real indexed title (new `ContentRepo::title_for` reverse lookup),
+    falling back to the id only when a node is unidentified.
+  - The anime absolute→episode remap is now backed by a **live TheTVDB + TheXEM** scene-mapping
+    provider (`cellarr-cli::metadata::TvdbSceneMappings` implementing
+    `cellarr_media::SceneMappingProvider`), consumed by the existing `remap_absolute`. Unmapped/absent
+    mappings surface for manual resolution (library-safety rule), never guessed. *(Pipeline-level
+    invocation of the remap is still gated on the `cellarr-db` identity-link query that resolves a
+    node's TVDB id — a documented core gap; the live remap path itself is wired and tested.)*
+  - **Verified live (2026-06-23):** booted the daemon with the `.env` TheTVDB key and called the
+    Sonarr-face `series/lookup?term=Breaking Bad` → resolved **`tvdbId: 81189`, `title: "Breaking
+    Bad"`, `year: 2008`** (6 candidates), confirmed both by the `cellarr-cli` `live_lookup_e2e` test
+    and a manual `curl`. Movie lookup with no TMDb key returns **HTTP 200 + `[]`** with a logged
+    "metadata unavailable" reason (graceful degradation, never a 500).
+- 🔵 **TMDb (movies) = blocked-on-key:** the live TMDb client path exists (`TmdbSource`, record/replay
+  green) but **no `CELLARR_TMDB__API_KEY` is provisioned**, so movie metadata is intentionally
+  unavailable: `movie/lookup` degrades to an empty, clearly-flagged result rather than erroring. Set
+  `CELLARR_TMDB__API_KEY` to enable + live-test.
 
 ### Phase F — Connect webhooks + lists + calendar polish
 - `eventType` webhook + `Test` event (Bazarr-push/Notifiarr/notifications); iCal feed; import lists

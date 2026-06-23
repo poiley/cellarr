@@ -82,6 +82,7 @@ moka = { version = "0.12", features = ["future"] }
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "env"] }
+dotenvy = "0.15"
 
 # Observability
 tracing = "0.1"
