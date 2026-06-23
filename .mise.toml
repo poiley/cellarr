@@ -1,0 +1,11 @@
+# Toolchains for cellarr, managed by mise. Run `mise install` (or `just setup`).
+# Rust/Cargo are NOT globally installed on this machine — use these.
+
+[tools]
+rust = "stable"      # cargo, rustc, clippy, rustfmt
+node = "lts"         # for web/ (Next.js + SRCL) and the differential-oracle harness tooling
+
+[env]
+# Keep each git worktree's build artifacts isolated by default (do not set a shared
+# CARGO_TARGET_DIR). See docs/16-local-dev-and-testing.md for the isolation model.
+RUST_BACKTRACE = "1"

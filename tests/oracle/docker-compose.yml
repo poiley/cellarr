@@ -1,0 +1,47 @@
+# Differential-oracle reference stack: PINNED Sonarr + Radarr, run by the real apps so cellarr's
+# parser/decision output can be diffed against them. See docs/11-testing.md and docs/04-parser.md.
+#
+# ISOLATION: never run this directly. Run via `just oracle`, which sets a per-run compose project
+# name (`-p cellarr-oracle-<RUN_ID>`) and maps host port 0 (OS-allocated). That namespaces all
+# containers/networks/volumes per run, so many workflows can run the oracle at once without
+# colliding. Ports below use `0:` so the host port is ephemeral and discovered at runtime.
+#
+# Pins are EXACT and deliberate: bumping a pin changes the parity baseline and is a reviewed change.
+# Verify/curate these tags in Phase 0; placeholders here document intent.
+
+services:
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:4.0.10  # PIN — verify exact digest in Phase 0
+    environment:
+      - PUID=1000
+      - PGID=1000
+    ports:
+      - "0:8989"        # host port OS-allocated; discovered via `docker compose port sonarr 8989`
+    tmpfs:
+      - /config         # ephemeral config; oracle seeds known profiles via API at startup
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8989/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:5.14.0  # PIN — verify exact digest in Phase 0
+    environment:
+      - PUID=1000
+      - PGID=1000
+    ports:
+      - "0:7878"
+    tmpfs:
+      - /config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7878/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+# Notes for the harness (Phase 0):
+# - Seed each app's API key + a known set of quality profiles/custom formats at startup so decision
+#   parity is compared against a KNOWN config, not defaults.
+# - Drive their parse/decision surface over the corpus inputs; diff against cellarr; emit parity %.
+# - Record intentional divergences to an allow-list with rationale (see docs/11-testing.md).

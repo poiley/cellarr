@@ -1,0 +1,29 @@
+# Rust
+/target
+**/*.rs.bk
+# sqlx offline data is COMMITTED (do not ignore .sqlx)
+
+# Node / web
+node_modules/
+web/.next/
+web/out/
+.DS_Store
+
+# Reference repos: cloned for STUDY ONLY, never shipped, never copied from.
+# See docs/agents/legal-and-licensing.md
+/reference/
+
+# Local config / secrets / data
+*.env
+.env.local
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Per-run scratch dirs for `just dev` (namespaced by RUN_ID) — see docs/16
+/.run/
+
+# Editor
+.idea/
+.vscode/
