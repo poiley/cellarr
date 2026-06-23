@@ -4,8 +4,10 @@ Conventions that keep a swarm's output coherent. Follow them; they are checked i
 
 ## Rust
 
-- **Edition & toolchain:** latest stable Rust, pinned in `rust-toolchain.toml`. No nightly features
-  in shipping crates.
+- **Edition & toolchain:** latest stable Rust, managed by **mise** via `.mise.toml` (`rust =
+  "stable"`) — *not* a `rust-toolchain.toml`. Cargo/rustc are not globally installed on dev machines;
+  invoke them through the mise-managed toolchain (e.g. `mise exec -- cargo …`). No nightly features in
+  shipping crates.
 - **Formatting:** `cargo fmt` (default rustfmt). CI runs `cargo fmt --check`.
 - **Lints:** `cargo clippy --all-targets -- -D warnings`. Warnings are errors in CI.
 - **Errors:** libraries use `thiserror` for typed errors; the binary uses `anyhow` at the top level.

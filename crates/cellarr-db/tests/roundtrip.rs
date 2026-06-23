@@ -7,15 +7,19 @@
 use cellarr_core::decision::{Score, Verdict};
 use cellarr_core::history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 use cellarr_core::pipeline::{Stage, Transition, TransitionKind};
+use cellarr_core::profile::Quality;
 use cellarr_core::repo::{
-    ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository, ProfileRepository,
+    ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository,
+    MediaFileRepository, ProfileRepository,
 };
 use cellarr_core::{
-    Condition, ConditionKind, ContentId, ContentRef, Coordinates, CustomFormat, CustomFormatId,
-    DownloadClientId, GrabRequest, IndexerId, Library, LibraryId, MediaType, PipelineRunId,
-    Protocol, QualityProfile, QualityProfileId, Release, Source,
+    Condition, ConditionKind, ContentId, ContentKind, ContentNode, ContentRef, Coordinates,
+    CustomFormat, CustomFormatId, DownloadClientConfig, DownloadClientId, Grab, GrabRequest,
+    GrabStatus, IndexerConfig, IndexerId, Library, LibraryId, MediaFile, MediaFileId, MediaType,
+    NotificationConfig, PipelineRunId, Protocol, QualityProfile, QualityProfileId, Release,
+    RootFolder, Source,
 };
-use cellarr_db::{ContentNode, Database};
+use cellarr_db::Database;
 use tempfile::TempDir;
 use time::OffsetDateTime;
 
@@ -36,7 +40,7 @@ fn movie_node(library_id: LibraryId, id: ContentId) -> ContentNode {
         library_id,
         media_type: MediaType::Movie,
         parent_id: None,
-        kind: "movie".to_string(),
+        kind: ContentKind::Movie,
         coords: Coordinates::Movie,
         monitored: true,
         title_id: None,
@@ -118,31 +122,18 @@ async fn monitored_missing_excludes_nodes_with_files_and_containers() {
     // A monitored movie that already has a file -> not missing.
     let have = movie_node(library.id, ContentId::new());
     content.upsert(&have).await.unwrap();
-    let media_file_id = cellarr_core::MediaFileId::new();
-    db.writer()
-        .submit({
-            let cid = have.id.to_string();
-            let mfid = media_file_id.to_string();
-            move |conn| {
-                Box::pin(async move {
-                    sqlx::query("INSERT INTO media_file (id, path, size) VALUES (?1, ?2, 100)")
-                        .bind(&mfid)
-                        .bind("/data/have.mkv")
-                        .execute(&mut *conn)
-                        .await?;
-                    sqlx::query(
-                        "INSERT INTO content_file (content_id, media_file_id) VALUES (?1, ?2)",
-                    )
-                    .bind(&cid)
-                    .bind(&mfid)
-                    .execute(&mut *conn)
-                    .await?;
-                    Ok(())
-                })
-            }
-        })
-        .await
-        .expect("link file");
+    let media_files = db.media_files();
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/data/have.mkv".to_string(),
+        size: 100,
+        quality: Quality::new("Bluray-1080p", 14),
+        languages: vec![],
+        media_info: None,
+        custom_format_score: None,
+    };
+    media_files.create(&file).await.expect("create file");
+    media_files.link(have.id, file.id).await.expect("link file");
 
     let result = content.monitored_missing().await.expect("query");
     let ids: Vec<ContentId> = result.iter().map(|r| r.id).collect();
@@ -187,13 +178,294 @@ async fn grab_create_and_get_round_trip() {
 
     let id = grabs.create(&request).await.expect("create grab");
     let fetched = grabs.get(id).await.expect("get").expect("present");
-    assert_eq!(fetched, request);
+    // A freshly created grab is the request plus its initial lifecycle state.
+    assert_eq!(
+        fetched,
+        Grab {
+            id,
+            request: request.clone(),
+            download_id: None,
+            status: GrabStatus::Pending,
+        }
+    );
 
     assert!(grabs
         .get(cellarr_core::GrabId::new())
         .await
         .expect("get missing")
         .is_none());
+}
+
+#[tokio::test]
+async fn grab_status_transitions_and_download_id() {
+    let (_dir, db) = temp_db().await;
+    let grabs = db.grabs();
+
+    let request = GrabRequest {
+        content_ref: ContentRef {
+            id: ContentId::new(),
+            library_id: LibraryId::new(),
+            media_type: MediaType::Movie,
+            coords: Coordinates::Movie,
+        },
+        release: Release {
+            indexer_id: IndexerId::new(),
+            title: "Movie.2024.2160p.WEB-DL-G".to_string(),
+            download_url: "https://nzb/x".to_string(),
+            guid: Some("g1".to_string()),
+            protocol: Protocol::Usenet,
+            size: Some(20_000_000_000),
+            seeders: None,
+            indexer_flags: vec![],
+        },
+        indexer_id: IndexerId::new(),
+        client_id: DownloadClientId::new(),
+        category: "cellarr-movies".to_string(),
+    };
+    let id = grabs.create(&request).await.expect("create");
+
+    // Record the download client's id, then walk the lifecycle.
+    grabs
+        .set_download_id(id, "sab-nzo-42")
+        .await
+        .expect("set download id");
+    grabs
+        .set_status(id, GrabStatus::Downloading)
+        .await
+        .expect("downloading");
+    let g = grabs.get(id).await.expect("get").expect("present");
+    assert_eq!(g.download_id.as_deref(), Some("sab-nzo-42"));
+    assert_eq!(g.status, GrabStatus::Downloading);
+
+    grabs
+        .set_status(id, GrabStatus::Imported)
+        .await
+        .expect("imported");
+    let g = grabs.get(id).await.expect("get").expect("present");
+    assert_eq!(g.status, GrabStatus::Imported);
+    // The download id survives later status changes.
+    assert_eq!(g.download_id.as_deref(), Some("sab-nzo-42"));
+}
+
+#[tokio::test]
+async fn media_file_create_get_and_list_for_content() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // Two episode nodes that a single multi-episode file satisfies.
+    let mut ep1 = movie_node(library.id, ContentId::new());
+    ep1.media_type = MediaType::Tv;
+    ep1.kind = ContentKind::Episode;
+    ep1.coords = Coordinates::Episode {
+        season: 1,
+        episode: 1,
+        absolute: None,
+    };
+    let mut ep2 = ContentNode {
+        id: ContentId::new(),
+        coords: Coordinates::Episode {
+            season: 1,
+            episode: 2,
+            absolute: None,
+        },
+        ..ep1.clone()
+    };
+    ep2.id = ContentId::new();
+    content.upsert(&ep1).await.unwrap();
+    content.upsert(&ep2).await.unwrap();
+
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/tv/show/S01E01-E02.mkv".to_string(),
+        size: 3_000_000_000,
+        quality: Quality::new("WEBDL-1080p", 13),
+        languages: vec!["en".to_string(), "ja".to_string()],
+        media_info: Some(serde_json::json!({"video": "h264", "runtime": 1320})),
+        custom_format_score: Some(25),
+    };
+    media_files.create(&file).await.expect("create");
+
+    let got = media_files
+        .get(file.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(got, file);
+
+    // One file linked to both episodes -> list_for_content returns it for each.
+    media_files.link(ep1.id, file.id).await.expect("link ep1");
+    media_files.link(ep2.id, file.id).await.expect("link ep2");
+    // Re-linking is idempotent (no duplicate edge / error).
+    media_files.link(ep1.id, file.id).await.expect("relink ep1");
+
+    let for_ep1 = media_files
+        .list_for_content(ep1.id)
+        .await
+        .expect("list ep1");
+    assert_eq!(for_ep1, vec![file.clone()]);
+    let for_ep2 = media_files
+        .list_for_content(ep2.id)
+        .await
+        .expect("list ep2");
+    assert_eq!(for_ep2, vec![file.clone()]);
+
+    // Delete removes the row and cascades the links.
+    media_files.delete(file.id).await.expect("delete");
+    assert!(media_files.get(file.id).await.expect("get").is_none());
+    assert!(media_files
+        .list_for_content(ep1.id)
+        .await
+        .expect("list after delete")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn content_upsert_and_children_walk_the_tree() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    let series = ContentNode {
+        id: ContentId::new(),
+        library_id: library.id,
+        media_type: MediaType::Tv,
+        parent_id: None,
+        kind: ContentKind::Series,
+        coords: Coordinates::Episode {
+            season: 0,
+            episode: 0,
+            absolute: None,
+        },
+        monitored: true,
+        title_id: None,
+    };
+    content.upsert(&series).await.unwrap();
+
+    let season = ContentNode {
+        id: ContentId::new(),
+        parent_id: Some(series.id),
+        kind: ContentKind::Season,
+        coords: Coordinates::SeasonPack { season: 1 },
+        ..series.clone()
+    };
+    content.upsert(&season).await.unwrap();
+
+    // upsert is idempotent: re-upserting a node with a changed field updates it.
+    let mut season_renamed = season.clone();
+    season_renamed.monitored = false;
+    content.upsert(&season_renamed).await.unwrap();
+
+    let kids = content.children(series.id).await.expect("children");
+    assert_eq!(kids.len(), 1);
+    assert_eq!(kids[0].id, season.id);
+    assert_eq!(kids[0].kind, ContentKind::Season);
+    assert!(!kids[0].monitored, "the update took effect");
+
+    // A leaf has no children.
+    assert!(content
+        .children(season.id)
+        .await
+        .expect("leaf children")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn config_aggregates_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+
+    let root = RootFolder {
+        id: "rf-1".to_string(),
+        path: "/data/movies".to_string(),
+        name: Some("Movies".to_string()),
+        enabled: true,
+    };
+    config.upsert_root_folder(&root).await.expect("upsert rf");
+    assert_eq!(
+        config.get_root_folder("rf-1").await.expect("get").as_ref(),
+        Some(&root)
+    );
+    assert_eq!(config.list_root_folders().await.expect("list"), vec![root]);
+
+    let indexer = IndexerConfig {
+        id: IndexerId::new(),
+        name: "Torznab Tracker".to_string(),
+        kind: "torznab".to_string(),
+        protocol: Protocol::Torrent,
+        enabled: true,
+        priority: 5,
+        settings: serde_json::json!({"base_url": "https://t/api", "api_key": "REDACTED"}),
+    };
+    config.upsert_indexer(&indexer).await.expect("upsert idx");
+    assert_eq!(
+        config.get_indexer(indexer.id).await.expect("get"),
+        Some(indexer.clone())
+    );
+    assert_eq!(config.list_indexers().await.expect("list"), vec![indexer]);
+
+    let client = DownloadClientConfig {
+        id: DownloadClientId::new(),
+        name: "qBittorrent".to_string(),
+        kind: "qbittorrent".to_string(),
+        protocol: Protocol::Torrent,
+        enabled: true,
+        priority: 1,
+        category: "cellarr".to_string(),
+        settings: serde_json::json!({"host": "127.0.0.1", "port": 8080}),
+    };
+    config
+        .upsert_download_client(&client)
+        .await
+        .expect("upsert client");
+    assert_eq!(
+        config.get_download_client(client.id).await.expect("get"),
+        Some(client.clone())
+    );
+    assert_eq!(
+        config.list_download_clients().await.expect("list"),
+        vec![client]
+    );
+
+    let notification = NotificationConfig {
+        id: "notif-1".to_string(),
+        name: "Discord".to_string(),
+        kind: "discord".to_string(),
+        enabled: true,
+        on_events: vec!["grab".to_string(), "import".to_string()],
+        settings: serde_json::json!({"webhook_url": "https://discord/x"}),
+    };
+    config
+        .upsert_notification(&notification)
+        .await
+        .expect("upsert notif");
+    assert_eq!(
+        config.get_notification("notif-1").await.expect("get"),
+        Some(notification.clone())
+    );
+    assert_eq!(
+        config.list_notifications().await.expect("list"),
+        vec![notification]
+    );
 }
 
 #[tokio::test]
@@ -307,7 +579,7 @@ async fn fts_search_finds_indexed_titles() {
         library_id: library.id,
         media_type: MediaType::Tv,
         parent_id: None,
-        kind: "series".to_string(),
+        kind: ContentKind::Episode,
         coords: Coordinates::Episode {
             season: 1,
             episode: 1,

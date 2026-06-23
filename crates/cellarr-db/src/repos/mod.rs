@@ -15,12 +15,14 @@ mod content;
 mod decision_log;
 mod grab;
 mod history;
+mod media_file;
 mod profile;
 
 pub use cache::CacheRepo;
 pub use config::ConfigRepo;
-pub use content::{ContentNode, ContentRepo};
+pub use content::ContentRepo;
 pub use decision_log::DecisionLogRepo;
-pub use grab::{GrabRepo, GrabStatus};
+pub use grab::GrabRepo;
 pub use history::HistoryRepo;
+pub use media_file::MediaFileRepo;
 pub use profile::ProfileRepo;

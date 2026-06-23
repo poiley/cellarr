@@ -33,7 +33,7 @@ mod writer;
 pub use db::Database;
 pub use error::{DbError, Result};
 pub use repos::{
-    CacheRepo, ConfigRepo, ContentNode, ContentRepo, DecisionLogRepo, GrabRepo, GrabStatus,
-    HistoryRepo, ProfileRepo,
+    CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo, MediaFileRepo,
+    ProfileRepo,
 };
 pub use writer::WriterHandle;

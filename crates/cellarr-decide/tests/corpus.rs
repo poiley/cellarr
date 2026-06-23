@@ -8,10 +8,10 @@ use std::path::PathBuf;
 
 use cellarr_core::{
     Condition, ContentId, ContentRef, Coordinates, CustomFormat, CustomFormatId, MediaFileId,
-    MediaType, ParsedRelease, ProperRepack, Protocol, QualityProfile, QualityProfileId, Release,
-    Resolution, Source, Verdict,
+    MediaType, ParsedRelease, ProperRepack, Protocol, QualityProfile, QualityProfileId,
+    QualityRanking, Release, Resolution, Source, Verdict,
 };
-use cellarr_decide::{decide, score, DecisionContext, MatchContext, OnDiskFile, QualityResolver};
+use cellarr_decide::{decide, score, DecisionContext, MatchContext, OnDiskFile};
 use serde::Deserialize;
 
 fn corpus_dir() -> PathBuf {
@@ -255,7 +255,7 @@ fn content_ref() -> ContentRef {
 fn decision_vectors() {
     let file: DecisionFile = load("decision.toml");
     assert!(!file.case.is_empty(), "no decision vectors loaded");
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
 
     for case in &file.case {
         let parsed = case.parsed.build(&case.title);
@@ -271,7 +271,7 @@ fn decision_vectors() {
         let ctx = DecisionContext {
             profile: &profile,
             custom_formats: &formats,
-            resolver: &resolver,
+            ranking: &ranking,
             blocklisted: case.blocklisted,
             proper_repack_policy: Default::default(),
         };

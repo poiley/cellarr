@@ -15,7 +15,6 @@ cellarr-core.workspace = true
 cellarr-llm = { workspace = true, optional = true }
 regex.workspace = true
 fancy-regex.workspace = true
-once_cell.workspace = true
 rayon.workspace = true
 serde.workspace = true
 

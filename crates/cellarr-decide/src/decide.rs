@@ -12,13 +12,13 @@
 //! 5. Proper/repack per policy.
 
 use cellarr_core::{
-    ContentRef, CustomFormat, Decision, MediaFileId, ParsedRelease, ProperRepack, QualityProfile,
-    RejectReason, Release, Score, Verdict,
+    ContentRef, CustomFormat, Decision, MediaFileId, ParsedRelease, ProperRepack, Quality,
+    QualityProfile, QualityRanking, RejectReason, Release, Score, Verdict,
 };
 
 use crate::error::DecideError;
 use crate::matching::MatchContext;
-use crate::quality::{QualityResolver, ResolvedQuality};
+use crate::quality::resolve_candidate_quality;
 use crate::scoring::score;
 
 /// What is already on disk for the content node under consideration.
@@ -57,8 +57,9 @@ pub struct DecisionContext<'a> {
     pub profile: &'a QualityProfile,
     /// The custom formats to score against.
     pub custom_formats: &'a [CustomFormat],
-    /// The (source, resolution) -> rank resolver.
-    pub resolver: &'a QualityResolver,
+    /// The global quality catalogue the candidate is ranked against (core owns
+    /// both the catalogue and the (source, resolution) -> quality mapping).
+    pub ranking: &'a QualityRanking,
     /// Whether the release (or its group) is blocklisted. Blocklist membership
     /// is a repository concern; the caller supplies the verdict.
     pub blocklisted: bool,
@@ -68,7 +69,7 @@ pub struct DecisionContext<'a> {
 
 /// The candidate's computed standing: quality + CF score, ready to compare.
 struct CandidateStanding {
-    quality: ResolvedQuality,
+    quality: Quality,
     cf_score: i32,
 }
 
@@ -110,7 +111,7 @@ fn decide_verdict(
         return reject(RejectReason::Blocklisted);
     }
 
-    let Some(quality) = ctx.resolver.resolve(parsed.source, parsed.resolution) else {
+    let Some(quality) = resolve_candidate_quality(parsed, ctx.ranking) else {
         return reject(RejectReason::QualityNotAllowed);
     };
 

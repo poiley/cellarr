@@ -2,48 +2,15 @@
 
 use async_trait::async_trait;
 use cellarr_core::repo::ContentRepository;
-use cellarr_core::{ContentId, ContentRef, Coordinates, LibraryId, MediaType, TitleId};
+use cellarr_core::{
+    ContentId, ContentKind, ContentNode, ContentRef, Coordinates, LibraryId, MediaType, TitleId,
+};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 
 use crate::convert::parse_uuid;
 use crate::error::{DbError, Result};
 use crate::writer::WriterHandle;
-
-/// A full structural content node, as persisted. The pipeline only carries the
-/// lighter [`ContentRef`]; this richer struct is for ingest/management.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContentNode {
-    /// Node id.
-    pub id: ContentId,
-    /// Owning library.
-    pub library_id: LibraryId,
-    /// Media type (carried so callers pick the right `MediaModule`).
-    pub media_type: MediaType,
-    /// Parent node in the adjacency list, if any.
-    pub parent_id: Option<ContentId>,
-    /// Structural kind (series/season/episode/movie/...).
-    pub kind: String,
-    /// Numbering within the type.
-    pub coords: Coordinates,
-    /// Whether the node is monitored for acquisition.
-    pub monitored: bool,
-    /// Link to the typed identity row, if resolved.
-    pub title_id: Option<TitleId>,
-}
-
-impl ContentNode {
-    /// The lighter handle the pipeline carries.
-    #[must_use]
-    pub fn as_ref(&self) -> ContentRef {
-        ContentRef {
-            id: self.id,
-            library_id: self.library_id,
-            media_type: self.media_type,
-            coords: self.coords.clone(),
-        }
-    }
-}
 
 /// Reads/writes for the `content` adjacency list.
 #[derive(Clone)]
@@ -55,55 +22,6 @@ pub struct ContentRepo {
 impl ContentRepo {
     pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
         Self { pool, writer }
-    }
-
-    /// Insert or replace a content node.
-    ///
-    /// # Errors
-    /// Returns a [`DbError`] on serialization or write failure.
-    pub async fn upsert(&self, node: &ContentNode) -> Result<()> {
-        let id = node.id.to_string();
-        let library_id = node.library_id.to_string();
-        let media_type = serde_json::to_value(node.media_type)?
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let parent_id = node.parent_id.map(|p| p.to_string());
-        let kind = node.kind.clone();
-        let coords = serde_json::to_string(&node.coords)?;
-        let monitored = i64::from(node.monitored);
-        let title_id = node.title_id.map(|t| t.to_string());
-
-        self.writer
-            .submit(move |conn| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "INSERT INTO content
-                            (id, library_id, media_type, parent_id, kind, coords, monitored, title_id)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                         ON CONFLICT(id) DO UPDATE SET
-                            library_id = excluded.library_id,
-                            media_type = excluded.media_type,
-                            parent_id  = excluded.parent_id,
-                            kind       = excluded.kind,
-                            coords     = excluded.coords,
-                            monitored  = excluded.monitored,
-                            title_id   = excluded.title_id",
-                    )
-                    .bind(id)
-                    .bind(library_id)
-                    .bind(media_type)
-                    .bind(parent_id)
-                    .bind(kind)
-                    .bind(coords)
-                    .bind(monitored)
-                    .bind(title_id)
-                    .execute(&mut *conn)
-                    .await?;
-                    Ok(())
-                })
-            })
-            .await
     }
 
     /// Index (or re-index) a node's searchable title in the FTS table.
@@ -150,7 +68,7 @@ impl ContentRepo {
             .collect()
     }
 
-    /// Fetch a full node (not just the [`ContentRef`]).
+    /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]).
     ///
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
@@ -166,6 +84,24 @@ impl ContentRepo {
     }
 }
 
+/// Serialize a [`ContentKind`] to its stored lowercase string form.
+///
+/// `ContentKind` serializes to a bare JSON string (`"episode"`); we want the raw
+/// scalar for the `content.kind` TEXT column, so unwrap the JSON string. The
+/// `unwrap_or_default` can never actually fire (the enum always serializes to a
+/// string), but avoids a panic on the fallible runtime path.
+fn kind_to_str(kind: ContentKind) -> Result<String> {
+    Ok(serde_json::to_value(kind)?
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Parse a stored `content.kind` string back into a [`ContentKind`].
+fn kind_from_str(kind: &str) -> Result<ContentKind> {
+    serde_json::from_value(serde_json::Value::String(kind.to_string())).map_err(DbError::from)
+}
+
 fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
     let id: String = row.try_get("id")?;
     let library_id: String = row.try_get("library_id")?;
@@ -178,6 +114,7 @@ fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
 
     let media_type: MediaType =
         serde_json::from_value(serde_json::Value::String(media_type)).map_err(DbError::from)?;
+    let kind = kind_from_str(&kind)?;
     let coords: Coordinates = serde_json::from_str(&coords)?;
     let parent_id = parent_id
         .map(|p| parse_uuid("parent_id", &p).map(ContentId::from_uuid))
@@ -225,5 +162,64 @@ impl ContentRepository for ContentRepo {
         rows.into_iter()
             .map(|r| row_to_node(r).map(|n| n.as_ref()))
             .collect()
+    }
+
+    async fn upsert(&self, node: &ContentNode) -> Result<()> {
+        let id = node.id.to_string();
+        let library_id = node.library_id.to_string();
+        let media_type = serde_json::to_value(node.media_type)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let parent_id = node.parent_id.map(|p| p.to_string());
+        let kind = kind_to_str(node.kind)?;
+        let coords = serde_json::to_string(&node.coords)?;
+        let monitored = i64::from(node.monitored);
+        let title_id = node.title_id.map(|t| t.to_string());
+
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO content
+                            (id, library_id, media_type, parent_id, kind, coords, monitored, title_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(id) DO UPDATE SET
+                            library_id = excluded.library_id,
+                            media_type = excluded.media_type,
+                            parent_id  = excluded.parent_id,
+                            kind       = excluded.kind,
+                            coords     = excluded.coords,
+                            monitored  = excluded.monitored,
+                            title_id   = excluded.title_id",
+                    )
+                    .bind(id)
+                    .bind(library_id)
+                    .bind(media_type)
+                    .bind(parent_id)
+                    .bind(kind)
+                    .bind(coords)
+                    .bind(monitored)
+                    .bind(title_id)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    async fn children(&self, parent: ContentId) -> Result<Vec<ContentNode>> {
+        // Ordered by id for a stable, deterministic walk; coords ordering would
+        // require parsing the tagged JSON, which the adjacency-list walk does not
+        // need. Callers that want numbering order sort on the decoded coords.
+        let rows = sqlx::query(
+            "SELECT id, library_id, media_type, parent_id, kind, coords, monitored, title_id
+             FROM content WHERE parent_id = ?1 ORDER BY id ASC",
+        )
+        .bind(parent.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_node).collect()
     }
 }

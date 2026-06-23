@@ -266,20 +266,45 @@ async fn commit_replacing(src: &Path, dst: &Path) -> Result<PlacedAs> {
     })
 }
 
-/// Cleanup one move: remove a replaced file *only if it is a distinct path from
-/// the destination* (an in-place atomic replace already consumed it). Returns
-/// whether a file was removed. Idempotent: a missing replaced file is success.
+/// Cleanup one move: remove a replaced file that sits at a path *distinct* from
+/// the destination. Returns whether a file was removed. Idempotent: a missing
+/// replaced file is success (a resumed cleanup must not fail on already-removed
+/// debris).
+///
+/// Cleanup runs only after every destination in the plan is durable, so removing
+/// the old file here can never violate the new-before-old ordering. An in-place
+/// replacement (`replaced_path == destination_path`, or unset) was already
+/// atomically consumed by `commit_replacing`, so there is nothing to delete.
 async fn cleanup_move(m: &PlannedMove) -> Result<bool> {
-    // The PlannedMove records the replaced file by id, not path; the only
-    // on-disk replaced file this crate can act on is one sitting AT the
-    // destination, which `commit_replacing` already atomically consumed. There
-    // is nothing else to delete here. If a future caller supplies a distinct
-    // replaced *path*, it would be removed here, after the new file is durable.
-    //
-    // We keep the hook point and the idempotent contract so resumed runs and
-    // future replaced-path support stay safe.
-    let _ = m;
-    Ok(false)
+    let Some(replaced) = &m.replaced_path else {
+        return Ok(false);
+    };
+
+    // An upgrade that lands at the same path overwrote the old file in place via
+    // the atomic rename in `commit_replacing`; there is no separate file left.
+    if replaced == &m.destination_path {
+        return Ok(false);
+    }
+
+    let replaced = PathBuf::from(replaced);
+
+    // Safety backstop: only remove the replaced file once the new file is
+    // genuinely durable at the destination. Cleanup is reached only after Commit,
+    // but on a *resumed* run we re-confirm rather than trust the prior process.
+    if !path_exists(&PathBuf::from(&m.destination_path)).await? {
+        return Err(FsError::VerificationFailed {
+            path: PathBuf::from(&m.destination_path),
+            detail: "refusing to remove the replaced file: destination is not in place".into(),
+        });
+    }
+
+    // Idempotent: a re-run after the file was already removed must succeed.
+    if !path_exists(&replaced).await? {
+        return Ok(false);
+    }
+
+    fsops::remove_durable(&replaced).await?;
+    Ok(true)
 }
 
 /// Whether the destination already holds the intended file (same size as the

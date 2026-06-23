@@ -11,12 +11,10 @@ use std::collections::HashMap;
 
 use cellarr_core::{
     ConditionKind, ContentId, ContentRef, Coordinates, IndexerId, LibraryId, MediaType,
-    ParsedRelease, Protocol, QualityProfile, QualityProfileId, Release, Resolution, Source,
-    Verdict,
+    ParsedRelease, Protocol, QualityProfile, QualityProfileId, QualityRanking, Release, Resolution,
+    Source, Verdict,
 };
-use cellarr_decide::{
-    decide, import_trash_custom_formats, score, DecisionContext, MatchContext, QualityResolver,
-};
+use cellarr_decide::{decide, import_trash_custom_formats, score, DecisionContext, MatchContext};
 
 const TRASH_JSON: &str = r#"
 [
@@ -143,14 +141,14 @@ fn imported_formats_score_a_release_as_the_sum_of_matches() {
 #[test]
 fn imported_cam_guard_drives_a_below_minimum_reject() {
     let formats = import_trash_custom_formats(TRASH_JSON, &scores()).unwrap();
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
 
     let profile = QualityProfile {
         id: QualityProfileId::new(),
         name: "p".to_string(),
-        allowed_qualities: vec![0, 10],
+        allowed_qualities: vec![1, 14],
         upgrades_allowed: true,
-        cutoff_quality: 16,
+        cutoff_quality: 20,
         min_custom_format_score: 0,
         upgrade_until_custom_format_score: 1000,
         required_languages: vec![],
@@ -164,7 +162,7 @@ fn imported_cam_guard_drives_a_below_minimum_reject() {
     let ctx = DecisionContext {
         profile: &profile,
         custom_formats: &formats,
-        resolver: &resolver,
+        ranking: &ranking,
         blocklisted: false,
         proper_repack_policy: Default::default(),
     };

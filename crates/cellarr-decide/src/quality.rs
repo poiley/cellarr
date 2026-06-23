@@ -1,159 +1,125 @@
-//! Mapping a parsed release to its position in the global quality ranking.
+//! Deriving the working quality of a candidate and of an on-disk file.
 //!
-//! `cellarr-core`'s [`QualityDefinition`] owns the *ranking* (a name and a `rank`),
-//! and [`QualityProfile`] references qualities by `rank`. But core carries no
-//! rule for turning a parsed release's (resolution, source) into a quality —
-//! that mapping is the decision engine's job. [`QualityResolver`] is the
-//! crate-local table that performs it.
+//! `cellarr-core` owns the quality vocabulary and the mapping itself:
+//! [`cellarr_core::QualityRanking`] is the worst→best catalogue and
+//! [`cellarr_core::resolve_quality`] turns a parsed release's (source,
+//! resolution) into a [`cellarr_core::Quality`] (a name plus its authoritative
+//! `rank`). The decision engine no longer keeps its own ranking table; it ranks
+//! against core's so the catalogue is single-sourced.
 //!
-//! The mapping mirrors the *arr stack's quality taxonomy clean-room: a quality is
-//! identified by a (source, resolution) pair (e.g. Bluray + 1080p ->
-//! "Bluray-1080p"), with Remux treated as a distinct, higher source than
-//! encoded Bluray.
+//! This module is the thin bridge from those core types into the decision
+//! engine's working state: resolving a candidate to an [`OnDiskFile`]-comparable
+//! quality, and projecting a persisted [`cellarr_core::MediaFile`] onto the
+//! quality rank + custom-format score that [`crate::decide`] compares.
 
-use cellarr_core::{QualityDefinition, Resolution, Source};
+use cellarr_core::{MediaFile, ParsedRelease, Quality, QualityRanking};
 
 use crate::OnDiskFile;
 
-/// A resolver from a parsed release's facts to a quality `rank`.
+/// The catalogue name core assigns to a parse it cannot bucket.
 ///
-/// Built from the global [`QualityDefinition`] list plus a (source, resolution)
-/// keying rule. Resolution is the dominant axis (a 2160p anything outranks a
-/// 1080p anything in the default ranking), with source breaking ties within a
-/// resolution.
-#[derive(Debug, Clone)]
-pub struct QualityResolver {
-    entries: Vec<QualityEntry>,
-}
+/// [`cellarr_core::resolve_quality`] always returns a [`Quality`]; when the parse
+/// lacks the source/resolution needed to name a bucket it returns this sentinel
+/// (rank 0). The decision engine treats that as "no resolvable quality", which is
+/// not an allowed quality.
+const UNKNOWN_QUALITY_NAME: &str = "Unknown";
 
-#[derive(Debug, Clone)]
-struct QualityEntry {
-    source: Source,
-    resolution: Resolution,
-    rank: u32,
-}
-
-/// What a candidate's (source, resolution) resolved to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResolvedQuality {
-    /// The matched quality's rank in the global ordering.
-    pub rank: u32,
-}
-
-impl QualityResolver {
-    /// Build a resolver from explicit (source, resolution, name) rows, looking up
-    /// each name's `rank` in `definitions`. Rows whose name is absent from
-    /// `definitions` are skipped, so the ranking stays the single source of truth.
-    #[must_use]
-    pub fn new(definitions: &[QualityDefinition], rows: &[(Source, Resolution, &str)]) -> Self {
-        let mut entries = Vec::new();
-        for (source, resolution, name) in rows {
-            if let Some(def) = definitions.iter().find(|d| d.name == *name) {
-                entries.push(QualityEntry {
-                    source: *source,
-                    resolution: *resolution,
-                    rank: def.rank,
-                });
-            }
-        }
-        Self { entries }
-    }
-
-    /// The default TRaSH-compatible ranking and (source, resolution) mapping.
-    ///
-    /// This is the clean-room equivalent of the *arr stack's default quality
-    /// list, ordered worst -> best. It is deliberately data here (not hard-coded
-    /// constants elsewhere) so tests and the corpus can reference exact ranks.
-    #[must_use]
-    pub fn default_ranking() -> (Vec<QualityDefinition>, Self) {
-        // (name, rank) worst -> best.
-        let names: &[(&str, u32)] = &[
-            ("CAM", 0),
-            ("SDTV", 1),
-            ("DVD", 2),
-            ("HDTV-720p", 3),
-            ("WEBRip-720p", 4),
-            ("WEBDL-720p", 5),
-            ("Bluray-720p", 6),
-            ("HDTV-1080p", 7),
-            ("WEBRip-1080p", 8),
-            ("WEBDL-1080p", 9),
-            ("Bluray-1080p", 10),
-            ("Remux-1080p", 11),
-            ("HDTV-2160p", 12),
-            ("WEBRip-2160p", 13),
-            ("WEBDL-2160p", 14),
-            ("Bluray-2160p", 15),
-            ("Remux-2160p", 16),
-        ];
-        let definitions: Vec<QualityDefinition> = names
-            .iter()
-            .map(|(name, rank)| QualityDefinition {
-                name: (*name).to_string(),
-                rank: *rank,
-                min_size_per_min: None,
-                max_size_per_min: None,
-            })
-            .collect();
-
-        use Resolution::{R1080p, R2160p, R720p};
-        use Source::{Bluray, Cam, Dvd, Hdtv, Remux, Sdtv, WebDl, Webrip};
-        let rows: &[(Source, Resolution, &str)] = &[
-            (Cam, Resolution::R480p, "CAM"),
-            (Sdtv, Resolution::R480p, "SDTV"),
-            (Sdtv, Resolution::R576p, "SDTV"),
-            (Dvd, Resolution::R480p, "DVD"),
-            (Dvd, Resolution::R576p, "DVD"),
-            (Hdtv, R720p, "HDTV-720p"),
-            (Webrip, R720p, "WEBRip-720p"),
-            (WebDl, R720p, "WEBDL-720p"),
-            (Bluray, R720p, "Bluray-720p"),
-            (Hdtv, R1080p, "HDTV-1080p"),
-            (Webrip, R1080p, "WEBRip-1080p"),
-            (WebDl, R1080p, "WEBDL-1080p"),
-            (Bluray, R1080p, "Bluray-1080p"),
-            (Remux, R1080p, "Remux-1080p"),
-            (Hdtv, R2160p, "HDTV-2160p"),
-            (Webrip, R2160p, "WEBRip-2160p"),
-            (WebDl, R2160p, "WEBDL-2160p"),
-            (Bluray, R2160p, "Bluray-2160p"),
-            (Remux, R2160p, "Remux-2160p"),
-        ];
-        let resolver = Self::new(&definitions, rows);
-        (definitions, resolver)
-    }
-
-    /// Resolve a (source, resolution) pair to a quality rank, or `None` when the
-    /// pair is unknown (which the decision engine treats as a disallowed quality).
-    #[must_use]
-    pub fn resolve(
-        &self,
-        source: Option<Source>,
-        resolution: Option<Resolution>,
-    ) -> Option<ResolvedQuality> {
-        let source = source?;
-        let resolution = resolution?;
-        self.entries
-            .iter()
-            .find(|e| e.source == source && e.resolution == resolution)
-            .map(|e| ResolvedQuality { rank: e.rank })
-    }
-}
-
-/// Convenience: build an [`OnDiskFile`] from a (source, resolution, cf score),
-/// resolving the quality through this resolver. Returns `None` if the quality is
-/// unknown.
+/// Resolve a candidate parse to its [`Quality`] against `ranking`, returning
+/// `None` when the parse cannot be bucketed (core's `Unknown` sentinel).
+///
+/// The decision engine treats `None` as a disallowed quality (precedence rule 1).
 #[must_use]
-pub fn on_disk_from_quality(
-    resolver: &QualityResolver,
-    source: Option<Source>,
-    resolution: Option<Resolution>,
-    custom_format_score: i32,
-    file_id: cellarr_core::MediaFileId,
-) -> Option<OnDiskFile> {
-    resolver.resolve(source, resolution).map(|q| OnDiskFile {
-        file_id,
-        quality_rank: q.rank,
-        custom_format_score,
-    })
+pub fn resolve_candidate_quality(
+    parsed: &ParsedRelease,
+    ranking: &QualityRanking,
+) -> Option<Quality> {
+    let quality = cellarr_core::resolve_quality(parsed, ranking);
+    if quality.name.eq_ignore_ascii_case(UNKNOWN_QUALITY_NAME) {
+        None
+    } else {
+        Some(quality)
+    }
+}
+
+/// Project a persisted [`MediaFile`] onto the [`OnDiskFile`] the decision engine
+/// compares: its quality rank and its custom-format score.
+///
+/// A file with no recorded custom-format score (`custom_format_score == None`,
+/// i.e. it has not yet been scored) is treated as score 0, the neutral total.
+#[must_use]
+pub fn on_disk_from_media_file(file: &MediaFile) -> OnDiskFile {
+    OnDiskFile {
+        file_id: file.id,
+        quality_rank: file.quality.rank,
+        custom_format_score: file.custom_format_score.unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::{MediaFileId, Resolution, Source};
+
+    fn parsed(source: Option<Source>, resolution: Option<Resolution>) -> ParsedRelease {
+        let mut p = ParsedRelease::new("t");
+        p.source = source;
+        p.resolution = resolution;
+        p
+    }
+
+    #[test]
+    fn resolve_candidate_quality_ranks_against_core() {
+        let ranking = QualityRanking::default();
+        let q = resolve_candidate_quality(
+            &parsed(Some(Source::Bluray), Some(Resolution::R1080p)),
+            &ranking,
+        )
+        .expect("bluray-1080p resolves");
+        assert_eq!(q.name, "Bluray-1080p");
+        // The rank must match core's catalogue, not a crate-local table.
+        assert_eq!(q.rank, ranking.by_name("Bluray-1080p").unwrap().rank);
+    }
+
+    #[test]
+    fn unresolvable_parse_is_none() {
+        let ranking = QualityRanking::default();
+        // No source -> core returns the Unknown sentinel, which we map to None.
+        assert!(
+            resolve_candidate_quality(&parsed(None, Some(Resolution::R1080p)), &ranking).is_none()
+        );
+    }
+
+    #[test]
+    fn on_disk_from_media_file_carries_rank_and_score() {
+        let ranking = QualityRanking::default();
+        let quality = ranking.by_name("Bluray-2160p").expect("present");
+        let file = MediaFile {
+            id: MediaFileId::new(),
+            path: "/library/movie.mkv".to_string(),
+            size: 42,
+            quality: quality.clone(),
+            languages: vec![],
+            media_info: None,
+            custom_format_score: Some(125),
+        };
+        let on_disk = on_disk_from_media_file(&file);
+        assert_eq!(on_disk.file_id, file.id);
+        assert_eq!(on_disk.quality_rank, quality.rank);
+        assert_eq!(on_disk.custom_format_score, 125);
+    }
+
+    #[test]
+    fn unscored_media_file_defaults_to_neutral_zero() {
+        let ranking = QualityRanking::default();
+        let file = MediaFile {
+            id: MediaFileId::new(),
+            path: "/library/movie.mkv".to_string(),
+            size: 42,
+            quality: ranking.by_name("Bluray-1080p").unwrap(),
+            languages: vec![],
+            media_info: None,
+            custom_format_score: None,
+        };
+        assert_eq!(on_disk_from_media_file(&file).custom_format_score, 0);
+    }
 }

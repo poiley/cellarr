@@ -1,0 +1,44 @@
+{
+  "status": "success",
+  "data": {
+    "id": 81189,
+    "name": "Breaking Bad",
+    "year": "2008",
+    "firstAired": "2008-01-20",
+    "overview": "A chemistry teacher turns to making methamphetamine.",
+    "remoteIds": [
+      { "id": "tt0903747", "sourceName": "IMDB" },
+      { "id": "1396", "sourceName": "TheMovieDB" }
+    ],
+    "artworks": [
+      { "id": 1, "type": 2, "image": "https://artworks.thetvdb.com/poster_bb.jpg" },
+      { "id": 2, "type": 3, "image": "https://artworks.thetvdb.com/bg_bb.jpg" }
+    ],
+    "episodes": [
+      {
+        "id": 349232,
+        "name": "Pilot",
+        "seasonNumber": 1,
+        "number": 1,
+        "absoluteNumber": 1,
+        "aired": "2008-01-20"
+      },
+      {
+        "id": 349233,
+        "name": "Cat's in the Bag...",
+        "seasonNumber": 1,
+        "number": 2,
+        "absoluteNumber": 2,
+        "aired": "2008-01-27"
+      },
+      {
+        "id": 349240,
+        "name": "Seven Thirty-Seven",
+        "seasonNumber": 2,
+        "number": 1,
+        "absoluteNumber": 8,
+        "aired": "2009-03-08"
+      }
+    ]
+  }
+}

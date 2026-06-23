@@ -33,7 +33,28 @@ fn planned(src: &Path, dst: &Path, replaces: Option<MediaFileId>) -> PlannedMove
         destination_path: dst.to_string_lossy().into_owned(),
         content_ids: vec![ContentId::new()],
         replaces,
+        // No distinct replaced file by default; the replacement (if any) is an
+        // in-place overwrite at the destination path.
+        replaced_path: None,
         // plan_import recomputes this; default for direct construction.
+        hardlink: false,
+    }
+}
+
+/// A move that replaces an existing library file living at a path *distinct* from
+/// the new destination (e.g. a quality upgrade that also renames/moves the file).
+fn planned_replacing_distinct(
+    src: &Path,
+    dst: &Path,
+    replaced: &Path,
+    replaces: MediaFileId,
+) -> PlannedMove {
+    PlannedMove {
+        source_path: src.to_string_lossy().into_owned(),
+        destination_path: dst.to_string_lossy().into_owned(),
+        content_ids: vec![ContentId::new()],
+        replaces: Some(replaces),
+        replaced_path: Some(replaced.to_string_lossy().into_owned()),
         hardlink: false,
     }
 }
@@ -221,6 +242,97 @@ async fn old_file_is_never_removed_before_new_file_is_durable() {
     let result = execute_import(&plan).await.unwrap();
     assert_eq!(read(&dst), b"the upgraded 1080p file");
     assert_eq!(result.moves.len(), 1);
+}
+
+#[tokio::test]
+async fn replaced_file_at_distinct_path_is_removed_in_cleanup() {
+    // An upgrade that lands at a NEW name/path while replacing an old file that
+    // lives at a different path. The old file is removed during Cleanup, only
+    // after the new file is durable at its destination.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("dl/movie.2160p.mkv");
+    let dst = tmp.path().join("lib/Movie (2020) Bluray-2160p.mkv");
+    let old = tmp.path().join("lib/Movie (2020) Bluray-1080p.mkv");
+    write(&src, b"the upgraded 2160p file");
+    write(&old, b"the old 1080p file at a distinct path");
+
+    let plan = plan_import(
+        GrabId::new(),
+        vec![planned_replacing_distinct(
+            &src,
+            &dst,
+            &old,
+            MediaFileId::new(),
+        )],
+    )
+    .await
+    .unwrap();
+
+    let result = execute_import(&plan).await.unwrap();
+
+    assert_eq!(read(&dst), b"the upgraded 2160p file");
+    assert!(
+        !old.exists(),
+        "the replaced file at the distinct path is gone"
+    );
+    assert!(
+        result.moves[0].removed_replaced,
+        "cleanup reports it removed the replaced file"
+    );
+}
+
+#[tokio::test]
+async fn crash_after_new_file_durable_before_replaced_removal_is_consistent_and_resumable() {
+    // The critical ordering window for a DISTINCT-path replacement: the new file
+    // is durable at its destination, but the process dies before the old file
+    // (at a different path) is removed. Assert:
+    //   1. the new file is intact and durable,
+    //   2. the replaced file is still present (no data lost; nothing partial),
+    //   3. a resumed run finishes the job — the replaced file is then removed.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("dl/show.s01e01.2160p.mkv");
+    let dst = tmp
+        .path()
+        .join("lib/Show/Season 01/Show - S01E01 Bluray-2160p.mkv");
+    let old = tmp
+        .path()
+        .join("lib/Show/Season 01/Show - S01E01 Bluray-1080p.mkv");
+    write(&src, b"the upgraded 2160p episode");
+    write(&old, b"the old 1080p episode");
+
+    let mfid = MediaFileId::new();
+    let plan = plan_import(
+        GrabId::new(),
+        vec![planned_replacing_distinct(&src, &dst, &old, mfid)],
+    )
+    .await
+    .unwrap();
+
+    // Crash after the new file is durable but before any cleanup removes the old.
+    let err = execute_import_with(&plan, &FailAt::before_cleanup()).await;
+    assert!(err.is_err());
+
+    // New file durable at its destination.
+    assert!(dst.exists(), "new file must be durable before cleanup");
+    assert_eq!(read(&dst), b"the upgraded 2160p episode");
+    // Old file at the distinct path is untouched — consistent, nothing lost.
+    assert!(
+        old.exists(),
+        "replaced file must remain until the new file is durable and cleanup runs"
+    );
+    assert_eq!(read(&old), b"the old 1080p episode");
+
+    // Resume: the run finishes, recognizing the committed file and removing the
+    // replaced one. The destination keeps the new bytes.
+    let result = execute_import(&plan).await.unwrap();
+    assert_eq!(read(&dst), b"the upgraded 2160p episode");
+    assert!(!old.exists(), "resume removes the replaced file");
+    assert_eq!(result.moves[0].outcome, PlacedAs::AlreadyPresent);
+    assert!(result.moves[0].removed_replaced);
+
+    // Re-running once more is a clean no-op (idempotent cleanup).
+    let again = execute_import(&plan).await.unwrap();
+    assert!(!again.moves[0].removed_replaced);
 }
 
 #[tokio::test]

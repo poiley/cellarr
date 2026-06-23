@@ -1,0 +1,63 @@
+{
+  "scenario": "SABnzbd: addurl -> queue Downloading -> queue Extracting (post-process, still not importable) -> history Completed with storage path -> history delete",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "mode=addurl",
+        "url_contains_2": "apikey=testkey",
+        "url_contains_3": "cat=cellarr-movies"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"status\": true, \"nzo_ids\": [\"SABnzbd_nzo_abc123\"]}"
+      }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "mode=queue" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"queue\": {\"slots\": [{\"nzo_id\": \"SABnzbd_nzo_abc123\", \"status\": \"Downloading\", \"cat\": \"cellarr-movies\", \"percentage\": \"55\"}]}}"
+      }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "mode=queue" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"queue\": {\"slots\": [{\"nzo_id\": \"SABnzbd_nzo_abc123\", \"status\": \"Extracting\", \"cat\": \"cellarr-movies\", \"percentage\": \"100\"}]}}"
+      }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "mode=queue" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"queue\": {\"slots\": []}}"
+      }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "mode=history" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"history\": {\"slots\": [{\"nzo_id\": \"SABnzbd_nzo_abc123\", \"status\": \"Completed\", \"category\": \"cellarr-movies\", \"storage\": \"/downloads/complete/Movie.2024.1080p\"}]}}"
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "mode=history",
+        "url_contains_2": "name=delete",
+        "url_contains_3": "value=SABnzbd_nzo_abc123"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"status\": true}"
+      }
+    }
+  ]
+}

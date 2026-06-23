@@ -1,0 +1,164 @@
+# Anime absolute -> season/episode mapping expectations.
+#
+# Shared corpus (parser produces the absolute number; metadata/Identify applies
+# the scene mapping to land it on a TVDB season/episode). These are the canonical
+# "swampiest correctness problem" vectors (docs/02-data-model.md): each case
+# names the series mapping (its TVDB-season ranges, as published by TheXEM /
+# Anime-Lists in distilled form) and asserts where a given absolute number lands.
+#
+# Provenance: clean-room. The mapping *shapes* (a cour = a TVDB season whose
+# episode 1 corresponds to some absolute number) are the publicly documented
+# TheXEM/anime-lists data model; the specific series names below are generic
+# placeholders, NOT transcribed from any upstream fixture file. Numbers were
+# chosen to exercise: first-cour identity, second-cour offset, three-cour split,
+# boundary episodes (first/last of a range), and a number that falls in no range
+# (must surface for manual resolution, never be guessed).
+
+# --- Mapping A: a single 12-episode cour. Absolute == episode. -------------
+[[case]]
+series   = "Single Cour Anime"
+external_id = "tvdb-1001"
+absolute = 1
+source   = "single-cour identity: first episode"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1, length = 12 },
+]
+[case.expected]
+season  = 1
+episode = 1
+
+[[case]]
+series   = "Single Cour Anime"
+external_id = "tvdb-1001"
+absolute = 12
+source   = "single-cour identity: last episode of the cour (boundary)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1, length = 12 },
+]
+[case.expected]
+season  = 1
+episode = 12
+
+# --- Mapping B: two cours as two TVDB seasons. Second cour is offset. ------
+# Season 1 = absolutes 1..=12, Season 2 = absolutes 13..=24.
+[[case]]
+series   = "Two Cour Anime"
+external_id = "tvdb-2002"
+absolute = 13
+source   = "second-cour offset: first episode of season 2 (boundary)"
+notes    = "absolute 13 -> S02E01, the classic offset that bare SxxEyy parsing gets wrong"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 12 },
+  { season = 2, start_absolute = 13, length = 12 },
+]
+[case.expected]
+season  = 2
+episode = 1
+
+[[case]]
+series   = "Two Cour Anime"
+external_id = "tvdb-2002"
+absolute = 24
+source   = "second-cour offset: last episode of season 2 (boundary)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 12 },
+  { season = 2, start_absolute = 13, length = 12 },
+]
+[case.expected]
+season  = 2
+episode = 12
+
+[[case]]
+series   = "Two Cour Anime"
+external_id = "tvdb-2002"
+absolute = 12
+source   = "second-cour mapping: last episode of season 1 still maps correctly"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 12 },
+  { season = 2, start_absolute = 13, length = 12 },
+]
+[case.expected]
+season  = 1
+episode = 12
+
+# --- Mapping C: a long runner split into three uneven TVDB seasons. -------
+# S1 = 1..=25, S2 = 26..=64 (39 eps), S3 = 65..=100 (36 eps).
+[[case]]
+series   = "Long Runner Anime"
+external_id = "tvdb-3003"
+absolute = 64
+source   = "uneven split: last episode of the long middle season (boundary)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 25 },
+  { season = 2, start_absolute = 26, length = 39 },
+  { season = 3, start_absolute = 65, length = 36 },
+]
+[case.expected]
+season  = 2
+episode = 39
+
+[[case]]
+series   = "Long Runner Anime"
+external_id = "tvdb-3003"
+absolute = 65
+source   = "uneven split: first episode of season 3 (boundary just past S2)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 25 },
+  { season = 2, start_absolute = 26, length = 39 },
+  { season = 3, start_absolute = 65, length = 36 },
+]
+[case.expected]
+season  = 3
+episode = 1
+
+[[case]]
+series   = "Long Runner Anime"
+external_id = "tvdb-3003"
+absolute = 100
+source   = "uneven split: final episode of the whole series (boundary)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 25 },
+  { season = 2, start_absolute = 26, length = 39 },
+  { season = 3, start_absolute = 65, length = 36 },
+]
+[case.expected]
+season  = 3
+episode = 36
+
+# --- Mapping D: a series with a special "season 0" before the main run. ----
+# Specials (season 0) carry their own absolute window; the main season follows.
+[[case]]
+series   = "Anime With Specials"
+external_id = "tvdb-4004"
+absolute = 1
+source   = "specials window maps to season 0 (some scene groups number OVAs in-line)"
+[case.mapping]
+ranges = [
+  { season = 0, start_absolute = 1, length = 3  },
+  { season = 1, start_absolute = 4, length = 24 },
+]
+[case.expected]
+season  = 0
+episode = 1
+
+[[case]]
+series   = "Anime With Specials"
+external_id = "tvdb-4004"
+absolute = 4
+source   = "first main-season episode sits after the specials window (boundary)"
+[case.mapping]
+ranges = [
+  { season = 0, start_absolute = 1, length = 3  },
+  { season = 1, start_absolute = 4, length = 24 },
+]
+[case.expected]
+season  = 1
+episode = 1

@@ -1,0 +1,29 @@
+{
+  "scenario": "qBittorrent 5.x late-2025 dev build: /login success body is NOT 'Ok.' but a SID cookie IS issued; adapter must accept via the cookie path",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/auth/login",
+        "header_equals": { "referer": "http://localhost:8080" }
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "SID=v5sid789; HttpOnly; SameSite=Strict; path=/" },
+        "body": "{\"ok\":true}"
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/api/v2/torrents/info?hashes=abc123",
+        "header_equals": { "cookie": "SID=v5sid789" }
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"downloading\",\"content_path\":\"/dl/x\",\"progress\":0.1,\"ratio\":0.0,\"seeding_time\":0,\"category\":\"cellarr-movies\"}]"
+      }
+    }
+  ]
+}

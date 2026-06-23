@@ -17,6 +17,14 @@ tokio.workspace = true
 moka.workspace = true
 governor.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
 quick-xml = { version = "0.37", features = ["serialize"] }
 axum = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json.workspace = true
+serde.workspace = true
+toml = "0.8"

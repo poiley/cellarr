@@ -1,0 +1,69 @@
+{
+  "scenario": "qBittorrent legacy login (Ok. body + SID cookie): add -> downloading -> completed (seeding) -> ratio-gated remove",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/auth/login",
+        "header_equals": { "referer": "http://localhost:8080", "origin": "http://localhost:8080" },
+        "body_contains": "username=admin"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "SID=legacysid123; HttpOnly; path=/" },
+        "body": "Ok."
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/add",
+        "header_equals": { "cookie": "SID=legacysid123" },
+        "body_contains": "category=cellarr-tv"
+      },
+      "response": { "status": 200, "headers": {}, "body": "Ok." }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/api/v2/torrents/info?hashes=deadbeefcafef00d",
+        "header_equals": { "cookie": "SID=legacysid123" }
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"downloading\",\"content_path\":\"/downloads/Show.S01E01\",\"progress\":0.4,\"ratio\":0.0,\"seeding_time\":0,\"category\":\"cellarr-tv\"}]"
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/api/v2/torrents/info?hashes=deadbeefcafef00d"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"uploading\",\"content_path\":\"/downloads/Show.S01E01\",\"progress\":1.0,\"ratio\":1.5,\"seeding_time\":7200,\"category\":\"cellarr-tv\"}]"
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/api/v2/torrents/info?hashes=deadbeefcafef00d"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"uploading\",\"content_path\":\"/downloads/Show.S01E01\",\"progress\":1.0,\"ratio\":2.5,\"seeding_time\":90000,\"category\":\"cellarr-tv\"}]"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/delete",
+        "body_contains": "hashes=deadbeefcafef00d"
+      },
+      "response": { "status": 200, "headers": {}, "body": "" }
+    }
+  ]
+}

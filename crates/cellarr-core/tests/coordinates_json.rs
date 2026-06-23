@@ -40,6 +40,47 @@ fn episode_coordinates_round_trip_with_and_without_absolute() {
 }
 
 #[test]
+fn daily_coordinates_round_trip() {
+    roundtrip(Coordinates::Daily {
+        date: "2024-03-14".to_string(),
+    });
+    let v = serde_json::to_value(Coordinates::Daily {
+        date: "2024-03-14".to_string(),
+    })
+    .unwrap();
+    assert_eq!(v, json!({ "type": "daily", "date": "2024-03-14" }));
+    assert_eq!(
+        Coordinates::Daily {
+            date: "2024-03-14".to_string()
+        }
+        .media_type(),
+        MediaType::Tv
+    );
+}
+
+#[test]
+fn season_pack_coordinates_round_trip() {
+    roundtrip(Coordinates::SeasonPack { season: 4 });
+    let v = serde_json::to_value(Coordinates::SeasonPack { season: 4 }).unwrap();
+    assert_eq!(v, json!({ "type": "seasonpack", "season": 4 }));
+    assert_eq!(
+        Coordinates::SeasonPack { season: 4 }.media_type(),
+        MediaType::Tv
+    );
+}
+
+#[test]
+fn absolute_coordinates_round_trip() {
+    roundtrip(Coordinates::Absolute { number: 1071 });
+    let v = serde_json::to_value(Coordinates::Absolute { number: 1071 }).unwrap();
+    assert_eq!(v, json!({ "type": "absolute", "number": 1071 }));
+    assert_eq!(
+        Coordinates::Absolute { number: 1071 }.media_type(),
+        MediaType::Tv
+    );
+}
+
+#[test]
 fn track_coordinates_round_trip() {
     roundtrip(Coordinates::Track { disc: 1, track: 9 });
     let v = serde_json::to_value(Coordinates::Track { disc: 2, track: 3 }).unwrap();

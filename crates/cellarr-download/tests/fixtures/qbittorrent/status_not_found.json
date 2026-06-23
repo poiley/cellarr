@@ -1,0 +1,13 @@
+{
+  "scenario": "qBittorrent torrents/info returns an empty array for an unknown hash -> NotFound",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "url_contains": "/api/v2/auth/login" },
+      "response": { "status": 200, "headers": { "set-cookie": "SID=s1" }, "body": "Ok." }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "/api/v2/torrents/info?hashes=missing" },
+      "response": { "status": 200, "headers": {}, "body": "[]" }
+    }
+  ]
+}

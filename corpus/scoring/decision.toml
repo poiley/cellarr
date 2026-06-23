@@ -3,7 +3,10 @@
 # Each case drives `decide(candidate, on_disk, profile)` and asserts the verdict
 # kind ("grab" | "upgrade" | "reject") and, for rejects, the reason kind. The
 # candidate's (source, resolution) is mapped to a quality rank by the default
-# ranking (see crates/cellarr-decide/src/quality.rs).
+# ranking, cellarr_core::QualityRanking::default() (worst -> best). Reference
+# ranks used below: DVD=3, CAM=1, WEBDL-1080p=13, Bluray-1080p=14,
+# Bluray-2160p=19. See crates/cellarr-core/src/profile.rs (resolve_quality) and
+# crates/cellarr-decide/src/quality.rs.
 #
 # Profile fields:
 #   allowed                 = allowed quality ranks
@@ -24,15 +27,15 @@
 [[case]]
 name   = "reject_disallowed_quality"
 source = "precedence rule 1: disallowed quality"
-notes  = "DVD (rank 2) not in an allowed set of {10}"
+notes  = "DVD (rank 3) not in an allowed set of {14}"
 title  = "Movie.2024.DVD.x264-GROUP"
 [case.parsed]
 source     = "dvd"
 resolution = "r480p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.expected]
@@ -46,9 +49,9 @@ notes  = "no source/resolution -> cannot resolve a rank"
 title  = "Some.Weird.Release-GROUP"
 [case.parsed]
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.expected]
@@ -64,9 +67,9 @@ title  = "Movie.2024.CAMRip.x264-GROUP"
 source     = "cam"
 resolution = "r480p"
 [case.profile]
-allowed                = [0, 10]
+allowed                = [1, 14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [[case.format]]
@@ -89,9 +92,9 @@ blocklisted = true
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.expected]
@@ -108,9 +111,9 @@ source     = "bluray"
 resolution = "r1080p"
 languages  = ["de"]
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 required_languages     = ["en"]
@@ -128,9 +131,9 @@ title  = "Movie.2024.1080p.BluRay.x264-GROUP"
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.expected]
@@ -141,19 +144,19 @@ verdict = "grab"
 [[case]]
 name   = "upgrade_higher_quality_even_with_lower_cf"
 source = "precedence rule 2: quality rank dominates"
-notes  = "candidate Bluray-2160p (rank 15) over on-disk Bluray-1080p (rank 10) even though cf 0 < 80"
+notes  = "candidate Bluray-2160p (rank 19) over on-disk Bluray-1080p (rank 14) even though cf 0 < 80"
 title  = "Movie.2024.2160p.BluRay.x265-GROUP"
 [case.parsed]
 source     = "bluray"
 resolution = "r2160p"
 [case.profile]
-allowed                = [10, 15]
+allowed                = [14, 19]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 80
 [case.expected]
 verdict = "upgrade"
@@ -161,16 +164,16 @@ verdict = "upgrade"
 [[case]]
 name   = "reject_lower_quality_despite_higher_cf"
 source = "precedence rule 2: never downgrade quality to chase CF score"
-notes  = "candidate WEBDL-1080p (rank 9, cf 500) is NOT an upgrade over Bluray-1080p (rank 10, cf 0)"
+notes  = "candidate WEBDL-1080p (rank 13, cf 500) is NOT an upgrade over Bluray-1080p (rank 14, cf 0)"
 title  = "Movie.2024.1080p.WEB-DL.x264-GROUP"
 flags  = ["freeleech"]
 [case.parsed]
 source     = "web-dl"
 resolution = "r1080p"
 [case.profile]
-allowed                = [9, 10]
+allowed                = [13, 14]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [[case.format]]
@@ -180,7 +183,7 @@ score = 500
 kind = "indexer_flag"
 flag = "freeleech"
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "reject"
@@ -198,9 +201,9 @@ flags  = ["freeleech"]
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [[case.format]]
@@ -210,7 +213,7 @@ score = 100
 kind = "indexer_flag"
 flag = "freeleech"
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "upgrade"
@@ -223,13 +226,13 @@ title  = "Movie.2024.1080p.BluRay.x264-GROUP"
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "reject"
@@ -247,9 +250,9 @@ flags  = ["freeleech"]
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 100
 [[case.format]]
@@ -259,7 +262,7 @@ score = 200
 kind = "indexer_flag"
 flag = "freeleech"
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 100
 [case.expected]
 verdict = "reject"
@@ -275,9 +278,9 @@ flags  = ["freeleech"]
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 10
+cutoff_quality         = 14
 min_cf_score           = 0
 upgrade_until_cf_score = 200
 [[case.format]]
@@ -287,7 +290,7 @@ score = 150
 kind = "indexer_flag"
 flag = "freeleech"
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "upgrade"
@@ -301,9 +304,9 @@ flags  = ["freeleech"]
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = false
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [[case.format]]
@@ -313,7 +316,7 @@ score = 100
 kind = "indexer_flag"
 flag = "freeleech"
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "reject"
@@ -330,13 +333,13 @@ source     = "bluray"
 resolution = "r1080p"
 proper     = "proper"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "upgrade"
@@ -349,13 +352,13 @@ title  = "Movie.2024.1080p.BluRay.x264-OTHER"
 source     = "bluray"
 resolution = "r1080p"
 [case.profile]
-allowed                = [10]
+allowed                = [14]
 upgrades_allowed       = true
-cutoff_quality         = 16
+cutoff_quality         = 20
 min_cf_score           = 0
 upgrade_until_cf_score = 1000
 [case.on_disk]
-quality_rank = 10
+quality_rank = 14
 cf_score     = 0
 [case.expected]
 verdict = "reject"

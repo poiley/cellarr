@@ -30,6 +30,174 @@ pub struct QualityDefinition {
     pub max_size_per_min: Option<u64>,
 }
 
+/// A resolved quality: the concrete name plus its position in the global
+/// ranking.
+///
+/// This is the value stored on a [`crate::media::MediaFile`] and produced by
+/// [`resolve_quality`] from a parse. It is the bridge between the
+/// [`QualityDefinition`] *catalogue* (names ↔ ranks) and a specific file: the
+/// `rank` is the authoritative ordering the decision engine compares (higher is
+/// better), and `name` is what the UI and logs display.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Quality {
+    /// Stable name (matches a [`QualityDefinition::name`], e.g. "Bluray-1080p").
+    pub name: String,
+    /// Position in the global ranking; higher is better. Mirrors the matching
+    /// [`QualityDefinition::rank`].
+    pub rank: u32,
+}
+
+impl Quality {
+    /// Construct a quality from a name and rank.
+    #[must_use]
+    pub fn new(name: impl Into<String>, rank: u32) -> Self {
+        Self {
+            name: name.into(),
+            rank,
+        }
+    }
+}
+
+/// The default global quality ranking, worst → best.
+///
+/// Names follow the TRaSH / *arr convention (`<Source>-<Resolution>`, with
+/// `Remux` and `WEBRip`/`WEBDL` spelled out). Ranks are dense and ascending so
+/// `rank` alone orders any two qualities. This is the *default*; a deployment can
+/// override it (see [`QualityRanking`]) but ships with this sane baseline.
+///
+/// The list is intentionally explicit rather than computed so it reads like the
+/// user-facing quality table and is trivial to diff when the catalogue changes.
+const DEFAULT_QUALITY_NAMES: &[&str] = &[
+    "Unknown",
+    "CAM",
+    "SDTV",
+    "DVD",
+    "WEBRip-480p",
+    "WEBDL-480p",
+    "Bluray-480p",
+    "HDTV-720p",
+    "WEBRip-720p",
+    "WEBDL-720p",
+    "Bluray-720p",
+    "HDTV-1080p",
+    "WEBRip-1080p",
+    "WEBDL-1080p",
+    "Bluray-1080p",
+    "Bluray-1080p Remux",
+    "HDTV-2160p",
+    "WEBRip-2160p",
+    "WEBDL-2160p",
+    "Bluray-2160p",
+    "Bluray-2160p Remux",
+];
+
+/// An ordered quality catalogue: the names that exist and their ranks.
+///
+/// Wraps the worst→best ordering so callers can resolve a parse to a [`Quality`]
+/// against either the shipped default ([`QualityRanking::default`]) or a custom
+/// ranking supplied by configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityRanking {
+    /// Quality definitions in worst→best order (index is *not* the rank; the
+    /// authoritative rank is [`QualityDefinition::rank`]).
+    pub qualities: Vec<QualityDefinition>,
+}
+
+impl Default for QualityRanking {
+    fn default() -> Self {
+        let qualities = DEFAULT_QUALITY_NAMES
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| QualityDefinition {
+                name: (*name).to_string(),
+                // Dense ascending ranks; index order is worst→best.
+                rank: idx as u32,
+                min_size_per_min: None,
+                max_size_per_min: None,
+            })
+            .collect();
+        Self { qualities }
+    }
+}
+
+impl QualityRanking {
+    /// Look up a [`Quality`] by its catalogue name, if present.
+    #[must_use]
+    pub fn by_name(&self, name: &str) -> Option<Quality> {
+        self.qualities
+            .iter()
+            .find(|q| q.name.eq_ignore_ascii_case(name))
+            .map(|q| Quality::new(q.name.clone(), q.rank))
+    }
+
+    /// The sentinel "Unknown" quality (rank 0 in the default ranking), used when
+    /// a parse carries no recognizable source/resolution.
+    #[must_use]
+    fn unknown(&self) -> Quality {
+        self.by_name("Unknown")
+            .unwrap_or_else(|| Quality::new("Unknown", 0))
+    }
+}
+
+/// Map a parsed release's source + resolution (+ remux/proper signals) to a
+/// [`Quality`] in `ranking`.
+///
+/// The mapping mirrors how the *arr stack derives a quality bucket from the two
+/// independent axes a release advertises (the *medium* and the *resolution*):
+///
+/// - The medium (`Source`) selects the family — CAM, SDTV, DVD, WEBRip, WEB-DL,
+///   Bluray — and, for Bluray, whether it is a `Remux`.
+/// - The resolution selects the tier within the family (720p/1080p/2160p; SD
+///   media collapse to their family name).
+///
+/// `Remux` source is treated as Bluray-Remux at its resolution. The proper/repack
+/// signal does **not** change the quality bucket (it is a same-quality upgrade
+/// modifier handled by the decision engine), so it is not consulted here; it is
+/// named in the signature for forward-compatibility and to document intent.
+///
+/// Falls back to the catalogue's `Unknown` when the parse lacks the signals
+/// needed to name a bucket.
+#[must_use]
+pub fn resolve_quality(parsed: &ParsedRelease, ranking: &QualityRanking) -> Quality {
+    let name = match (parsed.source, parsed.resolution) {
+        // Cam is its own bucket regardless of advertised resolution.
+        (Some(Source::Cam), _) => "CAM",
+        (Some(Source::Sdtv), _) => "SDTV",
+        (Some(Source::Dvd), _) => "DVD",
+
+        (Some(Source::Hdtv), Some(Resolution::R720p)) => "HDTV-720p",
+        (Some(Source::Hdtv), Some(Resolution::R1080p)) => "HDTV-1080p",
+        (Some(Source::Hdtv), Some(Resolution::R2160p)) => "HDTV-2160p",
+
+        (Some(Source::Webrip), Some(Resolution::R480p | Resolution::R576p)) => "WEBRip-480p",
+        (Some(Source::Webrip), Some(Resolution::R720p)) => "WEBRip-720p",
+        (Some(Source::Webrip), Some(Resolution::R1080p)) => "WEBRip-1080p",
+        (Some(Source::Webrip), Some(Resolution::R2160p)) => "WEBRip-2160p",
+
+        (Some(Source::WebDl), Some(Resolution::R480p | Resolution::R576p)) => "WEBDL-480p",
+        (Some(Source::WebDl), Some(Resolution::R720p)) => "WEBDL-720p",
+        (Some(Source::WebDl), Some(Resolution::R1080p)) => "WEBDL-1080p",
+        (Some(Source::WebDl), Some(Resolution::R2160p)) => "WEBDL-2160p",
+
+        // A bare Remux source implies Bluray-Remux at its resolution.
+        (Some(Source::Remux), Some(Resolution::R2160p)) => "Bluray-2160p Remux",
+        (Some(Source::Remux), _) => "Bluray-1080p Remux",
+
+        (Some(Source::Bluray), Some(Resolution::R480p | Resolution::R576p)) => "Bluray-480p",
+        (Some(Source::Bluray), Some(Resolution::R720p)) => "Bluray-720p",
+        (Some(Source::Bluray), Some(Resolution::R2160p)) => "Bluray-2160p",
+        // Bluray with 1080p or unknown resolution collapses to Bluray-1080p, the
+        // conventional default for an unqualified Bluray.
+        (Some(Source::Bluray), _) => "Bluray-1080p",
+
+        // HDTV / WEBRip / WEB-DL with no resolution, or no source at all, cannot
+        // be bucketed.
+        _ => return ranking.unknown(),
+    };
+
+    ranking.by_name(name).unwrap_or_else(|| ranking.unknown())
+}
+
 /// A user's allowed qualities, ordering, cutoff, and CF-score thresholds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QualityProfile {
@@ -407,6 +575,65 @@ mod tests {
             -10000,
         );
         assert!(custom_format_matches(&format, &p, &[]));
+    }
+
+    fn parsed_with(source: Option<Source>, resolution: Option<Resolution>) -> ParsedRelease {
+        let mut p = ParsedRelease::new("test");
+        p.source = source;
+        p.resolution = resolution;
+        p
+    }
+
+    #[test]
+    fn default_ranking_orders_worst_to_best() {
+        let r = QualityRanking::default();
+        let sdtv = r.by_name("SDTV").expect("SDTV present");
+        let bluray_1080p = r.by_name("Bluray-1080p").expect("Bluray-1080p present");
+        let bluray_2160p_remux = r
+            .by_name("Bluray-2160p Remux")
+            .expect("Bluray-2160p Remux present");
+        assert!(sdtv.rank < bluray_1080p.rank);
+        assert!(bluray_1080p.rank < bluray_2160p_remux.rank);
+    }
+
+    #[test]
+    fn resolve_quality_maps_representative_releases() {
+        let r = QualityRanking::default();
+
+        let webdl_1080p = resolve_quality(
+            &parsed_with(Some(Source::WebDl), Some(Resolution::R1080p)),
+            &r,
+        );
+        assert_eq!(webdl_1080p.name, "WEBDL-1080p");
+
+        let bluray_remux_2160 = resolve_quality(
+            &parsed_with(Some(Source::Remux), Some(Resolution::R2160p)),
+            &r,
+        );
+        assert_eq!(bluray_remux_2160.name, "Bluray-2160p Remux");
+
+        // A bare Bluray with no resolution defaults to Bluray-1080p.
+        let bluray_default = resolve_quality(&parsed_with(Some(Source::Bluray), None), &r);
+        assert_eq!(bluray_default.name, "Bluray-1080p");
+
+        // Remux outranks plain Bluray at the same resolution.
+        let plain = resolve_quality(
+            &parsed_with(Some(Source::Bluray), Some(Resolution::R1080p)),
+            &r,
+        );
+        let remux = resolve_quality(
+            &parsed_with(Some(Source::Remux), Some(Resolution::R1080p)),
+            &r,
+        );
+        assert!(remux.rank > plain.rank);
+    }
+
+    #[test]
+    fn resolve_quality_falls_back_to_unknown() {
+        let r = QualityRanking::default();
+        let unknown = resolve_quality(&parsed_with(None, Some(Resolution::R1080p)), &r);
+        assert_eq!(unknown.name, "Unknown");
+        assert_eq!(unknown.rank, 0);
     }
 
     #[test]

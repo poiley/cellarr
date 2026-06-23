@@ -1,0 +1,17 @@
+{
+  "scenario": "NZBGet par/unpack failure: not in listgroups, history shows FAILURE/UNPACK -> Failed",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"listgroups\"" },
+      "response": { "status": 200, "headers": {}, "body": "{\"result\": []}" }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"history\"" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\": [{\"NZBID\": 99, \"Status\": \"FAILURE/UNPACK\", \"Category\": \"cellarr-tv\", \"DestDir\": \"\"}]}"
+      }
+    }
+  ]
+}

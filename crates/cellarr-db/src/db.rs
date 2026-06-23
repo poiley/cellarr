@@ -12,7 +12,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::error::Result;
 use crate::repos::{
-    CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo, ProfileRepo,
+    CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo, MediaFileRepo,
+    ProfileRepo,
 };
 use crate::writer::WriterHandle;
 
@@ -97,6 +98,12 @@ impl Database {
     #[must_use]
     pub fn content(&self) -> ContentRepo {
         ContentRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The media-file repository.
+    #[must_use]
+    pub fn media_files(&self) -> MediaFileRepo {
+        MediaFileRepo::new(self.pool.clone(), self.writer.clone())
     }
 
     /// The grab repository.

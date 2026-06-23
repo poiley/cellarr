@@ -11,13 +11,19 @@
 
 use async_trait::async_trait;
 
-use crate::decision::GrabRequest;
+use crate::decision::{Grab, GrabRequest, GrabStatus};
 use crate::history::{DecisionLogRecord, HistoryRecord};
-use crate::ids::{ContentId, GrabId, QualityProfileId};
-use crate::media::ContentRef;
+use crate::ids::{ContentId, GrabId, MediaFileId, QualityProfileId};
+use crate::media::{ContentNode, ContentRef, MediaFile};
 use crate::profile::{CustomFormat, QualityProfile};
 
 /// Reads and writes for the structural `content` tree.
+///
+/// This is the aggregate `db/media` uses to build and traverse the adjacency
+/// list: [`ContentRepository::upsert`] writes a node (parent links included) and
+/// [`ContentRepository::children`] walks one level down. The slim
+/// [`ContentRepository::get`] / [`ContentRepository::monitored_missing`] reads
+/// remain for the pipeline, which only needs [`ContentRef`].
 #[async_trait]
 pub trait ContentRepository: Send + Sync {
     /// The typed error this repository reports.
@@ -28,6 +34,37 @@ pub trait ContentRepository: Send + Sync {
 
     /// All monitored content nodes that currently lack an acceptable file.
     async fn monitored_missing(&self) -> Result<Vec<ContentRef>, Self::Error>;
+
+    /// Insert or update a content node (keyed by [`ContentNode::id`]), so the
+    /// adjacency list can be written by `db/media`.
+    async fn upsert(&self, node: &ContentNode) -> Result<(), Self::Error>;
+
+    /// The direct children of `parent` in the tree, in stable order.
+    async fn children(&self, parent: ContentId) -> Result<Vec<ContentNode>, Self::Error>;
+}
+
+/// Reads and writes for `media_file` rows.
+///
+/// Kept a separate aggregate from [`ContentRepository`]: a file can satisfy
+/// several content nodes (multi-episode), so file lifecycle is its own concern.
+/// `list_for_content` resolves through the `content_file` link.
+#[async_trait]
+pub trait MediaFileRepository: Send + Sync {
+    /// The typed error this repository reports.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Persist a new media file.
+    async fn create(&self, file: &MediaFile) -> Result<(), Self::Error>;
+
+    /// Fetch a media file by id.
+    async fn get(&self, id: MediaFileId) -> Result<Option<MediaFile>, Self::Error>;
+
+    /// Every media file linked to `content` (one node may map to several files,
+    /// and one file to several nodes).
+    async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>, Self::Error>;
+
+    /// Delete a media file row by id (the on-disk removal is `cellarr-fs`'s job).
+    async fn delete(&self, id: MediaFileId) -> Result<(), Self::Error>;
 }
 
 /// Reads and writes for grabs handed to download clients.
@@ -36,11 +73,18 @@ pub trait GrabRepository: Send + Sync {
     /// The typed error this repository reports.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Persist a new grab and return its id.
+    /// Persist a new grab (created with [`GrabStatus::Pending`]) and return its
+    /// id.
     async fn create(&self, request: &GrabRequest) -> Result<GrabId, Self::Error>;
 
-    /// Fetch a grab request by id.
-    async fn get(&self, id: GrabId) -> Result<Option<GrabRequest>, Self::Error>;
+    /// Fetch the persisted grab (request + lifecycle) by id.
+    async fn get(&self, id: GrabId) -> Result<Option<Grab>, Self::Error>;
+
+    /// Record the download client's own id for a grab, once it has accepted it.
+    async fn set_download_id(&self, id: GrabId, download_id: &str) -> Result<(), Self::Error>;
+
+    /// Advance a grab's lifecycle [`GrabStatus`].
+    async fn set_status(&self, id: GrabId, status: GrabStatus) -> Result<(), Self::Error>;
 }
 
 /// Append-only writes and queries for the history stream.

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use cellarr_core::repo::GrabRepository;
-use cellarr_core::{ContentRef, GrabId, GrabRequest, Release};
+use cellarr_core::{ContentRef, Grab, GrabId, GrabRequest, GrabStatus, Release};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -11,28 +11,20 @@ use crate::convert::format_time;
 use crate::error::{DbError, Result};
 use crate::writer::WriterHandle;
 
-/// Lifecycle state of a grab. Persisted as a lowercase string in `grab.status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrabStatus {
-    /// Sent to the client, not yet acknowledged complete.
-    Queued,
-    /// Download finished, ready to import.
-    Completed,
-    /// Download failed.
-    Failed,
-    /// Files imported into the library.
-    Imported,
+/// Serialize a [`GrabStatus`] to its stored lowercase (snake_case) string.
+///
+/// `GrabStatus` serializes to a bare JSON string; we store that scalar in the
+/// `grab.status` TEXT column.
+fn status_to_str(status: GrabStatus) -> Result<String> {
+    Ok(serde_json::to_value(status)?
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
-impl GrabStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            GrabStatus::Queued => "queued",
-            GrabStatus::Completed => "completed",
-            GrabStatus::Failed => "failed",
-            GrabStatus::Imported => "imported",
-        }
-    }
+/// Parse a stored `grab.status` string back into a [`GrabStatus`].
+fn status_from_str(status: &str) -> Result<GrabStatus> {
+    serde_json::from_value(serde_json::Value::String(status.to_string())).map_err(DbError::from)
 }
 
 /// Reads/writes for grabs handed to download clients.
@@ -45,34 +37,6 @@ pub struct GrabRepo {
 impl GrabRepo {
     pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
         Self { pool, writer }
-    }
-
-    /// Record the download client's id and advance status for a grab.
-    ///
-    /// # Errors
-    /// Returns a [`DbError`] on write failure.
-    pub async fn set_download_id(
-        &self,
-        id: GrabId,
-        download_id: &str,
-        status: GrabStatus,
-    ) -> Result<()> {
-        let id = id.to_string();
-        let download_id = download_id.to_string();
-        let status = status.as_str();
-        self.writer
-            .submit(move |conn| {
-                Box::pin(async move {
-                    sqlx::query("UPDATE grab SET download_id = ?2, status = ?3 WHERE id = ?1")
-                        .bind(id)
-                        .bind(download_id)
-                        .bind(status)
-                        .execute(&mut *conn)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .await
     }
 }
 
@@ -89,6 +53,8 @@ impl GrabRepository for GrabRepo {
         let client_id = request.client_id.to_string();
         let category = request.category.clone();
         let created_at = format_time(OffsetDateTime::now_utc())?;
+        // New grabs start at the core-defined initial state.
+        let status = status_to_str(GrabStatus::Pending)?;
 
         self.writer
             .submit(move |conn| {
@@ -97,7 +63,7 @@ impl GrabRepository for GrabRepo {
                         "INSERT INTO grab
                             (id, content_ref, release, indexer_id, client_id, category,
                              download_id, status, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'queued', ?7)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
                     )
                     .bind(id_str)
                     .bind(content_ref)
@@ -105,6 +71,7 @@ impl GrabRepository for GrabRepo {
                     .bind(indexer_id)
                     .bind(client_id)
                     .bind(category)
+                    .bind(status)
                     .bind(created_at)
                     .execute(&mut *conn)
                     .await?;
@@ -115,9 +82,9 @@ impl GrabRepository for GrabRepo {
         Ok(id)
     }
 
-    async fn get(&self, id: GrabId) -> Result<Option<GrabRequest>> {
+    async fn get(&self, id: GrabId) -> Result<Option<Grab>> {
         let row = sqlx::query(
-            "SELECT content_ref, release, indexer_id, client_id, category
+            "SELECT content_ref, release, indexer_id, client_id, category, download_id, status
              FROM grab WHERE id = ?1",
         )
         .bind(id.to_string())
@@ -131,6 +98,8 @@ impl GrabRepository for GrabRepo {
         let indexer_id: String = row.try_get("indexer_id")?;
         let client_id: String = row.try_get("client_id")?;
         let category: String = row.try_get("category")?;
+        let download_id: Option<String> = row.try_get("download_id")?;
+        let status: String = row.try_get("status")?;
 
         let content_ref: ContentRef = serde_json::from_str(&content_ref)?;
         let release: Release = serde_json::from_str(&release)?;
@@ -138,13 +107,53 @@ impl GrabRepository for GrabRepo {
             serde_json::from_value(serde_json::Value::String(indexer_id)).map_err(DbError::from)?;
         let client_id =
             serde_json::from_value(serde_json::Value::String(client_id)).map_err(DbError::from)?;
+        let status = status_from_str(&status)?;
 
-        Ok(Some(GrabRequest {
-            content_ref,
-            release,
-            indexer_id,
-            client_id,
-            category,
+        Ok(Some(Grab {
+            id,
+            request: GrabRequest {
+                content_ref,
+                release,
+                indexer_id,
+                client_id,
+                category,
+            },
+            download_id,
+            status,
         }))
+    }
+
+    async fn set_download_id(&self, id: GrabId, download_id: &str) -> Result<()> {
+        let id = id.to_string();
+        let download_id = download_id.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query("UPDATE grab SET download_id = ?2 WHERE id = ?1")
+                        .bind(id)
+                        .bind(download_id)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    async fn set_status(&self, id: GrabId, status: GrabStatus) -> Result<()> {
+        let id = id.to_string();
+        let status = status_to_str(status)?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query("UPDATE grab SET status = ?2 WHERE id = ?1")
+                        .bind(id)
+                        .bind(status)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
     }
 }

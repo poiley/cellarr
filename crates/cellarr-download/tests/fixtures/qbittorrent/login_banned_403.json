@@ -1,0 +1,9 @@
+{
+  "scenario": "qBittorrent CSRF/host tightening rejects login with 403 (banned IP / bad Referer-Origin) -> Auth error",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "url_contains": "/api/v2/auth/login" },
+      "response": { "status": 403, "headers": {}, "body": "" }
+    }
+  ]
+}

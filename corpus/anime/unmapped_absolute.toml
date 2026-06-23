@@ -1,0 +1,54 @@
+# Anime absolute numbers that the scene mapping CANNOT place, and malformed
+# mappings. These pin the library-safety rule: Identify must surface these for
+# manual resolution, NEVER guess a season/episode (docs/02-data-model.md,
+# docs/specs/cellarr-media.md "ambiguous -> manual, never force-fit").
+#
+# Provenance: clean-room. Distilled from the documented failure modes of
+# TheXEM/anime-lists usage (a release ahead of the published mapping; a mapping
+# with an overlap bug). Generic placeholder series names; no upstream fixture
+# was copied.
+
+# A simulcast episode aired after the mapping was last published: the absolute
+# number is beyond every known range. Expected outcome = unmapped (manual).
+[[case]]
+series   = "Ongoing Simulcast Anime"
+external_id = "tvdb-5005"
+absolute = 27
+source   = "release ahead of the published mapping (cour 3 not yet mapped)"
+notes    = "outcome must be 'unmapped', surfaced for manual resolution"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 12 },
+  { season = 2, start_absolute = 13, length = 13 },
+]
+[case.outcome]
+kind = "unmapped"
+
+# A number below the first range's start (e.g. a mis-parsed leading zero or an
+# OVA the mapping does not include): still unmapped, not forced onto S1E0.
+[[case]]
+series   = "Anime Missing Its Specials"
+external_id = "tvdb-5006"
+absolute = 0
+source   = "below the first mapped absolute"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1, length = 24 },
+]
+[case.outcome]
+kind = "unmapped"
+
+# A malformed mapping whose two ranges overlap the requested number: this is a
+# data bug, and Identify must report it as malformed (not pick arbitrarily).
+[[case]]
+series   = "Anime With Overlapping Mapping"
+external_id = "tvdb-5007"
+absolute = 13
+source   = "overlapping ranges both cover absolute 13 (mapping data bug)"
+[case.mapping]
+ranges = [
+  { season = 1, start_absolute = 1,  length = 13 },
+  { season = 2, start_absolute = 13, length = 12 },
+]
+[case.outcome]
+kind = "malformed"

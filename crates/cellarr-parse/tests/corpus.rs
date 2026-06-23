@@ -219,18 +219,22 @@ fn check_numbering(e: &Expected, got: &ParsedRelease) -> Result<(), String> {
         let found = got
             .coordinates
             .iter()
-            .any(|c| matches!(c, Coordinates::Episode { absolute: Some(a), .. } if *a == abs));
+            .any(|c| matches!(c, Coordinates::Absolute { number } if *number == abs));
         if !found {
             return Err(format!("absolute: want {abs}, got {:?}", got.coordinates));
         }
         return Ok(());
     }
 
-    // Daily: no season/episode coordinates surfaced (date addressing).
+    // Daily: a single date coordinate surfaced (date addressing), no season/ep.
     if e.daily == Some(true) {
-        if !got.coordinates.is_empty() {
+        let found = got
+            .coordinates
+            .iter()
+            .any(|c| matches!(c, Coordinates::Daily { .. }));
+        if !found {
             return Err(format!(
-                "daily: want no coordinates, got {:?}",
+                "daily: want a Daily coordinate, got {:?}",
                 got.coordinates
             ));
         }
@@ -256,15 +260,16 @@ fn check_numbering(e: &Expected, got: &ParsedRelease) -> Result<(), String> {
         return Ok(());
     }
 
-    // Season pack: a single season coordinate with episode 0 sentinel.
+    // Season pack: a SeasonPack coordinate for the covered season.
     if e.season_pack == Some(true) {
-        let season = e.season.unwrap_or(0);
-        let found = got.coordinates.iter().any(
-            |c| matches!(c, Coordinates::Episode { season: s, episode: 0, .. } if *s == season),
-        );
+        let season = u16::try_from(e.season.unwrap_or(0)).unwrap_or(u16::MAX);
+        let found = got
+            .coordinates
+            .iter()
+            .any(|c| matches!(c, Coordinates::SeasonPack { season: s } if *s == season));
         if !found {
             return Err(format!(
-                "season_pack: want season {season} ep 0, got {:?}",
+                "season_pack: want SeasonPack season {season}, got {:?}",
                 got.coordinates
             ));
         }

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC: hand-authored Newznab search response, not captured from a live indexer. -->
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+  <channel>
+    <title>Example Newznab</title>
+    <item>
+      <title>Example.Show.S02E05.1080p.WEB-DL.DDP5.1.H.264-USENET</title>
+      <guid isPermaLink="true">https://news.example/details/aaaa1111</guid>
+      <link>https://news.example/getnzb/aaaa1111.nzb&amp;apikey=KEY</link>
+      <enclosure url="https://news.example/getnzb/aaaa1111.nzb&amp;apikey=KEY" length="2469606195" type="application/x-nzb" />
+      <newznab:attr name="category" value="5040" />
+      <newznab:attr name="size" value="2469606195" />
+      <newznab:attr name="grabs" value="42" />
+      <newznab:attr name="usenetdate" value="Mon, 02 Jun 2025 12:00:00 +0000" />
+    </item>
+    <item>
+      <title>Example.Movie.2024.2160p.UHD.BluRay.x265-USENET</title>
+      <guid isPermaLink="true">https://news.example/details/bbbb2222</guid>
+      <link>https://news.example/getnzb/bbbb2222.nzb&amp;apikey=KEY</link>
+      <enclosure url="https://news.example/getnzb/bbbb2222.nzb&amp;apikey=KEY" length="64424509440" type="application/x-nzb" />
+      <newznab:attr name="category" value="2040" />
+      <newznab:attr name="size" value="64424509440" />
+      <newznab:attr name="grabs" value="7" />
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC: hand-authored Torznab t=caps response, not captured from a live indexer. -->
+<caps>
+  <server version="1.1" title="Example Torznab" />
+  <limits max="100" default="50" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+    <tv-search available="yes" supportedParams="q,season,ep,tvdbid,imdbid" />
+    <movie-search available="yes" supportedParams="q,imdbid,tmdbid" />
+    <audio-search available="no" supportedParams="q" />
+    <book-search available="no" supportedParams="q" />
+  </searching>
+  <categories>
+    <category id="2000" name="Movies">
+      <subcat id="2040" name="Movies/HD" />
+      <subcat id="2045" name="Movies/UHD" />
+    </category>
+    <category id="5000" name="TV">
+      <subcat id="5040" name="TV/HD" />
+      <subcat id="5070" name="TV/Anime" />
+    </category>
+  </categories>
+</caps>

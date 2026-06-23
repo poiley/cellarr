@@ -1,0 +1,21 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "objectID": "series-81189",
+      "tvdb_id": "81189",
+      "name": "Breaking Bad",
+      "type": "series",
+      "year": "2008",
+      "overview": "A chemistry teacher turns to making methamphetamine."
+    },
+    {
+      "objectID": "series-79349",
+      "tvdb_id": "79349",
+      "name": "Firefly",
+      "type": "series",
+      "year": "2002",
+      "overview": ""
+    }
+  ]
+}

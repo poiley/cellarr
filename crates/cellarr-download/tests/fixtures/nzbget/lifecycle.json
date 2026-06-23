@@ -1,0 +1,50 @@
+{
+  "scenario": "NZBGet JSON-RPC: append -> listgroups DOWNLOADING -> listgroups UNPACKING (post-process) -> history SUCCESS/ALL with DestDir -> editqueue HistoryFinalDelete",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/jsonrpc",
+        "header_equals": { "authorization": "Basic bnpiZ2V0OnRlZ2J6bjY3ODk=" },
+        "body_contains": "\"method\":\"append\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"version\": \"1.1\", \"result\": 42}"
+      }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"listgroups\"" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\": [{\"NZBID\": 42, \"Status\": \"DOWNLOADING\", \"Category\": \"cellarr-tv\", \"FileSizeMB\": 1000, \"RemainingSizeMB\": 400}]}"
+      }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"listgroups\"" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\": [{\"NZBID\": 42, \"Status\": \"UNPACKING\", \"Category\": \"cellarr-tv\", \"FileSizeMB\": 1000, \"RemainingSizeMB\": 0}]}"
+      }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"listgroups\"" },
+      "response": { "status": 200, "headers": {}, "body": "{\"result\": []}" }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"history\"" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\": [{\"NZBID\": 42, \"Status\": \"SUCCESS/ALL\", \"Category\": \"cellarr-tv\", \"DestDir\": \"/downloads/dst/Show.S02E05\"}]}"
+      }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"editqueue\"" },
+      "response": { "status": 200, "headers": {}, "body": "{\"result\": true}" }
+    }
+  ]
+}

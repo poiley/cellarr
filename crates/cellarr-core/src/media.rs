@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use crate::ids::{ContentId, LibraryId};
+use crate::ids::{ContentId, LibraryId, MediaFileId, TitleId};
+use crate::profile::Quality;
 
 /// The four supported media types.
 ///
@@ -38,6 +39,30 @@ pub enum MediaType {
 /// column as **tagged JSON** (`{ "type": "...", ... }`) so it round-trips
 /// losslessly and is self-describing.
 ///
+/// # Which stage produces which variant
+///
+/// The numbering vocabulary spans two pipeline stages, so several variants are
+/// transient. The parser may emit the *advertised* numbering it sees in a
+/// release title; Identify then normalizes those to the canonical addressing the
+/// rest of the pipeline carries:
+///
+/// - [`Coordinates::Movie`] / [`Coordinates::Track`] / [`Coordinates::Book`] —
+///   canonical for their media type; produced by the parser and carried
+///   unchanged.
+/// - [`Coordinates::Episode`] — the canonical TV addressing. The parser emits it
+///   for `S01E02`-style titles; Identify also produces it by remapping a
+///   transient [`Coordinates::Absolute`] (see below). Its `absolute` field is
+///   `Some(_)` only once Identify has reconciled the anime absolute number.
+/// - [`Coordinates::Daily`] — a date-addressed broadcast (daily shows). The
+///   parser emits it; Identify resolves it to an [`Coordinates::Episode`] via the
+///   series' air-date table. **Parser-stage / transient.**
+/// - [`Coordinates::SeasonPack`] — a whole-season release. The parser emits it
+///   for season-pack titles; Identify fans it out to one episode node per
+///   covered episode. **Parser-stage / transient.**
+/// - [`Coordinates::Absolute`] — an anime absolute episode number, *before*
+///   Identify uses the scene mapping to remap it to an [`Coordinates::Episode`]
+///   `{ season, episode, absolute: Some(n) }`. **Parser-stage / transient.**
+///
 /// ```
 /// # use cellarr_core::Coordinates;
 /// let c = Coordinates::Episode { season: 2, episode: 15, absolute: None };
@@ -53,15 +78,37 @@ pub enum Coordinates {
     /// A movie is its own unit; it carries no coordinates.
     Movie,
     /// A television episode, addressed by season and episode, optionally with the
-    /// anime absolute number when known.
+    /// anime absolute number when known. This is the canonical TV addressing;
+    /// Identify produces it from [`Coordinates::Daily`], [`Coordinates::Absolute`],
+    /// and [`Coordinates::SeasonPack`] as well as from direct `SxxEyy` parses.
     Episode {
         /// Season number (specials are conventionally season 0).
         season: u32,
         /// Episode number within the season.
         episode: u32,
-        /// Absolute episode number across the whole series (anime numbering).
+        /// Absolute episode number across the whole series (anime numbering),
+        /// populated by Identify when it remaps a [`Coordinates::Absolute`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         absolute: Option<u32>,
+    },
+    /// A date-addressed broadcast (a daily show), as advertised before Identify
+    /// resolves it to an [`Coordinates::Episode`]. **Parser-stage / transient.**
+    Daily {
+        /// The air date in ISO `yyyy-mm-dd` form. Kept as a `String` so core
+        /// takes no calendar/`chrono` dependency; validated by `cellarr-parse`.
+        date: String,
+    },
+    /// A whole-season release, before Identify fans it out to per-episode nodes.
+    /// **Parser-stage / transient.**
+    SeasonPack {
+        /// The season the pack covers.
+        season: u16,
+    },
+    /// An anime absolute episode number, before Identify remaps it (via the scene
+    /// mapping) to an [`Coordinates::Episode`]. **Parser-stage / transient.**
+    Absolute {
+        /// The absolute episode number across the whole series.
+        number: u32,
     },
     /// A music track, addressed by disc and track number.
     Track {
@@ -84,7 +131,12 @@ impl Coordinates {
     pub const fn media_type(&self) -> MediaType {
         match self {
             Coordinates::Movie => MediaType::Movie,
-            Coordinates::Episode { .. } => MediaType::Tv,
+            // Episode plus the transient parser-stage TV variants Identify remaps
+            // into it all address television content.
+            Coordinates::Episode { .. }
+            | Coordinates::Daily { .. }
+            | Coordinates::SeasonPack { .. }
+            | Coordinates::Absolute { .. } => MediaType::Tv,
             Coordinates::Track { .. } => MediaType::Music,
             Coordinates::Book { .. } => MediaType::Book,
         }
@@ -144,6 +196,109 @@ impl ContentRef {
             coords,
         })
     }
+}
+
+/// The structural role a [`ContentNode`] plays within its media type's tree.
+///
+/// This is the `content.kind` discriminator from [`docs/02-data-model.md`]: it
+/// names the node's level in the adjacency list (e.g. a TV `Series` has `Season`
+/// children, each with `Episode` children) without the pipeline ever having to
+/// branch on [`MediaType`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentKind {
+    /// A film (flat; its own unit).
+    Movie,
+    /// A television series (root of the TV tree).
+    Series,
+    /// A season under a series.
+    Season,
+    /// An episode under a season.
+    Episode,
+    /// A music artist (root of the music tree).
+    Artist,
+    /// An album under an artist.
+    Album,
+    /// A track under an album.
+    Track,
+    /// A book author (root of the book tree).
+    Author,
+    /// A book under an author.
+    Book,
+}
+
+/// A persisted `content` row: one node in the structural adjacency-list tree.
+///
+/// Where [`ContentRef`] is the slim handle the pipeline carries, `ContentNode`
+/// is the full row `cellarr-db` writes and reads. The `parent_id` link is what
+/// makes the tree an adjacency list (series → season → episode, artist → album →
+/// track, author → book); roots have `parent_id == None`. See
+/// [`docs/02-data-model.md`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentNode {
+    /// This node's identifier.
+    pub id: ContentId,
+    /// The library the node belongs to.
+    pub library_id: LibraryId,
+    /// The media type (carried so callers pick the right `MediaModule`).
+    pub media_type: MediaType,
+    /// The parent node in the tree, or `None` for a root (series/artist/author,
+    /// or a flat movie).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<ContentId>,
+    /// The node's structural role within its media type.
+    pub kind: ContentKind,
+    /// The node's numbering within its type.
+    pub coords: Coordinates,
+    /// Whether the node is monitored for acquisition.
+    pub monitored: bool,
+    /// Link to the typed identity/metadata row, when one has been resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_id: Option<TitleId>,
+}
+
+impl ContentNode {
+    /// The slim [`ContentRef`] view of this node, for handing to the pipeline.
+    #[must_use]
+    pub fn as_ref(&self) -> ContentRef {
+        ContentRef {
+            id: self.id,
+            library_id: self.library_id,
+            media_type: self.media_type,
+            coords: self.coords.clone(),
+        }
+    }
+}
+
+/// A persisted `media_file` row: a physical file on disk and its assessed
+/// quality.
+///
+/// One file can satisfy several content nodes (a multi-episode `.mkv`); that
+/// many-to-many link is modeled separately (the `content_file` table) and so is
+/// not carried here. See [`docs/02-data-model.md`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaFile {
+    /// File identifier.
+    pub id: MediaFileId,
+    /// Absolute path on disk.
+    pub path: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// The quality assessed for this file (the same vocabulary the decision
+    /// engine ranks).
+    pub quality: Quality,
+    /// Detected languages (ISO-639 codes or names, as resolved).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+    /// Opaque media-info payload (codecs, streams, runtime) as probed by the
+    /// import scanner; `None` until probed. Kept as JSON so core stays free of
+    /// any probe library's schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_info: Option<serde_json::Value>,
+    /// The custom-format score this file earned, when scored; `None` until the
+    /// decision engine has evaluated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_format_score: Option<i32>,
 }
 
 /// A typed collection of content of a single media type.

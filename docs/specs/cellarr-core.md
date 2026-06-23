@@ -12,14 +12,24 @@ No `tokio`-required APIs in the core types (keep them runtime-agnostic where pra
 no `reqwest`.
 
 ## Public interface
-- **Domain types:** `MediaType`, `Coordinates` (the numbering enum), `ContentRef`, `ParsedRelease`
-  (+ per-field confidence), `Release` (a candidate from an indexer), `ContentMatch`, `QualityProfile`,
-  `CustomFormat`, `Decision`/`Verdict`, `GrabRequest`, `ImportPlan`, history/decision-log records.
+- **Domain types:** `MediaType`, `Coordinates` (the numbering enum: `Movie` / `Episode` / `Daily` /
+  `SeasonPack` / `Absolute` / `Track` / `Book` — the parser emits the transient TV variants, Identify
+  remaps them), `ContentRef`, `ContentNode` (+ `ContentKind`), `MediaFile`, `ParsedRelease` (+
+  per-field confidence), `Release` (a candidate from an indexer), `ContentMatch`, `QualityProfile`,
+  `QualityDefinition`, `Quality` (+ `QualityRanking` and the `resolve_quality` resolver),
+  `CustomFormat`, `Decision`/`Verdict`, `GrabRequest`, `Grab` (+ `GrabStatus`), `ImportPlan`
+  (+ `PlannedMove`, which carries `replaced_path` for replacements at a distinct path), config types
+  (`RootFolder`, `IndexerConfig`, `DownloadClientConfig`, `NotificationConfig`), history/decision-log
+  records.
 - **Seam traits** (definitions live here; impls live in their crates):
   - `MediaModule` — search terms / match / naming / metadata source (see [02-data-model.md](../02-data-model.md)).
   - `MetadataSource` — search / fetch / updates / images / scene_mapping (see [07](../07-metadata-service.md)).
   - `Indexer`, `DownloadClient` — integration seams (see [06](../06-integrations.md)).
-  - repository traits (consumed by all; implemented by `cellarr-db`).
+  - repository traits (consumed by all; implemented by `cellarr-db`): `ContentRepository`
+    (`get` / `monitored_missing` / `upsert` / `children`), `MediaFileRepository`
+    (`create` / `get` / `list_for_content` / `delete`), `GrabRepository`
+    (`create` / `get` / `set_download_id` / `set_status`), `HistoryRepository`,
+    `DecisionLogRepository`, `ProfileRepository`.
 - **Pipeline state machine:** the `Stage` enum, transition types, and the pure transition logic for
   Discover→Parse→Identify→Decide→Grab→Track→Import→Rename→Notify ([03-pipeline.md](../03-pipeline.md)).
   Execution/scheduling lives in `cellarr-jobs`; *the rules* live here.

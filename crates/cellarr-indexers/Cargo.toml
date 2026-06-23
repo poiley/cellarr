@@ -12,6 +12,13 @@ reqwest.workspace = true
 tokio.workspace = true
 governor.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
+url = "2.5"
 quick-xml = { version = "0.37", features = ["serialize"] }
 scraper = "0.21"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tokio = { workspace = true }

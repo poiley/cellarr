@@ -14,6 +14,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use cellarr_core::{MediaFile, MediaFileId, Quality};
+
 use crate::error::{FsError, Result};
 
 /// One discovered file in a library scan.
@@ -27,6 +29,30 @@ pub struct InventoryEntry {
     /// torrent client's download dir) shares the data — relevant to whether a
     /// "delete" actually frees space.
     pub link_count: u64,
+}
+
+impl InventoryEntry {
+    /// Adopt this discovered file as a [`MediaFile`] record, given an identifier
+    /// and the [`Quality`] resolved for it (by parsing the name upstream).
+    ///
+    /// This is the "recognize in place" bridge: migration walks an existing
+    /// library with [`scan`] and turns each entry into a persisted `media_file`
+    /// without moving a byte. The `quality` is the same core vocabulary the
+    /// decision engine ranks, so an adopted file is immediately comparable to a
+    /// newly imported one. `languages`, `media_info`, and `custom_format_score`
+    /// are left empty/`None` until a deeper probe/score pass fills them in.
+    #[must_use]
+    pub fn as_media_file(&self, id: MediaFileId, quality: Quality) -> MediaFile {
+        MediaFile {
+            id,
+            path: self.path.to_string_lossy().into_owned(),
+            size: self.size,
+            quality,
+            languages: Vec::new(),
+            media_info: None,
+            custom_format_score: None,
+        }
+    }
 }
 
 /// The result of scanning a library root.
@@ -135,6 +161,28 @@ mod tests {
         assert_eq!(inv.entries.len(), 1);
         assert!(inv.entries[0].path.ends_with("ep1.mkv"));
         assert_eq!(inv.entries[0].size, 3);
+    }
+
+    #[tokio::test]
+    async fn entry_adopts_as_media_file_carrying_core_quality() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("Movie Bluray-1080p.mkv"), b"abcdef").unwrap();
+
+        let inv = scan(root).await.unwrap();
+        let entry = &inv.entries[0];
+
+        let id = MediaFileId::new();
+        let quality = Quality::new("Bluray-1080p", 9);
+        let mf = entry.as_media_file(id, quality.clone());
+
+        assert_eq!(mf.id, id);
+        assert_eq!(mf.size, 6);
+        assert!(mf.path.ends_with("Movie Bluray-1080p.mkv"));
+        assert_eq!(mf.quality, quality);
+        assert!(mf.languages.is_empty());
+        assert!(mf.media_info.is_none());
+        assert!(mf.custom_format_score.is_none());
     }
 
     #[tokio::test]

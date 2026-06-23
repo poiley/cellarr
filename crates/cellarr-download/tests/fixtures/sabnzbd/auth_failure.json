@@ -1,0 +1,13 @@
+{
+  "scenario": "SABnzbd wrong api key: addurl returns the {status:false, error:'API Key Incorrect'} envelope -> Auth error",
+  "exchanges": [
+    {
+      "expect": { "method": "GET", "url_contains": "mode=addurl" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"status\": false, \"error\": \"API Key Incorrect\"}"
+      }
+    }
+  ]
+}

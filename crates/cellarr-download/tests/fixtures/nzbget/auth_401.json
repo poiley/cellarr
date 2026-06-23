@@ -1,0 +1,9 @@
+{
+  "scenario": "NZBGet bad Basic-auth credentials: /jsonrpc returns HTTP 401 -> Auth error",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"append\"" },
+      "response": { "status": 401, "headers": {}, "body": "401 Unauthorized" }
+    }
+  ]
+}

@@ -7,9 +7,9 @@
 use cellarr_core::{
     Condition, ConditionKind, ContentId, ContentRef, Coordinates, CustomFormat, CustomFormatId,
     IndexerId, LibraryId, MediaFileId, MediaType, ParsedRelease, ProperRepack, Protocol,
-    QualityProfile, QualityProfileId, Release, Resolution, Source, Verdict,
+    QualityProfile, QualityProfileId, QualityRanking, Release, Resolution, Source, Verdict,
 };
-use cellarr_decide::{decide, DecisionContext, OnDiskFile, ProperRepackPolicy, QualityResolver};
+use cellarr_decide::{decide, DecisionContext, OnDiskFile, ProperRepackPolicy};
 
 fn release(title: &str, flags: &[&str]) -> Release {
     Release {
@@ -80,30 +80,31 @@ fn on_disk(quality_rank: u32, cf_score: i32) -> OnDiskFile {
 fn ctx<'a>(
     profile: &'a QualityProfile,
     formats: &'a [CustomFormat],
-    resolver: &'a QualityResolver,
+    ranking: &'a QualityRanking,
 ) -> DecisionContext<'a> {
     DecisionContext {
         profile,
         custom_formats: formats,
-        resolver,
+        ranking,
         blocklisted: false,
         proper_repack_policy: ProperRepackPolicy::Prefer,
     }
 }
 
-/// Ranks under the default ranking, for readability in the tests below.
+/// Ranks under the default ranking (cellarr_core::QualityRanking::default()),
+/// for readability in the tests below.
 mod rank {
-    pub const WEBDL_1080P: u32 = 9;
-    pub const BLURAY_1080P: u32 = 10;
-    pub const BLURAY_2160P: u32 = 15;
+    pub const WEBDL_1080P: u32 = 13;
+    pub const BLURAY_1080P: u32 = 14;
+    pub const BLURAY_2160P: u32 = 19;
 }
 
 #[test]
 fn quality_rank_dominates_a_lower_quality_with_a_huge_cf_score_is_never_an_upgrade() {
-    // Candidate: WEBDL-1080p (rank 9) carrying a +5000 CF score.
-    // On disk:   Bluray-1080p (rank 10) with CF score 0.
+    // Candidate: WEBDL-1080p (rank 13) carrying a +5000 CF score.
+    // On disk:   Bluray-1080p (rank 14) with CF score 0.
     // The decision must NOT downgrade quality to chase the higher CF score.
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let formats = vec![freeleech_format(5000)];
     let prof = profile(
         &[rank::WEBDL_1080P, rank::BLURAY_1080P],
@@ -118,7 +119,7 @@ fn quality_rank_dominates_a_lower_quality_with_a_huge_cf_score_is_never_an_upgra
         &rel,
         &p,
         Some(on_disk(rank::BLURAY_1080P, 0)),
-        &ctx(&prof, &formats, &resolver),
+        &ctx(&prof, &formats, &ranking),
     )
     .unwrap();
 
@@ -132,11 +133,11 @@ fn quality_rank_dominates_a_lower_quality_with_a_huge_cf_score_is_never_an_upgra
 #[test]
 fn a_strictly_higher_quality_upgrades_even_when_its_cf_score_is_lower() {
     // The mirror of the rule above: higher quality wins regardless of CF score.
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let formats: Vec<CustomFormat> = vec![];
     let prof = profile(
         &[rank::BLURAY_1080P, rank::BLURAY_2160P],
-        16, // cutoff above 2160p so upgrades are allowed
+        20, // cutoff above 2160p so upgrades are allowed
         100_000,
     );
     let rel = release("Movie.2024.2160p.BluRay-GROUP", &[]);
@@ -147,7 +148,7 @@ fn a_strictly_higher_quality_upgrades_even_when_its_cf_score_is_lower() {
         &rel,
         &p,
         Some(on_disk(rank::BLURAY_1080P, 500)), // existing has a high CF score
-        &ctx(&prof, &formats, &resolver),
+        &ctx(&prof, &formats, &ranking),
     )
     .unwrap();
 
@@ -163,7 +164,7 @@ fn both_cutoffs_met_stops_all_churn_even_for_a_higher_cf_candidate() {
     // On disk is at the quality cutoff AND at/above the CF-score cutoff.
     // A candidate at the same quality with an even higher CF score must be
     // rejected with CutoffAlreadyMet — no churn.
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let formats = vec![freeleech_format(1000)];
     let prof = profile(&[rank::BLURAY_1080P], rank::BLURAY_1080P, 100);
     let rel = release("Movie.2024.1080p.BluRay-GROUP", &["freeleech"]);
@@ -174,7 +175,7 @@ fn both_cutoffs_met_stops_all_churn_even_for_a_higher_cf_candidate() {
         &rel,
         &p,
         Some(on_disk(rank::BLURAY_1080P, 100)), // CF score == upgrade-until
-        &ctx(&prof, &formats, &resolver),
+        &ctx(&prof, &formats, &ranking),
     )
     .unwrap();
 
@@ -190,7 +191,7 @@ fn both_cutoffs_met_stops_all_churn_even_for_a_higher_cf_candidate() {
 fn only_one_cutoff_met_still_allows_an_upgrade_on_the_unmet_axis() {
     // Quality cutoff met, but CF-score cutoff unmet and the candidate's CF score
     // is higher -> still an upgrade. This is the contrapositive of "both to stop".
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let formats = vec![freeleech_format(150)];
     let prof = profile(&[rank::BLURAY_1080P], rank::BLURAY_1080P, 200);
     let rel = release("Movie.2024.1080p.BluRay-GROUP", &["freeleech"]);
@@ -201,7 +202,7 @@ fn only_one_cutoff_met_still_allows_an_upgrade_on_the_unmet_axis() {
         &rel,
         &p,
         Some(on_disk(rank::BLURAY_1080P, 0)),
-        &ctx(&prof, &formats, &resolver),
+        &ctx(&prof, &formats, &ranking),
     )
     .unwrap();
 
@@ -217,7 +218,7 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
     // A matching -10000 guard sinks the total below the profile minimum, so the
     // candidate is rejected as a hard reject even though it would otherwise be a
     // clean fresh grab with no file on disk.
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let guard = CustomFormat {
         id: CustomFormatId::new(),
         name: "x265-guard".to_string(),
@@ -230,7 +231,7 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
         }],
         score: -10000,
     };
-    let mut prof = profile(&[rank::BLURAY_2160P], 16, 100);
+    let mut prof = profile(&[rank::BLURAY_2160P], 20, 100);
     prof.min_custom_format_score = 0;
     let rel = release("Movie.2024.2160p.BluRay.x265-GROUP", &[]);
     let mut p = parsed(Source::Bluray, Resolution::R2160p);
@@ -241,7 +242,7 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
         &rel,
         &p,
         None, // nothing on disk: a fresh grab, were it not for the guard
-        &ctx(&prof, &[guard], &resolver),
+        &ctx(&prof, &[guard], &ranking),
     )
     .unwrap();
 
@@ -255,9 +256,9 @@ fn hard_negative_guard_rejects_below_minimum_cf_score_before_any_upgrade_logic()
 
 #[test]
 fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
-    let (_defs, resolver) = QualityResolver::default_ranking();
+    let ranking = QualityRanking::default();
     let formats: Vec<CustomFormat> = vec![];
-    let prof = profile(&[rank::BLURAY_1080P], 16, 100);
+    let prof = profile(&[rank::BLURAY_1080P], 20, 100);
     let rel = release("Movie.2024.PROPER.1080p.BluRay-GROUP", &[]);
     let mut p = parsed(Source::Bluray, Resolution::R1080p);
     p.proper_repack = Some(ProperRepack::Proper);
@@ -270,7 +271,7 @@ fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
         &DecisionContext {
             profile: &prof,
             custom_formats: &formats,
-            resolver: &resolver,
+            ranking: &ranking,
             blocklisted: false,
             proper_repack_policy: ProperRepackPolicy::Prefer,
         },
@@ -290,7 +291,7 @@ fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
         &DecisionContext {
             profile: &prof,
             custom_formats: &formats,
-            resolver: &resolver,
+            ranking: &ranking,
             blocklisted: false,
             proper_repack_policy: ProperRepackPolicy::DoNotPrefer,
         },

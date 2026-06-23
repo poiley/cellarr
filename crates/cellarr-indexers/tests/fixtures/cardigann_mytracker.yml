@@ -1,0 +1,40 @@
+# SYNTHETIC Cardigann definition — original example, NOT copied from Prowlarr/Indexers.
+# Written to match the documented Cardigann field structure for engine tests.
+# See tests/fixtures/NOTES.md and docs/agents/legal-and-licensing.md.
+id: mytracker
+name: My Example Tracker
+language: en-US
+type: private
+encoding: UTF-8
+links:
+  - https://mytracker.example/
+
+caps:
+  categorymappings:
+    - { id: "10", cat: "5040", desc: "TV/HD" }
+    - { id: "11", cat: "5070", desc: "TV/Anime" }
+    - { id: "20", cat: "2040", desc: "Movies/HD" }
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+    movie-search: [q, imdbid]
+
+search:
+  paths:
+    - path: /torrents.php
+      method: get
+  rows:
+    selector: "table.torrents > tbody > tr.torrent"
+  fields:
+    title:
+      selector: "a.title"
+    details:
+      selector: "a.title"
+      attribute: href
+    download:
+      selector: "a.download"
+      attribute: href
+    size:
+      selector: "td.size"
+    seeders:
+      selector: "td.seeders"

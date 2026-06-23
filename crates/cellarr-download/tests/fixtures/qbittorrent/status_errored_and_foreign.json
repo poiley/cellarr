@@ -1,0 +1,25 @@
+{
+  "scenario": "qBittorrent: errored torrent -> Failed; and a foreign-category torrent is reported with its own category so callers can scope cellarr out",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "url_contains": "/api/v2/auth/login" },
+      "response": { "status": 200, "headers": { "set-cookie": "SID=s2" }, "body": "Ok." }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "/api/v2/torrents/info?hashes=erroredhash" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"error\",\"content_path\":\"\",\"progress\":0.3,\"ratio\":0.0,\"seeding_time\":0,\"category\":\"cellarr-tv\"}]"
+      }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "/api/v2/torrents/info?hashes=foreignhash" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "[{\"state\":\"uploading\",\"content_path\":\"/other/thing\",\"progress\":1.0,\"ratio\":3.0,\"seeding_time\":100000,\"category\":\"manual-stuff\"}]"
+      }
+    }
+  ]
+}

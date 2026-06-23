@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod config;
 pub mod decision;
 pub mod error;
 pub mod history;
@@ -34,25 +35,29 @@ pub mod release;
 pub mod repo;
 pub mod traits;
 
-pub use decision::{Decision, GrabRequest, ImportPlan, PlannedMove, RejectReason, Score, Verdict};
+pub use config::{DownloadClientConfig, IndexerConfig, NotificationConfig, RootFolder};
+pub use decision::{
+    Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,
+};
 pub use error::{CoreError, Result};
 pub use history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 pub use ids::{
     ContentId, CustomFormatId, DownloadClientId, GrabId, IndexerId, LibraryId, MediaFileId,
     PipelineRunId, QualityProfileId, TitleId,
 };
-pub use media::{ContentRef, Coordinates, Library, MediaType};
+pub use media::{ContentKind, ContentNode, ContentRef, Coordinates, Library, MediaFile, MediaType};
 pub use parsed::{
     Confidence, HdrFormat, ParsedField, ParsedRelease, ProperRepack, Resolution, Source, VideoCodec,
 };
 pub use pipeline::{is_legal_transition, Stage, Transition, TransitionKind};
 pub use profile::{
-    condition_matches, custom_format_matches, Condition, ConditionKind, CustomFormat,
-    QualityDefinition, QualityProfile,
+    condition_matches, custom_format_matches, resolve_quality, Condition, ConditionKind,
+    CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking,
 };
 pub use release::{ContentMatch, ParsedCandidate, Protocol, Release};
 pub use repo::{
-    ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository, ProfileRepository,
+    ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository,
+    MediaFileRepository, ProfileRepository,
 };
 pub use traits::{
     DownloadClient, DownloadStatus, Indexer, MediaModule, MetadataSource, NamingTokens, SearchTerms,

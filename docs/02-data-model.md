@@ -36,17 +36,34 @@ the authoritative schema lives in `cellarr-db` migrations — see [08-database.m
 - **`content`** — the structural tree, an adjacency list. Every monitorable / grabbable /
   file-bearing node is a row: `{ id, library_id, media_type, parent_id, kind, coords, monitored,
   title_id }`. `kind` ∈ {series, season, episode, movie, artist, album, track, author, book}.
-  `coords` is the numbering (below). `title_id` links to the typed identity row.
-- **`media_file`** — a physical file: `{ id, path, size, quality, languages, media_info, … }`.
+  `coords` is the numbering (below). `title_id` links to the typed identity row. Modeled in
+  `cellarr-core` as `ContentNode` (the persisted row) with a `ContentKind` discriminator; the
+  pipeline carries the slim `ContentRef` view (`ContentNode::as_ref`). `ContentRepository` owns the
+  reads/writes: `get` + `monitored_missing` (pipeline reads), plus `upsert` (write a node, parent
+  links included) and `children` (walk one level of the adjacency list) so `db`/`media` can build the
+  tree.
+- **`media_file`** — a physical file: `{ id, path, size, quality, languages, media_info,
+  custom_format_score }`. Modeled as `MediaFile` in `cellarr-core`; `quality` is the resolved
+  `Quality { name, rank }` (see [05-decision-engine.md](05-decision-engine.md)). Reads/writes live on
+  a dedicated **`MediaFileRepository`** (`create` / `get` / `list_for_content` / `delete`) — kept a
+  separate aggregate from `ContentRepository` because one file can satisfy several content nodes.
 - **`content_file`** — the many-to-many link between `content` and `media_file` (this is how one
   multi-episode file satisfies several episode nodes; the originals special-case this — we model it).
-- **`grab`** — a release we sent to a download client: `{ id, content_ref, release, client_id,
-  download_id, status, … }`.
+  `MediaFileRepository::list_for_content` resolves through this link.
+- **`grab`** — a release we sent to a download client: `{ id, request, download_id, status }`.
+  Modeled as `Grab` in `cellarr-core` (wrapping the immutable `GrabRequest` with mutable lifecycle).
+  `status` is a `GrabStatus` ∈ {pending, sent, downloading, completed, imported, failed,
+  blocklisted}. `GrabRepository` adds `set_download_id` and `set_status` to advance it.
 - **`history`** — the immutable event stream of what happened to each content node (grabbed,
   imported, upgraded, deleted, failed).
 - **`decision_log`** — *why* the system did what it did (see [03-pipeline.md](03-pipeline.md)).
 - **`quality_profile`**, **`custom_format`** — see [05-decision-engine.md](05-decision-engine.md).
 - **`indexer`**, **`download_client`**, **`root_folder`**, **`notification`** — configuration.
+  Modeled in `cellarr-core::config` as `IndexerConfig`, `DownloadClientConfig`, `RootFolder`, and
+  `NotificationConfig`. Each carries the small set of fields the system reasons about generically
+  (`id`, `name`, `kind`, `enabled`, and `priority`/`protocol`/`category` as relevant) plus a
+  `settings: serde_json::Value` for the adapter-specific bits (API keys, hosts, webhook URLs) — typed
+  where the shape is shared, JSON only for the open-ended remainder, per the decision below.
 
 ### Typed identity/metadata (per media type)
 
@@ -67,14 +84,24 @@ is unavoidable, so we name it explicitly and make it a closed enum (stored as ta
 `content.coords` column):
 
 - **Movie** — no coordinates (the movie is the unit).
-- **Episode** — `{ season, episode, absolute? }`. `absolute` is the anime absolute episode number;
-  reconciling absolute ↔ season/episode is the swampiest correctness problem in the project and is
-  handled via scene mappings (see [04-parser.md](04-parser.md) and [07-metadata-service.md](07-metadata-service.md)).
+- **Episode** — `{ season, episode, absolute? }`. The canonical TV addressing. `absolute` is the
+  anime absolute episode number; reconciling absolute ↔ season/episode is the swampiest correctness
+  problem in the project and is handled via scene mappings (see [04-parser.md](04-parser.md) and
+  [07-metadata-service.md](07-metadata-service.md)).
+- **Daily** — `{ date }` (ISO `yyyy-mm-dd`). A date-addressed broadcast (a daily show). The `date`
+  is a plain string so core needs no calendar dependency.
+- **SeasonPack** — `{ season }`. A whole-season release.
+- **Absolute** — `{ number }`. An anime absolute episode number on its own.
 - **Track** — `{ disc, track }`.
 - **Book** — `{ series_position? }`.
 
-The parser produces `Coordinates`; the identifier resolves them to a `content` node; the pipeline
-carries them opaquely.
+**Which stage produces which.** The parser may emit the *advertised* numbering it sees: `Movie`,
+`Episode`, `Track`, `Book`, **and** the transient TV variants `Daily`, `SeasonPack`, and `Absolute`.
+**Identify** then normalizes the transient ones to canonical addressing — `Daily` → `Episode` via the
+series' air-date table, `SeasonPack` → one `Episode` node per covered episode, and `Absolute` →
+`Episode { season, episode, absolute: Some(n) }` via the scene mapping. The pipeline downstream of
+Identify carries only the canonical variants. The stage that produces each variant is documented on
+the `Coordinates` enum in `cellarr-core`.
 
 ## `ContentRef` — the pipeline's currency
 

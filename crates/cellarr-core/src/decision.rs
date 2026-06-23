@@ -102,6 +102,50 @@ pub struct GrabRequest {
     pub category: String,
 }
 
+/// The lifecycle state of a persisted [`Grab`].
+///
+/// A grab walks this sequence as the download progresses and is imported. The
+/// terminal failure states ([`GrabStatus::Failed`], [`GrabStatus::Blocklisted`])
+/// let the pipeline re-search without re-grabbing the same bad release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrabStatus {
+    /// Created but not yet handed to a download client.
+    Pending,
+    /// Accepted by the download client (a `download_id` has been assigned).
+    Sent,
+    /// Actively downloading.
+    Downloading,
+    /// Download finished; not yet imported.
+    Completed,
+    /// Files imported into the library. Terminal (success).
+    Imported,
+    /// Download or import failed. Terminal (the release may be re-searched).
+    Failed,
+    /// The release (or its group) was blocklisted so it is never re-grabbed.
+    /// Terminal.
+    Blocklisted,
+}
+
+/// A persisted `grab` row: a release sent to a download client and its lifecycle.
+///
+/// Where [`GrabRequest`] is the immutable intent the decision engine produces,
+/// `Grab` is the row `cellarr-db` stores and mutates as the download progresses:
+/// the download client's id is filled in once known, and `status` advances
+/// through [`GrabStatus`]. See [`docs/02-data-model.md`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Grab {
+    /// This grab's identifier.
+    pub id: GrabId,
+    /// The original request that created the grab.
+    pub request: GrabRequest,
+    /// The download client's own id for the download, once it has accepted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_id: Option<String>,
+    /// Where the grab is in its lifecycle.
+    pub status: GrabStatus,
+}
+
 /// One file move within an import plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedMove {
@@ -114,6 +158,17 @@ pub struct PlannedMove {
     /// An existing library file this move would replace, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<MediaFileId>,
+    /// The on-disk path of the file being replaced, when it sits at a path
+    /// *distinct* from `destination_path`.
+    ///
+    /// An upgrade that lands at the same path overwrites in place and needs no
+    /// separate removal. But a replacement can have a different name (different
+    /// quality/codec tokens) or even a different folder, so `replaces`
+    /// (a [`MediaFileId`]) is not enough for `cellarr-fs` to delete the old file
+    /// — it also needs the concrete path. `None` when there is no replaced file,
+    /// or when it is overwritten in place at `destination_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_path: Option<String>,
     /// Whether the move can be a hardlink (same filesystem) or must be a copy.
     pub hardlink: bool,
 }

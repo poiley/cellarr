@@ -1,0 +1,17 @@
+{
+  "scenario": "SABnzbd download fails repair/unpack: leaves queue, appears in history with status Failed -> Failed (caller blocklists + re-searches)",
+  "exchanges": [
+    {
+      "expect": { "method": "GET", "url_contains": "mode=queue" },
+      "response": { "status": 200, "headers": {}, "body": "{\"queue\": {\"slots\": []}}" }
+    },
+    {
+      "expect": { "method": "GET", "url_contains": "mode=history" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"history\": {\"slots\": [{\"nzo_id\": \"SABnzbd_nzo_bad\", \"status\": \"Failed\", \"category\": \"cellarr-tv\", \"storage\": \"\"}]}}"
+      }
+    }
+  ]
+}

@@ -38,7 +38,7 @@ pub mod trash;
 pub use decide::{decide, DecisionContext, OnDiskFile, ProperRepackPolicy};
 pub use error::DecideError;
 pub use matching::MatchContext;
-pub use quality::{on_disk_from_quality, QualityResolver, ResolvedQuality};
+pub use quality::{on_disk_from_media_file, resolve_candidate_quality};
 pub use scoring::{score, score_detailed, MatchedFormat, ScoreBreakdown};
 pub use trash::{
     convert, import_trash_custom_formats, TrashCustomFormat, TrashFields, TrashSpecification,

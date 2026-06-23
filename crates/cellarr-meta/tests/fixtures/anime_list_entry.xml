@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC fixture: mirrors the Anime-Lists/anime-lists <anime> element shape.
+     A two-cour anime where TVDB splits it into two seasons:
+       absolute 1..12  -> S1 E1..E12  (the defaulttvdbseason fallback, offset 0)
+       absolute 13..24 -> S2 E1..E12  (explicit mapping, offset 12) -->
+<anime anidbid="9876" tvdbid="246521" defaulttvdbseason="1" episodeoffset="0">
+  <name>Synthetic Two Cour Anime</name>
+  <mapping-list>
+    <mapping anidbseason="1" tvdbseason="2" start="13" end="24" offset="12"/>
+  </mapping-list>
+</anime>
