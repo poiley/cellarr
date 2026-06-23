@@ -112,7 +112,12 @@ implement, mapping existing cellarr domain data:
   own Skyhook-equivalent / lead with TMDb-TV or TVmaze). Run the **identify oracle** with populated
   libraries (compare matched IDs).
 - **Exit gate:** lookup/add via Overseerr resolves to correct IDs; identify parity measured.
-- ⚠️ **Hard dependency:** TheTVDB v4 has no free per-user keys. Decision required (see §6).
+- ✅ **Decision made (2026-06-23):** **default to the user-supported PIN model now** (cellarr logs
+  into TheTVDB v4 with a project API key + per-user subscriber PIN), and **build a self-hosted
+  Skyhook-equivalent metadata proxy later** (no public Sonarr Skyhook source exists to reference, so
+  it's a from-scratch effort, deferred). Key stored in gitignored `.env`
+  (`CELLARR_TVDB__API_KEY`/`CELLARR_TVDB__PIN`); see `.env.example`. TMDb (movies) still needs a key
+  to live-test.
 
 ### Phase F — Connect webhooks + lists + calendar polish
 - `eventType` webhook + `Test` event (Bazarr-push/Notifiarr/notifications); iCal feed; import lists
