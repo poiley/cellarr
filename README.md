@@ -8,8 +8,11 @@ modern terminal-aesthetic UI. It learns from a decade of accumulated domain know
 existing apps — without inheriting their fork-sprawl, their polling-heavy design, or their
 two-codebases-that-drift problem.
 
-> **Status:** Planning. This repository currently contains the **end-to-end plan** only.
-> No production code has been written yet. Start at [`docs/README.md`](docs/README.md).
+> **Status:** v1 build complete and green. The full stack is implemented and tested — the
+> daemon boots zero-config, runs the acquisition pipeline, serves the native + `/api/v3` APIs,
+> and serves the theme-aware SRCL web UI from one binary. `just ci` passes (cargo 303 tests +
+> web 92 tests, clippy + fmt + SRCL-only lint clean). See [`BUILD_STATUS.md`](BUILD_STATUS.md)
+> for exactly what's built vs. deferred. Start at [`docs/README.md`](docs/README.md) for the design.
 
 ---
 
