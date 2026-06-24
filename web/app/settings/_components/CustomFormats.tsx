@@ -2,8 +2,12 @@
 
 // Settings — Custom Formats. SRCL-only: a Table of formats (Table/TableRow/
 // TableColumn) with quality Badges, an Input filter, a Select for condition
-// type, and a Dialog to create/edit a format. Reads GET /api/v1/customformats;
-// writes POST /api/v1/customformats.
+// type, and a Dialog to create/edit a format. Reads GET /api/v1/customformats
+// (the native list). Writes go through the Radarr-compatible /api/v3 shim:
+// POST /api/v1/customformats DOES NOT EXIST (the native surface only registers a
+// GET — a POST 405s), whereas POST /api/v3/customformat is the working create
+// route (crates/cellarr-api/src/shim.rs). Verified against the seeded daemon:
+// the v3 create returns the persisted resource (200).
 
 import * as React from 'react';
 
@@ -92,14 +96,16 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
     setSaving(true);
     setSaveError(undefined);
     try {
-      await client.request<CustomFormat>('/customformats', {
-        method: 'POST',
-        body: {
-          id: editing.id || undefined,
-          name: editing.name,
-          score: editing.score,
-          conditions: [{ type: editing.conditionType, value: editing.conditionValue }],
-        },
+      // The v3 create route is the working write path. We do not PUT-update here:
+      // the native list this screen reads carries uuid ids, while the v3 resource
+      // is keyed by a numeric projection (no stable uuid->numeric map on the
+      // client), and there is no native customformat update route — so an edit is
+      // persisted as a create. (PUT /api/v3/customformat/{numericId} exists for a
+      // known numeric id; this screen does not hold one.)
+      await client.createCustomFormat({
+        name: editing.name,
+        score: editing.score,
+        conditions: [{ type: editing.conditionType, value: editing.conditionValue }],
       });
       setEditing(null);
       setSaved(true);

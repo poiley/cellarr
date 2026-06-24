@@ -50,7 +50,11 @@ describe('IntegrationSection (indexers / clients)', () => {
     await waitFor(() =>
       expect(screen.getByText(/connection successful/i)).toBeTruthy()
     );
-    const testCall = fetchImpl.mock.calls.find(([url]) => String(url).endsWith('/indexers/test'));
+    // Test goes through the working v3 route (the v1 /indexers/test route does
+    // not exist on the daemon — it 404-falls-through to the SPA).
+    const testCall = fetchImpl.mock.calls.find(([url]) =>
+      String(url).endsWith('/api/v3/indexer/test')
+    );
     expect(testCall).toBeTruthy();
   });
 
@@ -91,13 +95,20 @@ describe('IntegrationSection (indexers / clients)', () => {
     fireEvent.click(screen.getByText('Save'));
 
     await waitFor(() => {
+      // Save goes through the working v3 create route with a Radarr-shaped body
+      // (host lives inside fields[], not as a flat property). The v1
+      // /downloadclients POST the screen used to send had no working test/shape.
       const postCall = fetchImpl.mock.calls.find(
-        ([url, opts]) => String(url).endsWith('/downloadclients') && opts?.method === 'POST'
+        ([url, opts]) =>
+          String(url).endsWith('/api/v3/downloadclient') && opts?.method === 'POST'
       );
       expect(postCall).toBeTruthy();
       const body = JSON.parse((postCall![1] as RequestInit).body as string);
       expect(body.name).toBe('qbit');
-      expect(body.host).toBe('localhost');
+      const hostField = (body.fields as Array<{ name: string; value: unknown }>).find(
+        (f) => f.name === 'host'
+      );
+      expect(hostField?.value).toBe('localhost');
     });
   });
 });

@@ -89,6 +89,9 @@ describe('Item-detail screen', () => {
     // Default: empty catalogues unless a test overrides them.
     listMovies.mockResolvedValue([]);
     listSeries.mockResolvedValue([]);
+    // runCommand resolves like the real client (CommandAccepted) so the screen's
+    // `.then(res => res.status)` success path does not reject.
+    runCommand.mockResolvedValue({ job_id: 'job-1', name: 'RefreshSeries', status: 'queued' });
   });
   afterEach(() => cleanup());
 
@@ -191,6 +194,12 @@ describe('Item-detail screen', () => {
     push.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /^⌘H\s*History$/ }));
     expect(push).toHaveBeenCalledWith('/history?id=c-series');
+
+    // Refresh on a TV node must send the backend-accepted RefreshSeries command
+    // (NOT the rejected RefreshContent). See commands.rs `kind_for_command`.
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    expect(runCommand).toHaveBeenCalledWith('RefreshSeries', 'c-series');
+    expect(runCommand).not.toHaveBeenCalledWith('RefreshContent', expect.anything());
   });
 
   it('surfaces an error when the item fails to load', async () => {

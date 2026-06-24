@@ -50,7 +50,7 @@ use cellarr_jobs::runner::{PipelineRunner, RunOutcome, RunnerConfig};
 use cellarr_jobs::{DbIndexerSet, JobHandler, JobKind, JobResult};
 use cellarr_media::MediaRegistry;
 
-use crate::clients::ConfiguredDownloadClient;
+use crate::clients::{ConfiguredDownloadClient, NoopDownloadClient};
 
 /// The maximum number of monitored-missing nodes one `MissingItemSearch` /
 /// `RssSync` tick drives through the pipeline, so a large backlog never makes a
@@ -320,6 +320,62 @@ impl LivePipelineEnv {
         Ok(Some((client, config.category.clone())))
     }
 
+    /// The download category an interactive search tags its (hypothetical) grabs
+    /// with, read **without building any client adapter**.
+    ///
+    /// The preview never grabs, so it never needs a live client — but the
+    /// [`RunnerConfig`] still carries a `category`. We read it from the
+    /// highest-priority enabled client's config when there is one, falling back to
+    /// a sane default otherwise. Critically, this only *reads the config row* and
+    /// never calls [`ConfiguredDownloadClient::from_config`], so a misconfigured or
+    /// unreachable download client (e.g. a SABnzbd row missing its base URL) can
+    /// never make an interactive search fail.
+    async fn search_category(&self) -> Result<String, String> {
+        let mut clients = self
+            .db
+            .config()
+            .list_download_clients()
+            .await
+            .map_err(|e| format!("loading download clients failed: {e}"))?;
+        clients.retain(|c| c.enabled);
+        clients.sort_by_key(|c| c.priority);
+        Ok(clients
+            .first()
+            .map(|c| c.category.clone())
+            .unwrap_or_else(|| "cellarr".to_string()))
+    }
+
+    /// Resolve the seams an **interactive release search** needs: the live indexer
+    /// set + the per-node [`RunnerConfig`], **without building a download client**.
+    ///
+    /// A search runs the read-only Discover→Decide preview, which never grabs, so
+    /// it must never construct a download client (and so can never be failed by a
+    /// misconfigured one). Discover itself is already per-source resilient (the
+    /// `DbIndexerSet` skips a misconfigured/unreachable indexer with a warning),
+    /// so a search returns the candidates it could gather (possibly empty) rather
+    /// than erroring on any one bad source.
+    ///
+    /// Returns `Ok(None)` when the environment is not ready (no library root /
+    /// quality profile for the node) — the shim renders that as a clearly-flagged
+    /// empty result, not an error.
+    async fn resolve_for_search(
+        &self,
+        content: &ContentRef,
+    ) -> Result<Option<(DbIndexerSet, RunnerConfig)>, String> {
+        // Read the category without constructing a client adapter (a preview never
+        // grabs, so a misconfigured client must not block the search).
+        let category = self.search_category().await?;
+        let Some(config) = self.resolve_config(content, category).await? else {
+            return Ok(None);
+        };
+        let indexer = DbIndexerSet::with_rate_limiter(
+            self.db.clone(),
+            Arc::clone(&self.rate_limiter),
+            /* fail_fast = */ false,
+        );
+        Ok(Some((indexer, config)))
+    }
+
     /// Build the [`RunnerConfig`] for a node: library root + naming + the library's
     /// default quality profile + custom formats + remote-path mappings, all from
     /// the DB. `client_category` is the category the chosen client tags grabs with
@@ -424,16 +480,21 @@ impl PipelineEnv for LivePipelineEnv {
 /// content node through the real [`PipelineRunner`], returning ranked candidates
 /// without grabbing.
 ///
-/// It resolves the same live seams a pipeline run does (the DB-backed indexer set
-/// and per-node [`RunnerConfig`]) via a [`LivePipelineEnv`], so the score,
-/// quality, and reject reason the interactive-search screen shows match exactly
-/// what a real acquisition would compute. A node with no environment ready (no
-/// enabled indexer/client/library root) is reported as
+/// It resolves the live indexer set + per-node [`RunnerConfig`] via a
+/// [`LivePipelineEnv`] — but, unlike a pipeline run, it **never builds a download
+/// client**: a search runs the read-only Discover→Decide preview and never grabs,
+/// so the misconfigured/unreachable download client that would fail an
+/// acquisition can never fail an interactive search. The score, quality, and
+/// reject reason the screen shows still match exactly what a real acquisition
+/// would compute. Discover is per-source resilient (a bad indexer is skipped with
+/// a warning), so a search returns the candidates it could gather (possibly
+/// empty) rather than erroring on one bad source. A node with no environment
+/// ready (no library root / quality profile) is reported as
 /// [`Unavailable`](cellarr_api::release_search::ReleaseSearchOutcome::Unavailable)
 /// — a benign empty result, not an error.
 ///
-/// The download client the env resolves is **never driven** here: the preview
-/// stops before Grab, so no download is ever created by an interactive search.
+/// No download client is constructed or driven here: the preview stops before
+/// Grab, so no download is ever created by an interactive search.
 pub struct LiveReleaseSearch {
     db: Database,
     registry: Arc<MediaRegistry>,
@@ -475,15 +536,21 @@ impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
             return Err(format!("content {content} not found"));
         };
 
-        // Resolve the live indexer + config for this node. `None` means the env is
-        // not ready (no enabled client/indexer/library root) — an empty,
-        // clearly-flagged interactive result rather than an error.
-        let Some((indexer, client, config)) = self.env.resolve(&node).await? else {
+        // Resolve the live indexer + config for this node — WITHOUT building a
+        // download client. A search never grabs, so a misconfigured/unreachable
+        // download client must never fail it; the preview is driven over a no-op
+        // client that is never called. `None` means the env is not ready (no
+        // library root / quality profile) — an empty, clearly-flagged interactive
+        // result rather than an error.
+        let Some((indexer, config)) = self.env.resolve_for_search(&node).await? else {
             return Ok(ReleaseSearchOutcome::Unavailable(
-                "no enabled indexer/download client/library root configured yet".into(),
+                "no library root / quality profile configured for this node yet".into(),
             ));
         };
 
+        // The preview stops before Grab, so the client is never driven; supply a
+        // no-op rather than constructing a live adapter.
+        let client = NoopDownloadClient;
         let runner = PipelineRunner::new(
             &indexer,
             &client,

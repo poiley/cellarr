@@ -3,8 +3,19 @@
 // Settings — Indexers / Download Clients. Both are integration configs with the
 // same shape (host/port/api-key/ssl/enabled, a Test button that surfaces an
 // AlertBanner result, and Save). SRCL-only: Card, Input, Select, Checkbox,
-// AlertBanner, Button. Reads GET /api/v1/<kind>; tests POST /api/v1/<kind>/test;
-// writes POST /api/v1/<kind>.
+// AlertBanner, Button.
+//
+// Reads GET /api/v1/<kind> (the native snake_case list). Test + Save go through
+// the Radarr/Sonarr-compatible /api/v3 shim, because the native /api/v1 surface
+// has NO create-test routes and no customformat/test/indexer-test endpoint:
+//   * /api/v1/indexers/test, /api/v1/downloadclients/test DO NOT EXIST (they
+//     404-fall-through to the SPA index.html, which silently "succeeds");
+//   * the working routes are POST /api/v3/{indexer,downloadclient}/test and
+//     POST /api/v3/{indexer,downloadclient} (crates/cellarr-api/src/shim.rs).
+// The v3 handlers expect a Radarr-shaped body (configContract + protocol +
+// fields[]), so the flat form is mapped to that shape via `toV3Body` below
+// (mirroring app/first-run WizardModal). Verified against the seeded daemon:
+// test returns {isValid:true}, create returns the persisted resource (200).
 
 import * as React from 'react';
 
@@ -19,7 +30,12 @@ import Divider from '@components/Divider';
 import Text from '@components/Text';
 
 import { ApiError, CellarrClient, api as defaultApi } from '@lib/api/client';
-import type { IndexerConfig, DownloadClientConfig } from '@lib/api/types';
+import type {
+  IndexerConfig,
+  DownloadClientConfig,
+  IndexerConfigV3,
+  DownloadClientConfigV3,
+} from '@lib/api/types';
 
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import {
@@ -118,22 +134,51 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
     setSaveError(undefined);
   };
 
-  const payload = () => ({
-    id: form.id || undefined,
-    name: form.name,
-    implementation: form.implementation,
-    host: form.host,
-    port: form.port ? Number.parseInt(form.port, 10) : undefined,
-    api_key: form.apiKey || undefined,
-    ssl: form.ssl,
-    enabled: form.enabled,
-  });
+  // Torrent vs usenet drives the protocol/configContract the v3 shim validates
+  // against (mirrors app/first-run WizardModal's mapping).
+  const protocolFor = (impl: string): 'usenet' | 'torrent' =>
+    /newznab|usenet|sab|nzb/i.test(impl) ? 'usenet' : 'torrent';
+
+  // Map the flat form to the Radarr/Sonarr-shaped body the /api/v3 test + create
+  // handlers expect: configContract + protocol + a fields[] array. An indexer's
+  // endpoint lives under `baseUrl`; a download client's under `host`/`port`.
+  const toV3Body = (): Partial<IndexerConfigV3> & Partial<DownloadClientConfigV3> => {
+    const port = form.port ? Number.parseInt(form.port, 10) : undefined;
+    const fields =
+      kind === 'indexers'
+        ? [
+            { name: 'baseUrl', value: form.host },
+            ...(form.apiKey ? [{ name: 'apiKey', value: form.apiKey }] : []),
+          ]
+        : [
+            { name: 'host', value: form.host },
+            ...(port !== undefined ? [{ name: 'port', value: port }] : []),
+            { name: 'useSsl', value: form.ssl },
+          ];
+    return {
+      name: form.name,
+      implementation: form.implementation,
+      configContract: `${form.implementation}Settings`,
+      protocol: protocolFor(form.implementation),
+      ...(kind === 'indexers'
+        ? {
+            enableRss: form.enabled,
+            enableAutomaticSearch: form.enabled,
+            enableInteractiveSearch: form.enabled,
+          }
+        : { enable: form.enabled }),
+      fields,
+      tags: [],
+    } as Partial<IndexerConfigV3> & Partial<DownloadClientConfigV3>;
+  };
 
   const test = async () => {
     setTesting(true);
     setTestResult(undefined);
     try {
-      await client.request<unknown>(`/${kind}/test`, { method: 'POST', body: payload() });
+      const body = toV3Body();
+      if (kind === 'indexers') await client.testIndexer(body);
+      else await client.testDownloadClient(body);
       setTestResult({ ok: true, message: 'Connection successful.' });
     } catch (err) {
       const e = toApiError(err);
@@ -148,7 +193,9 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
     setSaved(false);
     setSaveError(undefined);
     try {
-      await client.request<unknown>(`/${kind}`, { method: 'POST', body: payload() });
+      const body = toV3Body();
+      if (kind === 'indexers') await client.createIndexer(body);
+      else await client.createDownloadClient(body);
       setSaved(true);
       reset();
       reload();

@@ -193,6 +193,21 @@ function ItemDetail() {
       .catch((err: unknown) => setCommand(errorMessage(err, `${name} failed`)));
   };
 
+  /**
+   * The content-scoped refresh command name the backend accepts.
+   *
+   * The native command catalogue (crates/cellarr-api/src/commands.rs
+   * `kind_for_command`) has NO `RefreshContent` command — sending it 400s with
+   * "unknown command". It DOES accept `refreshmovie` / `refreshseries` (both map
+   * to `JobKind::MetadataRefresh`), so pick the one matching this node's media
+   * type. Confirmed against the live daemon: both return 200 (queued).
+   * Series sub-nodes (season/episode) refresh through the series command.
+   */
+  const refreshCommandFor = (n: Loose | undefined): string =>
+    (n && (n.media_type === 'tv' || n.kind === 'series' || n.kind === 'season' || n.kind === 'episode'))
+      ? 'RefreshSeries'
+      : 'RefreshMovie';
+
   if (!id) {
     return (
       <AppShell>
@@ -268,7 +283,7 @@ function ItemDetail() {
             <Divider type="GRADIENT" />
 
             <Row style={{ gap: '1ch', flexWrap: 'wrap' }}>
-              <ActionButton hotkey="⌘R" onClick={() => runCommand('RefreshContent')}>
+              <ActionButton hotkey="⌘R" onClick={() => runCommand(refreshCommandFor(loose))}>
                 Refresh
               </ActionButton>
               <ActionButton

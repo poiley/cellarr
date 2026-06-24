@@ -80,8 +80,11 @@ describe('CustomFormats (settings)', () => {
     fireEvent.click(screen.getByText('OK'));
 
     await waitFor(() => {
+      // Create goes through the working v3 route; the native v1 /customformats
+      // POST does not exist (the native surface only registers a GET → 405).
       const postCall = fetchImpl.mock.calls.find(
-        ([url, opts]) => String(url).endsWith('/customformats') && opts?.method === 'POST'
+        ([url, opts]) =>
+          String(url).endsWith('/api/v3/customformat') && opts?.method === 'POST'
       );
       expect(postCall).toBeTruthy();
       const body = JSON.parse((postCall![1] as RequestInit).body as string);

@@ -107,7 +107,12 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
         "missingitemsearch" | "missingmoviessearch" | "missingepisodesearch" => {
             Some(JobKind::MissingItemSearch)
         }
-        "refreshmetadata" | "refreshmovie" | "refreshseries" => Some(JobKind::MetadataRefresh),
+        // `refreshcontent` is cellarr's content-scoped refresh name (the UI's
+        // "Refresh Content" action); accept it as an alias for the metadata
+        // refresh alongside the *arr-native names so the command is valid.
+        "refreshmetadata" | "refreshmovie" | "refreshseries" | "refreshcontent" => {
+            Some(JobKind::MetadataRefresh)
+        }
         "diskspacecheck" => Some(JobKind::DiskSpaceCheck),
         "manualsearch" | "moviesearch" | "episodesearch" | "seriessearch" => {
             content_id.map(|content_id| JobKind::ManualSearch { content_id })
@@ -143,4 +148,39 @@ pub async fn list_jobs(scheduler: &ApiScheduler) -> Result<Vec<Job>, String> {
         .load_all()
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshcontent_maps_to_metadata_refresh() {
+        // cellarr's content-scoped refresh name resolves to MetadataRefresh, so a
+        // "Refresh Content" command is a valid command rather than an unknown one.
+        assert!(matches!(
+            kind_for_command("refreshcontent", None),
+            Some(JobKind::MetadataRefresh)
+        ));
+        // Case-insensitive on the leading token, like the other commands.
+        assert!(matches!(
+            kind_for_command("RefreshContent", None),
+            Some(JobKind::MetadataRefresh)
+        ));
+    }
+
+    #[test]
+    fn existing_refresh_names_still_map() {
+        for name in ["refreshmetadata", "refreshmovie", "refreshseries"] {
+            assert!(
+                matches!(kind_for_command(name, None), Some(JobKind::MetadataRefresh)),
+                "{name} should still map to MetadataRefresh"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_command_is_none() {
+        assert!(kind_for_command("definitelynotacommand", None).is_none());
+    }
 }

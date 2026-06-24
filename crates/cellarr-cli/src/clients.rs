@@ -180,6 +180,48 @@ impl DownloadClient for ConfiguredDownloadClient {
     }
 }
 
+/// A download client that does nothing and is never driven.
+///
+/// The interactive release-search preview (`GET /api/v3/release`) runs the
+/// read-only Discover→Decide path through the [`PipelineRunner`](cellarr_jobs::PipelineRunner),
+/// which is generic over a `D: DownloadClient` but **never calls** it for a
+/// preview (the preview stops before Grab). The runner still needs *a* client
+/// value to construct, so the search path supplies this no-op rather than
+/// building a live adapter — which means a misconfigured/unreachable download
+/// client can never fail an interactive search (a search never grabs).
+///
+/// Every method returns a [`DownloadError::Config`] error so that, were it ever
+/// driven by mistake, the failure is loud and self-describing rather than a
+/// silent success.
+pub struct NoopDownloadClient;
+
+#[async_trait]
+impl DownloadClient for NoopDownloadClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        "noop (interactive search; never grabs)"
+    }
+
+    async fn add(&self, _grab: &GrabRequest) -> Result<String, Self::Error> {
+        Err(DownloadError::Config(
+            "interactive release search must not grab".into(),
+        ))
+    }
+
+    async fn status(&self, _download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        Err(DownloadError::Config(
+            "interactive release search must not track".into(),
+        ))
+    }
+
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Err(DownloadError::Config(
+            "interactive release search must not remove a download".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
