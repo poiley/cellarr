@@ -18,6 +18,7 @@ mod grab;
 mod history;
 mod import_list;
 mod media_file;
+mod pending_release;
 mod profile;
 
 pub use blocklist::BlocklistRepo;
@@ -29,4 +30,5 @@ pub use grab::GrabRepo;
 pub use history::HistoryRepo;
 pub use import_list::ImportListRepo;
 pub use media_file::MediaFileRepo;
+pub use pending_release::{PendingRelease, PendingReleaseRepo};
 pub use profile::ProfileRepo;

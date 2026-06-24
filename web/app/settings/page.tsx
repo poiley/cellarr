@@ -15,6 +15,7 @@ import Divider from '@components/Divider';
 import AppShell from '@app/_components/AppShell';
 import QualityProfiles from '@app/settings/_components/QualityProfiles';
 import CustomFormats from '@app/settings/_components/CustomFormats';
+import DelayProfiles from '@app/settings/_components/DelayProfiles';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
 import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
@@ -24,6 +25,7 @@ import ComingSoon from '@app/settings/_components/ComingSoon';
 type Section =
   | 'profiles'
   | 'formats'
+  | 'delays'
   | 'indexers'
   | 'clients'
   | 'rootfolders'
@@ -34,6 +36,7 @@ type Section =
 const TABS: { id: Section; label: string }[] = [
   { id: 'profiles', label: 'Quality Profiles' },
   { id: 'formats', label: 'Custom Formats' },
+  { id: 'delays', label: 'Delay Profiles' },
   { id: 'indexers', label: 'Indexers' },
   { id: 'clients', label: 'Download Clients' },
   { id: 'rootfolders', label: 'Root Folders' },
@@ -61,6 +64,7 @@ export default function Page() {
       <div style={{ marginTop: '1ch' }}>
         {section === 'profiles' ? <QualityProfiles /> : null}
         {section === 'formats' ? <CustomFormats /> : null}
+        {section === 'delays' ? <DelayProfiles /> : null}
         {section === 'indexers' ? (
           <IntegrationSection
             kind="indexers"

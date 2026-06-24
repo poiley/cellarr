@@ -245,6 +245,8 @@ fn runner_config(
         client_host,
         remote_path_mappings: mappings,
         write_nfo: false,
+        delay_profiles: Vec::new(),
+        content_tags: Vec::new(),
     }
 }
 

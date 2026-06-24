@@ -523,6 +523,16 @@ impl LivePipelineEnv {
             .await
             .map_err(|e| format!("loading remote-path mappings failed: {e}"))?;
 
+        // Delay profiles hold a grabbable release for its protocol's window so a
+        // better one can arrive first. Loaded so the runner resolves the governing
+        // profile; an empty set (the default) imposes no delay.
+        let delay_profiles = self
+            .db
+            .profiles()
+            .list_delay_profiles()
+            .await
+            .map_err(|e| format!("loading delay profiles failed: {e}"))?;
+
         Ok(Some(RunnerConfig {
             profile,
             custom_formats,
@@ -546,6 +556,10 @@ impl LivePipelineEnv {
             // Write Kodi/Jellyfin `.nfo` sidecars on import (media-management
             // default). Best-effort, post-commit, so it never affects crash safety.
             write_nfo: true,
+            delay_profiles,
+            // Content tags are not yet modeled on the node; the catch-all (tagless)
+            // delay profile governs every node until per-node tags are wired.
+            content_tags: Vec::new(),
         }))
     }
 }

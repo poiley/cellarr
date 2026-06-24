@@ -25,6 +25,7 @@
 pub mod blocklist;
 pub mod config;
 pub mod decision;
+pub mod delay;
 pub mod error;
 pub mod history;
 pub mod ids;
@@ -49,11 +50,12 @@ pub use config::{
 pub use decision::{
     Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,
 };
+pub use delay::{resolve_delay_profile, DelayProfile, DelayVerdict, PreferredProtocol};
 pub use error::{CoreError, Result};
 pub use history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 pub use ids::{
-    ContentId, CustomFormatId, DownloadClientId, GrabId, IndexerId, LibraryId, MediaFileId,
-    PipelineRunId, QualityProfileId, TitleId,
+    ContentId, CustomFormatId, DelayProfileId, DownloadClientId, GrabId, IndexerId, LibraryId,
+    MediaFileId, PipelineRunId, QualityProfileId, TitleId,
 };
 pub use importlist::{
     sync_import_list, CleanAction, FetchResult, ImportListConfig, ImportListExclusion,

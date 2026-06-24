@@ -241,6 +241,101 @@ export interface CustomFormatV3 {
   [key: string]: unknown;
 }
 
+/** A select option offered by a schema field (`selectOptions[]`). */
+export interface CustomFormatSchemaSelectOption {
+  value: string;
+  name: string;
+  order?: number;
+}
+
+/** A field in a custom-format schema template (`fields[]`). */
+export interface CustomFormatSchemaField {
+  name: string;
+  label?: string;
+  /** `textbox` (free text), `select` (closed choice), or `number`. */
+  type?: string;
+  order?: number;
+  advanced?: boolean;
+  unit?: string;
+  selectOptions?: CustomFormatSchemaSelectOption[];
+}
+
+/**
+ * One specification template the CF editor builds rows from
+ * (`GET /api/v3/customformat/schema`). `implementation` is the wire id the spec
+ * round-trips under (e.g. `SourceSpecification`); `fields[]` describe the inputs
+ * the editor renders (a `value` textbox/select, or Size's `min`/`max` numbers).
+ */
+export interface CustomFormatSchema {
+  implementation: string;
+  implementationName: string;
+  infoLink?: string;
+  negate: boolean;
+  required: boolean;
+  fields: CustomFormatSchemaField[];
+  presets?: unknown[];
+  [key: string]: unknown;
+}
+
+/**
+ * One row of the `POST /api/v3/customformat/test` response: a stored format, and
+ * whether it matched the supplied release title (with its score).
+ */
+export interface CustomFormatTestResult {
+  id: number;
+  name: string;
+  matched: boolean;
+  score: number;
+}
+
+/** Optional pre-parsed fields the CF test preview can override the parse with. */
+export interface CustomFormatTestParsed {
+  source?: string;
+  resolution?: string;
+  codec?: string;
+  group?: string;
+  languages?: string[];
+}
+
+/** The body of `POST /api/v3/customformat/test`. */
+export interface CustomFormatTestBody {
+  title: string;
+  parsed?: CustomFormatTestParsed;
+  protocol?: 'usenet' | 'torrent';
+  indexer_flags?: string[];
+  size?: number;
+}
+
+/**
+ * A delay profile exactly as the v3 shim serializes it
+ * (`GET /api/v3/delayprofile`). camelCase, Sonarr/Radarr-compatible: a preferred
+ * protocol plus per-protocol grab delays (minutes), a bypass-if-highest flag,
+ * tags, and an ordering key.
+ */
+export interface DelayProfile {
+  id: number;
+  enableUsenet: boolean;
+  enableTorrent: boolean;
+  preferredProtocol: 'usenet' | 'torrent' | 'either';
+  usenetDelay: number;
+  torrentDelay: number;
+  bypassIfHighestQuality: boolean;
+  tags: string[];
+  order: number;
+  [key: string]: unknown;
+}
+
+/** The v3 delay-profile write body (`POST`/`PUT /api/v3/delayprofile`). */
+export interface DelayProfileBody {
+  enabled?: boolean;
+  preferredProtocol: 'usenet' | 'torrent' | 'either';
+  usenetDelay: number;
+  torrentDelay: number;
+  bypassIfHighestQuality: boolean;
+  tags: string[];
+  order: number;
+}
+
 /** A v3 provider field (indexer / download-client settings entry). */
 export interface ProviderField {
   name: string;

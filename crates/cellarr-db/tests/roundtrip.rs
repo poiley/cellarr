@@ -14,10 +14,10 @@ use cellarr_core::repo::{
 };
 use cellarr_core::{
     Condition, ConditionKind, ContentId, ContentKind, ContentNode, ContentRef, Coordinates,
-    CustomFormat, CustomFormatId, DownloadClientConfig, DownloadClientId, Grab, GrabRequest,
-    GrabStatus, IndexerConfig, IndexerId, Library, LibraryId, MediaFile, MediaFileId, MediaType,
-    NotificationConfig, PipelineRunId, Protocol, QualityProfile, QualityProfileId, Release,
-    RootFolder, Source,
+    CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, DownloadClientConfig,
+    DownloadClientId, Grab, GrabRequest, GrabStatus, IndexerConfig, IndexerId, Library, LibraryId,
+    MediaFile, MediaFileId, MediaType, NotificationConfig, PipelineRunId, PreferredProtocol,
+    Protocol, QualityProfile, QualityProfileId, Release, RootFolder, Source,
 };
 use cellarr_db::Database;
 use tempfile::TempDir;
@@ -1364,4 +1364,166 @@ async fn delete_movie_leaves_other_content_intact() {
     assert!(content.get(keep.id).await.unwrap().is_some());
     assert!(media_files.get(keep_file.id).await.unwrap().is_some());
     assert!(content.get(drop.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn custom_format_get_and_delete_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let profiles = db.profiles();
+
+    let cf = CustomFormat {
+        id: CustomFormatId::new(),
+        name: "HEVC".to_string(),
+        conditions: vec![Condition {
+            kind: ConditionKind::ReleaseTitle {
+                pattern: "(x265|hevc)".to_string(),
+            },
+            required: true,
+            negate: false,
+        }],
+        score: 25,
+    };
+    profiles.upsert_custom_format(&cf).await.expect("upsert");
+
+    // GET returns it.
+    let got = profiles
+        .get_custom_format(cf.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(got, cf);
+
+    // DELETE removes it (and is idempotent).
+    assert!(profiles.delete_custom_format(cf.id).await.expect("delete"));
+    assert!(profiles
+        .get_custom_format(cf.id)
+        .await
+        .expect("get")
+        .is_none());
+    assert!(
+        !profiles.delete_custom_format(cf.id).await.expect("delete2"),
+        "second delete is a no-op false"
+    );
+}
+
+#[tokio::test]
+async fn delay_profile_crud_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let profiles = db.profiles();
+
+    let dp = DelayProfile {
+        id: DelayProfileId::new(),
+        enabled: true,
+        preferred_protocol: PreferredProtocol::Usenet,
+        usenet_delay: 30,
+        torrent_delay: 60,
+        bypass_if_highest_quality: true,
+        tags: vec!["anime".to_string()],
+        order: 1,
+    };
+    profiles.upsert_delay_profile(&dp).await.expect("upsert");
+
+    // GET + LIST return it.
+    assert_eq!(
+        profiles
+            .get_delay_profile(dp.id)
+            .await
+            .expect("get")
+            .expect("present"),
+        dp
+    );
+    let list = profiles.list_delay_profiles().await.expect("list");
+    assert_eq!(list, vec![dp.clone()]);
+
+    // UPDATE (same id) replaces it; LIST is ordered by `order`.
+    let mut dp2 = DelayProfile {
+        id: dp.id,
+        enabled: false,
+        preferred_protocol: PreferredProtocol::Torrent,
+        usenet_delay: 0,
+        torrent_delay: 15,
+        bypass_if_highest_quality: false,
+        tags: Vec::new(),
+        order: 0,
+    };
+    profiles.upsert_delay_profile(&dp2).await.expect("update");
+    let after = profiles
+        .get_delay_profile(dp.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(after, dp2);
+
+    // Add a second profile and confirm order-ascending listing.
+    dp2.order = 5;
+    profiles.upsert_delay_profile(&dp2).await.expect("update2");
+    let second = DelayProfile {
+        id: DelayProfileId::new(),
+        enabled: true,
+        preferred_protocol: PreferredProtocol::Either,
+        usenet_delay: 0,
+        torrent_delay: 0,
+        bypass_if_highest_quality: false,
+        tags: Vec::new(),
+        order: 2,
+    };
+    profiles
+        .upsert_delay_profile(&second)
+        .await
+        .expect("upsert2");
+    let ordered = profiles.list_delay_profiles().await.expect("list");
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].order, 2, "lower order first");
+    assert_eq!(ordered[1].order, 5);
+
+    // DELETE removes one, idempotently.
+    assert!(profiles.delete_delay_profile(dp.id).await.expect("delete"));
+    assert!(!profiles.delete_delay_profile(dp.id).await.expect("delete2"));
+    assert_eq!(profiles.list_delay_profiles().await.expect("list").len(), 1);
+}
+
+#[tokio::test]
+async fn pending_release_records_earliest_sighting_and_clears() {
+    let (_dir, db) = temp_db().await;
+    let pending = db.pending_releases();
+    let content_id = ContentId::new();
+    let release = Release {
+        indexer_id: IndexerId::new(),
+        title: "Show.S01E01.1080p.WEB-DL-GRP".to_string(),
+        download_url: "magnet:?x".to_string(),
+        guid: Some("guid-1".to_string()),
+        protocol: Protocol::Torrent,
+        size: None,
+        seeders: None,
+        indexer_flags: Vec::new(),
+    };
+
+    // First sighting at t=100 is recorded and returned.
+    let first = pending
+        .record_seen(content_id, &release, 100)
+        .await
+        .expect("record");
+    assert_eq!(first, 100);
+
+    // A LATER sighting (t=500) does not move the clock — the earliest stands.
+    let again = pending
+        .record_seen(content_id, &release, 500)
+        .await
+        .expect("record2");
+    assert_eq!(again, 100, "re-seeing keeps the earliest first-seen");
+
+    // It is listed for the content.
+    let held = pending.list_for_content(content_id).await.expect("list");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].first_seen_at, 100);
+    assert_eq!(held[0].protocol, Protocol::Torrent);
+
+    // Clearing removes it (idempotently).
+    assert!(pending.clear(content_id, &release).await.expect("clear"));
+    assert!(pending
+        .list_for_content(content_id)
+        .await
+        .expect("list")
+        .is_empty());
+    assert!(!pending.clear(content_id, &release).await.expect("clear2"));
 }

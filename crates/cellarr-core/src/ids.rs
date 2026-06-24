@@ -87,6 +87,10 @@ id_newtype!(
     CustomFormatId
 );
 id_newtype!(
+    /// Identifies a delay profile.
+    DelayProfileId
+);
+id_newtype!(
     /// Correlates all log/history records produced by one pipeline run.
     PipelineRunId
 );

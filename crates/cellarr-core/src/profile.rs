@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{CustomFormatId, QualityProfileId};
 use crate::parsed::{HdrFormat, ParsedRelease, ProperRepack, Resolution, Source, VideoCodec};
+use crate::release::ReleaseType;
 
 /// A named, ordered quality (a position in the global worst→best ranking).
 ///
@@ -324,6 +325,14 @@ pub enum ConditionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<u64>,
     },
+    /// A release-type match (movie / single-episode / multi-episode / full-season
+    /// / …), derived from the parse's numbering. Mirrors the Sonarr
+    /// `ReleaseTypeSpecification`, which lets a CF target season packs, single
+    /// episodes, etc.
+    ReleaseType {
+        /// The required release type.
+        release_type: ReleaseType,
+    },
 }
 
 /// One condition within a custom format, with its TRaSH-compatible modifiers.
@@ -391,6 +400,9 @@ fn raw_condition_matches(
             .languages
             .iter()
             .any(|l| l.eq_ignore_ascii_case(language)),
+        ConditionKind::ReleaseType { release_type } => {
+            ReleaseType::from_parsed(parsed) == *release_type
+        }
         // Indexer flags and size are not carried on ParsedRelease (they live on
         // the Release); a parse-only evaluation cannot confirm them, so they are
         // treated as not matching here. Full evaluation against a Release lives
@@ -705,6 +717,40 @@ mod tests {
             resolve_quality(&parsed_with(Some(Source::Hdtv), None), &r).name,
             "SDTV"
         );
+    }
+
+    #[test]
+    fn release_type_condition_matches_derived_type() {
+        use crate::media::Coordinates;
+        // A season-pack parse derives ReleaseType::FullSeason; a FullSeason
+        // condition matches it and a Movie condition does not.
+        let mut p = ParsedRelease::new("Show.S01.1080p.WEB-DL");
+        p.coordinates = vec![Coordinates::SeasonPack { season: 1 }];
+        let full_season = cf(
+            "season",
+            vec![cond(
+                ConditionKind::ReleaseType {
+                    release_type: ReleaseType::FullSeason,
+                },
+                false,
+                false,
+            )],
+            10,
+        );
+        assert!(custom_format_matches(&full_season, &p, &[]));
+
+        let movie = cf(
+            "movie",
+            vec![cond(
+                ConditionKind::ReleaseType {
+                    release_type: ReleaseType::Movie,
+                },
+                false,
+                false,
+            )],
+            10,
+        );
+        assert!(!custom_format_matches(&movie, &p, &[]));
     }
 
     #[test]

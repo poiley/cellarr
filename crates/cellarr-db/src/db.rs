@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::error::Result;
 use crate::repos::{
     BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo,
-    ImportListRepo, MediaFileRepo, ProfileRepo,
+    ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -157,6 +157,12 @@ impl Database {
     #[must_use]
     pub fn profiles(&self) -> ProfileRepo {
         ProfileRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The pending-release repository (delay-profile first-seen bookkeeping).
+    #[must_use]
+    pub fn pending_releases(&self) -> PendingReleaseRepo {
+        PendingReleaseRepo::new(self.pool.clone(), self.writer.clone())
     }
 
     /// The cache repository.

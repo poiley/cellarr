@@ -289,6 +289,8 @@ fn runner_config(library_root: PathBuf, profile: QualityProfile, naming: &str) -
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
         write_nfo: false,
+        delay_profiles: Vec::new(),
+        content_tags: Vec::new(),
     }
 }
 

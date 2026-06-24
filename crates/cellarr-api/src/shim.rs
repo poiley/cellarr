@@ -142,6 +142,12 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/customFormat", get(list_custom_formats))
         .route("/customformat/schema", get(custom_format_schema))
         .route("/customFormat/schema", get(custom_format_schema))
+        .route("/customformat/{id}", get(get_custom_format))
+        .route("/customFormat/{id}", get(get_custom_format))
+        .route("/delayprofile", get(list_delay_profiles))
+        .route("/delayProfile", get(list_delay_profiles))
+        .route("/delayprofile/{id}", get(get_delay_profile))
+        .route("/delayProfile/{id}", get(get_delay_profile))
         .route("/indexer", get(list_indexers))
         .route("/indexer/schema", get(indexer_schema))
         .route("/downloadclient", get(list_download_clients))
@@ -212,6 +218,14 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/customFormat/{id}", put(update_custom_format))
         .route("/customformat/{id}", delete(delete_custom_format))
         .route("/customFormat/{id}", delete(delete_custom_format))
+        .route("/customformat/test", post(custom_format_test))
+        .route("/customFormat/test", post(custom_format_test))
+        .route("/delayprofile", post(create_delay_profile))
+        .route("/delayProfile", post(create_delay_profile))
+        .route("/delayprofile/{id}", put(update_delay_profile))
+        .route("/delayProfile/{id}", put(update_delay_profile))
+        .route("/delayprofile/{id}", delete(delete_delay_profile))
+        .route("/delayProfile/{id}", delete(delete_delay_profile))
         .route("/indexer", post(create_indexer))
         .route("/indexer/{id}", put(update_indexer))
         .route("/indexer/{id}", delete(delete_indexer))
@@ -1060,37 +1074,70 @@ fn spec_implementation(kind: &cellarr_core::ConditionKind) -> &'static str {
         K::ReleaseGroup { .. } => "ReleaseGroupSpecification",
         K::Source { .. } => "SourceSpecification",
         K::Resolution { .. } => "ResolutionSpecification",
-        K::Codec { .. } => "ReleaseTitleSpecification",
-        K::Hdr { .. } => "ReleaseTitleSpecification",
-        K::QualityModifier { .. } => "ReleaseTitleSpecification",
+        // Codec and HDR have no first-class Sonarr/Radarr spec; the apps express
+        // them as release-title regexes, and so do we on the wire.
+        K::Codec { .. } | K::Hdr { .. } => "ReleaseTitleSpecification",
+        K::QualityModifier { .. } => "QualityModifierSpecification",
         K::Language { .. } => "LanguageSpecification",
         K::IndexerFlag { .. } => "IndexerFlagSpecification",
         K::Size { .. } => "SizeSpecification",
+        K::ReleaseType { .. } => "ReleaseTypeSpecification",
     }
 }
 
 /// The regex/value a condition contributes to its v3 spec `value` field.
+///
+/// String-valued kinds surface their string directly; typed-enum kinds surface
+/// their serde token (e.g. a `Source::WebDl` becomes `"web-dl"`), so the value
+/// round-trips losslessly through `condition_from_spec`. Size carries a `{min,max}`
+/// object the apps model the same way.
 fn spec_value(kind: &cellarr_core::ConditionKind) -> Value {
     use cellarr_core::ConditionKind as K;
+    /// The bare serde token a single-field enum serializes to (e.g. `Source` ->
+    /// `"web-dl"`). The enums derive a plain string for their variants.
+    fn enum_token<T: serde::Serialize>(v: &T) -> Value {
+        serde_json::to_value(v).unwrap_or(Value::Null)
+    }
     match kind {
         K::ReleaseTitle { pattern } => json!(pattern),
         K::ReleaseGroup { name } => json!(name),
         K::Language { language } => json!(language),
         K::IndexerFlag { flag } => json!(flag),
-        // The remaining kinds carry typed enums; surface their serde token so the
-        // value round-trips losslessly enough for Recyclarr's diffing.
-        other => serde_json::to_value(other)
-            .ok()
-            .and_then(|v| {
-                v.get("value").cloned().or_else(|| {
-                    v.as_object().and_then(|o| {
-                        o.values()
-                            .find(|x| !x.is_string() || x.as_str() != Some(""))
-                            .cloned()
-                    })
-                })
-            })
-            .unwrap_or(Value::Null),
+        K::Source { source } => enum_token(source),
+        // Resolution's serde token (`r1080p`) is awkward on the wire; surface the
+        // conventional `1080p` form the UI and ecosystem use.
+        K::Resolution { resolution } => json!(resolution_token(*resolution)),
+        K::Codec { codec } => enum_token(codec),
+        K::Hdr { format } => enum_token(format),
+        K::QualityModifier { modifier } => enum_token(modifier),
+        K::ReleaseType { release_type } => enum_token(release_type),
+        K::Size { min, max } => json!({ "min": min, "max": max }),
+    }
+}
+
+/// The conventional `<height>p` token for a resolution (e.g. `1080p`), the wire
+/// form the CF editor and ecosystem use (the serde token is `r1080p`).
+fn resolution_token(r: cellarr_core::Resolution) -> &'static str {
+    use cellarr_core::Resolution as R;
+    match r {
+        R::R480p => "480p",
+        R::R576p => "576p",
+        R::R720p => "720p",
+        R::R1080p => "1080p",
+        R::R2160p => "2160p",
+    }
+}
+
+/// Parse a `<height>p` resolution token back into a [`Resolution`].
+fn resolution_from_token(token: &str) -> Option<cellarr_core::Resolution> {
+    use cellarr_core::Resolution as R;
+    match token.trim().to_ascii_lowercase().as_str() {
+        "480p" | "480" => Some(R::R480p),
+        "576p" | "576" => Some(R::R576p),
+        "720p" | "720" => Some(R::R720p),
+        "1080p" | "1080" => Some(R::R1080p),
+        "2160p" | "2160" | "4k" | "uhd" => Some(R::R2160p),
+        _ => None,
     }
 }
 
@@ -1128,7 +1175,9 @@ async fn list_custom_formats(State(fs): State<FaceState>) -> ApiResult<Json<Vec<
 /// v3 `customformat/schema` — the catalogue of specification templates a custom
 /// format is built from. Recyclarr reads it to validate the specs it pushes.
 async fn custom_format_schema() -> Json<Vec<Value>> {
-    let spec = |impl_name: &str, label: &str| {
+    // A free-text spec: one `value` textbox (a regex, group name, language code,
+    // or indexer flag).
+    let text_spec = |impl_name: &str, label: &str| {
         json!({
             "implementation": impl_name,
             "implementationName": label,
@@ -1139,16 +1188,100 @@ async fn custom_format_schema() -> Json<Vec<Value>> {
             "presets": [],
         })
     };
+    // A select spec: a `value` dropdown whose options are the serde tokens of a
+    // typed enum, so the editor can render a closed choice instead of free text.
+    let select_spec = |impl_name: &str, label: &str, options: &[&str]| {
+        let select_options: Vec<Value> = options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| json!({ "value": o, "name": o, "order": i }))
+            .collect();
+        json!({
+            "implementation": impl_name,
+            "implementationName": label,
+            "infoLink": "",
+            "negate": false,
+            "required": false,
+            "fields": [ {
+                "order": 0, "name": "value", "label": label, "type": "select",
+                "advanced": false, "selectOptions": select_options,
+            } ],
+            "presets": [],
+        })
+    };
+    // A size spec: numeric min/max bounds in bytes.
+    let size_spec = json!({
+        "implementation": "SizeSpecification",
+        "implementationName": "Size",
+        "infoLink": "",
+        "negate": false,
+        "required": false,
+        "fields": [
+            { "order": 0, "name": "min", "label": "Minimum Size", "type": "number", "advanced": false, "unit": "bytes" },
+            { "order": 1, "name": "max", "label": "Maximum Size", "type": "number", "advanced": false, "unit": "bytes" },
+        ],
+        "presets": [],
+    });
     Json(vec![
-        spec("ReleaseTitleSpecification", "Release Title"),
-        spec("ReleaseGroupSpecification", "Release Group"),
-        spec("SourceSpecification", "Source"),
-        spec("ResolutionSpecification", "Resolution"),
-        spec("LanguageSpecification", "Language"),
-        spec("IndexerFlagSpecification", "Indexer Flag"),
-        spec("SizeSpecification", "Size"),
+        text_spec("ReleaseTitleSpecification", "Release Title"),
+        text_spec("ReleaseGroupSpecification", "Release Group"),
+        select_spec("SourceSpecification", "Source", SOURCE_TOKENS),
+        select_spec("ResolutionSpecification", "Resolution", RESOLUTION_TOKENS),
+        select_spec(
+            "QualityModifierSpecification",
+            "Quality Modifier",
+            QUALITY_MODIFIER_TOKENS,
+        ),
+        select_spec(
+            "ReleaseTypeSpecification",
+            "Release Type",
+            RELEASE_TYPE_TOKENS,
+        ),
+        text_spec("LanguageSpecification", "Language"),
+        text_spec("IndexerFlagSpecification", "Indexer Flag"),
+        size_spec,
     ])
 }
+
+/// The serde tokens of [`cellarr_core::Source`], in catalogue order — the select
+/// options the CF editor offers for a Source spec.
+const SOURCE_TOKENS: &[&str] = &[
+    "workprint",
+    "cam",
+    "telesync",
+    "telecine",
+    "regional",
+    "dvdscr",
+    "sdtv",
+    "hdtv",
+    "raw-hd",
+    "webrip",
+    "web-dl",
+    "dvd",
+    "dvd-r",
+    "bluray",
+    "br-disk",
+    "remux",
+];
+
+/// The serde tokens of [`cellarr_core::Resolution`].
+const RESOLUTION_TOKENS: &[&str] = &["480p", "576p", "720p", "1080p", "2160p"];
+
+/// The serde tokens of [`cellarr_core::ProperRepack`].
+const QUALITY_MODIFIER_TOKENS: &[&str] = &["proper", "repack"];
+
+/// The serde tokens of [`cellarr_core::ReleaseType`].
+const RELEASE_TYPE_TOKENS: &[&str] = &[
+    "movie",
+    "single_episode",
+    "multi_episode",
+    "full_season",
+    "daily",
+    "absolute",
+    "track",
+    "book",
+    "other",
+];
 
 /// v3 customformat write body. We accept the full Recyclarr-shaped body and map
 /// its `specifications[]` back onto cellarr conditions where the implementation
@@ -1181,9 +1314,10 @@ struct FieldBody {
     value: Value,
 }
 
-/// Map a v3 spec body back onto a cellarr condition. Implementations cellarr
-/// models map to their typed kind; everything else degrades to a release-title
-/// regex (lossless enough for Recyclarr's name/score diffing).
+/// Map a v3 spec body back onto a cellarr condition. Every implementation cellarr
+/// models maps to its typed [`ConditionKind`]; a typed-enum value that does not
+/// parse (or an unmodeled implementation) degrades to a release-title regex so the
+/// round-trip never loses a format.
 fn condition_from_spec(spec: &SpecBody) -> cellarr_core::Condition {
     use cellarr_core::ConditionKind as K;
     let value = spec
@@ -1192,12 +1326,50 @@ fn condition_from_spec(spec: &SpecBody) -> cellarr_core::Condition {
         .find(|f| f.name.as_deref() == Some("value"))
         .map(|f| &f.value);
     let value_str = value.and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Parse a single-field enum from its serde token (e.g. "web-dl" -> Source),
+    // falling back to a release-title regex of the raw string when it does not
+    // name a known variant (so an unexpected token is preserved, not dropped).
+    fn enum_or_title<T: serde::de::DeserializeOwned>(token: &str, wrap: impl FnOnce(T) -> K) -> K {
+        serde_json::from_value::<T>(Value::String(token.to_string()))
+            .map(wrap)
+            .unwrap_or_else(|_| K::ReleaseTitle {
+                pattern: token.to_string(),
+            })
+    }
+
     let kind = match spec.implementation.as_deref() {
         Some("ReleaseGroupSpecification") => K::ReleaseGroup { name: value_str },
         Some("LanguageSpecification") => K::Language {
             language: value_str,
         },
         Some("IndexerFlagSpecification") => K::IndexerFlag { flag: value_str },
+        Some("SourceSpecification") => enum_or_title(&value_str, |source| K::Source { source }),
+        Some("ResolutionSpecification") => match resolution_from_token(&value_str) {
+            Some(resolution) => K::Resolution { resolution },
+            // An unrecognized token is preserved as a title regex, not dropped.
+            None => K::ReleaseTitle { pattern: value_str },
+        },
+        Some("QualityModifierSpecification") => {
+            enum_or_title(&value_str, |modifier| K::QualityModifier { modifier })
+        }
+        Some("ReleaseTypeSpecification") => {
+            enum_or_title(&value_str, |release_type| K::ReleaseType { release_type })
+        }
+        Some("SizeSpecification") => {
+            // Size carries a {min,max} object (bytes); a bare value is treated as
+            // the maximum, matching the apps' single-bound shorthand.
+            let (min, max) = value
+                .and_then(|v| v.as_object())
+                .map(|o| {
+                    (
+                        o.get("min").and_then(serde_json::Value::as_u64),
+                        o.get("max").and_then(serde_json::Value::as_u64),
+                    )
+                })
+                .unwrap_or((None, value.and_then(serde_json::Value::as_u64)));
+            K::Size { min, max }
+        }
         // ReleaseTitleSpecification and any unmodeled implementation become a
         // release-title regex.
         _ => K::ReleaseTitle { pattern: value_str },
@@ -1258,14 +1430,314 @@ async fn update_custom_format(
     Ok(Json(v3_custom_format(&cf)))
 }
 
-async fn delete_custom_format(
-    State(_fs): State<FaceState>,
+/// `GET /customformat/{id}` — one custom format in the v3 shape.
+async fn get_custom_format(
+    State(fs): State<FaceState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    // cellarr's persistence layer has no custom-format delete yet; accept the
-    // request idempotently (the ecosystem only needs a 200) and report the gap.
-    parse_i64(&id, "customformat")?;
+    let cf = find_custom_format_by_numeric(&fs, &id).await?;
+    Ok(Json(v3_custom_format(&cf)))
+}
+
+async fn delete_custom_format(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    // Resolve the numeric v3 id back to the cellarr uuid, then delete. Idempotent:
+    // a missing format is a no-op 200 (the ecosystem only needs a success), so a
+    // double-delete never errors.
+    let numeric = parse_i64(&id, "customformat")?;
+    if let Some(cf) = fs
+        .state
+        .db
+        .profiles()
+        .custom_formats()
+        .await?
+        .into_iter()
+        .find(|cf| cf_numeric_id(cf.id) == numeric)
+    {
+        fs.state.db.profiles().delete_custom_format(cf.id).await?;
+    }
     Ok(Json(json!({})))
+}
+
+/// Resolve a v3 numeric customformat id back to its cellarr [`CustomFormat`],
+/// 404ing when no format projects onto it.
+async fn find_custom_format_by_numeric(
+    fs: &FaceState,
+    id: &str,
+) -> ApiResult<cellarr_core::CustomFormat> {
+    let numeric = parse_i64(id, "customformat")?;
+    fs.state
+        .db
+        .profiles()
+        .custom_formats()
+        .await?
+        .into_iter()
+        .find(|cf| cf_numeric_id(cf.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("custom format {id} not found")))
+}
+
+/// The body of `POST /customformat/test`: a release title and an optional set of
+/// parsed-field overrides the editor's live preview supplies.
+#[derive(Debug, Deserialize)]
+struct CustomFormatTestBody {
+    /// The raw release title to evaluate every CF against.
+    #[serde(default)]
+    title: String,
+    /// Optional pre-parsed fields (source/resolution/codec/…); when omitted the
+    /// title is parsed. A field present here overrides the parse.
+    #[serde(default)]
+    parsed: Option<Value>,
+    /// Optional explicit protocol for the synthetic release (defaults to torrent);
+    /// only matters for protocol-sensitive specs.
+    #[serde(default)]
+    protocol: Option<String>,
+    /// Optional indexer flags for IndexerFlag specs.
+    #[serde(default)]
+    indexer_flags: Vec<String>,
+    /// Optional size in bytes for Size specs.
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// `POST /customformat/test` — report which stored custom formats match a release
+/// title (plus optional parsed-field / flag / size overrides), for the editor's
+/// live preview. Each entry carries the format id, name, whether it matched, and
+/// its score, mirroring the apps' CF-test response.
+async fn custom_format_test(
+    State(fs): State<FaceState>,
+    Json(body): Json<CustomFormatTestBody>,
+) -> ApiResult<Json<Vec<Value>>> {
+    use cellarr_decide::MatchContext;
+
+    let formats = fs.state.db.profiles().custom_formats().await?;
+
+    // Build the parse: start from the real parser, then apply any explicit
+    // overrides from the editor so a preview can test fields the title omits.
+    let mut parsed = cellarr_parse::parse_title(&body.title);
+    if let Some(over) = &body.parsed {
+        apply_parsed_overrides(&mut parsed, over);
+    }
+
+    let protocol = match body.protocol.as_deref() {
+        Some(p) if p.eq_ignore_ascii_case("usenet") => cellarr_core::Protocol::Usenet,
+        _ => cellarr_core::Protocol::Torrent,
+    };
+    let release = cellarr_core::Release {
+        indexer_id: cellarr_core::IndexerId::new(),
+        title: body.title.clone(),
+        download_url: String::new(),
+        guid: None,
+        protocol,
+        size: body.size,
+        seeders: None,
+        indexer_flags: body.indexer_flags.clone(),
+    };
+
+    // Compiling can fail if a stored CF carries a dialect-incompatible regex; a CF
+    // that cannot compile is reported as non-matching rather than failing the whole
+    // preview.
+    let report: Vec<Value> = match MatchContext::new(&formats) {
+        Ok(ctx) => formats
+            .iter()
+            .map(|cf| {
+                let matched = ctx.matches(cf, &release, &parsed);
+                json!({
+                    "id": cf_numeric_id(cf.id),
+                    "name": cf.name,
+                    "matched": matched,
+                    "score": cf.score,
+                })
+            })
+            .collect(),
+        Err(_) => formats
+            .iter()
+            .map(|cf| {
+                json!({
+                    "id": cf_numeric_id(cf.id),
+                    "name": cf.name,
+                    "matched": false,
+                    "score": cf.score,
+                })
+            })
+            .collect(),
+    };
+    Ok(Json(report))
+}
+
+/// Apply editor-supplied parsed-field overrides onto a parse. Only the fields the
+/// CF matcher reads are honored; an absent or unrecognized field leaves the parse
+/// value from the title in place.
+fn apply_parsed_overrides(parsed: &mut cellarr_core::ParsedRelease, over: &Value) {
+    let Some(obj) = over.as_object() else {
+        return;
+    };
+    let token = |k: &str| obj.get(k).and_then(serde_json::Value::as_str);
+    if let Some(v) = token("source") {
+        if let Ok(s) = serde_json::from_value(Value::String(v.to_string())) {
+            parsed.source = Some(s);
+        }
+    }
+    if let Some(v) = token("resolution") {
+        if let Some(r) = resolution_from_token(v) {
+            parsed.resolution = Some(r);
+        }
+    }
+    if let Some(v) = token("codec") {
+        if let Ok(c) = serde_json::from_value(Value::String(v.to_string())) {
+            parsed.codec = Some(c);
+        }
+    }
+    if let Some(v) = token("group") {
+        parsed.group = Some(v.to_string());
+    }
+    if let Some(langs) = obj.get("languages").and_then(serde_json::Value::as_array) {
+        parsed.languages = langs
+            .iter()
+            .filter_map(|l| l.as_str().map(str::to_string))
+            .collect();
+    }
+}
+
+// --- delayprofile ----------------------------------------------------------
+
+/// Render a cellarr [`DelayProfile`](cellarr_core::DelayProfile) into the v3
+/// delay-profile shape the ecosystem reads back. Mirrors Sonarr/Radarr's fields
+/// (`preferredProtocol`, the per-protocol delays, the bypass flag, tags, order).
+fn v3_delay_profile(dp: &cellarr_core::DelayProfile) -> Value {
+    use cellarr_core::PreferredProtocol as P;
+    let preferred = match dp.preferred_protocol {
+        P::Usenet => "usenet",
+        P::Torrent => "torrent",
+        P::Either => "either",
+    };
+    // The apps split the single preference into two booleans; derive both from the
+    // typed preference so a round-trip through either representation agrees.
+    json!({
+        "id": dp_numeric_id(dp.id),
+        "enableUsenet": dp.usenet_delay > 0 || matches!(dp.preferred_protocol, P::Usenet | P::Either),
+        "enableTorrent": dp.torrent_delay > 0 || matches!(dp.preferred_protocol, P::Torrent | P::Either),
+        "preferredProtocol": preferred,
+        "usenetDelay": dp.usenet_delay,
+        "torrentDelay": dp.torrent_delay,
+        "bypassIfHighestQuality": dp.bypass_if_highest_quality,
+        "tags": dp.tags,
+        "order": dp.order,
+    })
+}
+
+/// The v3 delay-profile write body (the Sonarr/Radarr shape).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelayProfileBody {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    preferred_protocol: Option<String>,
+    #[serde(default)]
+    usenet_delay: u32,
+    #[serde(default)]
+    torrent_delay: u32,
+    #[serde(default)]
+    bypass_if_highest_quality: bool,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    order: i32,
+}
+
+/// Build a cellarr [`DelayProfile`](cellarr_core::DelayProfile) from a write body,
+/// preserving `id` (for updates) or minting a fresh one (for creates).
+fn delay_profile_from_body(
+    id: cellarr_core::DelayProfileId,
+    body: &DelayProfileBody,
+) -> cellarr_core::DelayProfile {
+    use cellarr_core::PreferredProtocol as P;
+    let preferred = match body.preferred_protocol.as_deref() {
+        Some(p) if p.eq_ignore_ascii_case("usenet") => P::Usenet,
+        Some(p) if p.eq_ignore_ascii_case("torrent") => P::Torrent,
+        _ => P::Either,
+    };
+    cellarr_core::DelayProfile {
+        id,
+        enabled: body.enabled.unwrap_or(true),
+        preferred_protocol: preferred,
+        usenet_delay: body.usenet_delay,
+        torrent_delay: body.torrent_delay,
+        bypass_if_highest_quality: body.bypass_if_highest_quality,
+        tags: body.tags.clone(),
+        order: body.order,
+    }
+}
+
+async fn list_delay_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let profiles = fs.state.db.profiles().list_delay_profiles().await?;
+    Ok(Json(profiles.iter().map(v3_delay_profile).collect()))
+}
+
+async fn get_delay_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let dp = find_delay_profile_by_numeric(&fs, &id).await?;
+    Ok(Json(v3_delay_profile(&dp)))
+}
+
+async fn create_delay_profile(
+    State(fs): State<FaceState>,
+    Json(body): Json<DelayProfileBody>,
+) -> ApiResult<Json<Value>> {
+    let dp = delay_profile_from_body(cellarr_core::DelayProfileId::new(), &body);
+    fs.state.db.profiles().upsert_delay_profile(&dp).await?;
+    Ok(Json(v3_delay_profile(&dp)))
+}
+
+async fn update_delay_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<DelayProfileBody>,
+) -> ApiResult<Json<Value>> {
+    let existing = find_delay_profile_by_numeric(&fs, &id).await?;
+    let dp = delay_profile_from_body(existing.id, &body);
+    fs.state.db.profiles().upsert_delay_profile(&dp).await?;
+    Ok(Json(v3_delay_profile(&dp)))
+}
+
+async fn delete_delay_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "delayprofile")?;
+    if let Some(dp) = fs
+        .state
+        .db
+        .profiles()
+        .list_delay_profiles()
+        .await?
+        .into_iter()
+        .find(|dp| dp_numeric_id(dp.id) == numeric)
+    {
+        fs.state.db.profiles().delete_delay_profile(dp.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// Resolve a v3 numeric delayprofile id back to its cellarr
+/// [`DelayProfile`](cellarr_core::DelayProfile), 404ing when none projects onto it.
+async fn find_delay_profile_by_numeric(
+    fs: &FaceState,
+    id: &str,
+) -> ApiResult<cellarr_core::DelayProfile> {
+    let numeric = parse_i64(id, "delayprofile")?;
+    fs.state
+        .db
+        .profiles()
+        .list_delay_profiles()
+        .await?
+        .into_iter()
+        .find(|dp| dp_numeric_id(dp.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("delay profile {id} not found")))
 }
 
 // --- indexer ---------------------------------------------------------------
@@ -4375,6 +4847,12 @@ fn history_event_type(event: &cellarr_core::HistoryEvent) -> String {
 /// v3 `format`/`id` fields require — the ecosystem keys CFs by integer id. A
 /// hash of the uuid keeps it stable across requests within a process.
 fn cf_numeric_id(id: cellarr_core::CustomFormatId) -> i64 {
+    uuid_to_i64(id.as_uuid())
+}
+
+/// Project a [`DelayProfileId`](cellarr_core::DelayProfileId) onto a stable
+/// positive integer the v3 `id` field requires.
+fn dp_numeric_id(id: cellarr_core::DelayProfileId) -> i64 {
     uuid_to_i64(id.as_uuid())
 }
 

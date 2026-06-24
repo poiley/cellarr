@@ -25,8 +25,13 @@ import type {
   ContentNode,
   ContentRef,
   CustomFormat,
+  CustomFormatSchema,
+  CustomFormatTestBody,
+  CustomFormatTestResult,
   CustomFormatV3,
   DecisionLogRecord,
+  DelayProfile,
+  DelayProfileBody,
   DomainEvent,
   DomainEventType,
   DownloadClientConfig,
@@ -386,6 +391,32 @@ export class CellarrClient {
     return this.requestV3<CustomFormatV3[]>('/customformat', { signal });
   }
 
+  /** A single v3 custom format (`/api/v3/customformat/{id}`). */
+  getCustomFormatV3(id: number, signal?: AbortSignal) {
+    return this.requestV3<CustomFormatV3>(`/customformat/${id}`, { signal });
+  }
+
+  /**
+   * The catalogue of specification templates a custom format is built from
+   * (`/api/v3/customformat/schema`) — drives the editor's per-implementation
+   * fields (a `value` textbox/select, or Size's `min`/`max` numbers).
+   */
+  getCustomFormatSchema(signal?: AbortSignal) {
+    return this.requestV3<CustomFormatSchema[]>('/customformat/schema', { signal });
+  }
+
+  /**
+   * Report which stored custom formats match a release title, for the editor's
+   * live preview (`POST /api/v3/customformat/test`).
+   */
+  testCustomFormat(body: CustomFormatTestBody, signal?: AbortSignal) {
+    return this.requestV3<CustomFormatTestResult[]>('/customformat/test', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
   createCustomFormat(body: Partial<CustomFormatV3>, signal?: AbortSignal) {
     return this.requestV3<CustomFormatV3>('/customformat', {
       method: 'POST',
@@ -407,6 +438,40 @@ export class CellarrClient {
       method: 'DELETE',
       signal,
     });
+  }
+
+  // =========================================================================
+  // Delay profiles (Radarr/Sonarr-compatible /api/v3)
+  // =========================================================================
+
+  /** Delay profiles, ordered by `order` (`GET /api/v3/delayprofile`). */
+  getDelayProfiles(signal?: AbortSignal) {
+    return this.requestV3<DelayProfile[]>('/delayprofile', { signal });
+  }
+
+  /** A single delay profile (`GET /api/v3/delayprofile/{id}`). */
+  getDelayProfile(id: number, signal?: AbortSignal) {
+    return this.requestV3<DelayProfile>(`/delayprofile/${id}`, { signal });
+  }
+
+  createDelayProfile(body: DelayProfileBody, signal?: AbortSignal) {
+    return this.requestV3<DelayProfile>('/delayprofile', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  updateDelayProfile(id: number, body: DelayProfileBody, signal?: AbortSignal) {
+    return this.requestV3<DelayProfile>(`/delayprofile/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  deleteDelayProfile(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/delayprofile/${id}`, { method: 'DELETE', signal });
   }
 
   // =========================================================================

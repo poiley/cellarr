@@ -318,6 +318,15 @@ pub struct RunnerConfig {
     /// Sidecars are written best-effort *after* the media is durably committed, so
     /// disabling this never changes the crash-safe import guarantee.
     pub write_nfo: bool,
+    /// The configured delay profiles. A grabbable release is **held** until its
+    /// protocol's delay has elapsed since it was first seen, so a better release
+    /// can arrive first (mirrors the Sonarr/Radarr Delay Profile). Empty (the
+    /// default) imposes no delay. The governing profile is resolved per run via
+    /// [`cellarr_core::resolve_delay_profile`] against [`content_tags`](Self::content_tags).
+    pub delay_profiles: Vec<cellarr_core::DelayProfile>,
+    /// The tags on the content this runner acquires, used to resolve which delay
+    /// profile applies. Empty selects the catch-all (tagless) profile.
+    pub content_tags: Vec<String>,
 }
 
 /// Drives candidates through the pipeline state machine.
@@ -917,6 +926,18 @@ where
                 }
                 Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => {
                     let score = *score;
+                    // Delay-profile hold: a release that would otherwise be grabbed
+                    // is HELD until its protocol's delay has elapsed since it was
+                    // first seen, so a better release can arrive first. A held
+                    // candidate is logged and skipped (the next-best is tried, and a
+                    // later run re-evaluates it once the window lapses).
+                    if let Some(note) = self
+                        .delay_hold(run_id, &matched.content_ref, release, score.quality_rank)
+                        .await?
+                    {
+                        *last_reject = Some(note);
+                        continue;
+                    }
                     return Ok(PickResult::Grabbable(Box::new(PickedCandidate {
                         matched_ref: matched.content_ref,
                         release: release.clone(),
@@ -1102,6 +1123,87 @@ where
         };
         decide(content_ref.clone(), release, parsed, on_disk, &ctx)
             .map_err(|e| JobError::stage(Stage::Decide, e))
+    }
+
+    /// Apply the governing delay profile to a grabbable candidate.
+    ///
+    /// Resolves the delay profile for this content's tags, records (and reads back)
+    /// when the release was first seen, and asks the pure
+    /// [`DelayProfile::hold_decision`] whether the protocol's delay has elapsed.
+    /// When the release must still wait, this **logs the hold** (a `Decide ->
+    /// Rejected` transition noting the delay, mirroring how a blocklisted candidate
+    /// is logged at Decide) and returns `Some(note)` so the caller skips it this
+    /// run; a later run re-evaluates it once the window lapses. Returns `Ok(None)`
+    /// when the release is free to grab now (no profile, no/elapsed delay, or a
+    /// highest-quality bypass), in which case the first-seen row is cleared.
+    ///
+    /// `quality_rank` is the candidate's resolved quality position; the bypass
+    /// treats a candidate at or above the profile cutoff as "highest quality".
+    async fn delay_hold(
+        &self,
+        run_id: PipelineRunId,
+        content_ref: &ContentRef,
+        release: &Release,
+        quality_rank: u32,
+    ) -> Result<Option<String>> {
+        use cellarr_core::{resolve_delay_profile, DelayVerdict};
+
+        // No governing profile (none configured, or none applies/enabled): no delay.
+        let Some(profile) =
+            resolve_delay_profile(&self.config.delay_profiles, &self.config.content_tags)
+        else {
+            return Ok(None);
+        };
+        // A zero delay for this protocol can never hold; skip the first-seen write
+        // entirely (the common no-delay case stays a pure read).
+        if profile.delay_for(release.protocol) == 0 {
+            return Ok(None);
+        }
+
+        // Record/observe when this release was first seen, then measure elapsed.
+        let now = self.clock.now_secs();
+        let first_seen = self
+            .db
+            .pending_releases()
+            .record_seen(content_ref.id, release, now)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+        let elapsed_minutes = (now.saturating_sub(first_seen) / 60)
+            .try_into()
+            .unwrap_or(u32::MAX);
+
+        // The bypass treats a candidate already at the profile's quality cutoff as
+        // the highest worth waiting for — waiting cannot improve on it.
+        let is_highest_quality = quality_rank >= self.config.profile.cutoff_quality;
+
+        match profile.hold_decision(release.protocol, elapsed_minutes, is_highest_quality) {
+            DelayVerdict::Grab => {
+                // Free to grab: drop the first-seen row so it does not linger.
+                self.db
+                    .pending_releases()
+                    .clear(content_ref.id, release)
+                    .await
+                    .map_err(|e| JobError::Persistence(Box::new(e)))?;
+                Ok(None)
+            }
+            DelayVerdict::Hold { remaining_minutes } => {
+                let note = format!(
+                    "held by delay profile: {} more minute(s) for {} release",
+                    remaining_minutes,
+                    protocol_str(release.protocol)
+                );
+                self.log(
+                    run_id,
+                    Stage::Decide,
+                    Stage::Rejected,
+                    TransitionKind::Reject,
+                    None,
+                    Some(note.clone()),
+                )
+                .await?;
+                Ok(Some(note))
+            }
+        }
     }
 
     /// The currently-best on-disk file for `content`, expressed for the decision
@@ -2217,6 +2319,14 @@ fn quality_opt(name: &str) -> Option<String> {
         None
     } else {
         Some(name.to_string())
+    }
+}
+
+/// The lowercase wire token for a protocol, for the delay-hold log note.
+fn protocol_str(p: cellarr_core::Protocol) -> &'static str {
+    match p {
+        cellarr_core::Protocol::Torrent => "torrent",
+        cellarr_core::Protocol::Usenet => "usenet",
     }
 }
 
