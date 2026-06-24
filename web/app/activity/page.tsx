@@ -41,6 +41,7 @@ import TableRow from '@components/TableRow';
 import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
+import QueueActions from '@app/activity/_components/QueueActions';
 import {
   formatCountdown,
   formatIso,
@@ -77,6 +78,10 @@ interface DownloadRow {
   status: string;
   progress?: number; // [0, 1]
   protocol?: string;
+  /** The backing queue record (present for real queue rows; absent for live-only
+   *  SSE overlays that have not yet been re-snapshotted). Carries the ids the
+   *  remove / manual-import / change-category actions need. */
+  record?: QueueRecord;
 }
 
 // One self-heal pairing: a blocklisted release and (optionally) the grab that
@@ -175,6 +180,19 @@ export default function ActivityPage() {
       }
     );
     return () => handle.stop();
+  }, []);
+
+  // An on-demand re-snapshot of the queue + blocklist, fired after a queue action
+  // (remove / manual-import / change-category) so the row reflects the mutation
+  // immediately rather than waiting for the next 8s poll tick.
+  const refreshQueue = React.useCallback(async () => {
+    try {
+      const [q, b] = await Promise.all([api.getQueueV3(), api.getBlocklist()]);
+      setQueue(q.records);
+      setBlocklist(b.records);
+    } catch {
+      // Non-fatal: the background poll will reconcile on its next tick.
+    }
   }, []);
 
   // Live updates over SSE — the push path for lifecycle transitions. The per-type
@@ -297,6 +315,7 @@ export default function ActivityPage() {
         ? (rec.size - rec.sizeleft) / rec.size
         : undefined),
       protocol: rec.protocol,
+      record: rec,
     });
     liveById.delete(rec.id);
   }
@@ -358,7 +377,12 @@ export default function ActivityPage() {
                 <div key={row.id} style={{ marginBottom: '1ch' }}>
                   <RowSpaceBetween>
                     <Text>{row.title}</Text>
-                    <Badge>{lifecycleLabel(row.status)}</Badge>
+                    <span style={{ display: 'inline-flex', gap: '1ch', alignItems: 'center' }}>
+                      <Badge>{lifecycleLabel(row.status)}</Badge>
+                      {row.record ? (
+                        <QueueActions record={row.record} onChanged={refreshQueue} />
+                      ) : null}
+                    </span>
                   </RowSpaceBetween>
                   {row.progress != null ? (
                     <BarProgress progress={Math.round(row.progress * 100)} />

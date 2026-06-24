@@ -40,6 +40,12 @@ import type {
   HealthCheck,
   HistoryRecord,
   HistoryRecordV3,
+  ImportListBodyV3,
+  ImportListConfigV3,
+  ImportListExclusionBodyV3,
+  ImportListExclusionV3,
+  ImportListSchema,
+  ImportListSyncResult,
   IndexerConfig,
   IndexerConfigV3,
   Library,
@@ -58,7 +64,9 @@ import type {
   QualityDefinition,
   QualityProfile,
   QueueEntry,
+  QueueGrabResult,
   QueueRecord,
+  QueueRemoveResult,
   RemotePathMapping,
   RootFolder,
   Series,
@@ -689,12 +697,125 @@ export class CellarrClient {
   }
 
   // =========================================================================
+  // Import lists + exclusions (Radarr/Sonarr-compatible /api/v3)
+  // =========================================================================
+
+  /** Configured import lists (`GET /api/v3/importlist`). */
+  listImportLists(signal?: AbortSignal) {
+    return this.requestV3<ImportListConfigV3[]>('/importlist', { signal });
+  }
+
+  /** The import-list source templates (`GET /api/v3/importlist/schema`). */
+  getImportListSchema(signal?: AbortSignal) {
+    return this.requestV3<ImportListSchema[]>('/importlist/schema', { signal });
+  }
+
+  createImportList(body: ImportListBodyV3, signal?: AbortSignal) {
+    return this.requestV3<ImportListConfigV3>('/importlist', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  updateImportList(id: number, body: ImportListBodyV3, signal?: AbortSignal) {
+    return this.requestV3<ImportListConfigV3>(`/importlist/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  deleteImportList(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/importlist/${id}`, { method: 'DELETE', signal });
+  }
+
+  /** Validate an import-list body (`POST /api/v3/importlist/test`). */
+  testImportList(body: ImportListBodyV3, signal?: AbortSignal) {
+    return this.requestV3<unknown>('/importlist/test', { method: 'POST', body, signal });
+  }
+
+  /**
+   * Trigger a safeguarded sync for one import list
+   * (`POST /api/v3/importlist/{id}/sync`). A failed source fetch changes nothing
+   * (the safeguard); the response reports per-list `fetchSucceeded`/added/cleaned.
+   */
+  syncImportList(id: number, signal?: AbortSignal) {
+    return this.requestV3<ImportListSyncResult>(`/importlist/${id}/sync`, {
+      method: 'POST',
+      signal,
+    });
+  }
+
+  /** Configured import-list exclusions (`GET /api/v3/importlistexclusion`). */
+  listImportListExclusions(signal?: AbortSignal) {
+    return this.requestV3<ImportListExclusionV3[]>('/importlistexclusion', { signal });
+  }
+
+  createImportListExclusion(body: ImportListExclusionBodyV3, signal?: AbortSignal) {
+    return this.requestV3<ImportListExclusionV3>('/importlistexclusion', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  deleteImportListExclusion(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/importlistexclusion/${id}`, { method: 'DELETE', signal });
+  }
+
+  // =========================================================================
   // Queue / activity, history, blocklist (Radarr-compatible /api/v3, paged)
   // =========================================================================
 
   /** The activity queue (`/api/v3/queue` → paged envelope). */
   getQueueV3(signal?: AbortSignal) {
     return this.requestV3<Page<QueueRecord>>('/queue', { signal });
+  }
+
+  /**
+   * Remove a queue item (`DELETE /api/v3/queue/{id}`). `removeFromClient` also
+   * tells the download client to delete the download + its data; `blocklist` adds
+   * the release to the blocklist so a re-search never re-grabs it. Idempotent.
+   */
+  removeQueueItem(
+    id: string,
+    opts: { removeFromClient?: boolean; blocklist?: boolean } = {},
+    signal?: AbortSignal
+  ) {
+    return this.requestV3<QueueRemoveResult>(`/queue/${id}`, {
+      method: 'DELETE',
+      query: {
+        removeFromClient: opts.removeFromClient ?? false,
+        blocklist: opts.blocklist ?? false,
+      },
+      signal,
+    });
+  }
+
+  /** Change a queued download's category (`PUT /api/v3/queue/{id}`). */
+  updateQueueCategory(id: string, category: string, signal?: AbortSignal) {
+    return this.requestV3<QueueRecord>(`/queue/${id}`, {
+      method: 'PUT',
+      body: { category },
+      signal,
+    });
+  }
+
+  /**
+   * Manually import a completed-but-unmatched download from the queue
+   * (`POST /api/v3/queue/grab`). The grab is identified by `id`; `contentId`
+   * overrides the content node, and `path` is the on-disk download path.
+   */
+  grabQueueItem(
+    body: { id: number | string; contentId?: string; path: string },
+    signal?: AbortSignal
+  ) {
+    return this.requestV3<QueueGrabResult>('/queue/grab', {
+      method: 'POST',
+      body,
+      signal,
+    });
   }
 
   /** History records (`/api/v3/history` → paged envelope). */

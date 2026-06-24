@@ -541,6 +541,7 @@ dependencies = [
  "cellarr-fs",
  "cellarr-indexers",
  "cellarr-media",
+ "cellarr-meta",
  "cellarr-parse",
  "governor",
  "serde",

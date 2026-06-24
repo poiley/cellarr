@@ -146,6 +146,20 @@ impl Daemon {
         ));
         let state = state.with_manual_import(manual_import);
 
+        // The import-list sync seam (POST /api/v3/importlist/{id}/sync + the
+        // ImportListSync command) runs the safeguarded fetch+add over the live
+        // TMDb/IMDb/collection source factory; Trakt/Plex are credential-gated.
+        let import_list_sync =
+            std::sync::Arc::new(crate::pipeline::LiveImportListSync::new(state.db.clone()));
+        let state = state.with_import_list_sync(import_list_sync);
+
+        // The queue download-client seam (DELETE /api/v3/queue/{id}?removeFromClient=)
+        // resolves the configured client per call to remove a download when a queue
+        // item is removed.
+        let queue_client =
+            std::sync::Arc::new(crate::pipeline::LiveQueueClient::new(state.db.clone()));
+        let state = state.with_queue_client(queue_client);
+
         // The artwork cache dir (`<data_dir>/MediaCover`) the identify/refresh path
         // caches poster/fanart into and the v3 `mediacover/{id}/{kind}` route serves
         // from. Created up front so the route's reads never race a missing dir.

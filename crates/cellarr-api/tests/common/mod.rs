@@ -81,6 +81,38 @@ pub async fn start_with_recycle_bin(recycle_bin: std::path::PathBuf) -> TestServ
     }
 }
 
+/// Spin up an open server whose [`AppState`] is transformed by `f` before serving
+/// — the seam-injection harness used by the queue / import-list-sync tests to opt
+/// in a fake seam (`with_queue_client`, `with_manual_import`,
+/// `with_import_list_sync`).
+pub async fn start_with_state<F>(f: F) -> TestServer
+where
+    F: FnOnce(AppState) -> AppState,
+{
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("cellarr-test.db");
+    let db = Database::open(db_path.to_str().expect("utf-8 path"))
+        .await
+        .expect("open file db");
+    let state = f(AppState::new(db, AuthConfig::disabled()));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let base_url = format!("http://{addr}");
+    let serve_state = state.clone();
+    let handle = tokio::spawn(async move {
+        let _ = cellarr_api::serve(listener, serve_state).await;
+    });
+    TestServer {
+        base_url,
+        state,
+        _dir: dir,
+        _handle: handle,
+    }
+}
+
 /// Insert a library of the given media type with an explicit root folder (a real
 /// directory under a test temp dir), so file-deleting tests can place media on
 /// disk inside the library boundary.

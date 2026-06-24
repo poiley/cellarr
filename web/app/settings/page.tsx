@@ -15,6 +15,7 @@ import QualityProfiles from '@app/settings/_components/QualityProfiles';
 import CustomFormats from '@app/settings/_components/CustomFormats';
 import DelayProfiles from '@app/settings/_components/DelayProfiles';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
+import ImportLists from '@app/settings/_components/ImportLists';
 import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
 import Notifications from '@app/settings/_components/Notifications';
@@ -26,6 +27,7 @@ type Section =
   | 'delays'
   | 'indexers'
   | 'clients'
+  | 'importlists'
   | 'rootfolders'
   | 'remotepaths'
   | 'naming'
@@ -37,6 +39,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'delays', label: 'Delay Profiles' },
   { id: 'indexers', label: 'Indexers' },
   { id: 'clients', label: 'Download Clients' },
+  { id: 'importlists', label: 'Import Lists' },
   { id: 'rootfolders', label: 'Root Folders' },
   { id: 'remotepaths', label: 'Remote Path Mappings' },
   { id: 'naming', label: 'Naming' },
@@ -77,6 +80,7 @@ export default function Page() {
             implementations={CLIENT_IMPLS}
           />
         ) : null}
+        {section === 'importlists' ? <ImportLists /> : null}
         {section === 'rootfolders' ? <RootFolders /> : null}
         {section === 'remotepaths' ? <RemotePathMappings /> : null}
         {section === 'naming' ? <Naming /> : null}

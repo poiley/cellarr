@@ -530,7 +530,142 @@ export interface QueueRecord {
   sizeleft?: number;
   timeleft?: string;
   errorMessage?: string;
+  /** The download client's id for the in-flight download. */
+  downloadId?: string;
+  indexer?: string;
+  downloadClient?: string;
+  category?: string;
+  /** The content node this grab is meant to satisfy. */
+  contentId?: string;
+  /** The full (uuid) grab id, alongside `id` (the numeric projection). */
+  grabId?: string;
   [key: string]: unknown;
+}
+
+/** The `DELETE /api/v3/queue/{id}` response. */
+export interface QueueRemoveResult {
+  removed: boolean;
+  removedFromClient: boolean;
+  blocklisted: boolean;
+}
+
+/** The `POST /api/v3/queue/grab` (manual-import-from-queue) response. */
+export interface QueueGrabResult {
+  imported: boolean;
+  files?: number;
+  errors?: unknown[];
+  message?: string;
+}
+
+// ===========================================================================
+// Import lists + exclusions (Radarr/Sonarr-compatible /api/v3/importlist)
+// ===========================================================================
+
+/** A field on an import-list config / schema template (`fields[]`). */
+export interface ImportListField {
+  name: string;
+  value?: unknown;
+  label?: string;
+  helpText?: string;
+  /** `textbox`, `select`, `checkbox`, … — drives the rendered input. */
+  type?: string;
+  privacy?: string;
+  advanced?: boolean;
+  order?: number;
+  selectOptions?: CustomFormatSchemaSelectOption[];
+}
+
+/**
+ * An import-list config exactly as the v3 shim serializes it
+ * (`GET /api/v3/importlist`). The source credentials/settings ride in `fields[]`;
+ * `shouldMonitor` + `cleanLibraryLevel` are surfaced as top-level flags, and
+ * `lastSuccessfulSync` (unix seconds, or null) is the safeguard timestamp — only
+ * ever stamped on a confirmed-good fetch.
+ */
+export interface ImportListConfigV3 {
+  id: number;
+  name: string;
+  implementation: string;
+  implementationName: string;
+  configContract: string;
+  enabled: boolean;
+  enableAuto: boolean;
+  /** "all" when monitored, "none" otherwise. */
+  monitor: string;
+  shouldMonitor: boolean;
+  listType?: string;
+  /** "disabled" | "logOnly" | "removeAndKeep" — the safe default is "disabled". */
+  cleanLibraryLevel: string;
+  /** Unix seconds of the last confirmed-good sync, or null. */
+  lastSuccessfulSync: number | null;
+  fields: ImportListField[];
+  tags: number[];
+  [key: string]: unknown;
+}
+
+/** An import-list source template (`GET /api/v3/importlist/schema`). */
+export interface ImportListSchema {
+  name: string;
+  implementation: string;
+  implementationName: string;
+  configContract: string;
+  infoLink?: string;
+  enabled?: boolean;
+  enableAuto?: boolean;
+  listType?: string;
+  fields: ImportListField[];
+  presets?: unknown[];
+  tags?: number[];
+  [key: string]: unknown;
+}
+
+/** The v3 import-list write body (`POST`/`PUT /api/v3/importlist`). */
+export interface ImportListBodyV3 {
+  name: string;
+  implementation: string;
+  enabled?: boolean;
+  shouldMonitor?: boolean;
+  cleanLibraryLevel?: string;
+  fields: { name: string; value: unknown }[];
+}
+
+/** One per-list sync report row (`POST /importlist/{id}/sync` / command). */
+export interface ImportListSyncReport {
+  id: number;
+  name: string;
+  /** The safeguard: false means the source fetch failed; nothing was cleaned. */
+  fetchSucceeded: boolean;
+  added: number;
+  cleaned: number;
+  failureReason?: string | null;
+}
+
+/** The `POST /api/v3/importlist/{id}/sync` response. */
+export interface ImportListSyncResult {
+  triggered: boolean;
+  lists?: ImportListSyncReport[];
+  message?: string;
+}
+
+/**
+ * A v3 import-list exclusion (`GET /api/v3/importlistexclusion`). The external id
+ * comes back under the media type's field (`tmdbId`/`tvdbId`/`imdbId`).
+ */
+export interface ImportListExclusionV3 {
+  id: number;
+  title?: string;
+  tmdbId?: number | string;
+  tvdbId?: number | string;
+  imdbId?: number | string;
+  [key: string]: unknown;
+}
+
+/** The v3 import-list-exclusion write body. */
+export interface ImportListExclusionBodyV3 {
+  title?: string;
+  tmdbId?: number | string;
+  tvdbId?: number | string;
+  imdbId?: number | string;
 }
 
 /** A v3 history record (`GET /api/v3/history` → `Page<HistoryRecordV3>`). */

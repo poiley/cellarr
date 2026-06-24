@@ -274,8 +274,12 @@ async fn live_sources_without_credentials_fail_gracefully() {
     use cellarr_jobs::importlists::sources::LiveSourceFactory;
     use cellarr_jobs::importlists::SourceFactory;
 
-    let factory = LiveSourceFactory;
-    for kind in ["trakt", "tmdb", "plex"] {
+    // The live factory over a recorded fetcher that serves no routes: every URL
+    // 404s, so even a source that *would* hit the network reports Failed — and a
+    // credential-less source never reaches it. Either way the result is a graceful
+    // Failed, never an empty Fetched that could drive a clean.
+    let factory = LiveSourceFactory::with_fetcher(Arc::new(cellarr_meta::RecordedFetcher::new()));
+    for kind in ["trakt", "tmdb", "plex", "imdb", "collection"] {
         let mut cfg = movie_list(CleanAction::Remove);
         cfg.kind = kind.into();
         cfg.settings = serde_json::Value::Null; // no credentials

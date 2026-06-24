@@ -48,7 +48,7 @@ use cellarr_indexers::HostRateLimiter;
 use cellarr_jobs::clock::SystemClock;
 use cellarr_jobs::runner::{PipelineRunner, RunOutcome, RunnerConfig};
 use cellarr_jobs::{
-    DbIndexerSet, JobHandler, JobKind, JobResult, ProviderNotifier, WebhookNotifier,
+    DbIndexerSet, ImportListSync, JobHandler, JobKind, JobResult, ProviderNotifier, WebhookNotifier,
 };
 use cellarr_media::MediaRegistry;
 
@@ -963,5 +963,121 @@ fn default_coords(media_type: MediaType) -> cellarr_core::Coordinates {
         MediaType::Book => cellarr_core::Coordinates::Book {
             series_position: None,
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The import-list sync seam (POST /api/v3/importlist/{id}/sync + ImportListSync).
+// ---------------------------------------------------------------------------
+
+/// The daemon's
+/// [`ImportListSyncRunner`](cellarr_api::import_list_sync::ImportListSyncRunner)
+/// implementation: runs the safeguarded fetch+add for the configured import lists
+/// through the real [`cellarr_jobs::ImportListSync`] over the live source factory
+/// (a `reqwest`-backed TMDb/IMDb/collection fetcher; Trakt/Plex are credential-
+/// gated and report a graceful failed fetch).
+///
+/// The factory is owned so each sync resolves the lists + sources freshly per call
+/// (CRUD writes take effect with no restart). The empty-vs-failed safeguard lives
+/// inside `ImportListSync`, so this seam adds no library-mutating logic of its own.
+pub struct LiveImportListSync {
+    db: Database,
+    factory: std::sync::Arc<cellarr_jobs::importlists::sources::LiveSourceFactory>,
+}
+
+impl LiveImportListSync {
+    /// Build the import-list sync seam over the persistence handle, with the live
+    /// `reqwest`-backed source factory.
+    #[must_use]
+    pub fn new(db: Database) -> Self {
+        Self {
+            db,
+            factory: std::sync::Arc::new(
+                cellarr_jobs::importlists::sources::LiveSourceFactory::default(),
+            ),
+        }
+    }
+
+    /// Build the db-backed sync orchestrator for this call.
+    fn sync(&self) -> ImportListSync {
+        ImportListSync::new(self.db.clone(), std::sync::Arc::clone(&self.factory) as _)
+    }
+}
+
+#[async_trait]
+impl cellarr_api::import_list_sync::ImportListSyncRunner for LiveImportListSync {
+    async fn sync_all(
+        &self,
+    ) -> Result<cellarr_api::import_list_sync::ImportListSyncOutcome, String> {
+        use cellarr_api::import_list_sync::ImportListSyncOutcome;
+        let reports = self
+            .sync()
+            .sync_all()
+            .await
+            .map_err(|e| format!("import-list sync failed: {e}"))?;
+        Ok(ImportListSyncOutcome::Ran(reports))
+    }
+
+    async fn sync_one(
+        &self,
+        list_id: &str,
+    ) -> Result<cellarr_api::import_list_sync::ImportListSyncOutcome, String> {
+        use cellarr_api::import_list_sync::ImportListSyncOutcome;
+        use cellarr_core::ImportListRepository;
+        // Resolve the list config; an unknown id is reported as an empty run (the
+        // shim maps that to a 404), never an error.
+        let Some(list) = ImportListRepository::get(&self.db.import_lists(), list_id)
+            .await
+            .map_err(|e| format!("loading import list failed: {e}"))?
+        else {
+            return Ok(ImportListSyncOutcome::Ran(Vec::new()));
+        };
+        let report = self
+            .sync()
+            .sync_one(&list)
+            .await
+            .map_err(|e| format!("import-list sync failed: {e}"))?;
+        Ok(ImportListSyncOutcome::Ran(vec![report]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The queue download-client seam (DELETE /api/v3/queue/{id}?removeFromClient=).
+// ---------------------------------------------------------------------------
+
+/// The daemon's
+/// [`QueueDownloadClient`](cellarr_api::queue::QueueDownloadClient) implementation:
+/// removes a download from its client when a queue item is removed with
+/// `removeFromClient=true`.
+///
+/// It resolves the highest-priority enabled download client freshly per call
+/// (matching the rest of the live pipeline) and calls
+/// [`DownloadClient::remove`](cellarr_core::DownloadClient::remove). A
+/// misconfigured/absent client is a benign error string the queue handler logs —
+/// the queue row is still removed.
+pub struct LiveQueueClient {
+    env: LivePipelineEnv,
+}
+
+impl LiveQueueClient {
+    /// Build the queue download-client seam over the persistence handle.
+    #[must_use]
+    pub fn new(db: Database) -> Self {
+        Self {
+            env: LivePipelineEnv::new(db),
+        }
+    }
+}
+
+#[async_trait]
+impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), String> {
+        let Some((client, _category)) = self.env.resolve_client().await? else {
+            return Err("no enabled download client is configured to remove from".to_string());
+        };
+        client
+            .remove(download_id, delete_data)
+            .await
+            .map_err(|e| format!("download client removal failed: {e}"))
     }
 }

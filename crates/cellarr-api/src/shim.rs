@@ -270,6 +270,8 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/importList/{id}", delete(delete_import_list))
         .route("/importlist/test", post(test_import_list))
         .route("/importList/test", post(test_import_list))
+        .route("/importlist/{id}/sync", post(sync_import_list_one))
+        .route("/importList/{id}/sync", post(sync_import_list_one))
         .route("/importlistexclusion", post(create_import_list_exclusion))
         .route("/importListExclusion", post(create_import_list_exclusion))
         .route(
@@ -282,6 +284,9 @@ pub fn router(state: AppState, face: Face) -> Router {
         )
         .route("/blocklist/{id}", delete(delete_blocklist_item))
         .route("/blocklist/bulk", delete(delete_blocklist_bulk))
+        .route("/queue/{id}", delete(delete_queue_item))
+        .route("/queue/{id}", put(update_queue_category))
+        .route("/queue/grab", post(queue_grab))
         .layer(middleware::from_fn_with_state(
             fs.state.clone(),
             require_api_key,
@@ -3167,6 +3172,7 @@ fn import_list_implementation(kind: &str) -> &'static str {
     match kind.to_ascii_lowercase().as_str() {
         "trakt" => "TraktList",
         "tmdb" => "TMDbListImport",
+        "collection" => "TMDbCollectionImport",
         "plex" | "plex-watchlist" => "PlexImport",
         "imdb" => "IMDbListImport",
         _ => "CustomImport",
@@ -3178,6 +3184,9 @@ fn import_list_implementation(kind: &str) -> &'static str {
 fn import_list_kind(implementation: Option<&str>) -> String {
     match implementation.map(|s| s.to_ascii_lowercase()) {
         Some(i) if i.contains("trakt") => "trakt".into(),
+        // A TMDb *collection* import is its own source kind (auto-add-the-rest);
+        // checked before the generic tmdb match since the string contains "tmdb".
+        Some(i) if i.contains("collection") => "collection".into(),
         Some(i) if i.contains("tmdb") => "tmdb".into(),
         Some(i) if i.contains("plex") => "plex".into(),
         Some(i) if i.contains("imdb") => "imdb".into(),
@@ -3275,12 +3284,32 @@ async fn import_list_schema(State(fs): State<FaceState>) -> Json<Vec<Value>> {
             ],
         ),
     ];
+    // IMDb public lists/charts have no public JSON API; surface the JSON-proxy
+    // field so a list can be configured through a gateway (blocked-on-source until
+    // one is supplied).
+    out.push(entry(
+        "IMDbListImport",
+        vec![
+            json!({ "order": 10, "name": "json_url", "label": "IMDb JSON List URL", "helpText": "IMDb has no public list API; point this at a JSON list proxy returning {results:[{id,title,year}]}.", "type": "textbox", "advanced": false }),
+        ],
+    ));
     if radarr {
         out.push(entry(
             "TMDbListImport",
             vec![
                 json!({ "order": 10, "name": "api_key", "label": "TMDb API Key", "type": "textbox", "privacy": "apiKey", "advanced": false }),
-                json!({ "order": 11, "name": "list_id", "label": "List ID", "type": "textbox", "advanced": false }),
+                json!({ "order": 11, "name": "list_id", "label": "List ID", "helpText": "A curated TMDb list id. Leave blank to use a feed below.", "type": "textbox", "advanced": false }),
+                json!({ "order": 12, "name": "feed", "label": "Feed", "helpText": "When no List ID is set: popular or trending.", "type": "select", "value": "popular", "selectOptions": [ { "value": "popular", "name": "Popular", "order": 0 }, { "value": "trending", "name": "Trending", "order": 1 } ], "advanced": false }),
+                json!({ "order": 13, "name": "window", "label": "Trending Window", "helpText": "For the trending feed: day or week.", "type": "select", "value": "week", "selectOptions": [ { "value": "day", "name": "Day", "order": 0 }, { "value": "week", "name": "Week", "order": 1 } ], "advanced": true }),
+            ],
+        ));
+        // A movie-collection import-list: from a TMDb collection id, add the other
+        // movies in the collection (the auto-add-the-rest source).
+        out.push(entry(
+            "TMDbCollectionImport",
+            vec![
+                json!({ "order": 10, "name": "api_key", "label": "TMDb API Key", "type": "textbox", "privacy": "apiKey", "advanced": false }),
+                json!({ "order": 11, "name": "collection_id", "label": "Collection ID", "helpText": "A TMDb collection id; cellarr adds every movie in the collection.", "type": "textbox", "advanced": false }),
             ],
         ));
     }
@@ -3420,6 +3449,98 @@ async fn test_import_list(Json(body): Json<ImportListBody>) -> ApiResult<Json<Va
         return Err(ApiError::BadRequest("import list name is required".into()));
     }
     Ok(Json(json!({ "isValid": true, "validationFailures": [] })))
+}
+
+/// Render one [`ListSyncReport`](crate::import_list_sync::ListSyncReport) into a
+/// small JSON summary the UI/FE reads after a sync trigger.
+fn v3_list_sync_report(r: &crate::import_list_sync::ListSyncReport) -> Value {
+    json!({
+        "id": il_numeric_id(&r.list_id),
+        "name": r.list_name,
+        // The safeguard surfaced: a source that failed reports fetchSucceeded:false
+        // and added/cleaned 0, so the FE can show "list unavailable" without it
+        // looking like an empty (and thus clean-eligible) list.
+        "fetchSucceeded": r.fetch_succeeded,
+        "added": r.added,
+        "cleaned": r.cleaned,
+        "failureReason": r.failure_reason,
+    })
+}
+
+/// v3 `POST /api/v3/importlist/{id}/sync` — **trigger a sync for one import list**.
+///
+/// Runs the safeguarded fetch+add for the addressed list through the live
+/// [`ImportListSyncRunner`](crate::import_list_sync::ImportListSyncRunner) seam:
+/// it fetches the list's source, adds the monitored items the library lacks
+/// (skipping excluded + already-present), and — only on a confirmed-good fetch —
+/// applies the configured clean action and stamps `last_successful_sync`. A failed
+/// fetch changes nothing (the safeguard). With no sync wiring (offline/test) the
+/// trigger is reported accepted-but-unwired rather than erroring.
+async fn sync_import_list_one(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use crate::import_list_sync::ImportListSyncOutcome;
+    use cellarr_core::ImportListRepository;
+
+    // Resolve the numeric path id back to the cellarr uuid the sync seam keys on.
+    let numeric = parse_i64(&id, "importlist")?;
+    let list = ImportListRepository::list(&fs.state.db.import_lists())
+        .await?
+        .into_iter()
+        .find(|l| il_numeric_id(&l.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("import list {id} not found")))?;
+
+    let Some(runner) = fs.state.import_list_sync.as_ref() else {
+        return Ok(Json(json!({
+            "triggered": false,
+            "message": "no import-list sync pipeline is configured",
+        })));
+    };
+    let outcome = runner
+        .sync_one(&list.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("import-list sync failed: {e}")))?;
+    let reports = match outcome {
+        ImportListSyncOutcome::Ran(reports) => reports,
+        ImportListSyncOutcome::Unavailable(reason) => {
+            return Ok(Json(json!({ "triggered": false, "message": reason })));
+        }
+    };
+    // An empty report set means the list id did not resolve in the sync seam.
+    if reports.is_empty() {
+        return Err(ApiError::NotFound(format!("import list {id} not found")));
+    }
+    Ok(Json(json!({
+        "triggered": true,
+        "lists": reports.iter().map(v3_list_sync_report).collect::<Vec<_>>(),
+    })))
+}
+
+/// Run a **sync of all import lists** — the body of the `ImportListSync` command.
+///
+/// Returns the per-list reports as a JSON value the command handler embeds in its
+/// response. With no sync wiring this reports accepted-but-unwired.
+async fn run_import_list_sync_all(state: &AppState) -> ApiResult<Value> {
+    use crate::import_list_sync::ImportListSyncOutcome;
+    let Some(runner) = state.import_list_sync.as_ref() else {
+        return Ok(
+            json!({ "triggered": false, "message": "no import-list sync pipeline is configured" }),
+        );
+    };
+    let outcome = runner
+        .sync_all()
+        .await
+        .map_err(|e| ApiError::Internal(format!("import-list sync failed: {e}")))?;
+    match outcome {
+        ImportListSyncOutcome::Ran(reports) => Ok(json!({
+            "triggered": true,
+            "lists": reports.iter().map(v3_list_sync_report).collect::<Vec<_>>(),
+        })),
+        ImportListSyncOutcome::Unavailable(reason) => {
+            Ok(json!({ "triggered": false, "message": reason }))
+        }
+    }
 }
 
 // --- import-list exclusions ------------------------------------------------
@@ -4404,6 +4525,22 @@ async fn command(
     State(fs): State<FaceState>,
     Json(body): Json<CommandBody>,
 ) -> ApiResult<Json<Value>> {
+    // The import-list sync command runs through the dedicated sync seam (not the
+    // scheduler), so intercept it here. Mirrors Sonarr/Radarr's `ImportListSync`
+    // command (a.k.a. `ImportListSyncCommand`).
+    let lower = body.name.to_ascii_lowercase();
+    if lower == "importlistsync" || lower == "importlistsynccommand" {
+        let result = run_import_list_sync_all(&fs.state).await?;
+        return Ok(Json(json!({
+            "name": body.name,
+            "commandName": "ImportListSync",
+            "status": "completed",
+            "queued": "0001-01-01T00:00:00Z",
+            "trigger": "manual",
+            "result": result,
+        })));
+    }
+
     let content_id = body.movie_id.or(body.series_id);
     let kind = kind_for_command(&body.name, content_id)
         .ok_or_else(|| ApiError::BadRequest(format!("unknown command: {}", body.name)))?;
@@ -5126,23 +5263,330 @@ fn paged(records: Vec<Value>, sort_key: &str) -> Value {
     })
 }
 
+/// v3 `GET /api/v3/queue` — the download queue.
+///
+/// A queue item is an **in-flight grab**: a release handed to a download client
+/// that has not reached a terminal state (imported/failed/blocklisted). cellarr
+/// backs the queue on the real `grab` rows so the queue-management endpoints
+/// (remove / change-category / grab-from-queue) operate on actual downloads. A
+/// dedicated face only lists items of its own media type.
 async fn queue(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
-    let jobs = commands::list_jobs(&fs.state.scheduler)
-        .await
-        .map_err(ApiError::Command)?;
-    let records: Vec<Value> = jobs
-        .into_iter()
-        .map(|j| {
-            json!({
-                "id": j.id,
-                "title": command_name(&j.kind),
-                "status": format!("{:?}", j.state).to_ascii_lowercase(),
-                "trackedDownloadStatus": "ok",
-                "protocol": "unknown",
-            })
-        })
+    use cellarr_core::repo::GrabRepository;
+    let surface = fs.face.fixed_media();
+    let grabs = fs.state.db.grabs().list().await?;
+    let records: Vec<Value> = grabs
+        .iter()
+        .filter(|g| !is_terminal_grab(g.status))
+        .filter(|g| surface.is_none_or(|m| g.request.content_ref.media_type == m))
+        .map(v3_queue_item)
         .collect();
     Ok(Json(paged(records, "timeleft")))
+}
+
+/// Whether a grab's lifecycle state is terminal (so it is no longer a live queue
+/// item). Imported is a success; Failed/Blocklisted are dead releases.
+fn is_terminal_grab(status: cellarr_core::GrabStatus) -> bool {
+    use cellarr_core::GrabStatus as S;
+    matches!(status, S::Imported | S::Failed | S::Blocklisted)
+}
+
+/// The v3 `trackedDownloadState`/`status` strings for a grab lifecycle state.
+fn grab_status_strs(status: cellarr_core::GrabStatus) -> (&'static str, &'static str) {
+    use cellarr_core::GrabStatus as S;
+    // (status, trackedDownloadState) — the two fields *arr clients read.
+    match status {
+        S::Pending => ("queued", "downloading"),
+        S::Sent => ("queued", "downloading"),
+        S::Downloading => ("downloading", "downloading"),
+        S::Completed => ("completed", "importPending"),
+        // Terminal states are filtered out of the queue list, but render sanely if
+        // referenced directly.
+        S::Imported => ("completed", "imported"),
+        S::Failed => ("failed", "failed"),
+        S::Blocklisted => ("failed", "failed"),
+    }
+}
+
+/// Render one in-flight [`Grab`](cellarr_core::Grab) into the v3 queue record the
+/// ecosystem reads, keyed by the grab id's numeric projection.
+fn v3_queue_item(g: &cellarr_core::Grab) -> Value {
+    let (status, tracked_state) = grab_status_strs(g.status);
+    json!({
+        "id": grab_numeric_id(&g.id.to_string()),
+        "title": g.request.release.title,
+        "downloadId": g.download_id,
+        "status": status,
+        "trackedDownloadStatus": "ok",
+        "trackedDownloadState": tracked_state,
+        "protocol": protocol_str(g.request.release.protocol),
+        "indexer": g.request.indexer_id.to_string(),
+        "downloadClient": g.request.client_id.to_string(),
+        "size": g.request.release.size.unwrap_or(0),
+        // cellarr-native aliases the native queue FE reads.
+        "category": g.request.category,
+        "contentId": g.request.content_ref.id.to_string(),
+        "grabId": g.id.to_string(),
+    })
+}
+
+/// Resolve a queue id (the numeric projection of a grab uuid, or the full uuid)
+/// back to its [`Grab`](cellarr_core::Grab).
+async fn resolve_queue_grab(state: &AppState, raw: &str) -> ApiResult<Option<cellarr_core::Grab>> {
+    use cellarr_core::repo::GrabRepository;
+    // Full uuid: a direct get.
+    if let Ok(uuid) = raw.parse::<uuid::Uuid>() {
+        return Ok(state
+            .db
+            .grabs()
+            .get(cellarr_core::GrabId::from_uuid(uuid))
+            .await?);
+    }
+    // Numeric projection: scan the grabs and match the projected id.
+    let numeric = parse_i64(raw, "queue")?;
+    Ok(state
+        .db
+        .grabs()
+        .list()
+        .await?
+        .into_iter()
+        .find(|g| grab_numeric_id(&g.id.to_string()) == numeric))
+}
+
+/// The `DELETE /api/v3/queue/{id}` query: whether to also remove the download from
+/// the client (and its data) and whether to blocklist the release so it is never
+/// re-grabbed (the Sonarr/Radarr queue-remove options).
+#[derive(Debug, Deserialize)]
+struct QueueRemoveQuery {
+    #[serde(rename = "removeFromClient", default)]
+    remove_from_client: Option<bool>,
+    #[serde(default)]
+    blocklist: Option<bool>,
+}
+
+/// v3 `DELETE /api/v3/queue/{id}` — **remove a queue item**.
+///
+/// Removes the in-flight grab from cellarr's queue and, per the query flags:
+/// - `removeFromClient=true` — tells the download client to remove the download
+///   (deleting its on-disk data) via the [`QueueDownloadClient`] seam. With no
+///   client wiring (offline/test) this is reported not-performed rather than
+///   erroring — the queue row is still removed (the queue is cellarr's own state).
+/// - `blocklist=true` — adds the release to the blocklist so a re-search never
+///   re-grabs it (the Sonarr/Radarr "remove and blocklist").
+///
+/// Idempotent: a queue id that does not resolve still returns 200 (the *arr
+/// clients expect delete to succeed on a re-issued delete).
+async fn delete_queue_item(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Query(q): Query<QueueRemoveQuery>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::repo::GrabRepository;
+    let Some(grab) = resolve_queue_grab(&fs.state, &id).await? else {
+        // Nothing to remove — idempotent success.
+        return Ok(Json(json!({
+            "removed": false,
+            "removedFromClient": false,
+            "blocklisted": false,
+        })));
+    };
+
+    // 1) Optionally remove from the download client (best-effort: a down client
+    // must not strand the queue item).
+    let mut removed_from_client = false;
+    if q.remove_from_client.unwrap_or(false) {
+        if let (Some(client), Some(download_id)) =
+            (fs.state.queue_client.as_ref(), grab.download_id.as_deref())
+        {
+            match client.remove(download_id, /* delete_data = */ true).await {
+                Ok(()) => removed_from_client = true,
+                Err(e) => tracing::warn!(
+                    grab = %grab.id,
+                    error = %e,
+                    "queue remove: download client removal failed; removing queue row anyway"
+                ),
+            }
+        }
+    }
+
+    // 2) Optionally blocklist the release so a re-search never re-grabs it.
+    let mut blocklisted = false;
+    if q.blocklist.unwrap_or(false) {
+        use cellarr_core::blocklist::BlocklistRepository;
+        let entry = cellarr_core::BlocklistEntry::from_release(
+            grab.request.content_ref.id,
+            &grab.request.release,
+            "removed from queue and blocklisted by the user",
+            time::OffsetDateTime::now_utc(),
+        );
+        BlocklistRepository::add(&fs.state.db.blocklist(), &entry).await?;
+        blocklisted = true;
+    }
+
+    // 3) Drop the grab from cellarr's queue.
+    let removed = fs.state.db.grabs().delete(grab.id).await?;
+
+    Ok(Json(json!({
+        "removed": removed,
+        "removedFromClient": removed_from_client,
+        "blocklisted": blocklisted,
+    })))
+}
+
+/// The `PUT /api/v3/queue/{id}` change-category body: the new download category to
+/// tag the queued download with.
+#[derive(Debug, Deserialize)]
+struct QueueCategoryBody {
+    #[serde(default)]
+    category: Option<String>,
+}
+
+/// v3 `PUT /api/v3/queue/{id}` — **change a queued download's category**.
+///
+/// Retags the in-flight grab with a new download category (the Sonarr/Radarr
+/// "change category" queue action). Returns the updated queue record.
+async fn update_queue_category(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<QueueCategoryBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::repo::GrabRepository;
+    let category = body
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("a category is required".into()))?;
+    let Some(mut grab) = resolve_queue_grab(&fs.state, &id).await? else {
+        return Err(ApiError::NotFound(format!("queue item {id} not found")));
+    };
+    fs.state.db.grabs().set_category(grab.id, category).await?;
+    grab.request.category = category.to_string();
+    Ok(Json(v3_queue_item(&grab)))
+}
+
+/// The `POST /api/v3/queue/grab` body: import a completed-but-unmatched download
+/// from the queue by choosing the content node it should land on. The grab carries
+/// the on-disk download path; the user picks the content match (or accepts the
+/// grab's own content ref).
+#[derive(Debug, Deserialize)]
+struct QueueGrabBody {
+    /// The queue id (numeric projection or uuid) of the completed download.
+    /// Accepts a JSON number (the *arr-native numeric id) or a string.
+    #[serde(default)]
+    id: Option<Value>,
+    /// The content node to import onto (overrides the grab's own content ref). The
+    /// *arr `movieId`/`seriesId` spellings are accepted too.
+    #[serde(rename = "contentId", default)]
+    content_id: Option<String>,
+    #[serde(rename = "movieId", default)]
+    movie_id: Option<String>,
+    #[serde(rename = "seriesId", default)]
+    series_id: Option<String>,
+    /// The on-disk path of the completed download to import, when the caller knows
+    /// it (e.g. the queue row's reported output path). Falls back to none, in which
+    /// case the grab must carry a resolvable path.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// v3 `POST /api/v3/queue/grab` — **manual import from the queue**.
+///
+/// Imports a completed-but-unmatched download by choosing the content node it
+/// should satisfy, reusing the **same crash-safe manual-import commit path** the
+/// loose-folder manual import uses. The download's on-disk `path` (from the body,
+/// or the grab's reported output) is imported onto the chosen content node; on a
+/// successful import the grab is marked imported and dropped from the queue.
+///
+/// With no import pipeline wired (offline/test), this degrades to a clear JSON
+/// outcome with `imported: false` rather than erroring.
+async fn queue_grab(
+    State(fs): State<FaceState>,
+    Json(body): Json<QueueGrabBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::repo::GrabRepository;
+    let raw_id = body
+        .id
+        .as_ref()
+        .and_then(id_value_str)
+        .ok_or_else(|| ApiError::BadRequest("a queue id is required".into()))?;
+    let Some(grab) = resolve_queue_grab(&fs.state, &raw_id).await? else {
+        return Err(ApiError::NotFound(format!("queue item {raw_id} not found")));
+    };
+
+    // The content node to import onto: the caller's chosen match, else the grab's
+    // own content ref (the node the grab was intended to satisfy).
+    let content_id = match body
+        .content_id
+        .or(body.movie_id)
+        .or(body.series_id)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => cellarr_core::ContentId::from_uuid(
+            raw.parse::<uuid::Uuid>()
+                .map_err(|_| ApiError::BadRequest(format!("invalid contentId: {raw}")))?,
+        ),
+        None => grab.request.content_ref.id,
+    };
+
+    // The on-disk path of the completed download: the caller's path, else the
+    // release's download_url when it names a local path. A queue grab-import needs
+    // a concrete source path.
+    let path = body
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "a path to the completed download is required to import it from the queue".into(),
+            )
+        })?;
+
+    // No import pipeline wiring (offline/test): report unavailable rather than 500.
+    let Some(mi) = fs.state.manual_import.as_ref() else {
+        return Ok(Json(json!({
+            "imported": false,
+            "message": "no import pipeline is configured",
+        })));
+    };
+
+    use crate::manual_import::ManualImportCommitOutcome;
+    let outcome = mi
+        .commit(vec![cellarr_jobs::ManualImportRequest { path, content_id }])
+        .await
+        .map_err(|e| ApiError::Internal(format!("queue grab-import failed: {e}")))?;
+    let body = match outcome {
+        ManualImportCommitOutcome::Committed { imported, errors } => {
+            if !imported.is_empty() {
+                // The download landed: mark the grab imported and drop it from the
+                // queue so it no longer shows as in-flight.
+                let _ = fs
+                    .state
+                    .db
+                    .grabs()
+                    .set_status(grab.id, cellarr_core::GrabStatus::Imported)
+                    .await;
+                let _ = fs.state.db.grabs().delete(grab.id).await;
+            }
+            json!({
+                "imported": !imported.is_empty(),
+                "files": imported.len(),
+                "errors": errors,
+            })
+        }
+        ManualImportCommitOutcome::Unavailable(reason) => json!({
+            "imported": false,
+            "message": reason,
+        }),
+    };
+    Ok(Json(body))
+}
+
+/// Project a grab id (a uuid string) onto a stable positive integer the v3 queue
+/// `id` field requires.
+fn grab_numeric_id(id: &str) -> i64 {
+    rpm_numeric_id(id)
 }
 
 #[derive(Debug, Deserialize)]

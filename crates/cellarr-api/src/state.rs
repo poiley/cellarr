@@ -15,8 +15,10 @@ use cellarr_jobs::JobHandler;
 use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, build_scheduler_with, ApiScheduler};
 use crate::events::EventBus;
+use crate::import_list_sync::ImportListSyncRunner;
 use crate::manual_import::ManualImport;
 use crate::metadata::MetadataLookup;
+use crate::queue::QueueDownloadClient;
 use crate::release_search::{ReleaseGrab, ReleaseSearch};
 use crate::tags::TagStore;
 
@@ -56,6 +58,16 @@ pub struct AppState {
     /// unavailable); the daemon injects a live implementation over the real
     /// [`PipelineRunner`](cellarr_jobs::PipelineRunner) scan + crash-safe import path.
     pub manual_import: Option<Arc<dyn ManualImport>>,
+    /// The import-list **sync** seam `POST /api/v3/importlist/{id}/sync` and the
+    /// `ImportListSync` command drive. `None` means no sync wiring at all (the
+    /// shim then reports a sync trigger as accepted-but-unwired); the daemon
+    /// injects a live implementation over [`cellarr_jobs::ImportListSync`].
+    pub import_list_sync: Option<Arc<dyn ImportListSyncRunner>>,
+    /// The "remove a download from its client" seam the `DELETE /api/v3/queue/{id}`
+    /// `removeFromClient` action drives. `None` means no download-client wiring (the
+    /// queue row is still removed; the client removal is reported not-performed);
+    /// the daemon injects a live implementation that builds the configured client.
+    pub queue_client: Option<Arc<dyn QueueDownloadClient>>,
     /// The on-disk artwork cache directory (`<data_dir>/MediaCover`), where the
     /// identify/refresh path caches poster/fanart bytes keyed by content id. The
     /// `GET /api/v3/mediacover/{id}/{kind}` route serves files from here. `None`
@@ -118,6 +130,8 @@ impl AppState {
             release_search: None,
             release_grab: None,
             manual_import: None,
+            import_list_sync: None,
+            queue_client: None,
             artwork_dir: None,
             recycle_bin_path: None,
         }
@@ -161,6 +175,27 @@ impl AppState {
     #[must_use]
     pub fn with_manual_import(mut self, manual_import: Arc<dyn ManualImport>) -> Self {
         self.manual_import = Some(manual_import);
+        self
+    }
+
+    /// Attach the import-list sync source (the live `cellarr-jobs` wiring), so
+    /// `POST /api/v3/importlist/{id}/sync` and the `ImportListSync` command run the
+    /// real safeguarded fetch+add. Builder form so the base [`AppState::new`] stays
+    /// offline (the shim reports a sync trigger unavailable) and tests can opt a
+    /// fake in.
+    #[must_use]
+    pub fn with_import_list_sync(mut self, runner: Arc<dyn ImportListSyncRunner>) -> Self {
+        self.import_list_sync = Some(runner);
+        self
+    }
+
+    /// Attach the queue download-client source (the live wiring), so a
+    /// `DELETE /api/v3/queue/{id}?removeFromClient=true` actually removes the
+    /// download from its client. Builder form so the base [`AppState::new`] stays
+    /// offline (the removal is reported not-performed) and tests can opt a fake in.
+    #[must_use]
+    pub fn with_queue_client(mut self, client: Arc<dyn QueueDownloadClient>) -> Self {
+        self.queue_client = Some(client);
         self
     }
 

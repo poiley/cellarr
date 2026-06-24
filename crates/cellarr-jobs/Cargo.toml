@@ -13,6 +13,7 @@ cellarr-decide.workspace = true
 cellarr-fs.workspace = true
 cellarr-indexers.workspace = true
 cellarr-media.workspace = true
+cellarr-meta.workspace = true
 cellarr-download.workspace = true
 cellarr-parse.workspace = true
 tokio.workspace = true

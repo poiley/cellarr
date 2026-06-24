@@ -143,11 +143,24 @@ pub trait GrabRepository: Send + Sync {
     /// Fetch the persisted grab (request + lifecycle) by id.
     async fn get(&self, id: GrabId) -> Result<Option<Grab>, Self::Error>;
 
+    /// Every persisted grab, newest first. Backs the v3 `queue` surface (a queue
+    /// item is an in-flight grab) and the queue-management endpoints that resolve a
+    /// queue id back to its grab.
+    async fn list(&self) -> Result<Vec<Grab>, Self::Error>;
+
     /// Record the download client's own id for a grab, once it has accepted it.
     async fn set_download_id(&self, id: GrabId, download_id: &str) -> Result<(), Self::Error>;
 
     /// Advance a grab's lifecycle [`GrabStatus`].
     async fn set_status(&self, id: GrabId, status: GrabStatus) -> Result<(), Self::Error>;
+
+    /// Change the download category a grab is tagged with (the v3 `PUT /queue`
+    /// change-category action). Idempotent; a missing id is a no-op.
+    async fn set_category(&self, id: GrabId, category: &str) -> Result<(), Self::Error>;
+
+    /// Delete a grab row by id. Used when a queue item is removed (the grab no
+    /// longer tracks anything). Idempotent; returns `true` if a row was removed.
+    async fn delete(&self, id: GrabId) -> Result<bool, Self::Error>;
 }
 
 /// Append-only writes and queries for the history stream.

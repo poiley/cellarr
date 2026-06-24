@@ -150,6 +150,54 @@ impl GrabRepository for GrabRepo {
         }))
     }
 
+    async fn list(&self) -> Result<Vec<Grab>> {
+        let rows = sqlx::query(
+            "SELECT id, content_ref, release, indexer_id, client_id, category, download_id, status,
+                    release_type
+             FROM grab ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id_str: String = row.try_get("id")?;
+            let content_ref: String = row.try_get("content_ref")?;
+            let release: String = row.try_get("release")?;
+            let indexer_id: String = row.try_get("indexer_id")?;
+            let client_id: String = row.try_get("client_id")?;
+            let category: String = row.try_get("category")?;
+            let download_id: Option<String> = row.try_get("download_id")?;
+            let status: String = row.try_get("status")?;
+            let release_type: Option<String> = row.try_get("release_type")?;
+
+            let id =
+                serde_json::from_value(serde_json::Value::String(id_str)).map_err(DbError::from)?;
+            let content_ref: ContentRef = serde_json::from_str(&content_ref)?;
+            let release: Release = serde_json::from_str(&release)?;
+            let indexer_id = serde_json::from_value(serde_json::Value::String(indexer_id))
+                .map_err(DbError::from)?;
+            let client_id = serde_json::from_value(serde_json::Value::String(client_id))
+                .map_err(DbError::from)?;
+            let status = status_from_str(&status)?;
+            let release_type = release_type_from_str(release_type)?;
+
+            out.push(Grab {
+                id,
+                request: GrabRequest {
+                    content_ref,
+                    release,
+                    indexer_id,
+                    client_id,
+                    category,
+                    release_type,
+                },
+                download_id,
+                status,
+            });
+        }
+        Ok(out)
+    }
+
     async fn set_download_id(&self, id: GrabId, download_id: &str) -> Result<()> {
         let id = id.to_string();
         let download_id = download_id.to_string();
@@ -182,5 +230,45 @@ impl GrabRepository for GrabRepo {
                 })
             })
             .await
+    }
+
+    async fn set_category(&self, id: GrabId, category: &str) -> Result<()> {
+        let id = id.to_string();
+        let category = category.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query("UPDATE grab SET category = ?2 WHERE id = ?1")
+                        .bind(id)
+                        .bind(category)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    async fn delete(&self, id: GrabId) -> Result<bool> {
+        // The writer actor's job returns `()`, so detect existence with a read
+        // before issuing the delete (the queue-remove path is not hot).
+        let existed = sqlx::query("SELECT 1 FROM grab WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+        let id = id.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query("DELETE FROM grab WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(existed)
     }
 }
