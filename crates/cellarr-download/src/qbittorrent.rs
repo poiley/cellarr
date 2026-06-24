@@ -33,6 +33,7 @@ use serde::Deserialize;
 use crate::error::DownloadError;
 use crate::http::{HttpRequest, HttpResponse, HttpTransport};
 use crate::lifecycle::{DownloadProgress, RemovePolicy};
+use crate::source::TorrentSource;
 
 /// Connection + auth settings for a qBittorrent client, deserialized from a
 /// [`cellarr_core::DownloadClientConfig`]'s `settings` JSON.
@@ -261,26 +262,64 @@ impl QbittorrentClient {
 
     /// Add a torrent and return its infohash (the qBittorrent download id).
     ///
-    /// qBittorrent's add endpoint does not return the hash, so we derive it from
-    /// the magnet/URL the grab carries: a magnet's `btih` is the infohash. For a
-    /// `.torrent` URL the caller must have an infohash on the release (the
-    /// indexer supplies it); we surface a clear error otherwise rather than
-    /// guessing.
+    /// cellarr resolves the release's `download_url` to a self-contained
+    /// [`TorrentSource`] **first** (fetching the indexer URL itself), so qBittorrent
+    /// never has to reach the indexer — which is unreachable from qBittorrent's
+    /// network when cellarr talks to the indexer over a port-forward/VPN. A magnet
+    /// is submitted via the form `urls=` field; a `.torrent` is uploaded directly as
+    /// the multipart `torrents` file part.
+    ///
+    /// qBittorrent's add endpoint does not return the hash, so we derive the
+    /// infohash from the resolved source: a magnet's `btih`, or the SHA-1 of the
+    /// uploaded `.torrent`'s bencoded `info` dictionary (the BitTorrent v1 infohash).
     pub async fn add(&self, grab: &GrabRequest) -> Result<String, DownloadError> {
         self.ensure_session().await?;
-        let url = &grab.release.download_url;
-        let body = format!(
-            "urls={}&category={}",
-            urlencode(url),
-            urlencode(&self.category)
-        );
-        let req = self
-            .with_session(HttpRequest::new(
-                "POST",
-                format!("{}/api/v2/torrents/add", self.base()),
-            ))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body);
+        let source =
+            TorrentSource::resolve(&grab.release.download_url, self.transport.as_ref()).await?;
+
+        let (req, infohash) = match &source {
+            TorrentSource::Magnet(magnet) => {
+                let body = format!(
+                    "urls={}&category={}",
+                    urlencode(magnet),
+                    urlencode(&self.category)
+                );
+                let req = self
+                    .with_session(HttpRequest::new(
+                        "POST",
+                        format!("{}/api/v2/torrents/add", self.base()),
+                    ))
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(body);
+                let infohash = infohash_from_url(magnet).ok_or_else(|| {
+                    DownloadError::UnexpectedResponse(
+                        "resolved magnet carries no btih infohash".into(),
+                    )
+                })?;
+                (req, infohash)
+            }
+            TorrentSource::Metainfo(bytes) => {
+                // Upload the .torrent bytes as a multipart `torrents` file part and
+                // a `category` text part. qBittorrent does not echo the hash, so we
+                // compute the v1 infohash from the file's bencoded `info` dict.
+                let infohash = infohash_from_metainfo(bytes).ok_or_else(|| {
+                    DownloadError::UnexpectedResponse(
+                        "could not compute infohash from .torrent metainfo (no bencoded info dict)"
+                            .into(),
+                    )
+                })?;
+                let (body, content_type) = multipart_add_body(bytes, &self.category);
+                let req = self
+                    .with_session(HttpRequest::new(
+                        "POST",
+                        format!("{}/api/v2/torrents/add", self.base()),
+                    ))
+                    .header("Content-Type", content_type)
+                    .body_bytes(body);
+                (req, infohash)
+            }
+        };
+
         let resp = self.transport.send(req).await?;
         if resp.status == 401 || resp.status == 403 {
             return Err(DownloadError::Auth(format!(
@@ -295,12 +334,7 @@ impl QbittorrentClient {
                 resp.body.trim()
             )));
         }
-        infohash_from_url(url).ok_or_else(|| {
-            DownloadError::UnexpectedResponse(
-                "could not determine infohash for added torrent (non-magnet URL with no infohash)"
-                    .into(),
-            )
-        })
+        Ok(infohash)
     }
 
     /// Read the qBittorrent application version (e.g. `v5.1.2`) via
@@ -469,6 +503,190 @@ fn infohash_from_url(url: &str) -> Option<String> {
     }
 }
 
+/// A fixed multipart boundary for the `.torrent` upload. A constant is safe here
+/// because the only payload is opaque bencoded bytes plus the cellarr category,
+/// neither of which contains this token.
+const MULTIPART_BOUNDARY: &str = "cellarrFormBoundary7MA4YWxkTrZu0gW";
+
+/// Build the `multipart/form-data` body for a `.torrent` upload: a `torrents`
+/// file part carrying the metainfo bytes and a `category` text part. Returns the
+/// raw body bytes and the matching `Content-Type` header value.
+fn multipart_add_body(metainfo: &[u8], category: &str) -> (Vec<u8>, String) {
+    let mut body = Vec::new();
+    let dashes = format!("--{MULTIPART_BOUNDARY}\r\n");
+
+    // The .torrent file part (binary, sent verbatim).
+    body.extend_from_slice(dashes.as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"torrents\"; filename=\"cellarr.torrent\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: application/x-bittorrent\r\n\r\n");
+    body.extend_from_slice(metainfo);
+    body.extend_from_slice(b"\r\n");
+
+    // The category text part.
+    body.extend_from_slice(dashes.as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"category\"\r\n\r\n");
+    body.extend_from_slice(category.as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}");
+    (body, content_type)
+}
+
+/// Compute the BitTorrent v1 infohash (lowercase hex SHA-1 of the bencoded `info`
+/// dictionary) from `.torrent` metainfo bytes, or `None` if it has no `info` dict.
+fn infohash_from_metainfo(metainfo: &[u8]) -> Option<String> {
+    let info = bencode_info_slice(metainfo)?;
+    Some(hex(&sha1(info)))
+}
+
+/// Find the byte slice of the top-level `info` dictionary value inside a bencoded
+/// `.torrent` file, so its SHA-1 can be taken as the infohash.
+///
+/// Parses just enough bencode to walk the top-level dictionary's key/value pairs
+/// and return the exact bytes spanning the `info` value (the BitTorrent spec keys
+/// the infohash off these verbatim bytes — re-encoding would change them).
+fn bencode_info_slice(data: &[u8]) -> Option<&[u8]> {
+    let mut pos = 0;
+    // The whole file is a dictionary: it must start with 'd'.
+    if data.first() != Some(&b'd') {
+        return None;
+    }
+    pos += 1;
+    while pos < data.len() && data[pos] != b'e' {
+        // A dictionary key is always a bencoded string.
+        let (key, after_key) = bencode_string(data, pos)?;
+        pos = after_key;
+        let value_start = pos;
+        pos = bencode_skip(data, pos)?;
+        if key == b"info" {
+            return data.get(value_start..pos);
+        }
+    }
+    None
+}
+
+/// Parse a bencoded string starting at `pos`; return its content and the index
+/// just past it.
+fn bencode_string(data: &[u8], pos: usize) -> Option<(&[u8], usize)> {
+    let colon = data[pos..].iter().position(|&b| b == b':')? + pos;
+    let len: usize = std::str::from_utf8(data.get(pos..colon)?)
+        .ok()?
+        .parse()
+        .ok()?;
+    let start = colon + 1;
+    let end = start.checked_add(len)?;
+    let content = data.get(start..end)?;
+    Some((content, end))
+}
+
+/// Return the index just past the bencoded value starting at `pos` (recursively
+/// skipping strings, integers, lists, and dictionaries).
+fn bencode_skip(data: &[u8], pos: usize) -> Option<usize> {
+    match data.get(pos)? {
+        b'i' => {
+            // i<digits>e
+            let end = data[pos..].iter().position(|&b| b == b'e')? + pos;
+            Some(end + 1)
+        }
+        b'l' | b'd' => {
+            // List/dict: skip nested values until the matching 'e'.
+            let mut p = pos + 1;
+            while *data.get(p)? != b'e' {
+                if data[pos] == b'd' {
+                    // dict: key (string) then value
+                    let (_k, after) = bencode_string(data, p)?;
+                    p = bencode_skip(data, after)?;
+                } else {
+                    p = bencode_skip(data, p)?;
+                }
+            }
+            Some(p + 1)
+        }
+        b'0'..=b'9' => {
+            let (_s, end) = bencode_string(data, pos)?;
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
+/// Lowercase hex encoding of a byte slice.
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// A dependency-free SHA-1 (RFC 3174) over `data`, returning the 20-byte digest.
+///
+/// Used solely to derive the BitTorrent v1 infohash from a `.torrent`'s `info`
+/// dictionary; pulling a crypto crate for this one non-security use is avoided.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let ml = (data.len() as u64).wrapping_mul(8);
+
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&ml.to_be_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
 /// Minimal `application/x-www-form-urlencoded` value encoder.
 ///
 /// Avoids pulling a URL-encoding crate for the handful of params the adapters
@@ -504,6 +722,51 @@ mod tests {
     #[test]
     fn urlencode_escapes_reserved() {
         assert_eq!(urlencode("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn sha1_matches_known_vectors() {
+        // RFC 3174 / well-known vectors.
+        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(
+            hex(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hex(&sha1(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        );
+    }
+
+    #[test]
+    fn infohash_from_metainfo_extracts_and_hashes_info_dict() {
+        // A tiny well-formed bencoded torrent; the v1 infohash is the SHA-1 of the
+        // verbatim bytes of its `info` value (independently computed in Python).
+        let torrent = b"d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        assert_eq!(
+            infohash_from_metainfo(torrent).as_deref(),
+            Some("157493ee02747f71737019e994e47f44e5f89b97")
+        );
+    }
+
+    #[test]
+    fn infohash_from_metainfo_none_without_info_dict() {
+        assert!(infohash_from_metainfo(b"d8:announce4:noopee").is_none());
+    }
+
+    #[test]
+    fn multipart_body_frames_file_and_category_parts() {
+        let (body, content_type) = multipart_add_body(b"BENCODE", "cellarr-tv");
+        let text = String::from_utf8_lossy(&body);
+        assert!(content_type.starts_with("multipart/form-data; boundary="));
+        assert!(text.contains("name=\"torrents\"; filename=\"cellarr.torrent\""));
+        assert!(text.contains("application/x-bittorrent"));
+        assert!(text.contains("BENCODE"));
+        assert!(text.contains("name=\"category\""));
+        assert!(text.contains("cellarr-tv"));
+        assert!(text.trim_end().ends_with("--"));
     }
 
     fn resp_with_set_cookie(set_cookie: &str) -> HttpResponse {

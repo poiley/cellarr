@@ -1,0 +1,4 @@
+{
+  "scenario": "Source resolver: a magnet download_url resolves with zero HTTP traffic; also reused by the empty-url config-error case.",
+  "exchanges": []
+}

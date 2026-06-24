@@ -1,0 +1,27 @@
+{
+  "scenario": "Source resolver: an http(s) download_url 301-redirects to another http(s) URL (bounded hop), which then streams .torrent bytes -> Metainfo. A relative Location resolves against the indexer origin.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download"
+      },
+      "response": {
+        "status": 301,
+        "headers": { "location": "/dl/real.torrent" },
+        "body": ""
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/dl/real.torrent"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    }
+  ]
+}

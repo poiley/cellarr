@@ -1,0 +1,44 @@
+{
+  "scenario": "Transmission add with an http(s) download_url (Prowlarr proxy): cellarr fetches the .torrent itself, then torrent-add passes base64 metainfo (NOT filename=<url>) through the 409 session handshake. The daemon never sees the indexer URL.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "body_contains": "\"method\":\"torrent-add\""
+      },
+      "response": {
+        "status": 409,
+        "headers": { "x-transmission-session-id": "sess-abc-123" },
+        "body": "<h1>409: Conflict</h1>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "header_equals": { "x-transmission-session-id": "sess-abc-123" },
+        "body_contains": "\"metainfo\":\"ZDg6YW5ub3VuY2UxMzpodHRwOi8vdHIvYW5uNDppbmZvZDY6bGVuZ3RoaTEyZTQ6bmFtZTk6U29tZS5GaWxlMTI6cGllY2UgbGVuZ3RoaTE2Mzg0ZTY6cGllY2VzMjA6YWFhYWFhYWFhYWFhYWFhYWFhYWFlZQ==\"",
+        "body_contains_2": "\"labels\":[\"cellarr-tv\"]",
+        "body_contains_3": "\"download-dir\":\"/downloads/cellarr-tv\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrent-added\":{\"id\":7,\"name\":\"Some.File\",\"hashString\":\"157493ee02747f71737019e994e47f44e5f89b97\"}}}"
+      }
+    }
+  ]
+}

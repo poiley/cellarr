@@ -1,0 +1,17 @@
+{
+  "scenario": "Source resolver: an http(s) download_url (a Prowlarr proxy URL) streams .torrent bytes (200) -> Metainfo. cellarr fetches it, not the client.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    }
+  ]
+}

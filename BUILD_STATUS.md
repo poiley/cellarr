@@ -46,6 +46,22 @@ strategy and every hard number live in **[`docs/parity/TESTING.md`](docs/parity/
 - `cellarr migrate` imports the Radarr+Sonarr fixtures into one unified library set (recognize-in-place, 0 file ops).
 - Browser: UI renders in light **and** dark via OS preference (no flash), per-route navigation, live API data (imported Movies + TV libraries).
 - `cellarr-jobs` end-to-end test drives a movie and a TV episode discover→imported (files land on disk at renamed paths; grab→Imported; decision_log + history written); a junk release is rejected with a logged reason and no file moved.
+- **Live stack run (2026-06-23, against the user's real Prowlarr + Transmission + NAS).** The
+  prebuilt daemon was driven end to end: configured a Transmission download client, a Torznab indexer
+  pointed at the user's real Prowlarr (TPB feed), and a remote-path mapping, then added *Big Buck
+  Bunny* (TMDb 10378) and triggered a search. **OBSERVED live:** cellarr really queried Prowlarr (22
+  TPB releases returned), parsed/identified the movie, reached a **Grab** verdict, persisted a grab
+  row, and called the **real Transmission `torrent-add` RPC**. Furthest stage reached = **grabbed**.
+  The grab then **failed** at the magnet-redirect boundary: Prowlarr's `/download` 301-redirects into
+  a `magnet:` URI and cellarr's Torznab adapter passes only the `<enclosure>` HTTP URL to the client
+  (it ignores the magnet sitting in `<guid>`; see `crates/cellarr-indexers/src/feed.rs` line ~53,
+  `download_url = self.enclosure_url.or(self.link)`), so `torrent-add` got `Moved Permanently (301)`
+  and could not fetch the torrent. The daemon's own DB recorded **2 grab rows status=failed**, **2
+  `download_failed` history events**, **0 `media_file` (no import)**; nothing was written to the NAS
+  and no torrent was left on the user's Transmission. So **search→decide→grab→Transmission-RPC is
+  proven live, but the real byte-transfer + import did not complete** — a genuine integration gap
+  (magnet-redirect indexers like TPB), not a config error. The hermetic e2e (below / `pipeline_e2e.rs`)
+  still covers download→import with a direct-`.torrent` / pre-staged completed dir.
 
 ## Deferred (documented, not silently missing)
 
@@ -61,6 +77,13 @@ strategy and every hard number live in **[`docs/parity/TESTING.md`](docs/parity/
   **identify/matching oracle** (needs populated libraries) — see [`docs/parity/decision-gaps.md`](docs/parity/decision-gaps.md).
 - **Live-service smoke suites** — integrations are tested via record/replay fixtures (offline);
   opt-in live drift suites against real indexers/clients/metadata are not wired.
+- **Magnet-redirect indexers (e.g. The Pirate Bay via Prowlarr)** — the Torznab adapter
+  (`cellarr-indexers/src/feed.rs`) uses only the `<enclosure>`/`<link>` download URL and does not
+  fall back to the `magnet:` URI in `<guid>` or follow a `/download` → `magnet:` 301 redirect. For
+  trackers that only offer magnets behind a redirect, the live grab reaches the download client but
+  `torrent-add` cannot fetch the URL (observed `Moved Permanently (301)` in the 2026-06-23 live run).
+  Direct-`.torrent` indexers are unaffected. Fix = use the `<guid>`/`infohash` magnet or resolve the
+  redirect (deferred, not a research problem).
 - **LLM & WASM plugins** — implemented but feature-gated off by default (kept out of the lean single binary).
 - Some integration coverage (Cardigann breadth, more download clients, richer `/api/v3` surface) is
   first-cut and intended to grow against the test corpora.

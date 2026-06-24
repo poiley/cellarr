@@ -187,6 +187,23 @@ async fn errored_torrent_is_failed_and_foreign_label_is_visible() {
 }
 
 #[tokio::test]
+async fn add_with_http_url_fetches_torrent_and_sends_metainfo_not_filename() {
+    // The download_url is an http(s) Prowlarr proxy URL only cellarr can reach.
+    // cellarr must fetch it itself and pass base64 `metainfo` to torrent-add so the
+    // daemon never tries (and fails) to fetch the indexer URL. The fixture's add
+    // exchange asserts `metainfo` is present; the returned hashString is the SHA-1
+    // of the fetched .torrent's info dict (proving the metainfo path ran).
+    let (client, transport) = client("transmission/add_http_torrent_metainfo.json", "cellarr-tv");
+    let grab = torrent_grab(
+        "http://127.0.0.1:19696/1/download?apikey=KEY&link=LINK",
+        "cellarr-tv",
+    );
+    let id = client.add(&grab, false).await.expect("http add");
+    assert_eq!(id, "157493ee02747f71737019e994e47f44e5f89b97");
+    transport.assert_drained();
+}
+
+#[tokio::test]
 async fn empty_torrents_array_maps_to_not_found() {
     let (client, transport) = client("transmission/status_not_found.json", "cellarr-tv");
     let err = client.status("missing").await.unwrap_err();

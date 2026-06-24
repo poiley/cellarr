@@ -93,7 +93,10 @@ async fn main() {
     //    409 session-id handshake and proves the RPC is reachable. A NotFound is
     //    the expected, successful outcome (the daemon answered "success" with an
     //    empty torrents array).
-    match client.status("0000000000000000000000000000000000000000").await {
+    match client
+        .status("0000000000000000000000000000000000000000")
+        .await
+    {
         Err(cellarr_download::DownloadError::NotFound(_)) => {
             println!("LIVE handshake_ok=true (session-id captured, empty torrent-get)");
         }

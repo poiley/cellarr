@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 use crate::error::DownloadError;
 use crate::http::{HttpRequest, HttpTransport};
 use crate::lifecycle::{DownloadProgress, RemovePolicy};
+use crate::source::TorrentSource;
 
 /// The header Transmission uses to carry the CSRF session id, both on the `409`
 /// challenge response and on every authenticated request.
@@ -286,16 +287,30 @@ impl TransmissionClient {
 
     /// Add a torrent and return its `hashString` (the cellarr download id).
     ///
-    /// The magnet/`.torrent` URL is passed as `filename` (Transmission fetches
-    /// URLs and resolves magnets), the per-category save path as `download-dir`
-    /// (only when an absolute root is configured — see [`Self::download_dir`]),
-    /// cellarr's category as a `labels` entry, and the `paused` flag verbatim.
+    /// cellarr resolves the release's `download_url` to a self-contained
+    /// [`TorrentSource`] **first** (fetching the indexer URL itself), so the daemon
+    /// never has to reach the indexer — which is unreachable from the daemon's
+    /// network when cellarr talks to the indexer over a port-forward/VPN. A magnet
+    /// is then passed as `filename` (Transmission resolves magnets via DHT/trackers
+    /// on its own); a `.torrent` is passed as base64 `metainfo` (no fetch needed).
+    /// The per-category save path is sent as `download-dir` (only when an absolute
+    /// root is configured — see [`Self::download_dir`]), cellarr's category as a
+    /// `labels` entry, and the `paused` flag verbatim.
     pub async fn add(&self, grab: &GrabRequest, paused: bool) -> Result<String, DownloadError> {
-        let mut args = json!({
-            "filename": grab.release.download_url,
-            "labels": [self.category],
-            "paused": paused,
-        });
+        let source =
+            TorrentSource::resolve(&grab.release.download_url, self.transport.as_ref()).await?;
+        let mut args = match source {
+            TorrentSource::Magnet(magnet) => json!({
+                "filename": magnet,
+                "labels": [self.category],
+                "paused": paused,
+            }),
+            TorrentSource::Metainfo(bytes) => json!({
+                "metainfo": base64_encode(&bytes),
+                "labels": [self.category],
+                "paused": paused,
+            }),
+        };
         // Transmission rejects a relative download-dir, so we only set it when we
         // have an absolute per-category path; otherwise the daemon's own root is
         // used and the label still scopes the torrent to cellarr.

@@ -42,15 +42,17 @@ pub mod lifecycle;
 pub mod nzbget;
 pub mod qbittorrent;
 pub mod sabnzbd;
+pub mod source;
 pub mod transmission;
 
 pub use blackhole::{BlackholeClient, BlackholeSettings};
 pub use error::DownloadError;
-pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
+pub use http::{HttpRequest, HttpResponse, HttpTransport, RawHttpResponse, ReqwestTransport};
 pub use lifecycle::{DownloadProgress, RemovePolicy};
 pub use nzbget::{NzbgetClient, NzbgetSettings};
 pub use qbittorrent::{QbittorrentClient, QbittorrentSettings};
 pub use sabnzbd::{SabnzbdClient, SabnzbdSettings};
+pub use source::TorrentSource;
 pub use transmission::{TransmissionClient, TransmissionSettings};
 
 use async_trait::async_trait;

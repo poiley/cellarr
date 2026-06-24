@@ -1,0 +1,17 @@
+{
+  "scenario": "Source resolver: an http(s) download_url (Prowlarr proxy) 302-redirects to a magnet: Location -> Magnet. Redirects are NOT auto-followed; cellarr reads the Location.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 302,
+        "headers": { "location": "magnet:?xt=urn:btih:deadbeefcafef00d&dn=Show.S01E01" },
+        "body": ""
+      }
+    }
+  ]
+}

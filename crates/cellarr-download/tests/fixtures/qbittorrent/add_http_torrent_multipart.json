@@ -1,0 +1,41 @@
+{
+  "scenario": "qBittorrent add with an http(s) download_url (Prowlarr proxy): login, then cellarr fetches the .torrent itself, then torrents/add uploads it as a multipart `torrents` file part (NOT urls=<indexer-url>). The client never fetches the indexer URL. The returned id is the v1 infohash computed from the fetched metainfo.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/auth/login",
+        "body_contains": "username=admin"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "SID=legacysid123; HttpOnly; path=/" },
+        "body": "Ok."
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/add",
+        "header_equals": { "cookie": "SID=legacysid123" },
+        "body_contains": "name=\"torrents\"; filename=\"cellarr.torrent\"",
+        "body_contains_2": "application/x-bittorrent",
+        "body_contains_3": "name=\"category\"",
+        "body_contains_4": "cellarr-tv"
+      },
+      "response": { "status": 200, "headers": {}, "body": "Ok." }
+    }
+  ]
+}

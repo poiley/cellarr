@@ -1,0 +1,38 @@
+{
+  "scenario": "qBittorrent add with an http(s) download_url that 302-redirects to a magnet: login, cellarr resolves the redirect to a magnet (Location not auto-followed), then torrents/add uses the simple urls= form. The id is the magnet's btih.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/auth/login",
+        "body_contains": "username=admin"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "SID=legacysid123; HttpOnly; path=/" },
+        "body": "Ok."
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download"
+      },
+      "response": {
+        "status": 302,
+        "headers": { "location": "magnet:?xt=urn:btih:deadbeefcafef00d&dn=Show.S01E01" },
+        "body": ""
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/api/v2/torrents/add",
+        "header_equals": { "cookie": "SID=legacysid123" },
+        "body_contains": "urls=magnet%3A%3Fxt%3Durn%3Abtih%3Adeadbeefcafef00d",
+        "body_contains_2": "category=cellarr-tv"
+      },
+      "response": { "status": 200, "headers": {}, "body": "Ok." }
+    }
+  ]
+}

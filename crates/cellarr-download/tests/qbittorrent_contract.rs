@@ -77,6 +77,36 @@ async fn full_lifecycle_with_legacy_login_and_ratio_gated_remove() {
 }
 
 #[tokio::test]
+async fn add_with_http_url_fetches_torrent_and_uploads_multipart_not_urls() {
+    // The download_url is an http(s) Prowlarr proxy URL only cellarr can reach.
+    // cellarr fetches it and uploads the .torrent as a multipart `torrents` file
+    // part, so qBittorrent never tries (and fails) to fetch the indexer URL. The
+    // returned id is the v1 infohash computed from the fetched metainfo's info dict.
+    let (client, transport) = client("qbittorrent/add_http_torrent_multipart.json", "cellarr-tv");
+    let grab = torrent_grab(
+        "http://127.0.0.1:19696/1/download?apikey=KEY&link=LINK",
+        "cellarr-tv",
+    );
+    let id = client.add(&grab).await.expect("http add");
+    assert_eq!(id, "157493ee02747f71737019e994e47f44e5f89b97");
+    transport.assert_drained();
+}
+
+#[tokio::test]
+async fn add_with_http_url_redirecting_to_magnet_uses_urls_form() {
+    // An http(s) download_url that redirects to a magnet resolves to a magnet, so
+    // the add reverts to the simple urls= form (no fetch of indexer bytes needed).
+    let (client, transport) = client("qbittorrent/add_http_redirect_to_magnet.json", "cellarr-tv");
+    let grab = torrent_grab(
+        "http://127.0.0.1:19696/1/download?apikey=KEY&link=LINK",
+        "cellarr-tv",
+    );
+    let id = client.add(&grab).await.expect("http->magnet add");
+    assert_eq!(id, "deadbeefcafef00d");
+    transport.assert_drained();
+}
+
+#[tokio::test]
 async fn accepts_5x_changed_login_body_via_sid_cookie() {
     let (client, transport) = client("qbittorrent/login_5x_changed_body.json", "cellarr-movies");
     // The 5.x build returns a non-`Ok.` body; the adapter must still authenticate
