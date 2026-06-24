@@ -172,9 +172,10 @@ describe('Item-detail screen', () => {
     renderPage();
 
     await waitFor(() => {
-      // TreeView nodes render their titles (defaultValue expands them).
-      expect(screen.getByText(/Season 1/)).toBeTruthy();
-      expect(screen.getByText(/Pilot/)).toBeTruthy();
+      // TreeView nodes render their titles (defaultValue expands them). The
+      // titles also appear in the Monitoring card below, so allow multiple.
+      expect(screen.getAllByText(/Season 1/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Pilot/).length).toBeGreaterThan(0);
     });
   });
 
@@ -397,5 +398,123 @@ describe('Item-detail screen', () => {
     await waitFor(() => {
       expect(screen.getByText(/Could not load item/i)).toBeTruthy();
     });
+  });
+
+  it('renders a per-season/episode Monitoring card for a TV item', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => {
+      // The Monitoring card surfaces the season + its episode with toggle buttons.
+      expect(screen.getByText('Monitoring')).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name: /Monitor.*Season 1/i })
+      ).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name: /Monitor.*Pilot/i })
+      ).toBeTruthy();
+    });
+  });
+
+  it('toggles a season via the season-monitor route and cascades the episodes', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // The season-monitor PUT returns the cascade count.
+    requestV3.mockImplementation((path: string, opts?: { body?: { monitored?: boolean } }) => {
+      if (path === '/season/monitor') {
+        return Promise.resolve({
+          seasonId: 'c-s1',
+          monitored: opts?.body?.monitored ?? false,
+          episodesUpdated: 1,
+        });
+      }
+      return Promise.resolve({
+        id: 'c-series',
+        title: 'Breaking Bad',
+        monitored: opts?.body?.monitored ?? true,
+        status: 'continuing',
+      });
+    });
+
+    renderPage();
+
+    const seasonBtn = await screen.findByRole('button', { name: /Unmonitor.*Season 1/i });
+    requestV3.mockClear();
+    fireEvent.click(seasonBtn);
+
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/season/monitor',
+        expect.objectContaining({
+          method: 'PUT',
+          body: { seasonId: 'c-s1', monitored: false },
+        })
+      )
+    );
+    // Season was monitored -> toggling it OFF stops monitoring and cascades the
+    // override to its episode, which flips to "Not monitored".
+    await waitFor(() => {
+      expect(screen.getByText(/Stopped monitoring Season 1/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^Monitor Pilot$/i })).toBeTruthy();
+    });
+  });
+
+  it('toggles a single episode via the episode-monitor route', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    requestV3.mockImplementation((path: string, opts?: { body?: { monitored?: boolean } }) => {
+      if (path === '/episode/monitor') {
+        return Promise.resolve({ updated: 1, monitored: opts?.body?.monitored ?? false });
+      }
+      return Promise.resolve({
+        id: 'c-series',
+        title: 'Breaking Bad',
+        monitored: opts?.body?.monitored ?? true,
+        status: 'continuing',
+      });
+    });
+
+    renderPage();
+
+    const epBtn = await screen.findByRole('button', { name: /Unmonitor Pilot/i });
+    requestV3.mockClear();
+    fireEvent.click(epBtn);
+
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/episode/monitor',
+        expect.objectContaining({
+          method: 'PUT',
+          body: { episodeIds: ['c-e1'], monitored: false },
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Stopped monitoring/i)).toBeTruthy()
+    );
+  });
+
+  it('shows no Monitoring card for a movie with no seasons', async () => {
+    const MOVIE = { id: 'c-movie', library_id: 'lib-movies', media_type: 'movie', kind: 'movie', monitored: true, coords: { type: 'movie' }, title: 'Blade Runner' };
+    searchParams = new URLSearchParams('id=c-movie');
+    getContent.mockResolvedValue(MOVIE);
+    listContent.mockResolvedValue([MOVIE]);
+    listContentFiles.mockResolvedValue([]);
+    getLibrary.mockResolvedValue({ id: 'lib-movies', name: 'Movies' });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Blade Runner').length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText('Monitoring')).toBeNull();
   });
 });

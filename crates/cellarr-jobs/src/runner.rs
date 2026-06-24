@@ -199,6 +199,74 @@ pub struct ReleaseCandidate {
     pub reason: String,
 }
 
+/// One file found by a **manual-import scan** of a loose folder — parsed,
+/// size-stamped, and (when it confidently identifies) suggested onto a content
+/// node. This is the read-only preview the `GET /api/v3/manualimport` screen
+/// renders before the user commits an import; producing it **moves nothing**.
+///
+/// Mirrors the Sonarr/Radarr manual-import row: the source path/name/size, the
+/// parsed quality, the suggested placement (content id + season/episode), and any
+/// rejections (a file the scanner cannot place, e.g. one that did not parse or
+/// did not confidently identify, still appears so the user can map it by hand).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManualImportCandidate {
+    /// Absolute path of the loose file on disk.
+    pub path: String,
+    /// The file's base name (what the row labels itself with).
+    pub name: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// The cleaned title the parser extracted, when it found one.
+    pub parsed_title: Option<String>,
+    /// The resolved quality the file parsed to (Unknown sentinel when the parser
+    /// could not bucket it).
+    pub quality: cellarr_core::Quality,
+    /// The content node the scanner suggests this file be imported onto, when it
+    /// confidently identified one. `None` means the user must pick a node by hand
+    /// (the row carries a rejection explaining why).
+    pub suggested: Option<ManualImportSuggestion>,
+    /// Per-file reasons the scanner could not auto-place the file (did not parse,
+    /// did not identify, ambiguous). Empty when `suggested` is `Some`.
+    pub rejections: Vec<String>,
+}
+
+/// The content placement a manual-import scan suggests for one file: the node id
+/// plus, for TV, the season/episode the file parsed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualImportSuggestion {
+    /// The suggested content node.
+    pub content_id: cellarr_core::ContentId,
+    /// The season number, for a TV file.
+    pub season: Option<u32>,
+    /// The episode number, for a TV file.
+    pub episode: Option<u32>,
+}
+
+/// One user-chosen file to import, as committed through
+/// [`PipelineRunner::import_manual`]. The user picked the file and the content
+/// node it maps to (overriding or confirming the scan's suggestion); the runner
+/// drives it through the **same crash-safe stage→verify→commit→log import path** a
+/// pipeline run uses — it never moves a byte until the plan is verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualImportRequest {
+    /// Absolute path of the loose source file to import.
+    pub path: String,
+    /// The content node the user chose to import the file onto.
+    pub content_id: cellarr_core::ContentId,
+}
+
+/// The outcome of importing one [`ManualImportRequest`]: where the file landed
+/// (renamed, under the library root) and the content node it was linked to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualImportResult {
+    /// The original source path the user asked to import.
+    pub source_path: String,
+    /// The on-disk destination the file was renamed/moved to.
+    pub destination_path: String,
+    /// The content node the imported file was linked to.
+    pub content_id: cellarr_core::ContentId,
+}
+
 /// Everything the runner needs that is *not* a live integration seam: the
 /// decision inputs and the on-disk naming/target configuration.
 ///
@@ -1878,6 +1946,261 @@ where
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(self.clock.now_secs() as i64)
             .unwrap_or_else(|_| OffsetDateTime::now_utc())
+    }
+
+    // --- manual import (loose-folder scan + commit) ----------------------
+
+    /// **Manual-import scan**: walk `folder` for media files and, for each, parse
+    /// the name, attempt to identify it onto a content node, and report a
+    /// [`ManualImportCandidate`]. This is **read-only** — it stats and parses, but
+    /// moves, renames, and deletes nothing (the user reviews the candidates before
+    /// committing through [`import_manual`](Self::import_manual)).
+    ///
+    /// The walk reuses the same [`cellarr_fs::scan`] inventory the migration
+    /// "recognize in place" path uses (so the folder is enumerated identically),
+    /// then runs the same Parse→Identify steps a pipeline run performs (real
+    /// `cellarr-parse` + the media module's `match_release`). A file the parser
+    /// cannot bucket, or that does not confidently identify to a single node, is
+    /// still returned — with its `suggested` left `None` and a `rejections` entry —
+    /// so the screen can show it and let the user map it by hand.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only for an infrastructure failure (the folder could
+    /// not be scanned). A per-file parse/identify miss is **not** an error — it is
+    /// a candidate carrying a rejection.
+    pub async fn scan_manual_import(
+        &self,
+        folder: &std::path::Path,
+    ) -> Result<Vec<ManualImportCandidate>> {
+        let inventory = cellarr_fs::scan(folder.to_path_buf())
+            .await
+            .map_err(|e| JobError::stage(Stage::Import, e))?;
+
+        let mut out = Vec::with_capacity(inventory.entries.len());
+        for entry in &inventory.entries {
+            let name = entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let parsed = cellarr_parse::parse_title(&name);
+            let quality = cellarr_core::resolve_quality(&parsed, &self.config.ranking);
+
+            let (suggested, rejections) = self.suggest_placement(&parsed).await;
+            out.push(ManualImportCandidate {
+                path: entry.path.to_string_lossy().into_owned(),
+                name,
+                size: entry.size,
+                parsed_title: parsed.clean_title.clone(),
+                quality,
+                suggested,
+                rejections,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Identify a parsed loose file onto a content node, returning the suggested
+    /// placement or the reason no confident, unambiguous match was found.
+    ///
+    /// Tries every registered media module's `match_release` (a loose folder may
+    /// mix movies and TV), keeps the matches above [`cellarr_media::AMBIGUOUS_CONFIDENCE`],
+    /// and suggests the single most-confident one. Zero confident matches, or a tie
+    /// the identifier already flagged ambiguous, yields `None` + a rejection so the
+    /// user maps it by hand — never a guessed placement (the library-safety rule).
+    async fn suggest_placement(
+        &self,
+        parsed: &ParsedRelease,
+    ) -> (Option<ManualImportSuggestion>, Vec<String>) {
+        use cellarr_core::Coordinates;
+
+        let mut best: Option<ContentMatch> = None;
+        for media_type in self.registry.media_types() {
+            let Some(module) = self.registry.get(media_type) else {
+                continue;
+            };
+            let matches = match module.match_release(parsed).await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            for m in matches {
+                if m.confidence.value() <= cellarr_media::AMBIGUOUS_CONFIDENCE {
+                    continue;
+                }
+                let better = best
+                    .as_ref()
+                    .is_none_or(|b| m.confidence.value() > b.confidence.value());
+                if better {
+                    best = Some(m);
+                }
+            }
+        }
+
+        let Some(matched) = best else {
+            return (
+                None,
+                vec!["could not confidently identify this file to a library item".to_string()],
+            );
+        };
+        let (season, episode) = match &matched.content_ref.coords {
+            Coordinates::Episode {
+                season, episode, ..
+            } => (Some(*season), Some(*episode)),
+            _ => (None, None),
+        };
+        (
+            Some(ManualImportSuggestion {
+                content_id: matched.content_ref.id,
+                season,
+                episode,
+            }),
+            Vec::new(),
+        )
+    }
+
+    /// **Manual-import commit**: import the user's chosen loose files onto the
+    /// content nodes they picked, each through the **same crash-safe
+    /// stage→verify→commit→log import path** an automatic run uses
+    /// ([`cellarr_fs::plan_import`] / [`cellarr_fs::execute_import`]).
+    ///
+    /// For each request: resolve the chosen content node, re-parse the *file* name
+    /// (the second parse — the source of truth), render the destination via the
+    /// media module's naming tokens + the configured naming format, and run the
+    /// crash-safe planner/executor. On success the imported file is persisted as a
+    /// `media_file` row linked to the node (so the library recognizes it and the
+    /// node is no longer "missing"), exactly as the automatic import does. A file
+    /// is **never moved until its plan is verified**, and the old library file (on
+    /// an overwrite) is never removed before the new one is durable — the
+    /// library-safety guarantee is the import path's, untouched here.
+    ///
+    /// Per-request failures are collected and returned as `Err` strings rather than
+    /// aborting the whole batch, so one un-importable file does not strand the rest.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only for an infrastructure failure (a repository write
+    /// failed). A per-file domain failure (node not found, plan/verify failed) is
+    /// carried in the returned `errors` vector, not errored.
+    pub async fn import_manual(
+        &self,
+        requests: &[ManualImportRequest],
+    ) -> Result<(Vec<ManualImportResult>, Vec<String>)> {
+        use cellarr_core::repo::ContentRepository;
+
+        let mut imported = Vec::new();
+        let mut errors = Vec::new();
+        for req in requests {
+            let node = match ContentRepository::get(&self.db.content(), req.content_id).await {
+                Ok(Some(n)) => n,
+                Ok(None) => {
+                    errors.push(format!("content {} not found", req.content_id));
+                    continue;
+                }
+                Err(e) => return Err(JobError::Persistence(Box::new(e))),
+            };
+            match self.import_one_manual(&node, &req.path).await {
+                Ok(result) => imported.push(result),
+                Err(detail) => errors.push(format!("{}: {detail}", req.path)),
+            }
+        }
+        Ok((imported, errors))
+    }
+
+    /// Import one chosen loose file onto `matched_ref` through the crash-safe path,
+    /// persisting the resulting media-file row. Mirrors [`import`](Self::import) but
+    /// drives a single user-chosen source rather than a download directory, and is
+    /// scoped to one destination node.
+    async fn import_one_manual(
+        &self,
+        matched_ref: &ContentRef,
+        source_path: &str,
+    ) -> std::result::Result<ManualImportResult, String> {
+        let src = std::path::Path::new(source_path);
+        if !src.is_file() {
+            return Err(format!("source file does not exist: {source_path}"));
+        }
+
+        // The second parse: the on-disk file name is the source of truth. Render the
+        // destination from the media module's naming tokens + the file extension.
+        let file_parsed = cellarr_parse::parse_title(
+            src.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+        );
+        let module = self
+            .module_for(matched_ref)
+            .map_err(|e| format!("module: {e}"))?;
+        let tokens = module
+            .naming_tokens(matched_ref)
+            .await
+            .map_err(|e| format!("naming tokens: {e}"))?;
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+        let rel =
+            cellarr_fs::render_name(&self.config.naming_format, &with_ext_token(&tokens, ext))
+                .map_err(|e| format!("render name: {e}"))?;
+        let dest = self.config.library_root.join(&rel);
+
+        // Verify the file's parse does not contradict the chosen node's coordinates
+        // (the same library-safety gate the automatic import applies), then plan and
+        // commit through the crash-safe path. A grab id is minted to key the plan's
+        // staging area; a manual import has no grab row, so the id is local to the plan.
+        let intent = ParsedRelease {
+            coordinates: vec![matched_ref.coords.clone()],
+            ..ParsedRelease::new(source_path)
+        };
+        verify_second_parse(&intent, std::slice::from_ref(&src.to_path_buf()))?;
+
+        let moves = vec![PlannedMove {
+            source_path: source_path.to_string(),
+            destination_path: dest.to_string_lossy().into_owned(),
+            content_ids: vec![matched_ref.id],
+            replaces: None,
+            replaced_path: None,
+            hardlink: false,
+        }];
+        let plan = cellarr_fs::plan_import(GrabId::new(), moves)
+            .await
+            .map_err(|e| format!("plan import: {e}"))?;
+        let result = cellarr_fs::execute_import(&plan)
+            .await
+            .map_err(|e| format!("execute import: {e}"))?;
+        let destination_path = result
+            .moves
+            .first()
+            .map(|m| m.destination_path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        // Persist the media-file row + content link so the library recognizes the
+        // import (the node is no longer "missing"), the same authoritative write the
+        // automatic import makes — but idempotently: a manual re-commit of an
+        // already-imported source lands at the same destination, and `media_file.path`
+        // is unique, so we skip the create+link when the node already carries a file
+        // at this path (re-issuing the commit must not error or duplicate the row). A
+        // manual import carries no grab provenance, so the release type is left unknown.
+        let already_linked = {
+            use cellarr_core::repo::MediaFileRepository;
+            self.db
+                .media_files()
+                .list_for_content(matched_ref.id)
+                .await
+                .map_err(|e| format!("reading existing media files: {e}"))?
+                .iter()
+                .any(|f| f.path == destination_path)
+        };
+        if !already_linked {
+            self.persist_imported_files(
+                matched_ref,
+                &file_parsed,
+                cellarr_core::ReleaseType::from_parsed(&file_parsed),
+                std::slice::from_ref(&destination_path),
+            )
+            .await
+            .map_err(|e| format!("persist imported file: {e}"))?;
+        }
+
+        Ok(ManualImportResult {
+            source_path: source_path.to_string(),
+            destination_path,
+            content_id: matched_ref.id,
+        })
     }
 }
 

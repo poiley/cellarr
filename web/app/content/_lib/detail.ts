@@ -60,6 +60,54 @@ export function setMonitored(
   return api.requestV3<Detail>(path, { method: 'PUT', body: { monitored }, signal });
 }
 
+/** The result of toggling a season's monitored flag. */
+export interface SeasonMonitorResult {
+  seasonId: string;
+  monitored: boolean;
+  /** How many episode children the toggle cascaded to. */
+  episodesUpdated: number;
+}
+
+/**
+ * Toggle monitoring for a single season and (the Sonarr behavior) every episode
+ * beneath it via `PUT /api/v3/season/monitor`. The id is the season content id —
+ * the same id the structure tree drills with. Returns the cascade count.
+ */
+export function setSeasonMonitored(
+  seasonId: string,
+  monitored: boolean,
+  signal?: AbortSignal
+): Promise<SeasonMonitorResult> {
+  return api.requestV3<SeasonMonitorResult>('/season/monitor', {
+    method: 'PUT',
+    body: { seasonId, monitored },
+    signal,
+  });
+}
+
+/** The result of toggling one or more episodes' monitored flag. */
+export interface EpisodeMonitorResult {
+  updated: number;
+  monitored: boolean;
+}
+
+/**
+ * Toggle monitoring for a set of episodes via `PUT /api/v3/episode/monitor`.
+ * Unknown ids are skipped server-side (idempotent), so re-issuing on a removed
+ * episode still succeeds. Returns how many episodes were persisted.
+ */
+export function setEpisodesMonitored(
+  episodeIds: string[],
+  monitored: boolean,
+  signal?: AbortSignal
+): Promise<EpisodeMonitorResult> {
+  return api.requestV3<EpisodeMonitorResult>('/episode/monitor', {
+    method: 'PUT',
+    body: { episodeIds, monitored },
+    signal,
+  });
+}
+
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length ? v : undefined;
 }

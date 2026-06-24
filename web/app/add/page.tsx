@@ -38,7 +38,14 @@ import type { Library, QualityProfile, RootFolder } from '@lib/api/types';
 import AppShell from '@app/_components/AppShell';
 import { useToast } from '@app/_lib/ToastProvider';
 
-import { addContent, lookup, rankResults, type LookupResult } from '../_search/api';
+import {
+  addContent,
+  lookup,
+  rankResults,
+  MONITOR_OPTIONS,
+  type LookupResult,
+  type MonitorOption,
+} from '../_search/api';
 
 type Phase = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -51,6 +58,11 @@ interface AddSelection {
   qualityProfileId?: string;
   monitor: boolean;
   searchOnAdd: boolean;
+  /**
+   * For series adds: the per-episode monitoring policy (Sonarr `addOptions.monitor`).
+   * Movies ignore it (they carry a single monitored flag). Defaults to `all`.
+   */
+  monitorOption: MonitorOption;
 }
 
 export default function Page() {
@@ -149,6 +161,8 @@ export default function Page() {
           quality_profile_id: selection.qualityProfileId,
           monitored: selection.monitor,
           search_on_add: selection.searchOnAdd,
+          monitor_option:
+            (result.media_type ?? 'movie') === 'tv' ? selection.monitorOption : undefined,
         });
         setAdded((prev) => new Set(prev).add(key));
         success(
@@ -411,6 +425,7 @@ const AddDialogBody: React.FC<{
       qualityProfileId: profileByName.get(defaultProfileName) ?? defaultProfileId,
       monitor: selectionRef.current.monitor,
       searchOnAdd: selectionRef.current.searchOnAdd,
+      monitorOption: selectionRef.current.monitorOption,
     };
     // Run once on mount with the resolved defaults.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -480,15 +495,41 @@ const AddDialogBody: React.FC<{
         )}
       </Field>
 
-      <Checkbox
-        name="add-monitor"
-        defaultChecked={selectionRef.current.monitor}
-        onChange={(e) => {
-          selectionRef.current = { ...selectionRef.current, monitor: e.target.checked };
-        }}
-      >
-        Monitor
-      </Checkbox>
+      {result.media_type === 'tv' ? (
+        // Series: the per-episode monitoring policy (Sonarr addOptions.monitor).
+        // The dropdown drives both the policy AND the root monitored flag (`none`
+        // adds the series unmonitored), so the bare Monitor checkbox is hidden.
+        <Field label="Monitor">
+          <Select
+            name="add-monitor-option"
+            options={MONITOR_OPTIONS.map((o) => o.label)}
+            defaultValue={
+              MONITOR_OPTIONS.find((o) => o.value === selectionRef.current.monitorOption)?.label ??
+              MONITOR_OPTIONS[0].label
+            }
+            placeholder="Choose what to monitor"
+            onChange={(label) => {
+              const opt = MONITOR_OPTIONS.find((o) => o.label === label);
+              if (!opt) return;
+              selectionRef.current = {
+                ...selectionRef.current,
+                monitorOption: opt.value,
+                monitor: opt.value !== 'none',
+              };
+            }}
+          />
+        </Field>
+      ) : (
+        <Checkbox
+          name="add-monitor"
+          defaultChecked={selectionRef.current.monitor}
+          onChange={(e) => {
+            selectionRef.current = { ...selectionRef.current, monitor: e.target.checked };
+          }}
+        >
+          Monitor
+        </Checkbox>
+      )}
 
       <Checkbox
         name="add-search-on-add"
@@ -528,6 +569,7 @@ function defaultSelection(
     qualityProfileId: lib?.default_quality_profile,
     monitor: true,
     searchOnAdd: true,
+    monitorOption: 'all',
   };
 }
 

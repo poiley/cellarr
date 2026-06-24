@@ -136,6 +136,16 @@ impl Daemon {
         ));
         let state = state.with_release_grab(release_grab);
 
+        // The manual-import seam (GET/POST /api/v3/manualimport) shares the same DB +
+        // media registry, scanning a loose folder (read-only) and committing chosen
+        // files through the runner's crash-safe import path — it never grabs, so (like
+        // search) it builds no download client.
+        let manual_import = std::sync::Arc::new(crate::pipeline::LiveManualImport::new(
+            state.db.clone(),
+            std::sync::Arc::clone(&registry),
+        ));
+        let state = state.with_manual_import(manual_import);
+
         // The artwork cache dir (`<data_dir>/MediaCover`) the identify/refresh path
         // caches poster/fanart into and the v3 `mediacover/{id}/{kind}` route serves
         // from. Created up front so the route's reads never race a missing dir.

@@ -772,6 +772,161 @@ impl cellarr_api::release_search::ReleaseGrab for LiveReleaseGrab {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The manual-import seam (GET/POST /api/v3/manualimport).
+// ---------------------------------------------------------------------------
+
+/// The daemon's [`ManualImport`](cellarr_api::manual_import::ManualImport)
+/// implementation: scans a loose folder (read-only) and commits the user's chosen
+/// files through the real [`PipelineRunner`]'s crash-safe import path.
+///
+/// Neither the scan nor the commit grabs anything, so — like
+/// [`LiveReleaseSearch`] — it never builds a download client: it drives the runner
+/// over a [`NoopDownloadClient`] that is never called. The scan reuses the same
+/// per-library [`RunnerConfig`] an acquisition uses (so files are parsed/identified
+/// identically) and the commit reuses the same `plan_import`/`execute_import` path
+/// (so a manual import is as crash-safe as an automatic one).
+///
+/// The config is resolved per call so library CRUD takes effect with no restart;
+/// a folder scanned with no library configured at all is reported as
+/// [`Unavailable`](cellarr_api::manual_import::ManualImportOutcome::Unavailable) —
+/// a benign empty result, not an error.
+pub struct LiveManualImport {
+    db: Database,
+    registry: Arc<MediaRegistry>,
+    env: LivePipelineEnv,
+    clock: SystemClock,
+}
+
+impl LiveManualImport {
+    /// Build the manual-import seam over the persistence handle + the shared media
+    /// registry. It owns its own [`LivePipelineEnv`] so it resolves library config
+    /// freshly per call.
+    #[must_use]
+    pub fn new(db: Database, registry: Arc<MediaRegistry>) -> Self {
+        let env = LivePipelineEnv::new(db.clone());
+        Self {
+            db,
+            registry,
+            env,
+            clock: SystemClock,
+        }
+    }
+
+    /// Resolve a [`RunnerConfig`] for the manual-import runner, scoped to the first
+    /// configured library of any media type (the scan/commit naming + library root
+    /// come from it). A loose folder is not tied to a single node, so we pick the
+    /// first library with a usable root + profile. `Ok(None)` when none is ready.
+    async fn resolve_config(&self) -> Result<Option<RunnerConfig>, String> {
+        let libraries = self
+            .db
+            .config()
+            .list_libraries()
+            .await
+            .map_err(|e| format!("loading libraries failed: {e}"))?;
+        // Build a config against the first library that has a root folder; the
+        // commit renames each file using the *node's* media-type naming format, so
+        // the library chosen here only supplies the root + profile/ranking inputs.
+        for library in libraries {
+            // A synthetic node ref scoped to this library, of the library's media
+            // type, lets the existing per-node config resolver build the config. The
+            // ref is used only to read the library's root/profile, never persisted.
+            let probe = ContentRef::new(
+                cellarr_core::ContentId::new(),
+                library.id,
+                library.media_type,
+                default_coords(library.media_type),
+            )
+            .map_err(|e| format!("building probe ref failed: {e}"))?;
+            if let Some(config) = self
+                .env
+                .resolve_config(&probe, "cellarr".to_string())
+                .await?
+            {
+                return Ok(Some(config));
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl cellarr_api::manual_import::ManualImport for LiveManualImport {
+    async fn scan(
+        &self,
+        folder: &str,
+    ) -> Result<cellarr_api::manual_import::ManualImportOutcome, String> {
+        use cellarr_api::manual_import::ManualImportOutcome;
+
+        let Some(config) = self.resolve_config().await? else {
+            return Ok(ManualImportOutcome::Unavailable(
+                "no library with a root folder is configured yet".into(),
+            ));
+        };
+        // Scan + identify never grab, so the client is never driven.
+        let client = NoopDownloadClient;
+        let indexer = DbIndexerSet::new(self.db.clone());
+        let runner = PipelineRunner::new(
+            &indexer,
+            &client,
+            &self.registry,
+            &self.db,
+            &self.clock,
+            &config,
+        );
+        let candidates = runner
+            .scan_manual_import(std::path::Path::new(folder))
+            .await
+            .map_err(|e| format!("manual-import scan failed: {e}"))?;
+        Ok(ManualImportOutcome::Found(candidates))
+    }
+
+    async fn commit(
+        &self,
+        items: Vec<cellarr_api::manual_import::ManualImportRequest>,
+    ) -> Result<cellarr_api::manual_import::ManualImportCommitOutcome, String> {
+        use cellarr_api::manual_import::ManualImportCommitOutcome;
+
+        let Some(config) = self.resolve_config().await? else {
+            return Ok(ManualImportCommitOutcome::Unavailable(
+                "no library with a root folder is configured yet".into(),
+            ));
+        };
+        let client = NoopDownloadClient;
+        let indexer = DbIndexerSet::new(self.db.clone());
+        let runner = PipelineRunner::new(
+            &indexer,
+            &client,
+            &self.registry,
+            &self.db,
+            &self.clock,
+            &config,
+        );
+        let (imported, errors) = runner
+            .import_manual(&items)
+            .await
+            .map_err(|e| format!("manual import failed: {e}"))?;
+        Ok(ManualImportCommitOutcome::Committed { imported, errors })
+    }
+}
+
+/// The default coordinates for a probe content ref of `media_type` (used only to
+/// build a library-scoped [`RunnerConfig`]; never persisted).
+fn default_coords(media_type: MediaType) -> cellarr_core::Coordinates {
+    match media_type {
+        MediaType::Tv => cellarr_core::Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+        MediaType::Movie => cellarr_core::Coordinates::Movie,
+        MediaType::Music => cellarr_core::Coordinates::Track { disc: 1, track: 1 },
+        MediaType::Book => cellarr_core::Coordinates::Book {
+            series_position: None,
+        },
+    }
+}
+
 /// The default rename format per media type — the `{Token}` shape cellarr-fs
 /// `render_name` interpolates against the media module's naming tokens. A
 /// deployment can later make this configurable per library; this is the safe

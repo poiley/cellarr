@@ -15,6 +15,7 @@ use cellarr_jobs::JobHandler;
 use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, build_scheduler_with, ApiScheduler};
 use crate::events::EventBus;
+use crate::manual_import::ManualImport;
 use crate::metadata::MetadataLookup;
 use crate::release_search::{ReleaseGrab, ReleaseSearch};
 use crate::tags::TagStore;
@@ -50,6 +51,11 @@ pub struct AppState {
     /// drives the real [`PipelineRunner`](cellarr_jobs::PipelineRunner) Grab→Import
     /// path.
     pub release_grab: Option<Arc<dyn ReleaseGrab>>,
+    /// The manual-import seam `GET/POST /api/v3/manualimport` reads from. `None`
+    /// means no pipeline wiring at all (the shim then reports every scan/commit as
+    /// unavailable); the daemon injects a live implementation over the real
+    /// [`PipelineRunner`](cellarr_jobs::PipelineRunner) scan + crash-safe import path.
+    pub manual_import: Option<Arc<dyn ManualImport>>,
     /// The on-disk artwork cache directory (`<data_dir>/MediaCover`), where the
     /// identify/refresh path caches poster/fanart bytes keyed by content id. The
     /// `GET /api/v3/mediacover/{id}/{kind}` route serves files from here. `None`
@@ -111,6 +117,7 @@ impl AppState {
             metadata: None,
             release_search: None,
             release_grab: None,
+            manual_import: None,
             artwork_dir: None,
             recycle_bin_path: None,
         }
@@ -143,6 +150,17 @@ impl AppState {
     #[must_use]
     pub fn with_release_grab(mut self, release_grab: Arc<dyn ReleaseGrab>) -> Self {
         self.release_grab = Some(release_grab);
+        self
+    }
+
+    /// Attach the manual-import source (the live pipeline wiring), so
+    /// `GET/POST /api/v3/manualimport` scans loose folders and commits chosen files
+    /// through the real crash-safe import path. Builder form so the base
+    /// [`AppState::new`] stays offline (the shim reports manual import unavailable)
+    /// and tests can opt a fake in.
+    #[must_use]
+    pub fn with_manual_import(mut self, manual_import: Arc<dyn ManualImport>) -> Self {
+        self.manual_import = Some(manual_import);
         self
     }
 

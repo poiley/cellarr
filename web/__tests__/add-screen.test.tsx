@@ -274,6 +274,113 @@ describe('Add / search-new screen', () => {
     });
   });
 
+  it('offers a monitor-options dropdown for a series and threads it into the POST', async () => {
+    const series = {
+      title: 'Breaking Bad',
+      titleSlug: 'breaking-bad',
+      year: 2008,
+      tvdbId: 81189,
+      overview: 'A chemistry teacher.',
+      monitored: false,
+      hasFile: false,
+      status: 'ended',
+    };
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([]);
+      if (path === '/series/lookup') return Promise.resolve([series]);
+      if (path === '/series') return Promise.resolve({ id: 'c-series' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'breaking' } });
+    await waitFor(() => expect(screen.getByText('Breaking Bad')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Breaking Bad"/)).toBeTruthy());
+
+    // The series dialog exposes the monitor-options Select (not the bare checkbox).
+    expect(container.querySelector('input[name="add-monitor"]')).toBeNull();
+    // The dialog has several Selects (profile / root / monitor); the monitor
+    // dropdown is the last one rendered.
+    const selects = container.querySelectorAll('button[aria-haspopup="listbox"]');
+    const select = selects[selects.length - 1] as HTMLElement;
+    expect(select).toBeTruthy();
+    // The default option is "All episodes".
+    expect(screen.getByText('All episodes')).toBeTruthy();
+
+    // Choose "First season".
+    fireEvent.click(select);
+    fireEvent.click(screen.getByText('First season'));
+
+    fireEvent.click(screen.getByText('OK'));
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/series',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.objectContaining({
+            tvdbId: 81189,
+            monitored: true,
+            addOptions: expect.objectContaining({ monitor: 'firstSeason' }),
+          }),
+        })
+      )
+    );
+  });
+
+  it('adds a series unmonitored when the monitor option is None', async () => {
+    const series = {
+      title: 'Breaking Bad',
+      titleSlug: 'breaking-bad',
+      year: 2008,
+      tvdbId: 81189,
+      monitored: false,
+      hasFile: false,
+      status: 'ended',
+    };
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([]);
+      if (path === '/series/lookup') return Promise.resolve([series]);
+      if (path === '/series') return Promise.resolve({ id: 'c-series' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'breaking' } });
+    await waitFor(() => expect(screen.getByText('Breaking Bad')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Breaking Bad"/)).toBeTruthy());
+
+    // The dialog has several Selects (profile / root / monitor); the monitor
+    // dropdown is the last one rendered.
+    const selects = container.querySelectorAll('button[aria-haspopup="listbox"]');
+    const select = selects[selects.length - 1] as HTMLElement;
+    fireEvent.click(select);
+    fireEvent.click(screen.getByText('None (unmonitored)'));
+
+    fireEvent.click(screen.getByText('OK'));
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/series',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.objectContaining({
+            monitored: false,
+            addOptions: expect.objectContaining({ monitor: 'none' }),
+          }),
+        })
+      )
+    );
+  });
+
   it('renders an error banner when both lookups fail', async () => {
     requestV3.mockRejectedValue(new Error('boom'));
     const { container } = renderPage();

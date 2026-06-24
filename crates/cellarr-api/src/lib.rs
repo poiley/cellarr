@@ -22,6 +22,7 @@ pub mod commands;
 pub mod error;
 pub mod events;
 pub mod fs_health;
+pub mod manual_import;
 pub mod mediacover;
 pub mod metadata;
 pub mod native;

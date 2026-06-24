@@ -69,7 +69,42 @@ export interface AddContentRequest {
   monitored?: boolean;
   /** Trigger an automatic search immediately after adding. */
   search_on_add?: boolean;
+  /**
+   * For series adds: the Sonarr-style per-episode monitoring policy threaded into
+   * `addOptions.monitor`. The shim reads this to decide which episodes start
+   * monitored; `none` adds the series unmonitored. Ignored for movies (which only
+   * carry a single monitored flag). When omitted the shim defaults to `all`.
+   */
+  monitor_option?: MonitorOption;
 }
+
+/**
+ * The Sonarr-style monitor selections the v3 add accepts on `addOptions.monitor`
+ * (crates/cellarr-api/src/shim.rs `MonitorOption`). Exposed by the Add dialog so a
+ * series can be added watching all / future / missing / existing / its first
+ * season, or unmonitored.
+ */
+export type MonitorOption =
+  | 'all'
+  | 'future'
+  | 'missing'
+  | 'existing'
+  | 'firstSeason'
+  | 'lastSeason'
+  | 'pilot'
+  | 'none';
+
+/** The monitor options the Add dialog offers, in display order, with labels. */
+export const MONITOR_OPTIONS: ReadonlyArray<{ value: MonitorOption; label: string }> = [
+  { value: 'all', label: 'All episodes' },
+  { value: 'future', label: 'Future episodes' },
+  { value: 'missing', label: 'Missing episodes' },
+  { value: 'existing', label: 'Existing episodes' },
+  { value: 'firstSeason', label: 'First season' },
+  { value: 'lastSeason', label: 'Latest season' },
+  { value: 'pilot', label: 'Pilot only' },
+  { value: 'none', label: 'None (unmonitored)' },
+];
 
 /** A candidate release surfaced by an interactive (manual) search. */
 export interface CandidateRelease {
@@ -212,12 +247,22 @@ export async function addContent(
   };
 
   if (body.media_type === 'tv') {
+    // The series root's monitored flag follows the per-episode policy: `none`
+    // adds the series unmonitored, every other option monitors at least some
+    // episodes (the shim applies the policy as the season/episode tree fills in).
+    const monitorOption = body.monitor_option;
+    const seriesMonitored =
+      monitorOption !== undefined ? monitorOption !== 'none' : common.monitored;
     const created = await api.requestV3<{ id: string }>('/series', {
       method: 'POST',
       body: {
         ...common,
+        monitored: seriesMonitored,
         tvdbId: body.tvdb_id,
-        addOptions: { searchForMissingEpisodes: body.search_on_add ?? false },
+        addOptions: {
+          searchForMissingEpisodes: body.search_on_add ?? false,
+          ...(monitorOption !== undefined ? { monitor: monitorOption } : {}),
+        },
       },
       signal,
     });

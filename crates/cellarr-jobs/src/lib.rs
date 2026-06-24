@@ -45,5 +45,8 @@ pub use job::{
     Job, JobKind, JobState, JobStore, MemoryJobStore, MemoryStoreError, RetryPolicy, Schedule,
 };
 pub use notify::{ProviderNotifier, WebhookNotifier, WEBHOOK_KIND, WEBHOOK_URL_FIELD};
-pub use runner::{PipelineRunner, ReleaseCandidate, RunOutcome, RunnerConfig};
+pub use runner::{
+    ManualImportCandidate, ManualImportRequest, ManualImportResult, ManualImportSuggestion,
+    PipelineRunner, ReleaseCandidate, RunOutcome, RunnerConfig,
+};
 pub use scheduler::{ConcurrencyCaps, CronError, JobHandler, JobResult, Scheduler};

@@ -170,6 +170,8 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/movie/lookup", get(movie_lookup))
         .route("/series/lookup", get(series_lookup))
         .route("/release", get(release_search))
+        .route("/manualimport", get(manual_import_scan))
+        .route("/manualImport", get(manual_import_scan))
         .route("/calendar", get(calendar))
         .route("/mediacover/{contentId}/{kind}", get(media_cover))
         .route("/queue", get(queue))
@@ -190,6 +192,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/series/{id}", put(update_content))
         .route("/series/{id}", delete(delete_series))
         .route("/release", post(grab_release))
+        .route("/manualimport", post(manual_import_commit))
+        .route("/manualImport", post(manual_import_commit))
+        .route("/episode/monitor", put(episode_monitor))
+        .route("/season/monitor", put(season_monitor))
         .route("/command", post(command))
         .route("/tag", post(create_tag))
         .route("/tag/{id}", put(update_tag))
@@ -3295,6 +3301,20 @@ struct AddBody {
     root_folder_path: Option<String>,
     #[serde(default)]
     monitored: Option<bool>,
+    /// The Sonarr/Radarr `addOptions` block; only its `monitor` selection is read
+    /// (the per-episode monitoring policy applied as episodes are populated).
+    #[serde(rename = "addOptions", default)]
+    add_options: Option<AddOptions>,
+}
+
+/// The v3 `addOptions` block carried on an add. cellarr reads the Sonarr-style
+/// `monitor` selection (`all`/`existing`/`future`/`missing`/`firstSeason`/
+/// `lastSeason`/`pilot`/`none`); the search-on-add flags are accepted and ignored
+/// (the daemon's monitored-missing sweep covers acquisition).
+#[derive(Debug, Deserialize)]
+struct AddOptions {
+    #[serde(default)]
+    monitor: Option<cellarr_core::MonitorOption>,
 }
 
 async fn add_movie(
@@ -3341,6 +3361,14 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
             cellarr_core::Coordinates::Movie,
         ),
     };
+    // The root container's monitored flag. An explicit `monitored` wins; else the
+    // Sonarr-style `addOptions.monitor` selection decides (only `none` adds the
+    // series unmonitored — every other option monitors at least some episodes, so
+    // the root container is monitored and the per-episode policy is applied as the
+    // season/episode tree is populated). Defaults to monitored.
+    let monitored = body.monitored.unwrap_or_else(|| {
+        body.add_options.as_ref().and_then(|o| o.monitor) != Some(cellarr_core::MonitorOption::None)
+    });
     let node = cellarr_core::ContentNode {
         id: cellarr_core::ContentId::new(),
         library_id: library.id,
@@ -3348,7 +3376,7 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
         parent_id: None,
         kind,
         coords,
-        monitored: body.monitored.unwrap_or(true),
+        monitored,
         title_id: None,
     };
     let content = state.db.content();
@@ -3645,6 +3673,381 @@ async fn grab_release(
         }),
     };
     Ok(Json(body))
+}
+
+// --- manual import (loose-folder scan + commit) ----------------------------
+
+/// The `GET /api/v3/manualimport` query: the loose folder to scan for media files
+/// (the Sonarr/Radarr manual-import `folder` parameter).
+#[derive(Debug, Deserialize)]
+struct ManualImportQuery {
+    folder: Option<String>,
+}
+
+/// v3 `GET /api/v3/manualimport` — the **manual-import scan**.
+///
+/// Scans `folder` (read-only — moves nothing) for media files, parses each, and
+/// attempts to identify it onto a library item, returning the ranked candidates
+/// the manual-import screen renders. Mirrors Sonarr/Radarr's manual-import row
+/// shape (`path`, `name`, `size`, `quality`, the suggested `movie`/`series` +
+/// `seasonNumber`/`episodeNumber`, and `rejections[]`) plus the cellarr-native
+/// `parsedTitle`/`contentId` aliases the FE reads.
+///
+/// When no pipeline is wired (offline/test) or no library is ready, this returns
+/// an **empty array** rather than erroring — the screen degrades to "no files".
+async fn manual_import_scan(
+    State(fs): State<FaceState>,
+    Query(q): Query<ManualImportQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let folder = q
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("a folder query parameter is required".into()))?;
+
+    // No pipeline wiring (offline/test): degrade to an empty list, never 500.
+    let Some(mi) = fs.state.manual_import.as_ref() else {
+        return Ok(Json(Vec::new()));
+    };
+    let outcome = mi
+        .scan(folder)
+        .await
+        .map_err(|e| ApiError::Internal(format!("manual-import scan failed: {e}")))?;
+    let candidates = match outcome {
+        crate::manual_import::ManualImportOutcome::Found(c) => c,
+        // No library ready: an empty manual-import list, not an error.
+        crate::manual_import::ManualImportOutcome::Unavailable(_) => return Ok(Json(Vec::new())),
+    };
+
+    let rows: Vec<Value> = candidates
+        .into_iter()
+        .map(|c| v3_manual_import_row(&c, fs.face))
+        .collect();
+    Ok(Json(rows))
+}
+
+/// Render one [`ManualImportCandidate`] into the v3 manual-import row.
+fn v3_manual_import_row(c: &cellarr_jobs::ManualImportCandidate, face: Face) -> Value {
+    let quality_name = face_quality_name(&c.quality.name, face).into_owned();
+    let rejections: Vec<Value> = c
+        .rejections
+        .iter()
+        .map(|r| json!({ "reason": r }))
+        .collect();
+    // The suggested placement: the *arr screen keys off `movie`/`series` objects
+    // (carrying the content id) plus season/episode; cellarr also surfaces the flat
+    // `contentId`/`seasonNumber`/`episodeNumber` aliases the native FE reads.
+    let mut row = json!({
+        "path": c.path,
+        "name": c.name,
+        "size": c.size,
+        "parsedTitle": c.parsed_title,
+        "quality": {
+            "quality": { "id": c.quality.rank, "name": quality_name },
+            "revision": { "version": 1, "real": 0, "isRepack": false },
+        },
+        "customFormats": [],
+        "rejected": !c.rejections.is_empty(),
+        "rejections": rejections,
+    });
+    if let Some(s) = &c.suggested {
+        merge_into(
+            &mut row,
+            json!({
+                "contentId": s.content_id.to_string(),
+                "seasonNumber": s.season,
+                "episodeNumber": s.episode,
+                // The *arr-native suggested-item objects, keyed by the cellarr id so
+                // the FE's "move file" POST round-trips the same id back.
+                "movie": { "id": s.content_id.to_string() },
+                "series": { "id": s.content_id.to_string() },
+            }),
+        );
+    }
+    row
+}
+
+/// The `POST /api/v3/manualimport` body: the chosen files to import. Each item
+/// names the loose source `path` and the content node it maps to (`contentId`, or
+/// the *arr `movieId`/`seriesId` spellings), confirming or overriding the scan's
+/// suggestion.
+#[derive(Debug, Deserialize)]
+struct ManualImportCommitBody {
+    #[serde(default)]
+    files: Vec<ManualImportFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManualImportFile {
+    path: Option<String>,
+    #[serde(rename = "contentId", default)]
+    content_id: Option<String>,
+    #[serde(rename = "movieId", default)]
+    movie_id: Option<String>,
+    #[serde(rename = "seriesId", default)]
+    series_id: Option<String>,
+}
+
+/// v3 `POST /api/v3/manualimport` — the **manual-import commit**.
+///
+/// Imports the user's chosen loose files onto the content nodes they picked, each
+/// through the **same crash-safe stage→verify→commit→log import path** an
+/// automatic acquisition uses (it never moves a byte until the plan is verified).
+/// The originals drive this through `POST /command` with a `ManualImport`/`MoveFile`
+/// command; cellarr accepts both that and this direct route (see [`command`]).
+///
+/// Returns a per-file result list (`imported[]` with the destination each file
+/// landed at, `errors[]` for files that could not be placed) the screen shows. When
+/// no pipeline is wired or no library is ready, it degrades to a clear JSON outcome
+/// with `imported: []` rather than erroring.
+async fn manual_import_commit(
+    State(fs): State<FaceState>,
+    Json(body): Json<ManualImportCommitBody>,
+) -> ApiResult<Json<Value>> {
+    // Build the typed requests, validating each file carries a source path and a
+    // resolvable content id. A bad item is a structured 400, not a silent skip.
+    let mut requests = Vec::with_capacity(body.files.len());
+    for f in body.files {
+        let path = f
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ApiError::BadRequest("each file needs a path".into()))?;
+        let raw = f
+            .content_id
+            .or(f.movie_id)
+            .or(f.series_id)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ApiError::BadRequest("each file needs a contentId (or movieId/seriesId)".into())
+            })?;
+        let content_id = cellarr_core::ContentId::from_uuid(
+            raw.parse::<uuid::Uuid>()
+                .map_err(|_| ApiError::BadRequest(format!("invalid contentId: {raw}")))?,
+        );
+        requests.push(cellarr_jobs::ManualImportRequest {
+            path: path.to_string(),
+            content_id,
+        });
+    }
+
+    // No pipeline wiring (offline/test): report unavailable rather than 500.
+    let Some(mi) = fs.state.manual_import.as_ref() else {
+        return Ok(Json(json!({
+            "imported": [],
+            "errors": [],
+            "message": "no import pipeline is configured",
+        })));
+    };
+
+    use crate::manual_import::ManualImportCommitOutcome;
+    let outcome = mi
+        .commit(requests)
+        .await
+        .map_err(|e| ApiError::Internal(format!("manual import failed: {e}")))?;
+    let body = match outcome {
+        ManualImportCommitOutcome::Committed { imported, errors } => {
+            let imported_rows: Vec<Value> = imported
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "sourcePath": r.source_path,
+                        "destinationPath": r.destination_path,
+                        "contentId": r.content_id.to_string(),
+                    })
+                })
+                .collect();
+            json!({
+                "imported": imported_rows,
+                "errors": errors,
+            })
+        }
+        ManualImportCommitOutcome::Unavailable(reason) => json!({
+            "imported": [],
+            "errors": [],
+            "message": reason,
+        }),
+    };
+    Ok(Json(body))
+}
+
+// --- per-episode / per-season monitoring toggles ---------------------------
+
+/// The `PUT /api/v3/episode/monitor` body — the Sonarr monitor-toggle shape: a set
+/// of episode ids and the monitored flag to apply to all of them.
+#[derive(Debug, Deserialize)]
+struct EpisodeMonitorBody {
+    #[serde(rename = "episodeIds", default)]
+    episode_ids: Vec<String>,
+    #[serde(default)]
+    monitored: bool,
+}
+
+/// v3 `PUT /api/v3/episode/monitor` — the **per-episode monitor toggle**.
+///
+/// Sets `monitored` on every addressed episode node. Each id is a cellarr content
+/// id (the full uuid the native FE sends, or the numeric projection an *arr client
+/// keys on); an id that does not resolve to an episode node is skipped (idempotent
+/// — re-issuing the toggle on a deleted episode still succeeds). Returns the count
+/// of episodes whose flag was persisted.
+async fn episode_monitor(
+    State(fs): State<FaceState>,
+    Json(body): Json<EpisodeMonitorBody>,
+) -> ApiResult<Json<Value>> {
+    let content = fs.state.db.content();
+    let mut updated = 0usize;
+    for raw in &body.episode_ids {
+        let Some(mut node) = resolve_episode_node(&fs.state, raw).await? else {
+            continue;
+        };
+        if node.monitored != body.monitored {
+            node.monitored = body.monitored;
+            content.upsert(&node).await?;
+        }
+        updated += 1;
+    }
+    Ok(Json(
+        json!({ "updated": updated, "monitored": body.monitored }),
+    ))
+}
+
+/// Resolve an episode id (full uuid or numeric projection) to its episode
+/// [`ContentNode`], or `None` when nothing matches an Episode-kind node. The
+/// numeric fallback scans every library's content tree and re-projects each node id
+/// (the same stateless projection the list endpoints emit).
+async fn resolve_episode_node(
+    state: &AppState,
+    id: &str,
+) -> ApiResult<Option<cellarr_core::ContentNode>> {
+    let content = state.db.content();
+    if let Ok(uuid) = id.parse::<uuid::Uuid>() {
+        let node = content
+            .get_node(cellarr_core::ContentId::from_uuid(uuid))
+            .await?
+            .filter(|n| n.kind == cellarr_core::ContentKind::Episode);
+        return Ok(node);
+    }
+    // Numeric projection: walk the TV trees and match a projected episode id.
+    let numeric = parse_i64(id, "episode")?;
+    for lib in state.db.config().list_libraries().await? {
+        if lib.media_type != MediaType::Tv {
+            continue;
+        }
+        for node in walk_episode_nodes(state, lib.id).await? {
+            if rpm_numeric_id(&node.id.to_string()) == numeric {
+                return Ok(Some(node));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Collect every Episode-kind node under a library, walking the series→season→
+/// episode adjacency list. Used by the numeric-id resolution and the season toggle.
+async fn walk_episode_nodes(
+    state: &AppState,
+    library: LibraryId,
+) -> ApiResult<Vec<cellarr_core::ContentNode>> {
+    let content = state.db.content();
+    let mut episodes = Vec::new();
+    let mut stack = content.roots(library).await?;
+    while let Some(node) = stack.pop() {
+        if node.kind == cellarr_core::ContentKind::Episode {
+            episodes.push(node);
+        } else {
+            stack.extend(content.children(node.id).await?);
+        }
+    }
+    Ok(episodes)
+}
+
+/// The `PUT /api/v3/season/monitor` body — toggle monitoring for one season and
+/// (by default) every episode beneath it, the Sonarr season-toggle behavior.
+#[derive(Debug, Deserialize)]
+struct SeasonMonitorBody {
+    #[serde(rename = "seasonId", default)]
+    season_id: Option<String>,
+    #[serde(default)]
+    monitored: bool,
+}
+
+/// v3 `PUT /api/v3/season/monitor` — the **per-season monitor toggle**.
+///
+/// Sets `monitored` on the addressed season node and cascades the same flag to
+/// every episode beneath it (the Sonarr behavior: toggling a season monitors/
+/// unmonitors its episodes). Returns the season id and the number of episode nodes
+/// updated.
+async fn season_monitor(
+    State(fs): State<FaceState>,
+    Json(body): Json<SeasonMonitorBody>,
+) -> ApiResult<Json<Value>> {
+    let raw = body
+        .season_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("a seasonId is required".into()))?;
+    let content = fs.state.db.content();
+    let Some(mut season) = resolve_season_node(&fs.state, raw).await? else {
+        return Err(ApiError::NotFound(format!("season {raw} not found")));
+    };
+
+    if season.monitored != body.monitored {
+        season.monitored = body.monitored;
+        content.upsert(&season).await?;
+    }
+    // Cascade to the season's episode children.
+    let mut updated = 0usize;
+    for mut child in content.children(season.id).await? {
+        if child.kind != cellarr_core::ContentKind::Episode {
+            continue;
+        }
+        if child.monitored != body.monitored {
+            child.monitored = body.monitored;
+            content.upsert(&child).await?;
+        }
+        updated += 1;
+    }
+    Ok(Json(json!({
+        "seasonId": season.id.to_string(),
+        "monitored": body.monitored,
+        "episodesUpdated": updated,
+    })))
+}
+
+/// Resolve a season id (full uuid or numeric projection) to its Season-kind
+/// [`ContentNode`], or `None` when nothing matches.
+async fn resolve_season_node(
+    state: &AppState,
+    id: &str,
+) -> ApiResult<Option<cellarr_core::ContentNode>> {
+    let content = state.db.content();
+    if let Ok(uuid) = id.parse::<uuid::Uuid>() {
+        let node = content
+            .get_node(cellarr_core::ContentId::from_uuid(uuid))
+            .await?
+            .filter(|n| n.kind == cellarr_core::ContentKind::Season);
+        return Ok(node);
+    }
+    let numeric = parse_i64(id, "season")?;
+    for lib in state.db.config().list_libraries().await? {
+        if lib.media_type != MediaType::Tv {
+            continue;
+        }
+        // Walk series -> season nodes and match a projected season id.
+        let mut stack = content.roots(lib.id).await?;
+        while let Some(node) = stack.pop() {
+            if node.kind == cellarr_core::ContentKind::Season {
+                if rpm_numeric_id(&node.id.to_string()) == numeric {
+                    return Ok(Some(node));
+                }
+            } else if node.kind == cellarr_core::ContentKind::Series {
+                stack.extend(content.children(node.id).await?);
+            }
+        }
+    }
+    Ok(None)
 }
 
 // --- calendar / queue / history / wanted -----------------------------------
