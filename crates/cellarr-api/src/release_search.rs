@@ -59,3 +59,49 @@ pub trait ReleaseSearch: Send + Sync {
     /// [`ReleaseSearchOutcome::Unavailable`].
     async fn search(&self, content: ContentId) -> Result<ReleaseSearchOutcome, String>;
 }
+
+/// The outcome of an **interactive grab**: the user picked a release from the
+/// interactive-search screen and asked cellarr to acquire it.
+///
+/// Unlike a search, a grab builds and drives the download client — so its outcome
+/// distinguishes a grab that was queued/imported, one refused for a domain reason
+/// (blocklisted, did not identify), and the no-environment case (no enabled
+/// download client / library root) reported as
+/// [`Unavailable`](Self::Unavailable) so the UI degrades rather than 500ing.
+#[derive(Debug, Clone)]
+pub enum ReleaseGrabOutcome {
+    /// The grab ran to a terminal pipeline outcome. `imported` is true when a file
+    /// was downloaded + imported; false when it was queued but not yet importable,
+    /// rejected, or held. `detail` is a short human string for the UI toast.
+    Grabbed {
+        /// Whether a file was downloaded and imported (vs. queued/rejected/held).
+        imported: bool,
+        /// A short, non-secret human description of the outcome for the UI.
+        detail: String,
+    },
+    /// No environment is configured/ready to grab (no enabled download client /
+    /// library root). The reason is a short, non-secret human string.
+    Unavailable(String),
+}
+
+/// The object-safe **interactive grab** seam the shim depends on.
+///
+/// Implemented by the wiring crate over the live
+/// [`PipelineRunner`](cellarr_jobs::PipelineRunner) — driving the real Grab→Track→
+/// Import path for the chosen release; held in
+/// [`AppState`](crate::state::AppState) as `Option<Arc<dyn ReleaseGrab>>`. `None`
+/// means no pipeline wiring at all (the shim then reports every grab as
+/// unavailable — the offline/test default).
+#[async_trait]
+pub trait ReleaseGrab: Send + Sync {
+    /// Grab the release identified by `guid` for `content`, building the download
+    /// client and driving Grab→Track→Import.
+    ///
+    /// # Errors
+    /// Returns a short human string only for an infrastructure failure the grab
+    /// could not recover from. A release that is blocklisted, does not identify, or
+    /// is no longer offered is **not** an error — it is a
+    /// [`ReleaseGrabOutcome::Grabbed`] with `imported: false` and an explanatory
+    /// `detail`.
+    async fn grab(&self, content: ContentId, guid: &str) -> Result<ReleaseGrabOutcome, String>;
+}

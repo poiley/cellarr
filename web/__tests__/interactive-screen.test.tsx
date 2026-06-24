@@ -17,6 +17,7 @@ vi.mock('@lib/api/client', async () => {
 // useSearchParams needs a router context; mock next/navigation.
 let searchValue = '';
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
   useSearchParams: () => new URLSearchParams(searchValue),
 }));
 

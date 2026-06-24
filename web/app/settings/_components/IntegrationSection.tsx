@@ -37,13 +37,10 @@ import type {
   DownloadClientConfigV3,
 } from '@lib/api/types';
 
+import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
-import {
-  Loading,
-  ErrorBanner,
-  SuccessBanner,
-  EmptyState,
-} from '@app/settings/_components/StatusBanners';
+import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
+import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
 
 type IntegrationKind = 'indexers' | 'downloadclients';
 type RawConfig = IndexerConfig | DownloadClientConfig;
@@ -110,27 +107,29 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
     [client, kind]
   );
   const { data, loading, error, reload } = useAsync<RawConfig[]>(load);
+  const { success, error: toastError, info } = useToast();
+
+  const singular = title.replace(/s$/, '');
 
   const [form, setForm] = React.useState<IntegrationForm>(() => blankForm(implementations));
   const [testing, setTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState<TestResult | undefined>(undefined);
   const [saving, setSaving] = React.useState(false);
-  const [saved, setSaved] = React.useState(false);
   const [saveError, setSaveError] = React.useState<ApiError | undefined>(undefined);
+  const [pendingDelete, setPendingDelete] = React.useState<IntegrationForm | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
 
   const configs = data ?? [];
 
   const edit = (raw: RawConfig) => {
     setForm(toForm(raw, implementations));
     setTestResult(undefined);
-    setSaved(false);
     setSaveError(undefined);
   };
 
   const reset = () => {
     setForm(blankForm(implementations));
     setTestResult(undefined);
-    setSaved(false);
     setSaveError(undefined);
   };
 
@@ -173,36 +172,75 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
   };
 
   const test = async () => {
+    if (!form.name.trim()) {
+      toastError('Give it a name before testing.');
+      return;
+    }
     setTesting(true);
     setTestResult(undefined);
+    info('Testing connection…', { durationMs: 2000 });
     try {
       const body = toV3Body();
       if (kind === 'indexers') await client.testIndexer(body);
       else await client.testDownloadClient(body);
       setTestResult({ ok: true, message: 'Connection successful.' });
+      success('Connection successful.');
     } catch (err) {
       const e = toApiError(err);
       setTestResult({ ok: false, message: `${e.code}: ${e.message}` });
+      toastError(`Test failed — ${e.message}`);
     } finally {
       setTesting(false);
     }
   };
 
   const save = async () => {
+    if (!form.name.trim()) {
+      toastError('Give it a name before saving.');
+      return;
+    }
     setSaving(true);
-    setSaved(false);
     setSaveError(undefined);
     try {
       const body = toV3Body();
       if (kind === 'indexers') await client.createIndexer(body);
       else await client.createDownloadClient(body);
-      setSaved(true);
+      success(`${singular} saved.`);
       reset();
       reload();
     } catch (err) {
-      setSaveError(toApiError(err));
+      const e = toApiError(err);
+      setSaveError(e);
+      toastError(`Could not save — ${e.message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const numericId = Number.parseInt(pendingDelete.id, 10);
+    if (!Number.isFinite(numericId)) {
+      // The native list keys configs by an opaque id; the v3 delete route is
+      // addressed by a numeric id. Surface this rather than firing a request
+      // that cannot resolve.
+      toastError('This entry cannot be deleted from here (no numeric id).');
+      setPendingDelete(null);
+      return;
+    }
+    setDeleting(true);
+    try {
+      if (kind === 'indexers') await client.deleteIndexer(numericId);
+      else await client.deleteDownloadClient(numericId);
+      success(`${singular} removed.`);
+      if (form.id === pendingDelete.id) reset();
+      setPendingDelete(null);
+      reload();
+    } catch (err) {
+      const e = toApiError(err);
+      toastError(`Could not remove — ${e.message}`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -233,9 +271,18 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
                       <Badge>{f.enabled ? 'enabled' : 'disabled'}</Badge> {f.name || '(unnamed)'}{' '}
                       <span style={{ opacity: 0.5 }}>{f.implementation}</span>
                     </span>
-                    <Button theme="SECONDARY" onClick={() => edit(raw)}>
-                      Edit
-                    </Button>
+                    <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
+                      <Button theme="SECONDARY" aria-label={`Edit ${f.name || singular}`} onClick={() => edit(raw)}>
+                        Edit
+                      </Button>
+                      <Button
+                        theme="SECONDARY"
+                        aria-label={`Remove ${f.name || singular}`}
+                        onClick={() => setPendingDelete(f)}
+                      >
+                        Remove
+                      </Button>
+                    </span>
                   </li>
                 );
               })}
@@ -247,7 +294,7 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
           <Divider type="GRADIENT" />
 
           <Text style={{ opacity: 0.6, margin: '1ch 0 0.5ch' }}>
-            {form.id ? `Editing ${form.name || form.id}` : `New ${title.replace(/s$/, '').toLowerCase()}`}
+            {form.id ? `Editing ${form.name || form.id}` : `New ${singular.toLowerCase()}`}
           </Text>
 
           <div style={{ margin: '0.5ch 0' }}>
@@ -322,23 +369,14 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
             </Checkbox>
           </div>
 
+          {/* Inline test result stays near the form as a persistent indicator;
+              the same outcome is also announced via toast. */}
           {testResult ? (
-            testResult.ok ? (
-              <SuccessBanner>{testResult.message}</SuccessBanner>
-            ) : (
-              <ErrorBanner
-                error={
-                  new ApiError(
-                    'test_failed',
-                    testResult.message,
-                    0
-                  )
-                }
-              />
-            )
+            <div role="status" style={{ margin: '0.5ch 0' }}>
+              <Badge>{testResult.ok ? '✓ ok' : '✗ failed'}</Badge> {testResult.message}
+            </div>
           ) : null}
           {saveError ? <ErrorBanner error={saveError} /> : null}
-          {saved ? <SuccessBanner>Saved.</SuccessBanner> : null}
 
           <div style={{ marginTop: '1ch' }}>
             <ButtonGroup
@@ -349,6 +387,22 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
               ]}
             />
           </div>
+
+          {pendingDelete ? (
+            <ConfirmDialog
+              title={`Remove ${singular.toLowerCase()}`}
+              confirmLabel={`Remove ${singular.toLowerCase()}`}
+              pendingLabel="Removing…"
+              pending={deleting}
+              onConfirm={confirmDelete}
+              onCancel={() => (deleting ? undefined : setPendingDelete(null))}
+            >
+              <Text>
+                Remove <strong>{pendingDelete.name || singular.toLowerCase()}</strong>? cellarr will
+                stop using this {singular.toLowerCase()}.
+              </Text>
+            </ConfirmDialog>
+          ) : null}
         </>
       )}
     </Card>

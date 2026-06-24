@@ -1,12 +1,14 @@
 'use client';
 
-// Home / dashboard — a fast at-a-glance overview of the instance: library
-// totals, what's downloading now, recent grabs/imports, health warnings, and a
-// monitored/missing rollup. Each card links to the screen that owns the detail.
+// Home / dashboard — a fast at-a-glance overview of the instance: a compact
+// stat strip (library totals, monitored/missing, on-disk size, in-flight
+// downloads, health), what's downloading now, recent grabs/imports, recently
+// added titles, and (when the backend has dated items) an upcoming calendar.
+// Every stat is a deep link into the screen that owns the detail.
 //
 // Composed exclusively from vendored SRCL primitives + the typed API client and
 // the pure aggregation helpers in _lib/dashboard. The only non-component glue is
-// routing (next/link) and data (the API client).
+// routing (next/link), data (the API client), and the shared toast.
 
 import * as React from 'react';
 import Link from 'next/link';
@@ -23,15 +25,21 @@ import RowSpaceBetween from '@components/RowSpaceBetween';
 import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
 import { formatBytes, formatTimestamp } from '@app/_lib/decisionlog';
 import {
   activeDownloads,
   downloadProgress,
+  fetchCalendar,
+  healthSummary,
   historyEventV3Label,
   notableHealth,
   recentHistory,
+  recentlyAdded,
   summarizeLibrary,
+  upcomingItems,
+  type CalendarItem,
   type MonitoredSummary,
 } from '@app/_lib/dashboard';
 import type {
@@ -50,6 +58,7 @@ interface DashboardData {
   queue: QueueRecord[];
   history: HistoryRecordV3[];
   health: HealthCheck[];
+  calendar: CalendarItem[];
 }
 
 const EMPTY: DashboardData = {
@@ -59,18 +68,49 @@ const EMPTY: DashboardData = {
   queue: [],
   history: [],
   health: [],
+  calendar: [],
 };
 
-// A typed metric tile: label, value, and the screen it links into.
-const Metric: React.FC<{ label: string; value: React.ReactNode; href: string }> = ({
-  label,
-  value,
-  href,
-}) => (
-  <Link href={href} style={{ textDecoration: 'none' }}>
-    <Card title={label} style={{ height: '100%' }}>
-      <Text style={{ fontSize: '2ch', fontWeight: 600 }}>{value}</Text>
-    </Card>
+// A single dense stat tile in the bento strip: a glyph-or-value over a label,
+// the whole cell a deep link into the screen that owns the detail. Tiles share
+// a bordered grid cell (the strip draws the borders) so the row reads as one
+// compact panel rather than six stacked cards.
+const StatTile: React.FC<{
+  label: string;
+  value: React.ReactNode;
+  href: string;
+  hint?: string;
+  emphasis?: boolean;
+}> = ({ label, value, href, hint, emphasis }) => (
+  <Link
+    href={href}
+    style={{ textDecoration: 'none', display: 'block' }}
+    title={hint ?? `Open ${label}`}
+  >
+    <div
+      style={{
+        border: '1px solid var(--theme-border, var(--theme-text))',
+        padding: '0.75ch 1ch',
+        minWidth: '14ch',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.25ch',
+      }}
+    >
+      <Text
+        style={{
+          fontSize: '2ch',
+          fontWeight: 600,
+          color: emphasis ? 'var(--theme-error, inherit)' : 'inherit',
+        }}
+      >
+        {value}
+      </Text>
+      <Text style={{ opacity: 0.6, textTransform: 'uppercase', fontSize: '0.85em' }}>
+        {label}
+      </Text>
+    </div>
   </Link>
 );
 
@@ -83,18 +123,25 @@ export default function HomePage() {
   const [data, setData] = React.useState<DashboardData>(EMPTY);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const { error: toastError } = useToast();
 
   React.useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
     // Each panel degrades independently: one failing endpoint must not blank the
-    // whole dashboard. settle() folds a rejected call into a fallback value.
+    // whole dashboard. settle() folds a rejected call into a fallback value, and
+    // surfaces the first non-network failure both in the banner and as a toast.
     const settle = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
       p.catch((err: unknown) => {
         if (err instanceof ApiError && err.code === 'network_error') return fallback;
-        // Surface the first real error but keep rendering the rest.
-        setError((prev) => prev ?? (err instanceof Error ? err.message : 'load failed'));
+        const message = err instanceof Error ? err.message : 'load failed';
+        setError((prev) => {
+          if (prev) return prev;
+          // First real failure: also nudge the user via the shared toast.
+          toastError(`Some dashboard data failed to load: ${message}`);
+          return message;
+        });
         return fallback;
       });
 
@@ -105,16 +152,19 @@ export default function HomePage() {
       settle(api.getQueueV3(signal), null).then((page) => page?.records ?? []),
       settle(api.getHistoryV3(signal), null).then((page) => page?.records ?? []),
       settle(api.health(signal), [] as HealthCheck[]),
+      settle(fetchCalendar(api, 14, signal), [] as CalendarItem[]),
     ])
-      .then(([status, movies, series, queue, history, health]) => {
+      .then(([status, movies, series, queue, history, health, calendar]) => {
         if (signal.aborted) return;
-        setData({ status, movies, series, queue, history, health });
+        setData({ status, movies, series, queue, history, health, calendar });
       })
       .finally(() => {
         if (!signal.aborted) setLoading(false);
       });
 
     return () => controller.abort();
+    // toastError is stable from the provider; intentionally run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const summary: MonitoredSummary = React.useMemo(
@@ -124,6 +174,12 @@ export default function HomePage() {
   const downloads = React.useMemo(() => activeDownloads(data.queue), [data.queue]);
   const recent = React.useMemo(() => recentHistory(data.history), [data.history]);
   const warnings = React.useMemo(() => notableHealth(data.health), [data.health]);
+  const health = React.useMemo(() => healthSummary(data.health), [data.health]);
+  const added = React.useMemo(
+    () => recentlyAdded(data.movies, data.series),
+    [data.movies, data.series]
+  );
+  const upcoming = React.useMemo(() => upcomingItems(data.calendar), [data.calendar]);
 
   return (
     <AppShell>
@@ -147,32 +203,75 @@ export default function HomePage() {
         </Row>
       ) : null}
 
-      {/* Top-line counts, each linking to the owning screen. */}
-      <Grid style={{ marginTop: '1ch' }}>
-        <Metric label="Library items" value={summary.total} href="/library" />
-        <Metric label="Monitored" value={summary.monitored} href="/library" />
-        <Metric label="Missing" value={summary.missing} href="/library" />
-        <Metric label="On disk" value={formatBytes(summary.sizeOnDisk)} href="/library" />
-        <Metric label="Downloading" value={downloads.length} href="/activity" />
-        <Metric
-          label="Health"
-          value={warnings.length === 0 ? 'OK' : warnings.length}
-          href="/system"
-        />
-      </Grid>
+      {/* Compact bento stat strip — high density, no scroll. Each tile is a deep
+          link into the screen that owns the detail. Health is a glyph + word. */}
+      <Card title="Overview" style={{ marginTop: '1ch' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(14ch, 1fr))',
+            gap: '0.5ch',
+          }}
+        >
+          <StatTile label="Items" value={summary.total} href="/library" />
+          <StatTile label="Monitored" value={summary.monitored} href="/library" />
+          <StatTile
+            label="Missing"
+            value={summary.missing}
+            href="/library"
+            emphasis={summary.missing > 0}
+            hint="Monitored items with no file — open Library"
+          />
+          <StatTile
+            label="On disk"
+            value={formatBytes(summary.sizeOnDisk)}
+            href="/library"
+          />
+          <StatTile
+            label="Downloading"
+            value={downloads.length}
+            href="/activity"
+            hint="In-flight downloads — open Activity"
+          />
+          <StatTile
+            label="Health"
+            value={
+              <span>
+                <span aria-hidden="true">{health.glyph}</span>{' '}
+                {health.word}
+              </span>
+            }
+            href="/system"
+            emphasis={health.hasWarnings}
+            hint={
+              health.hasWarnings
+                ? `${health.count} health ${health.count === 1 ? 'warning' : 'warnings'} — open System`
+                : 'All health checks OK — open System'
+            }
+          />
+        </div>
+      </Card>
 
-      {/* Health warnings — only shown when there is something to say. */}
+      {/* Health warnings — only shown when there is something to say. Glyphed,
+          never colour-only. */}
       {warnings.length > 0 ? (
         <Card title="Health warnings" style={{ marginTop: '1ch' }}>
           {warnings.map((c, i) => (
             <React.Fragment key={`${c.source ?? c.type ?? 'h'}-${i}`}>
               {i > 0 ? <Divider type="GRADIENT" /> : null}
               <RowSpaceBetween>
-                <Text>{c.message ?? c.source ?? 'health check'}</Text>
+                <Text>
+                  <span aria-hidden="true">▲</span>{' '}
+                  {c.message ?? c.source ?? 'health check'}
+                </Text>
                 <Badge>{(c.type ?? 'warning').toUpperCase()}</Badge>
               </RowSpaceBetween>
             </React.Fragment>
           ))}
+          <Divider type="GRADIENT" />
+          <Link href="/system" style={{ textDecoration: 'none' }}>
+            <Text style={{ opacity: 0.6 }}>View system →</Text>
+          </Link>
         </Card>
       ) : null}
 
@@ -181,7 +280,9 @@ export default function HomePage() {
         <Card title="Filesystem warnings" style={{ marginTop: '1ch' }}>
           {data.status.filesystem_warnings.map((w, i) => (
             <Row key={i}>
-              <Text>{w}</Text>
+              <Text>
+                <span aria-hidden="true">▲</span> {w}
+              </Text>
             </Row>
           ))}
         </Card>
@@ -244,6 +345,68 @@ export default function HomePage() {
             <Text style={{ opacity: 0.6 }}>View history →</Text>
           </Link>
         </Card>
+      </Grid>
+
+      <Grid style={{ marginTop: '1ch' }}>
+        {/* Recently added monitored titles. */}
+        <Card title="Recently added">
+          {added.length === 0 ? (
+            <Text style={{ opacity: 0.6 }}>No monitored items yet.</Text>
+          ) : (
+            added.map((item, i) => (
+              <React.Fragment key={item.id}>
+                {i > 0 ? <Divider type="GRADIENT" /> : null}
+                <Link
+                  href={`/content/?id=${encodeURIComponent(item.id)}`}
+                  style={{ textDecoration: 'none', display: 'block' }}
+                >
+                  <RowSpaceBetween>
+                    <Text>
+                      <span aria-hidden="true">{item.hasFile ? '✓' : '▸'}</span>{' '}
+                      {item.title}
+                    </Text>
+                    <Badge>{item.kind === 'movie' ? 'MOVIE' : 'SERIES'}</Badge>
+                  </RowSpaceBetween>
+                  {item.added ? (
+                    <Text style={{ opacity: 0.6 }}>{formatTimestamp(item.added)}</Text>
+                  ) : null}
+                </Link>
+              </React.Fragment>
+            ))
+          )}
+          <Divider type="GRADIENT" />
+          <Link href="/library" style={{ textDecoration: 'none' }}>
+            <Text style={{ opacity: 0.6 }}>View library →</Text>
+          </Link>
+        </Card>
+
+        {/* Upcoming — only shown when the backend calendar has dated items.
+            Today only TV daily-coded episodes carry a self-contained date, so
+            most libraries yield an empty calendar (the data-model limitation
+            noted by the backend); we then simply omit this panel.
+            TODO: when the identify pipeline persists per-item air/release dates
+            for movies + standard episodes, this panel will populate for them too
+            (no frontend change needed — it already reads the same shape). */}
+        {upcoming.length > 0 ? (
+          <Card title="Upcoming">
+            {upcoming.map((item, i) => {
+              const when = item.airDate ?? item.date ?? '';
+              const label = item.title ?? item.summary ?? shortId(item.id);
+              return (
+                <React.Fragment key={item.id ?? `${label}-${i}`}>
+                  {i > 0 ? <Divider type="GRADIENT" /> : null}
+                  <RowSpaceBetween>
+                    <Text>
+                      <span aria-hidden="true">{item.hasFile ? '✓' : '●'}</span>{' '}
+                      {label}
+                    </Text>
+                    {when ? <Badge>{when}</Badge> : null}
+                  </RowSpaceBetween>
+                </React.Fragment>
+              );
+            })}
+          </Card>
+        ) : null}
       </Grid>
     </AppShell>
   );

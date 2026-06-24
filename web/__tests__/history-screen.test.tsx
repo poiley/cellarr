@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const getHistory = vi.fn();
 const getHistoryV3 = vi.fn();
@@ -19,6 +19,7 @@ vi.mock('@lib/api/client', async () => {
 // global recent feed). Drive the active node through a mutable search-params stub.
 let searchParams = new URLSearchParams();
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
   useSearchParams: () => searchParams,
   useRouter: () => ({ push: () => {} }),
 }));
@@ -147,6 +148,19 @@ describe('History screen', () => {
       expect(links.length).toBe(EVENTS.length);
       expect((links[0] as HTMLAnchorElement).getAttribute('href')).toContain('run=run-xyz');
     });
+  });
+
+  it('hides the raw node-id box behind an Advanced disclosure by default', async () => {
+    getHistoryV3.mockResolvedValue(FEED);
+    const { container } = renderPage();
+    await waitFor(() => {
+      expect(getHistoryV3).toHaveBeenCalled();
+    });
+    // Default (global feed) view: the uuid box is collapsed out of the DOM.
+    expect(container.querySelector('input[name="node"]')).toBeNull();
+    // ...and revealed only when the user opens the disclosure.
+    fireEvent.click(screen.getByText(/Advanced — open a node by id/i));
+    expect(container.querySelector('input[name="node"]')).toBeTruthy();
   });
 
   it('shows the empty state when a content node has no events', async () => {

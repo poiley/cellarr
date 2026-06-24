@@ -9,12 +9,18 @@ import { HotkeysProvider } from '@modules/hotkeys';
 import { ModalProvider } from '@components/page/ModalContext';
 
 import { ThemeProvider } from '@lib/ThemeProvider';
+import { ToastProvider } from '@app/_lib/ToastProvider';
+import { CommandPaletteProvider } from '@app/_components/CommandPaletteProvider';
 
 const Providers: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return (
     <ThemeProvider>
       <HotkeysProvider>
-        <ModalProvider>{children}</ModalProvider>
+        <ModalProvider>
+          <ToastProvider>
+            <CommandPaletteProvider>{children}</CommandPaletteProvider>
+          </ToastProvider>
+        </ModalProvider>
       </HotkeysProvider>
     </ThemeProvider>
   );

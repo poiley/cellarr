@@ -13,9 +13,12 @@
 //      /api/v3/blocklist plus the live `decision_logged` / `queue_progress`
 //      frames that announce the next grab.
 //   3. Scheduled tasks — the recurring scheduler jobs (MissingItemSearch /
-//      RssSync / DiskSpaceCheck). These are real, but they are NOT downloads, so
-//      they live in their own labelled section. The /api/v3/queue surface marks
-//      them with `status: "scheduled"` / `protocol: "unknown"`.
+//      RssSync / DiskSpaceCheck), read from the dedicated /api/v3/system/task
+//      surface so each row shows a real next-run countdown, last run, last
+//      status, and a "Run now" action (POST /api/v3/command). These are NOT
+//      downloads, so they live in their own labelled section; any cron rows the
+//      /api/v3/queue still tags with `status:"scheduled"`/`protocol:"unknown"`
+//      are recognised only to keep them OUT of the download list.
 //
 // Live by default: an SSE subscription over /api/v1/stream pushes lifecycle
 // transitions, and a low-frequency poll re-snapshots the queue + blocklist so
@@ -28,6 +31,7 @@ import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
 import BarLoader from '@components/BarLoader';
 import BarProgress from '@components/BarProgress';
+import Button from '@components/Button';
 import Card from '@components/Card';
 import Divider from '@components/Divider';
 import RowSpaceBetween from '@components/RowSpaceBetween';
@@ -37,6 +41,15 @@ import TableRow from '@components/TableRow';
 import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
+import {
+  formatCountdown,
+  formatIso,
+  getSystemTasks,
+  lastStatusGlyph,
+  runTaskNow,
+  type SystemTaskV3,
+} from '@app/_lib/activity';
+import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
 import type {
   BlocklistRecord,
@@ -77,7 +90,12 @@ interface HealRow {
   recovery?: string; // a short note about the follow-up grab, if seen live
 }
 
-type StreamState = 'connecting' | 'live' | 'offline';
+// The live-stream connection lifecycle, surfaced verbatim in the header badge:
+//   connecting   — opening the SSE socket, not yet confirmed open
+//   live         — socket open, frames flowing
+//   disconnected — socket dropped after having been live (browser is retrying)
+//   offline      — no EventSource at all (SSR / unsupported runtime)
+type StreamState = 'connecting' | 'live' | 'disconnected' | 'offline';
 
 // v3 history/blocklist dates are unix seconds, not ISO; format locally.
 function formatUnix(seconds?: number): string {
@@ -104,10 +122,18 @@ function lifecycleLabel(status: string): string {
 }
 
 export default function ActivityPage() {
+  const { success, error: toastError, info } = useToast();
   const [queue, setQueue] = React.useState<QueueRecord[] | null>(null);
   const [blocklist, setBlocklist] = React.useState<BlocklistRecord[]>([]);
+  const [tasks, setTasks] = React.useState<SystemTaskV3[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stream, setStream] = React.useState<StreamState>('connecting');
+  // Tasks currently mid "Run now" POST, keyed by task id (string), so each row's
+  // button can disable itself without blocking the others.
+  const [running, setRunning] = React.useState<Set<string>>(new Set());
+  // A ticking clock so the next-run countdowns re-render once a second without a
+  // network round-trip; the task list itself is re-polled far less often.
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
 
   // Live overlay of grab progress keyed by grab id, fed by the SSE stream. This
   // is the source of truth for the download lifecycle between queue snapshots.
@@ -154,9 +180,17 @@ export default function ActivityPage() {
   // Live updates over SSE — the push path for lifecycle transitions. The per-type
   // `on` handlers receive the full DomainEvent union, so each narrows on `type`.
   React.useEffect(() => {
+    // EventSource fires `error` both before the first open (still connecting) and
+    // whenever an established socket drops (it then auto-retries). Reflect the
+    // REAL transport state: only claim "live" on a confirmed open; show
+    // "disconnected" when a previously-open stream drops, "connecting" otherwise.
+    let everOpen = false;
     const handle = api.openStream({
-      onOpen: () => setStream('live'),
-      onError: () => setStream('connecting'),
+      onOpen: () => {
+        everOpen = true;
+        setStream('live');
+      },
+      onError: () => setStream(everOpen ? 'disconnected' : 'connecting'),
       on: {
         queue_progress: (ev) => {
           if (ev.type !== 'queue_progress') return;
@@ -188,9 +222,65 @@ export default function ActivityPage() {
     return () => handle.close();
   }, []);
 
+  // Poll the real scheduler tasks (`/api/v3/system/task`) for next-run, last-run
+  // and last-status. Slower cadence than the live channel — the per-second
+  // countdown ticker below keeps the displayed times fresh between polls.
+  React.useEffect(() => {
+    const handle = api.poll<SystemTaskV3[]>((signal) => getSystemTasks(signal), {
+      intervalMs: 15000,
+      onData: (rows) => setTasks(rows ?? []),
+      onError: (err) => {
+        // A missing task surface shouldn't blank the whole screen; degrade to an
+        // empty task list (the section renders its own one-line empty state).
+        if (err instanceof ApiError) setTasks((t) => t ?? []);
+      },
+    });
+    return () => handle.stop();
+  }, []);
+
+  // Re-render countdowns once a second without re-fetching.
+  React.useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // --- run a scheduled task on demand ---------------------------------------
+
+  const onRunTask = React.useCallback(
+    async (task: SystemTaskV3) => {
+      const key = String(task.id);
+      setRunning((prev) => new Set(prev).add(key));
+      info(`Queuing ${task.name}…`);
+      try {
+        await runTaskNow(task.taskName);
+        success(`${task.name} queued`);
+        // Refresh tasks so next/last-run reflects the just-triggered command.
+        try {
+          setTasks(await getSystemTasks());
+        } catch {
+          // Non-fatal: the 15s poll will reconcile shortly.
+        }
+      } catch (err) {
+        const message =
+          err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'unknown error';
+        toastError(`Could not run ${task.name}: ${message}`);
+      } finally {
+        setRunning((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [info, success, toastError]
+  );
+
   // --- derive the three sections --------------------------------------------
 
-  const scheduledTasks = (queue ?? []).filter(isScheduledTask);
+  // Scheduler jobs now come from the dedicated /system/task surface (real
+  // next/last-run + status). The legacy queue-tagged cron rows are still
+  // recognised and excluded from the download list so they never masquerade as
+  // downloads, but they are no longer the source for the Scheduled section.
   const queuedDownloads = (queue ?? []).filter((r) => !isScheduledTask(r));
 
   // Merge the real-download queue rows with the live SSE overlay (overlay wins
@@ -220,11 +310,15 @@ export default function ActivityPage() {
     date: typeof b.date === 'number' ? b.date : undefined,
   }));
 
-  const streamBadge = (
-    <Badge>
-      {stream === 'live' ? 'live' : stream === 'connecting' ? 'connecting…' : 'offline'}
-    </Badge>
-  );
+  // The badge reflects the REAL SSE transport state — it only says "live" when
+  // the socket is confirmed open, and switches to "disconnected" if it drops.
+  const STREAM_LABEL: Record<StreamState, string> = {
+    live: '● live',
+    connecting: '● connecting…',
+    disconnected: '✗ disconnected',
+    offline: '✗ offline',
+  };
+  const streamBadge = <Badge>{STREAM_LABEL[stream]}</Badge>;
 
   const isLoading = queue === null && !error;
 
@@ -258,10 +352,7 @@ export default function ActivityPage() {
               Downloads
             </Text>
             {downloads.length === 0 ? (
-              <Text style={{ opacity: 0.6 }}>
-                No active downloads. Grabs appear here as they move from grabbed
-                through downloading and importing.
-              </Text>
+              <Text style={{ opacity: 0.6 }}>No active downloads.</Text>
             ) : (
               downloads.map((row) => (
                 <div key={row.id} style={{ marginBottom: '1ch' }}>
@@ -291,10 +382,7 @@ export default function ActivityPage() {
               Self-heal · blocklisted releases
             </Text>
             {healRows.length === 0 ? (
-              <Text style={{ opacity: 0.6 }}>
-                Nothing blocklisted. When a download fails, the daemon walls off
-                the bad release here and grabs the next candidate.
-              </Text>
+              <Text style={{ opacity: 0.6 }}>Nothing blocklisted.</Text>
             ) : (
               <Table>
                 <TableRow>
@@ -337,22 +425,49 @@ export default function ActivityPage() {
             <Text style={{ opacity: 0.6, marginBottom: '0.5ch' }}>
               Scheduled tasks
             </Text>
-            {scheduledTasks.length === 0 ? (
+            {tasks === null ? (
+              <BarLoader intervalRate={700} />
+            ) : tasks.length === 0 ? (
               <Text style={{ opacity: 0.6 }}>No scheduled tasks registered.</Text>
             ) : (
               <Table>
                 <TableRow>
                   <TableColumn style={{ opacity: 0.6 }}>Task</TableColumn>
-                  <TableColumn style={{ opacity: 0.6 }}>State</TableColumn>
+                  <TableColumn style={{ opacity: 0.6 }}>Next run</TableColumn>
+                  <TableColumn style={{ opacity: 0.6 }}>Last run</TableColumn>
+                  <TableColumn style={{ opacity: 0.6 }}>Last status</TableColumn>
+                  <TableColumn style={{ opacity: 0.6 }} />
                 </TableRow>
-                {scheduledTasks.map((task) => (
-                  <TableRow key={task.id}>
-                    <TableColumn>{task.title}</TableColumn>
-                    <TableColumn>
-                      <Badge>{task.status}</Badge>
-                    </TableColumn>
-                  </TableRow>
-                ))}
+                {tasks.map((task) => {
+                  const key = String(task.id);
+                  const isRunning = running.has(key);
+                  const last = lastStatusGlyph(task.lastStatus);
+                  return (
+                    <TableRow key={key}>
+                      <TableColumn>{task.name}</TableColumn>
+                      <TableColumn style={{ whiteSpace: 'nowrap' }}>
+                        {formatCountdown(task.nextExecution, nowMs)}
+                      </TableColumn>
+                      <TableColumn style={{ whiteSpace: 'nowrap' }}>
+                        {formatIso(task.lastExecution)}
+                      </TableColumn>
+                      <TableColumn style={{ whiteSpace: 'nowrap' }}>
+                        <Badge>
+                          {last.glyph} {last.label}
+                        </Badge>
+                      </TableColumn>
+                      <TableColumn style={{ whiteSpace: 'nowrap' }}>
+                        <Button
+                          theme="SECONDARY"
+                          isDisabled={isRunning}
+                          onClick={() => onRunTask(task)}
+                        >
+                          {isRunning ? 'Running…' : 'Run now'}
+                        </Button>
+                      </TableColumn>
+                    </TableRow>
+                  );
+                })}
               </Table>
             )}
           </>

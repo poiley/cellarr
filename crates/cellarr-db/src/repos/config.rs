@@ -159,6 +159,34 @@ impl ConfigRepo {
         rows.into_iter().map(row_to_json_body).collect()
     }
 
+    /// Delete a root folder by id. Returns whether a row was removed (so an
+    /// already-deleted id can be reported as the idempotent no-op the `/api/v3`
+    /// shim treats as success).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_root_folder(&self, id: &str) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM root_folder WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     // --- Indexers -----------------------------------------------------------
 
     /// Insert or replace an indexer configuration.

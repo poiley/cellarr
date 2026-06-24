@@ -2,6 +2,7 @@
 // summary numbers from the typed API payloads. Kept out of the page component so
 // they can be unit-tested without React. No UI here; the page does the SRCL.
 
+import { type CellarrClient } from '@lib/api/client';
 import type {
   HealthCheck,
   HistoryRecordV3,
@@ -124,4 +125,149 @@ export function historyEventV3Label(eventType?: string): string {
     default:
       return eventType as string;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Recently added
+// ---------------------------------------------------------------------------
+
+/** A flattened "recently added" row across movies + series. */
+export interface RecentItem {
+  id: string;
+  title: string;
+  kind: 'movie' | 'series';
+  /** ISO timestamp the item was added to the library (may be empty). */
+  added: string;
+  monitored: boolean;
+  hasFile: boolean;
+}
+
+/** Parse an `added` ISO timestamp to epoch ms, or 0 when absent/invalid. */
+function addedTime(added: string): number {
+  if (!added) return 0;
+  const t = Date.parse(added);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * Most-recently-added monitored items across both libraries, newest first.
+ * Mirrors the originals' "Recently added" rail: we surface monitored adds (the
+ * things the user actually cares to track), capped to `limit`. Items without an
+ * `added` timestamp sort last.
+ */
+export function recentlyAdded(
+  movies: Movie[],
+  series: Series[],
+  limit = 6
+): RecentItem[] {
+  const rows: RecentItem[] = [];
+  for (const m of movies) {
+    if (!m.monitored) continue;
+    rows.push({
+      id: m.id,
+      title: m.year ? `${m.title} (${m.year})` : m.title,
+      kind: 'movie',
+      added: m.added ?? '',
+      monitored: m.monitored,
+      hasFile: m.hasFile,
+    });
+  }
+  for (const s of series) {
+    if (!s.monitored) continue;
+    rows.push({
+      id: s.id,
+      title: s.title,
+      kind: 'series',
+      added: s.added ?? '',
+      monitored: s.monitored,
+      hasFile: s.hasFile,
+    });
+  }
+  rows.sort((a, b) => addedTime(b.added) - addedTime(a.added));
+  return rows.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Health glyph
+// ---------------------------------------------------------------------------
+
+/** A glyph + word health rollup — never colour-only (accessibility). */
+export interface HealthStatus {
+  /** ASCII status glyph: ● when OK, ▲ when there are warnings/errors. */
+  glyph: '●' | '▲';
+  /** Short label: 'OK' or 'N warnings'. */
+  word: string;
+  /** True when there is at least one notable check. */
+  hasWarnings: boolean;
+  count: number;
+}
+
+/** Summarize notable health checks into a glyph + word for the dashboard. */
+export function healthSummary(checks: HealthCheck[]): HealthStatus {
+  const notable = notableHealth(checks);
+  const count = notable.length;
+  if (count === 0) {
+    return { glyph: '●', word: 'OK', hasWarnings: false, count: 0 };
+  }
+  return {
+    glyph: '▲',
+    word: `${count} ${count === 1 ? 'warning' : 'warnings'}`,
+    hasWarnings: true,
+    count,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Calendar (upcoming) — read via the generic v3 escape hatch
+// ---------------------------------------------------------------------------
+
+/**
+ * A calendar row from `GET /api/v3/calendar`. The backend returns the originals'
+ * shape (`id`, `title`, `airDate`/`airDateUtc`, `monitored`, `hasFile`) plus the
+ * cellarr-native `date`/`summary` aliases. Today only TV daily-coded episodes
+ * carry a self-contained date, so this is often empty — the dashboard then shows
+ * "Recently added" instead. See the calendar handler in shim.rs.
+ */
+export interface CalendarItem {
+  id?: string;
+  title?: string;
+  airDate?: string;
+  airDateUtc?: string;
+  monitored?: boolean;
+  hasFile?: boolean;
+  date?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
+
+/** Format a `Date` as a `YYYY-MM-DD` window bound for the calendar query. */
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Fetch the upcoming calendar window [today, today+days]. Uses the client's
+ * generic `requestV3` escape hatch because the calendar route is not yet a typed
+ * method on the shared client (which screen agents must not edit).
+ */
+export async function fetchCalendar(
+  client: CellarrClient,
+  days = 14,
+  signal?: AbortSignal
+): Promise<CalendarItem[]> {
+  const now = new Date();
+  const end = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  return client.requestV3<CalendarItem[]>('/calendar', {
+    query: { start: isoDate(now), end: isoDate(end) },
+    signal,
+  });
+}
+
+/** Upcoming calendar rows sorted by date (earliest first), capped to `limit`. */
+export function upcomingItems(items: CalendarItem[], limit = 6): CalendarItem[] {
+  const dateOf = (i: CalendarItem) => i.airDate ?? i.date ?? '';
+  return [...items]
+    .filter((i) => dateOf(i))
+    .sort((a, b) => dateOf(a).localeCompare(dateOf(b)))
+    .slice(0, limit);
 }

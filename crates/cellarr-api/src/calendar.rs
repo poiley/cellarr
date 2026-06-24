@@ -264,6 +264,47 @@ async fn build_calendar(
     Ok(cal)
 }
 
+/// Collect the dated calendar events for `media`, optionally bounded to the
+/// inclusive ISO date range `[start, end]` — the shared seam behind both the iCal
+/// feed and the JSON `/api/v3/calendar` endpoint.
+///
+/// Returns one event per content node of `media` whose coordinates carry an
+/// air/release date (today only TV daily-coded episodes — see [`event_for_node`]),
+/// sorted by date. Undated nodes are omitted. `start`/`end`, when given, filter to
+/// events whose `date` falls within the range (string compare is correct for the
+/// `yyyy-mm-dd` form). An empty result is normal (no dated content yet), not an
+/// error — the dashboard then shows "Recently added" instead.
+///
+/// # Errors
+/// Returns a [`DbError`](cellarr_db::DbError) on a repository read failure.
+pub async fn collect_calendar_events(
+    state: &AppState,
+    media: MediaType,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<Vec<CalendarEvent>, cellarr_db::DbError> {
+    let content = state.db.content();
+    let mut events = Vec::new();
+    for lib in state.db.config().list_libraries().await? {
+        if lib.media_type != media {
+            continue;
+        }
+        let mut stack = content.roots(lib.id).await?;
+        while let Some(node) = stack.pop() {
+            if let Some(event) = event_for_node(state, &node).await? {
+                let in_range = start.is_none_or(|s| event.date.as_str() >= s)
+                    && end.is_none_or(|e| event.date.as_str() <= e);
+                if in_range {
+                    events.push(event);
+                }
+            }
+            stack.extend(content.children(node.id).await?);
+        }
+    }
+    events.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(events)
+}
+
 /// Build a [`CalendarEvent`] for a node, or `None` when it carries no date.
 async fn event_for_node(
     state: &AppState,

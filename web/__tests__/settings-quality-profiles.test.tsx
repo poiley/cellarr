@@ -184,18 +184,20 @@ describe('QualityProfiles (settings)', () => {
     expect(body.items.length).toBe(2);
   });
 
-  it('deletes a profile after a confirm click', async () => {
+  it('deletes a profile after confirming in the dialog', async () => {
     const fetchImpl = makeRouter();
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
-    await waitFor(() => expect(screen.getByText('Delete profile')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Delete profile')).toBeTruthy());
 
-    // First click only arms the confirm — no DELETE yet.
-    fireEvent.click(screen.getByText('Delete profile'));
+    // Clicking Delete only opens the confirm dialog — no DELETE yet.
+    fireEvent.click(screen.getByLabelText('Delete profile'));
     expect(findDeleteCall(fetchImpl)).toBeFalsy();
-    await waitFor(() => expect(screen.getByText('Confirm delete')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
 
-    fireEvent.click(screen.getByText('Confirm delete'));
+    // The dialog's danger button (also aria-labelled "Delete profile") confirms.
+    const confirmButtons = screen.getAllByLabelText('Delete profile');
+    fireEvent.click(confirmButtons[confirmButtons.length - 1]);
     await waitFor(() => expect(findDeleteCall(fetchImpl)).toBeTruthy());
   });
 });

@@ -1,0 +1,96 @@
+/* Toast stack positioning + variant accents. No UI primitives here — just the
+   layout the SRCL <Card> toasts live in, the semantic accent rail, and a
+   reduced-motion-aware entrance. Colours come from SRCL's own --ansi-* / --theme
+   tokens so both themes stay correct. */
+
+.region {
+  position: fixed;
+  right: 1ch;
+  bottom: 1ch;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1ch;
+  width: min(44ch, calc(100vw - 2ch));
+  max-height: 100vh;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.region > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1ch;
+}
+
+.item {
+  pointer-events: auto;
+  font-family: var(--font-family-mono);
+  /* A left accent rail keyed to the variant, sitting flush with the Card. */
+  border-left: 2px solid var(--theme-text);
+  animation: toast-in 160ms ease-out;
+}
+
+.item[data-variant='success'] {
+  border-left-color: var(--ansi-2-green);
+}
+
+.item[data-variant='error'] {
+  border-left-color: var(--ansi-9-red);
+}
+
+.item[data-variant='info'] {
+  border-left-color: var(--theme-focused-foreground);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1ch;
+}
+
+.message {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  color: var(--theme-text);
+  font-family: var(--font-family-mono);
+  cursor: pointer;
+  padding: 0 0.5ch;
+  opacity: 0.6;
+}
+
+.dismiss:hover {
+  opacity: 1;
+}
+
+.dismiss:focus-visible {
+  outline: 0;
+  background: var(--theme-focused-foreground);
+  color: var(--theme-background);
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5ch);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .item {
+    animation: none;
+  }
+}

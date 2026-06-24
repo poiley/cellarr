@@ -1,12 +1,14 @@
 'use client';
 
 // System / Status (docs/10-ui.md §screen-mapping): health + scheduler tasks +
-// raw details. Reads /api/v1/system/status and /api/v1/commands. A SimpleTable
-// for the health/tasks rows, an AlertBanner for any health advisory, a Message
-// for empty/explanatory copy, and a CodeBlock for the raw status JSON.
+// raw diagnostics. Reads /api/v1/system/status, /api/v1/commands, and the v3
+// scheduler surface (/api/v3/system/task) for per-task next/last-run + a
+// 'Run now' action (POST /api/v3/command).
 //
-// Composed only from vendored SRCL primitives; the API client is the lone
-// non-component data glue.
+// The Health and Tasks tables are the PRIMARY view; the raw status JSON now
+// lives behind a 'Raw / Advanced' SRCL disclosure (Accordion) with a copy
+// button. Composed only from vendored SRCL primitives; the API client + the
+// shared toast hook are the lone non-component glue.
 
 import * as React from 'react';
 
@@ -20,34 +22,55 @@ import AlertBanner from '@components/AlertBanner';
 import Message from '@components/Message';
 import CodeBlock from '@components/CodeBlock';
 import BlockLoader from '@components/BlockLoader';
+import Accordion from '@components/Accordion';
+import ActionButton from '@components/ActionButton';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
 import type { CommandInfo, SystemStatus } from '@lib/api/types';
+import {
+  fetchSystemTasks,
+  runTaskNow,
+  formatTimestamp,
+  formatCountdown,
+  formatInterval,
+  type SystemTask,
+} from '@app/system/_lib/system';
 
 interface LoadState {
   status: SystemStatus | null;
   commands: CommandInfo[] | null;
+  tasks: SystemTask[] | null;
   error: string | null;
   loading: boolean;
 }
 
 export default function SystemPage() {
+  const { success, error: toastError, info } = useToast();
+
   const [state, setState] = React.useState<LoadState>({
     status: null,
     commands: null,
+    tasks: null,
     error: null,
     loading: true,
   });
+  // Which task's 'Run now' is currently in flight (keyed by taskName).
+  const [running, setRunning] = React.useState<string | null>(null);
+  const [copied, setCopied] = React.useState(false);
 
   React.useEffect(() => {
     const controller = new AbortController();
     Promise.all([
       api.systemStatus(controller.signal),
       api.getCommands(controller.signal),
+      // The scheduler surface is best-effort: an older daemon without it should
+      // not blank the whole screen, so swallow its failure into a null list.
+      fetchSystemTasks(api, controller.signal).catch(() => null),
     ])
-      .then(([status, commands]) => {
-        setState({ status, commands, error: null, loading: false });
+      .then(([status, commands, tasks]) => {
+        setState({ status, commands, tasks, error: null, loading: false });
       })
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.code === 'network_error') {
@@ -63,7 +86,7 @@ export default function SystemPage() {
     return () => controller.abort();
   }, []);
 
-  const { status, commands, error, loading } = state;
+  const { status, commands, tasks, error, loading } = state;
 
   // A small health check derived from the status snapshot: zero indexers means
   // nothing can be searched, which is the canonical first-run warning.
@@ -86,11 +109,53 @@ export default function SystemPage() {
       ]
     : [];
 
-  const taskData: string[][] = commands
-    ? [['Task', 'Description'], ...commands.map((c) => [c.name, c.description])]
-    : [];
-
   const rawDetails = status ? JSON.stringify(status, null, 2) : '';
+
+  // 'Run now': POST the task's command, surface the result via the shared toast.
+  const handleRunNow = React.useCallback(
+    async (task: SystemTask) => {
+      if (running) return; // serialize while one is in flight
+      setRunning(task.taskName);
+      info(`Queuing ${task.name}…`);
+      try {
+        await runTaskNow(api, task.taskName);
+        success(`${task.name} queued.`);
+        // Optimistically reset the countdown so the row reads as just-run.
+        setState((prev) => {
+          if (!prev.tasks) return prev;
+          const now = new Date().toISOString();
+          return {
+            ...prev,
+            tasks: prev.tasks.map((t) =>
+              t.taskName === task.taskName ? { ...t, lastExecution: now } : t
+            ),
+          };
+        });
+      } catch (err) {
+        const message =
+          err instanceof ApiError ? err.message : 'failed to queue task';
+        toastError(`${task.name} failed: ${message}`);
+      } finally {
+        setRunning(null);
+      }
+    },
+    [running, info, success, toastError]
+  );
+
+  const handleCopyRaw = React.useCallback(async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(rawDetails);
+        setCopied(true);
+        success('Raw status copied to clipboard.');
+        window.setTimeout(() => setCopied(false), 2000);
+      } else {
+        toastError('Clipboard is unavailable in this context.');
+      }
+    } catch {
+      toastError('Could not copy to clipboard.');
+    }
+  }, [rawDetails, success, toastError]);
 
   return (
     <AppShell>
@@ -133,26 +198,127 @@ export default function SystemPage() {
           </>
         ) : null}
 
-        {commands ? (
+        {status ? (
           <>
             <Divider type="GRADIENT" />
             <Text style={{ opacity: 0.6, marginBottom: '0.5ch' }}>Scheduled tasks</Text>
-            {commands.length > 0 ? (
-              <SimpleTable data={taskData} />
-            ) : (
-              <Message>No tasks are registered.</Message>
-            )}
+            <TaskTable
+              tasks={tasks}
+              commands={commands}
+              running={running}
+              onRunNow={handleRunNow}
+            />
           </>
         ) : null}
 
         {status ? (
           <>
             <Divider type="GRADIENT" />
-            <Text style={{ opacity: 0.6, marginBottom: '0.5ch' }}>Raw status</Text>
-            <CodeBlock>{rawDetails}</CodeBlock>
+            <Accordion title="Raw / Advanced">
+              <div style={{ width: '100%' }}>
+                <RowSpaceBetween style={{ marginBottom: '0.5ch' }}>
+                  <Text style={{ opacity: 0.6 }}>Raw status JSON</Text>
+                  <ActionButton onClick={handleCopyRaw} hotkey={copied ? '✓' : '⧉'}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </ActionButton>
+                </RowSpaceBetween>
+                <CodeBlock>{rawDetails}</CodeBlock>
+              </div>
+            </Accordion>
           </>
         ) : null}
       </Card>
     </AppShell>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Tasks table — composed from SRCL rows (SimpleTable is string-only, so it can
+// not host the per-row 'Run now' action). Each row shows cadence, the live
+// countdown to the next run, the derived last run, and a Run-now ActionButton.
+// Falls back to the native command catalogue when the scheduler surface is
+// absent (older daemon).
+// ---------------------------------------------------------------------------
+
+interface TaskTableProps {
+  tasks: SystemTask[] | null;
+  commands: CommandInfo[] | null;
+  running: string | null;
+  onRunNow: (task: SystemTask) => void;
+}
+
+const TaskTable: React.FC<TaskTableProps> = ({ tasks, commands, running, onRunNow }) => {
+  // Prefer the rich scheduler tasks; otherwise synthesize rows from the native
+  // command catalogue so 'Run now' still works (no schedule metadata, though).
+  const rows: SystemTask[] =
+    tasks && tasks.length
+      ? tasks
+      : (commands ?? []).map((c) => ({
+          id: c.name,
+          name: c.name,
+          taskName: c.name,
+          interval: 0,
+          nextExecution: '',
+          lastExecution: null,
+          lastStatus: c.description,
+        }));
+
+  if (rows.length === 0) {
+    return <Message>No tasks are registered.</Message>;
+  }
+
+  return (
+    <div role="table" aria-label="Scheduled tasks">
+      <RowSpaceBetween
+        role="row"
+        style={{ opacity: 0.6, borderBottom: '1px solid var(--theme-border)', paddingBottom: '0.25ch' }}
+      >
+        <span style={{ flex: 2 }}>Task</span>
+        <span style={{ flex: 1 }}>Interval</span>
+        <span style={{ flex: 1 }}>Next run</span>
+        <span style={{ flex: 1 }}>Last run</span>
+        <span style={{ flex: 1, textAlign: 'right' }}>Action</span>
+      </RowSpaceBetween>
+      {rows.map((task) => {
+        const isRunning = running === task.taskName;
+        const statusGlyph =
+          task.lastStatus && /fail|error/i.test(task.lastStatus)
+            ? '✗'
+            : task.lastExecution
+              ? '✓'
+              : '●';
+        return (
+          <RowSpaceBetween
+            key={String(task.id)}
+            role="row"
+            style={{ padding: '0.5ch 0', alignItems: 'center' }}
+          >
+            <span style={{ flex: 2 }}>
+              <span aria-hidden style={{ opacity: 0.6, marginRight: '0.5ch' }}>
+                {statusGlyph}
+              </span>
+              {task.name}
+            </span>
+            <span style={{ flex: 1, opacity: 0.7 }}>
+              {task.interval ? formatInterval(task.interval) : '—'}
+            </span>
+            <span style={{ flex: 1, opacity: 0.7 }} title={formatTimestamp(task.nextExecution)}>
+              {task.nextExecution ? formatCountdown(task.nextExecution) : '—'}
+            </span>
+            <span style={{ flex: 1, opacity: 0.7 }} title={formatTimestamp(task.lastExecution)}>
+              {formatTimestamp(task.lastExecution)}
+            </span>
+            <span style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
+              <ActionButton
+                onClick={isRunning ? undefined : () => onRunNow(task)}
+                hotkey={isRunning ? '●' : '▸'}
+              >
+                {isRunning ? 'Running…' : 'Run now'}
+              </ActionButton>
+            </span>
+          </RowSpaceBetween>
+        );
+      })}
+    </div>
+  );
+};

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 
 import { ThemeProvider } from '@lib/ThemeProvider';
 import { STORAGE_KEY } from '@lib/theme';
-import ThemeToggle from '@app/_components/ThemeToggle';
+import ThemeBarToggle from '@app/_components/ThemeBarToggle';
 
 function installMatchMedia(dark: boolean) {
   window.matchMedia = vi.fn().mockReturnValue({
@@ -18,7 +18,7 @@ function installMatchMedia(dark: boolean) {
   }) as unknown as typeof window.matchMedia;
 }
 
-describe('ThemeToggle (SRCL RadioButton group)', () => {
+describe('ThemeBarToggle (SRCL ActionButton segmented control)', () => {
   beforeEach(() => {
     window.localStorage.clear();
     document.body.className = '';
@@ -31,29 +31,26 @@ describe('ThemeToggle (SRCL RadioButton group)', () => {
   });
 
   it('selecting Dark pins the dark theme and persists the choice', () => {
-    const { container } = render(
+    const { getByLabelText } = render(
       <ThemeProvider>
-        <ThemeToggle />
+        <ThemeBarToggle />
       </ThemeProvider>
     );
-    const darkRadio = container.querySelector(
-      'input[name="cellarr-theme"][value="dark"]'
-    ) as HTMLInputElement;
-    expect(darkRadio).toBeTruthy();
-    fireEvent.click(darkRadio);
+    const darkSegment = getByLabelText('Dark theme');
+    expect(darkSegment).toBeTruthy();
+    fireEvent.click(darkSegment);
     expect(document.body.classList.contains('theme-dark')).toBe(true);
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe('dark');
   });
 
-  it('renders the three System/Light/Dark options', () => {
-    const { container } = render(
+  it('renders the three System/Light/Dark segments', () => {
+    const { getByLabelText } = render(
       <ThemeProvider>
-        <ThemeToggle />
+        <ThemeBarToggle />
       </ThemeProvider>
     );
-    const radios = container.querySelectorAll('input[name="cellarr-theme"]');
-    expect(radios.length).toBe(3);
-    const values = Array.from(radios).map((r) => (r as HTMLInputElement).value).sort();
-    expect(values).toEqual(['dark', 'light', 'system']);
+    expect(getByLabelText('System theme')).toBeTruthy();
+    expect(getByLabelText('Light theme')).toBeTruthy();
+    expect(getByLabelText('Dark theme')).toBeTruthy();
   });
 });

@@ -10,8 +10,30 @@ import FirstRunPage from '@app/first-run/page';
 
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
   useRouter: () => ({ push: pushMock }),
 }));
+
+// The first-run page calls api.listLibraries() on mount to decide whether to
+// show the wizard. Keep CellarrClient real (the wizard tests build their own),
+// but stub the default `api.listLibraries`.
+const listLibraries = vi.fn();
+vi.mock('@lib/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@lib/api/client')>('@lib/api/client');
+  return {
+    ...actual,
+    // When the page launches the wizard via ModalTrigger, the wizard falls back
+    // to this default `api`. Stub the methods it touches so that path works too
+    // (the dedicated wizard tests inject their own CellarrClient instead).
+    api: {
+      listLibraries: (...args: unknown[]) => listLibraries(...args),
+      getQualityProfiles: () => Promise.resolve([]),
+      request: () => Promise.resolve({ id: 'x' }),
+      createIndexer: () => Promise.resolve({ id: 1 }),
+      createDownloadClient: () => Promise.resolve({ id: 1 }),
+    },
+  };
+});
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -42,6 +64,15 @@ describe('First-run wizard', () => {
     window.localStorage.clear();
     document.body.className = '';
     pushMock.mockClear();
+    listLibraries.mockReset();
+    listLibraries.mockResolvedValue([]);
+    // The wizard's step indicator uses BarProgress, which observes its
+    // container width; jsdom has no ResizeObserver.
+    (globalThis as Record<string, unknown>).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: () => {},
@@ -53,7 +84,10 @@ describe('First-run wizard', () => {
     vi.restoreAllMocks();
   });
 
-  it('launches the wizard from the first-run page via ModalTrigger/ModalStack', async () => {
+  it('launches the wizard from the first-run page when no libraries exist', async () => {
+    // The page checks for existing libraries on mount; return an empty list so
+    // it shows the first-run prompt (rather than the "already set up" shortcut).
+    listLibraries.mockResolvedValue([]);
     render(
       <ThemeProvider>
         <ModalProvider>
@@ -61,13 +95,67 @@ describe('First-run wizard', () => {
         </ModalProvider>
       </ThemeProvider>
     );
-    expect(screen.getByText('Start setup')).toBeTruthy();
+    // The library check resolves async, then the prompt appears.
+    await waitFor(() => expect(screen.getByText('Start setup')).toBeTruthy());
     // Before launch there is no modal dialog.
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByText('Start setup'));
     // After launch the SRCL Dialog (the wizard) is on screen.
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
     expect(screen.getByText('Welcome')).toBeTruthy();
+  });
+
+  it('shows the already-set-up shortcut (no wizard prompt) when libraries exist', async () => {
+    listLibraries.mockResolvedValue([{ id: 'lib-1', name: 'Movies', media_type: 'movie' }]);
+    render(
+      <ThemeProvider>
+        <ModalProvider>
+          <FirstRunPage />
+        </ModalProvider>
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByText('Go to Library')).toBeTruthy());
+    // The first-run prompt is suppressed once a library exists.
+    expect(screen.queryByText('Start setup')).toBeNull();
+  });
+
+  it('renders a step indicator inside the wizard', async () => {
+    const fetchImpl = makeFetch();
+    const client = new CellarrClient({ fetchImpl });
+    render(
+      <ModalProvider>
+        <WizardModal client={client} />
+      </ModalProvider>
+    );
+    // The step indicator is decorative (aria-hidden) but visible; it labels
+    // every step and carries a BarProgress (progressbar role, hidden subtree).
+    await waitFor(() =>
+      expect(screen.getAllByRole('progressbar', { hidden: true }).length).toBeGreaterThan(0)
+    );
+    // All step labels appear in the indicator (Welcome..Finish).
+    expect(screen.getAllByText(/Welcome/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Finish/)).toBeTruthy();
+  });
+
+  it('is fully skippable from inside the wizard', async () => {
+    const fetchImpl = makeFetch();
+    const client = new CellarrClient({ fetchImpl });
+    render(
+      <ModalProvider>
+        <WizardModal client={client} />
+      </ModalProvider>
+    );
+    await waitFor(() =>
+      expect(fetchImpl.mock.calls.some(([u]) => String(u).endsWith('/qualityprofile'))).toBe(true)
+    );
+    fireEvent.click(screen.getByText('Skip setup'));
+    // Skipping creates nothing and routes to the Library screen.
+    const wrote = fetchImpl.mock.calls.some(
+      ([url, opts]) =>
+        String(url).endsWith('/libraries') && (opts as RequestInit)?.method === 'POST'
+    );
+    expect(wrote).toBe(false);
+    expect(pushMock).toHaveBeenCalledWith('/library/');
   });
 
   it('walks the steps and POSTs the library with a default quality profile on finish', async () => {

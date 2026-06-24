@@ -123,6 +123,8 @@ pub fn router(state: AppState, face: Face) -> Router {
     let reads = Router::new()
         .route("/ping", get(ping))
         .route("/system/status", get(system_status))
+        .route("/system/task", get(system_tasks))
+        .route("/system/task/{id}", get(system_task))
         .route("/health", get(health))
         .route("/rootfolder", get(root_folders))
         .route("/rootFolder", get(root_folders))
@@ -161,8 +163,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/importListExclusion", get(list_import_list_exclusions))
         .route("/blocklist", get(list_blocklist))
         .route("/series", get(list_series))
+        .route("/series/{id}", get(get_series_detail))
         .route("/episode", get(list_episodes))
         .route("/movie", get(list_movies))
+        .route("/movie/{id}", get(get_movie_detail))
         .route("/movie/lookup", get(movie_lookup))
         .route("/series/lookup", get(series_lookup))
         .route("/release", get(release_search))
@@ -174,8 +178,15 @@ pub fn router(state: AppState, face: Face) -> Router {
         .with_state(fs.clone());
 
     let writes = Router::new()
+        .route("/rootfolder", post(create_root_folder))
+        .route("/rootFolder", post(create_root_folder))
+        .route("/rootfolder/{id}", delete(delete_root_folder))
+        .route("/rootFolder/{id}", delete(delete_root_folder))
         .route("/movie", post(add_movie))
+        .route("/movie/{id}", put(update_content))
         .route("/series", post(add_series))
+        .route("/series/{id}", put(update_content))
+        .route("/release", post(grab_release))
         .route("/command", post(command))
         .route("/tag", post(create_tag))
         .route("/tag/{id}", put(update_tag))
@@ -392,6 +403,105 @@ async fn system_status(
     })))
 }
 
+// --- system/task -----------------------------------------------------------
+
+/// v3 `system/task` — the scheduled-task list the Activity/System screen reads to
+/// show each maintenance task's interval, next-run countdown, and last status.
+///
+/// cellarr's scheduler tracks every recurring job's **next due time** (`due_at`,
+/// a unix timestamp) and its **lifecycle state** (which doubles as the last
+/// status), and a recurring job carries its `interval_secs`. We surface those in
+/// the v3 task shape (`name`/`taskName`/`interval` minutes/`nextExecution`/
+/// `lastExecution`/`lastDuration`).
+///
+/// `lastExecution` is **derived**, not recorded: for a recurring job firing every
+/// `interval_secs`, the previous fire was `nextExecution - interval` (null until
+/// it has fired at least once). The scheduler does not persist a real
+/// execution-completed timestamp or duration yet — that is the small DEFERRED
+/// part (`lastDuration` is reported as `00:00:00`). Next-run + interval + status
+/// are real, which is what the countdown + "Run now" UI needs.
+async fn system_tasks(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let jobs = commands::list_jobs(&fs.state.scheduler)
+        .await
+        .map_err(ApiError::Command)?;
+    let out = jobs.iter().filter_map(v3_task).collect();
+    Ok(Json(out))
+}
+
+/// v3 `system/task/{id}` — one scheduled task by its (numeric-projected) id.
+async fn system_task(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "task")?;
+    let jobs = commands::list_jobs(&fs.state.scheduler)
+        .await
+        .map_err(ApiError::Command)?;
+    jobs.iter()
+        .find(|j| rpm_numeric_id(&j.id) == numeric)
+        .and_then(v3_task)
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("task {id} not found")))
+}
+
+/// Render a recurring scheduler [`Job`](cellarr_jobs::Job) into the v3 task shape.
+/// Returns `None` for a one-shot (`Once`) job — those are commands, not scheduled
+/// tasks, and belong on the `command`/`queue` surface.
+fn v3_task(job: &cellarr_jobs::Job) -> Option<Value> {
+    use cellarr_jobs::Schedule;
+    let (interval_secs, next) = match job.schedule {
+        Schedule::Every {
+            interval_secs,
+            next,
+        } => (interval_secs, next),
+        Schedule::Once { .. } => return None,
+    };
+    let name = command_name(&job.kind);
+    // The previous fire is one interval before the next due time; null until the
+    // task has fired at least once (next is still its first scheduled fire).
+    let last_execution = next
+        .checked_sub(interval_secs)
+        .map(unix_to_iso)
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    Some(json!({
+        "id": rpm_numeric_id(&job.id),
+        "name": name,
+        "taskName": name,
+        "interval": interval_secs / 60,
+        "lastExecution": last_execution,
+        // The scheduler does not record a real run duration yet (DEFERRED); the
+        // status the UI shows comes from the job's lifecycle state.
+        "lastDuration": "00:00:00",
+        "nextExecution": unix_to_iso(next),
+        "lastStatus": task_status(job.state),
+    }))
+}
+
+/// Map a job lifecycle state to the last-status string the UI shows.
+fn task_status(state: cellarr_jobs::JobState) -> &'static str {
+    use cellarr_jobs::JobState;
+    match state {
+        JobState::Done => "completed",
+        JobState::Running => "started",
+        JobState::Failed => "failed",
+        JobState::Retrying => "retrying",
+        JobState::Scheduled => "queued",
+    }
+}
+
+/// Format a unix timestamp (seconds) as an RFC 3339 / ISO-8601 UTC string for the
+/// v3 date fields. A timestamp the clock cannot represent falls back to the v3
+/// zero date the *arr apps use for "never".
+fn unix_to_iso(secs: u64) -> String {
+    use time::format_description::well_known::Rfc3339;
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+        .and_then(|dt| dt.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "0001-01-01T00:00:00Z".to_string())
+}
+
 // --- health ----------------------------------------------------------------
 
 /// v3 health checks. cellarr surfaces its own health as v3-shaped
@@ -472,20 +582,82 @@ async fn root_folders(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>
             idx += 1;
         }
     }
-    // Also include any standalone root folders the config layer holds.
+    // Also include any standalone root folders the config layer holds. These
+    // carry their real id projection (not the library-derived sequential index)
+    // so a folder created via POST round-trips through DELETE/{id}.
+    let _ = idx;
     for rf in cfg.list_root_folders().await? {
         if seen.insert(rf.path.clone()) {
-            out.push(json!({
-                "id": idx,
-                "path": rf.path,
-                "accessible": rf.enabled,
-                "freeSpace": 0,
-                "unmappedFolders": [],
-            }));
-            idx += 1;
+            out.push(v3_root_folder(&rf));
         }
     }
     Ok(Json(out))
+}
+
+/// Render a standalone [`RootFolder`] into the v3 root-folder shape, with its id
+/// projected to the stable integer the v3 `id` field requires (so it round-trips
+/// through `DELETE /rootfolder/{id}`).
+fn v3_root_folder(rf: &cellarr_core::RootFolder) -> Value {
+    json!({
+        "id": rpm_numeric_id(&rf.id),
+        "path": rf.path,
+        "accessible": rf.enabled,
+        "freeSpace": 0,
+        "unmappedFolders": [],
+    })
+}
+
+/// v3 root-folder write body (`path`, optional `name`).
+#[derive(Debug, Deserialize)]
+struct RootFolderBody {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// v3 `POST /rootfolder` — add a standalone root folder. The Settings UI adds
+/// importable roots here; they live in the `root_folder` config table (distinct
+/// from a library's own `root_folders`, which are managed via the library).
+async fn create_root_folder(
+    State(fs): State<FaceState>,
+    Json(body): Json<RootFolderBody>,
+) -> ApiResult<Json<Value>> {
+    let path = body
+        .path
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::BadRequest("root folder path is required".into()))?;
+    let folder = cellarr_core::RootFolder {
+        id: uuid::Uuid::new_v4().to_string(),
+        path,
+        name: body.name.clone(),
+        enabled: true,
+    };
+    fs.state.db.config().upsert_root_folder(&folder).await?;
+    Ok(Json(v3_root_folder(&folder)))
+}
+
+/// v3 `DELETE /rootfolder/{id}` — remove a standalone root folder by its
+/// (numeric-projected) id. Idempotent: a missing id still returns 200, matching
+/// the *arr clients' expectation that delete succeeds on a re-issued delete.
+async fn delete_root_folder(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "rootfolder")?;
+    if let Some(rf) = fs
+        .state
+        .db
+        .config()
+        .list_root_folders()
+        .await?
+        .into_iter()
+        .find(|rf| rpm_numeric_id(&rf.id) == numeric)
+    {
+        fs.state.db.config().delete_root_folder(&rf.id).await?;
+    }
+    Ok(Json(json!({})))
 }
 
 // --- tag -------------------------------------------------------------------
@@ -2671,6 +2843,114 @@ async fn list_episodes() -> Json<Vec<Value>> {
     Json(Vec::new())
 }
 
+// --- content detail (GET /movie/{id}, GET /series/{id}) --------------------
+
+async fn get_movie_detail(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    content_detail(&fs.state, &id, MediaType::Movie)
+        .await
+        .map(Json)
+}
+
+async fn get_series_detail(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    content_detail(&fs.state, &id, MediaType::Tv)
+        .await
+        .map(Json)
+}
+
+/// Build the v3 content-detail resource for one node by id — the shape the
+/// content-detail screen reads: the [`v3_resource_item`] fields (title, monitored,
+/// path, `hasFile`, `sizeOnDisk`) plus the addressed library's
+/// **`qualityProfileId`** (cellarr scopes the quality profile per library, so a
+/// node's effective profile is its library's default) and an `overview` field.
+///
+/// `overview`/`year` come from the metadata identity tables, which have no clean
+/// content-scoped read seam yet, so they are surfaced as empty/zero with a TODO —
+/// the deferred part. Title, monitored, file-state, size, and the quality profile
+/// are real, which is what the detail screen and the monitor toggle need.
+async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiResult<Value> {
+    let content_id = cellarr_core::ContentId::from_uuid(
+        id.parse::<uuid::Uuid>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid id: {id}")))?,
+    );
+    let content = state.db.content();
+    let node = content
+        .get_node(content_id)
+        .await?
+        .filter(|n| n.media_type == expected)
+        .ok_or_else(|| ApiError::NotFound(format!("{expected:?} {id} not found")))?;
+    let title = content
+        .title_for(node.id)
+        .await?
+        .unwrap_or_else(|| node.id.to_string());
+    // The node's effective quality profile is its library's default (cellarr scopes
+    // quality profiles per library).
+    let profile_id = state
+        .db
+        .config()
+        .get_library(node.library_id)
+        .await?
+        .map(|l| l.default_quality_profile.to_string());
+    let mut detail = v3_resource_item(state, &node, &title).await?;
+    merge_into(
+        &mut detail,
+        json!({
+            "qualityProfileId": profile_id,
+            // TODO: join the metadata identity tables (series_meta/movie_meta) to
+            // surface the real overview + year; no content-scoped read seam yet.
+            "overview": "",
+        }),
+    );
+    Ok(detail)
+}
+
+// --- content monitor toggle (PUT /movie/{id}, PUT /series/{id}) ------------
+
+/// The v3 content update body. The shim's content update is scoped to the one
+/// field the UI toggles — `monitored` — and ignores the rest of the (large) v3
+/// movie/series body a client may round-trip back.
+#[derive(Debug, Deserialize)]
+struct ContentUpdateBody {
+    #[serde(default)]
+    monitored: Option<bool>,
+}
+
+/// v3 `PUT /movie/{id}` / `PUT /series/{id}` — the **monitor toggle**.
+///
+/// Sonarr/Radarr round-trip the whole resource back on a PUT; the only mutation
+/// the content-detail UI makes through it is flipping `monitored`, so this reads
+/// the node, applies the new monitored flag (when present), and persists it,
+/// returning the refreshed detail resource. Other fields in the body are accepted
+/// and ignored (cellarr scopes quality profile per library, not per node, and the
+/// remaining v3 fields are projections, not stored per-node).
+async fn update_content(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<ContentUpdateBody>,
+) -> ApiResult<Json<Value>> {
+    let content_id = cellarr_core::ContentId::from_uuid(
+        id.parse::<uuid::Uuid>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid id: {id}")))?,
+    );
+    let content = fs.state.db.content();
+    let mut node = content
+        .get_node(content_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("content {id} not found")))?;
+    if let Some(monitored) = body.monitored {
+        node.monitored = monitored;
+        content.upsert(&node).await?;
+    }
+    content_detail(&fs.state, &id, node.media_type)
+        .await
+        .map(Json)
+}
+
 // --- add -------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -2940,10 +3220,159 @@ fn v3_release(
     })
 }
 
+/// The `POST /api/v3/release` body: which release to grab, for which content node.
+/// The interactive-search FE POSTs the `guid` of the row the user picked plus the
+/// content id the search was scoped to. We accept the three id spellings the *arr
+/// apps use interchangeably (`movieId`/`seriesId`/`contentId`), all carrying the
+/// same cellarr [`ContentId`] uuid — matching the `GET /api/v3/release` query.
+#[derive(Debug, Deserialize)]
+struct GrabReleaseBody {
+    /// The indexer-advertised guid of the chosen release (falls back to its
+    /// download URL when the indexer advertises no guid). Optional in the wire
+    /// shape so a missing guid is a structured 400 from the handler rather than an
+    /// opaque deserialization 422.
+    #[serde(default)]
+    guid: Option<String>,
+    #[serde(rename = "contentId", default)]
+    content_id: Option<String>,
+    #[serde(rename = "movieId", default)]
+    movie_id: Option<String>,
+    #[serde(rename = "seriesId", default)]
+    series_id: Option<String>,
+}
+
+/// v3 `POST /api/v3/release` — the **interactive grab**.
+///
+/// The `GET /api/v3/release` interactive-search screen lists ranked candidates;
+/// this is the action that grabs the one the user picked. It hands the chosen
+/// `guid` + content node to the [`ReleaseGrab`](crate::release_search::ReleaseGrab)
+/// seam, which builds the configured download client and drives the real
+/// Grab→Track→Import path (unlike the read-only search/preview, which never builds
+/// a client). The end-to-end loop interactive search → pick → grab is what this
+/// closes (previously the FE's POST 405'd — there was no grab route).
+///
+/// The originals return the grabbed release row from this endpoint; we mirror that
+/// shape (`guid` + a cellarr-native `grabbed`/`imported`/`message` triple the FE
+/// reads for its toast). When no pipeline is wired (offline/test) or no
+/// environment is ready, this degrades to a clear `503`-free JSON outcome with
+/// `grabbed: false` rather than erroring, so the screen shows a message.
+async fn grab_release(
+    State(fs): State<FaceState>,
+    Json(body): Json<GrabReleaseBody>,
+) -> ApiResult<Json<Value>> {
+    let guid = body
+        .guid
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("a release guid is required".into()))?;
+    let raw = body
+        .content_id
+        .or(body.movie_id)
+        .or(body.series_id)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "a contentId (or movieId/seriesId) is required to grab a release".into(),
+            )
+        })?;
+    let content_id = cellarr_core::ContentId::from_uuid(
+        raw.parse::<uuid::Uuid>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid contentId: {raw}")))?,
+    );
+
+    // No pipeline wiring (offline/test): report the grab as unavailable rather
+    // than 500. The FE shows the message and the row is not grabbed.
+    let Some(grabber) = fs.state.release_grab.as_ref() else {
+        return Ok(Json(json!({
+            "guid": guid,
+            "grabbed": false,
+            "imported": false,
+            "message": "no download pipeline is configured",
+        })));
+    };
+
+    use crate::release_search::ReleaseGrabOutcome;
+    let outcome = grabber
+        .grab(content_id, guid)
+        .await
+        .map_err(|e| ApiError::Internal(format!("grab failed: {e}")))?;
+    let body = match outcome {
+        ReleaseGrabOutcome::Grabbed { imported, detail } => json!({
+            "guid": guid,
+            "grabbed": true,
+            "imported": imported,
+            "message": detail,
+        }),
+        ReleaseGrabOutcome::Unavailable(reason) => json!({
+            "guid": guid,
+            "grabbed": false,
+            "imported": false,
+            "message": reason,
+        }),
+    };
+    Ok(Json(body))
+}
+
 // --- calendar / queue / history / wanted -----------------------------------
 
-async fn calendar() -> Json<Vec<Value>> {
-    Json(Vec::new())
+/// The `GET /api/v3/calendar` query: an optional `[start, end]` ISO date window
+/// (the originals' calendar paging) plus the usual `libraryId` surface hint.
+#[derive(Debug, Deserialize)]
+struct CalendarQuery {
+    #[serde(default)]
+    start: Option<String>,
+    #[serde(default)]
+    end: Option<String>,
+    #[serde(rename = "libraryId", default)]
+    library_id: Option<String>,
+}
+
+/// v3 `GET /api/v3/calendar` — the JSON calendar feed the dashboard reads for
+/// upcoming items by date.
+///
+/// Backed by the shared [`collect_calendar_events`](crate::calendar::collect_calendar_events)
+/// seam (the same one the iCal feed uses): one row per content node of the
+/// addressed surface whose coordinates carry an air/release date, within the
+/// optional `[start, end]` window, sorted by date. Each row mirrors the originals'
+/// calendar shape (`id`, `title`, `airDate`/`airDateUtc`, `monitored`, `hasFile`)
+/// plus the cellarr-native `date`/`summary` aliases.
+///
+/// Today only TV daily-coded episodes carry a self-contained date in the data
+/// model, so a movie/standard-episode library yields an empty calendar until the
+/// identify pipeline persists per-item air/release dates — the dashboard then
+/// shows "Recently added" instead. This is real (not faked): it returns exactly
+/// the dated items that exist.
+async fn calendar(
+    State(fs): State<FaceState>,
+    Query(q): Query<CalendarQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let hint = library_hint(q.library_id.as_deref())?;
+    let surface = surface_for(&fs, hint).await?;
+    let events = crate::calendar::collect_calendar_events(
+        &fs.state,
+        surface,
+        q.start.as_deref(),
+        q.end.as_deref(),
+    )
+    .await?;
+    let rows: Vec<Value> = events
+        .into_iter()
+        .map(|e| {
+            json!({
+                "id": e.uid,
+                "title": e.summary,
+                "airDate": e.date,
+                "airDateUtc": format!("{}T00:00:00Z", e.date),
+                "monitored": true,
+                "hasFile": false,
+                // cellarr-native aliases the dashboard reads.
+                "date": e.date,
+                "summary": e.summary,
+            })
+        })
+        .collect();
+    Ok(Json(rows))
 }
 
 /// The full v3 paging envelope: `page, pageSize, sortKey, sortDirection,

@@ -1,0 +1,58 @@
+/* Command-palette overlay + panel positioning. No UI primitives — the visible
+   surface is an SRCL <Card> with SRCL <Input> / <ActionListItem> rows inside.
+   Colours come from SRCL --theme tokens. Honours prefers-reduced-motion. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: var(--theme-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 2ch 2ch;
+}
+
+.panel {
+  width: min(72ch, calc(100vw - 4ch));
+  font-family: var(--font-family-mono);
+  animation: palette-in 140ms ease-out;
+}
+
+.results {
+  max-height: 48vh;
+  overflow-y: auto;
+}
+
+.empty {
+  padding: 1ch;
+}
+
+.activeRow {
+  background: var(--theme-focused-foreground);
+}
+
+.activeRow :global(*) {
+  color: var(--theme-background);
+}
+
+.tag {
+  opacity: 0.6;
+}
+
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5ch);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+}

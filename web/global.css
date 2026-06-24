@@ -472,3 +472,79 @@ body.theme-dark.tint-pink {
 
 #__next {
 }
+
+/* ---------------------------------------------------------------------------
+   Global UX affordances (app shell task): a terminal-style visible focus ring
+   on every interactive element, pointer cursor on clickables, a screen-reader-
+   only utility, and a reduced-motion guard. These are app-wide CSS only — no UI
+   primitives — keyed off SRCL's own --theme tokens so they stay correct in both
+   themes and under every dark tint.
+   --------------------------------------------------------------------------- */
+
+/* Visible focus for keyboard users. Inverse fill (focused foreground bg with
+   the page background as text) reads as the terminal "selected" state and is
+   high-contrast in both themes. Scoped to :focus-visible so mouse clicks do not
+   leave a lingering ring. */
+a:focus-visible,
+button:focus-visible,
+[role='button']:focus-visible,
+[role='link']:focus-visible,
+[role='option']:focus-visible,
+[role='menuitem']:focus-visible,
+[role='radio']:focus-visible,
+[role='checkbox']:focus-visible,
+[role='tab']:focus-visible,
+[tabindex]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--theme-focused-foreground);
+  outline-offset: -2px;
+}
+
+/* Pointer cursor on things that act like buttons/links but are not native
+   anchors/buttons (SRCL composes many of these from <div>/<li>). */
+[role='button'],
+[role='link'],
+[role='option'],
+[role='menuitem'],
+[role='tab'],
+[role='radio'],
+button:not(:disabled),
+a[href],
+summary {
+  cursor: pointer;
+}
+
+[aria-disabled='true'],
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Visually hidden but available to assistive tech — used to name icon-only
+   controls (e.g. the top-bar ✸ command-palette logo button). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Honour reduced-motion app-wide: collapse transitions/animations for users who
+   ask for it, while leaving the (already instant) focus ring intact. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

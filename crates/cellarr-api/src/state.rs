@@ -15,7 +15,7 @@ use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, build_scheduler_with, ApiScheduler};
 use crate::events::EventBus;
 use crate::metadata::MetadataLookup;
-use crate::release_search::ReleaseSearch;
+use crate::release_search::{ReleaseGrab, ReleaseSearch};
 use crate::tags::TagStore;
 
 /// The injected dependency bundle for the API.
@@ -43,6 +43,12 @@ pub struct AppState {
     /// interactive search as unavailable); the daemon injects a live
     /// implementation over the real [`PipelineRunner`](cellarr_jobs::PipelineRunner).
     pub release_search: Option<Arc<dyn ReleaseSearch>>,
+    /// The interactive grab seam `POST /api/v3/release` drives. `None` means no
+    /// pipeline wiring at all (the shim then reports every grab as unavailable);
+    /// the daemon injects a live implementation that builds the download client and
+    /// drives the real [`PipelineRunner`](cellarr_jobs::PipelineRunner) Grab→Import
+    /// path.
+    pub release_grab: Option<Arc<dyn ReleaseGrab>>,
 }
 
 impl AppState {
@@ -91,6 +97,7 @@ impl AppState {
             tags: TagStore::default(),
             metadata: None,
             release_search: None,
+            release_grab: None,
         }
     }
 
@@ -111,6 +118,16 @@ impl AppState {
     #[must_use]
     pub fn with_release_search(mut self, release_search: Arc<dyn ReleaseSearch>) -> Self {
         self.release_search = Some(release_search);
+        self
+    }
+
+    /// Attach the interactive grab source (the live pipeline wiring), so
+    /// `POST /api/v3/release` grabs the chosen release through the real download
+    /// client. Builder form so the base [`AppState::new`] stays offline (the shim
+    /// reports grabs unavailable) and tests can opt a fake in.
+    #[must_use]
+    pub fn with_release_grab(mut self, release_grab: Arc<dyn ReleaseGrab>) -> Self {
+        self.release_grab = Some(release_grab);
         self
     }
 }

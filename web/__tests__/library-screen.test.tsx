@@ -10,6 +10,7 @@ import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/re
 const listLibraries = vi.fn();
 const listMovies = vi.fn();
 const listSeries = vi.fn();
+const runCommandV3 = vi.fn();
 const push = vi.fn();
 let searchParams = new URLSearchParams();
 
@@ -21,11 +22,13 @@ vi.mock('@lib/api/client', async () => {
       listLibraries: (...a: unknown[]) => listLibraries(...a),
       listMovies: (...a: unknown[]) => listMovies(...a),
       listSeries: (...a: unknown[]) => listSeries(...a),
+      runCommandV3: (...a: unknown[]) => runCommandV3(...a),
     },
   };
 });
 
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
   useRouter: () => ({ push }),
   useSearchParams: () => searchParams,
 }));
@@ -101,6 +104,8 @@ describe('Library browse screen', () => {
     listLibraries.mockReset();
     listMovies.mockReset();
     listSeries.mockReset();
+    runCommandV3.mockReset();
+    runCommandV3.mockResolvedValue({ id: 'cmd-1' });
     push.mockReset();
   });
   afterEach(() => cleanup());
@@ -236,5 +241,114 @@ describe('Library browse screen', () => {
     await waitFor(() => {
       expect(screen.getByText(/Could not load content/i)).toBeTruthy();
     });
+  });
+
+  // --- #15 segmented control -------------------------------------------------
+
+  it('renders the library switcher as a segmented control (tablist) and switches on click', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    // The switcher is a tablist with one tab per library, the active one marked.
+    const tablist = screen.getByRole('tablist', { name: /libraries/i });
+    expect(tablist).toBeTruthy();
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.length).toBe(2);
+    const active = tabs.find((t) => t.getAttribute('aria-selected') === 'true');
+    expect(active?.textContent).toMatch(/Movies/);
+
+    // Clicking the TV segment deep-links via ?lib=.
+    const tvTab = tabs.find((t) => /TV/.test(t.textContent ?? ''))!;
+    fireEvent.click(tvTab);
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/library/?lib=lib-tv'));
+  });
+
+  // --- #16 sortable columns --------------------------------------------------
+
+  it('sorts items by a column header click with aria-sort indicators', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    const yearHeader = screen.getByRole('columnheader', { name: /Year/ });
+    // Default sort is title-asc, so year header starts unsorted.
+    expect(yearHeader.getAttribute('aria-sort')).toBe('none');
+
+    fireEvent.click(yearHeader);
+    await waitFor(() => expect(yearHeader.getAttribute('aria-sort')).toBe('ascending'));
+
+    // Ascending year → 1999 row before 2005 row.
+    const titles = Array.from(container.querySelectorAll('td[role="link"]')).map(
+      (n) => n.textContent
+    );
+    expect(titles[0]).toBe('Synthetic Movie One'); // 1999
+    expect(titles[1]).toBe('Synthetic Movie Two'); // 2005
+
+    // A second click flips to descending.
+    fireEvent.click(yearHeader);
+    await waitFor(() => expect(yearHeader.getAttribute('aria-sort')).toBe('descending'));
+    const titlesDesc = Array.from(container.querySelectorAll('td[role="link"]')).map(
+      (n) => n.textContent
+    );
+    expect(titlesDesc[0]).toBe('Synthetic Movie Two');
+  });
+
+  // --- #17 status glyph ------------------------------------------------------
+
+  it('shows a ✓/✗ status glyph so MISSING stands out beyond colour', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+    // m1 is downloaded (✓), m2 is missing (✗).
+    expect(screen.getByText('✓')).toBeTruthy();
+    expect(screen.getByText('✗')).toBeTruthy();
+  });
+
+  // --- #18 type filter hidden for single-type libraries ----------------------
+
+  it('hides the Type filter + column for a single-media-type library', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+    // No "Type" filter select, and no "Type" column header (all rows are movies).
+    expect(container.querySelector('[name="content-type"]')).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: /^Type$/ })).toBeNull();
+  });
+
+  // --- #19 multi-select + bulk search ---------------------------------------
+
+  it('multi-selects rows and bulk-searches the selection via the v3 command', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    // Select the missing row (m2) by its row checkbox.
+    const m2checkbox = container.querySelector('input[name="select-m2"]') as HTMLInputElement;
+    expect(m2checkbox).toBeTruthy();
+    fireEvent.click(m2checkbox);
+
+    // Bulk bar appears; trigger the search-missing action.
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/Search missing/));
+
+    await waitFor(() =>
+      expect(runCommandV3).toHaveBeenCalledWith({ name: 'MoviesSearch', movieId: 'm2' })
+    );
   });
 });

@@ -41,6 +41,16 @@ export interface LookupResult {
   tvdb_id?: number;
   /** URL-safe slug echoed back to the add POST. */
   title_slug?: string;
+  /**
+   * Source popularity (TMDB/TVDB-style). Used purely as a disambiguation /
+   * ranking hint so the obvious hit floats to the top of its section. May be
+   * absent — the metadata source does not always provide it.
+   */
+  popularity?: number;
+  /** Average user rating (0–10), when the source provides one. */
+  vote_average?: number;
+  /** Runtime in minutes (movies), when known — another disambiguation hint. */
+  runtime?: number;
 }
 
 /** The body the add call posts to create monitored content. */
@@ -55,6 +65,8 @@ export interface AddContentRequest {
   /** Root folder to add the title under (e.g. "/movies"). */
   root_folder_path: string;
   quality_profile_id?: string;
+  /** Whether the title is monitored on add. Defaults to true. */
+  monitored?: boolean;
   /** Trigger an automatic search immediately after adding. */
   search_on_add?: boolean;
 }
@@ -87,6 +99,15 @@ function isSeriesCandidate(c: LookupCandidate): boolean {
   return c.tvdbId !== undefined && c.tvdbId !== null;
 }
 
+/** Read a numeric field off the loosely-typed lookup candidate, if present. */
+function numField(c: LookupCandidate, ...keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = c[k];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
 /** Map a raw v3 lookup candidate to the UI's LookupResult shape. */
 function toLookupResult(c: LookupCandidate, mediaType: MediaType): LookupResult {
   const sourceId =
@@ -101,7 +122,37 @@ function toLookupResult(c: LookupCandidate, mediaType: MediaType): LookupResult 
     tmdb_id: c.tmdbId,
     tvdb_id: c.tvdbId,
     title_slug: c.titleSlug,
+    popularity: numField(c, 'popularity'),
+    vote_average: numField(c, 'voteAverage', 'ratings', 'rating'),
+    runtime: numField(c, 'runtime'),
   };
+}
+
+/**
+ * Relevance/popularity ranking for a single section's results against the typed
+ * query. Exact (case-insensitive) title matches win, then prefix matches, then
+ * the more popular / higher-rated / more recent title — so the obvious hit lands
+ * first and the long tail trails behind. Stable for ties (returns 0).
+ */
+export function rankResults(results: LookupResult[], term: string): LookupResult[] {
+  const q = term.trim().toLowerCase();
+  const score = (r: LookupResult): number => {
+    const title = r.title.toLowerCase();
+    let s = 0;
+    if (q && title === q) s += 1_000_000;
+    else if (q && title.startsWith(q)) s += 100_000;
+    else if (q && title.includes(q)) s += 10_000;
+    // Popularity dominates rating, which dominates recency, as a tiebreak.
+    if (r.popularity !== undefined) s += Math.min(r.popularity, 9_999);
+    if (r.vote_average !== undefined) s += r.vote_average * 10;
+    if (r.year !== undefined) s += (r.year - 1900) / 1000;
+    return s;
+  };
+  // Decorate-sort-undecorate keeps the sort stable across engines.
+  return results
+    .map((r, i) => ({ r, i, s: score(r) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.r);
 }
 
 /**
@@ -157,7 +208,7 @@ export async function addContent(
     year: body.year,
     qualityProfileId: body.quality_profile_id,
     rootFolderPath: body.root_folder_path,
-    monitored: true,
+    monitored: body.monitored ?? true,
   };
 
   if (body.media_type === 'tv') {

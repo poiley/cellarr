@@ -532,6 +532,163 @@ where
         Ok(out)
     }
 
+    /// **Interactive grab**: grab one specific release the user picked from the
+    /// interactive-search screen and drive it through Grab→Track→Import.
+    ///
+    /// This is the engine behind `POST /api/v3/release`. Unlike
+    /// [`preview_releases`](Self::preview_releases) (which never grabs), this path
+    /// **does** build and drive the download client: it re-runs Discover to locate
+    /// the release the user chose (matched by `guid`, falling back to the download
+    /// URL), parses/identifies it to `content`, then hands it to the download
+    /// client and tracks it to import — the exact [`grab_track_import`] path a full
+    /// pipeline run takes, so a manual grab and an automatic grab are
+    /// indistinguishable downstream (same grab row, history, webhook, import).
+    ///
+    /// The user explicitly chose this release, so the Decide verdict is **not** a
+    /// gate here — a release the engine would have rejected for scoring (e.g. lower
+    /// than the on-disk file) is still grabbable by hand, mirroring Sonarr/Radarr's
+    /// "override and grab" on the interactive screen. A *blocklisted* release is
+    /// still refused (it previously failed for this node), and a release that does
+    /// not confidently identify to `content` is refused (we will not place a file
+    /// on the wrong node — the library-safety rule).
+    ///
+    /// # Errors
+    /// Returns [`JobError`] for infrastructure failures (Discover seam error,
+    /// repository failure). A release that cannot be found, identified, or is
+    /// blocklisted is reported as a domain [`RunOutcome`]
+    /// ([`Rejected`](RunOutcome::Rejected) / [`HeldForReview`](RunOutcome::HeldForReview)),
+    /// never an error.
+    ///
+    /// [`grab_track_import`]: Self::grab_track_import
+    pub async fn grab_release(&self, content: &ContentRef, guid: &str) -> Result<RunOutcome> {
+        let run_id = PipelineRunId::new();
+        let mut stage = Stage::Discover;
+
+        // Re-discover to locate the chosen release. The interactive search the user
+        // grabbed from listed the live candidates; we re-run Discover and match the
+        // user's pick by guid (the stable id the UI carries), falling back to the
+        // download URL when an indexer advertises no guid.
+        let releases = self.discover(content).await?;
+        let Some(release) = releases
+            .into_iter()
+            .find(|r| r.guid.as_deref() == Some(guid) || r.download_url == guid)
+        else {
+            let reason = format!("release {guid} is no longer offered by the indexers");
+            self.log(
+                run_id,
+                Stage::Discover,
+                Stage::Failed,
+                TransitionKind::Fail,
+                None,
+                Some(reason.clone()),
+            )
+            .await?;
+            return Ok(RunOutcome::NothingFound);
+        };
+        stage = self.advance(run_id, stage, None).await?; // -> Parse
+
+        // Parse + reconcile any anime absolute, exactly as a run does. An
+        // unresolvable absolute holds for manual resolution — never a guess.
+        let parsed = cellarr_parse::parse_title(&release.title);
+        let parsed = match self.remap_absolute_coords(content, parsed).await {
+            Ok(p) => p,
+            Err(reason) => {
+                self.log(
+                    run_id,
+                    Stage::Identify,
+                    Stage::HeldForReview,
+                    TransitionKind::Hold,
+                    None,
+                    Some(reason.clone()),
+                )
+                .await?;
+                return Ok(RunOutcome::HeldForReview { reason });
+            }
+        };
+
+        // Identify to the node. A release that does not confidently match `content`
+        // is refused — a manual grab still must not place a file on the wrong node.
+        let matches = match self.identify(content, &parsed).await {
+            Ok(m) => m,
+            Err(e) => {
+                let reason = format!("identify failed: {e}");
+                self.log(
+                    run_id,
+                    Stage::Identify,
+                    Stage::HeldForReview,
+                    TransitionKind::Hold,
+                    None,
+                    Some(reason.clone()),
+                )
+                .await?;
+                return Ok(RunOutcome::HeldForReview { reason });
+            }
+        };
+        stage = self.advance(run_id, stage, None).await?; // -> Identify
+        let Some(matched) = self.best_match(content, matches) else {
+            let reason = "release does not confidently identify to this item".to_string();
+            self.log(
+                run_id,
+                Stage::Identify,
+                Stage::Rejected,
+                TransitionKind::Reject,
+                None,
+                Some(reason.clone()),
+            )
+            .await?;
+            return Ok(RunOutcome::Rejected { reason });
+        };
+        stage = self.advance(run_id, stage, None).await?; // -> Decide
+
+        // A blocklisted release previously failed for this node; refuse it even on
+        // a manual grab (grab-next blocklisted it for a reason).
+        if self
+            .is_blocklisted(matched.content_ref.id, &release)
+            .await?
+        {
+            let reason = "release is blocklisted".to_string();
+            self.log(
+                run_id,
+                Stage::Decide,
+                Stage::Rejected,
+                TransitionKind::Reject,
+                None,
+                Some(reason.clone()),
+            )
+            .await?;
+            return Ok(RunOutcome::Rejected { reason });
+        }
+
+        // Decide is run for its log + score, but the verdict does NOT gate a manual
+        // grab: the user explicitly chose this release. A Reject verdict is grabbed
+        // anyway (recorded as a manual override); Grab/Upgrade carry their score.
+        let on_disk = self.on_disk_for(content).await?;
+        let decision = self.decide(&matched.content_ref, &release, &parsed, on_disk)?;
+        let score = match &decision.verdict {
+            Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => *score,
+            // A manually-overridden grab of a release the engine would reject: use a
+            // zero score (the user is overriding scoring, not relying on it).
+            Verdict::Reject { .. } => Score::default(),
+        };
+
+        match self
+            .grab_track_import(
+                run_id,
+                &mut stage,
+                content,
+                &matched.content_ref,
+                &release,
+                &parsed,
+                decision,
+                score,
+            )
+            .await?
+        {
+            GrabTrackResult::Done(outcome) => Ok(outcome),
+            GrabTrackResult::FailedGrabNext(detail) => Ok(RunOutcome::Failed { detail }),
+        }
+    }
+
     /// Walk the discovered `releases` for the best **grabbable** candidate this
     /// attempt: the first that identifies to `content`, is not blocklisted, and
     /// whose decision is Grab/Upgrade. Rejects and blocklisted/unmatched

@@ -20,6 +20,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import Accordion from '@components/Accordion';
 import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
 import BlockLoader from '@components/BlockLoader';
@@ -34,6 +35,7 @@ import TableRow from '@components/TableRow';
 import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
 import type { HistoryRecord, HistoryRecordV3, Page } from '@lib/api/types';
 import {
@@ -141,6 +143,7 @@ const NodeTimelineTable: React.FC<{ records: TypedHistoryRecord[] }> = ({ record
 function HistoryScreen() {
   const router = useRouter();
   const params = useSearchParams();
+  const { info } = useToast();
   // The active node is driven by the URL (`?id=`), so deep links and the global
   // feed's "open node" buttons share one source of truth.
   const activeNode = params?.get('id')?.trim() ?? '';
@@ -217,7 +220,10 @@ function HistoryScreen() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    openNode(nodeInput);
+    const trimmed = nodeInput.trim();
+    if (!trimmed) return;
+    info(`Opening timeline for ${shortId(trimmed)}`);
+    openNode(trimmed);
   };
 
   return (
@@ -229,27 +235,37 @@ function HistoryScreen() {
           decision log for the run that produced it. Open a node to see its full timeline.
         </Text>
 
-        <form onSubmit={submit} style={{ marginTop: '1ch' }}>
-          <RowSpaceBetween style={{ gap: '1ch', alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <Input
-                label="Content node id (optional)"
-                name="node"
-                placeholder="paste a node id to view its timeline"
-                value={nodeInput}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNodeInput(e.target.value)}
-              />
-            </div>
-            <Button type="submit" isDisabled={!nodeInput.trim()}>
-              Open node
+        {activeNode ? (
+          <Row style={{ marginTop: '1ch' }}>
+            <Button theme="SECONDARY" onClick={() => openNode('')}>
+              ▸ Back to recent feed
             </Button>
-            {activeNode ? (
-              <Button theme="SECONDARY" onClick={() => openNode('')}>
-                Recent feed
-              </Button>
-            ) : null}
-          </RowSpaceBetween>
-        </form>
+          </Row>
+        ) : null}
+
+        {/* The raw content-node id is a power-user entry point — normal users
+            open a node from a row in the feed, never by pasting a uuid. Keep it
+            out of the way behind an SRCL disclosure. */}
+        <div style={{ marginTop: '1ch' }}>
+          <Accordion title="Advanced — open a node by id" defaultValue={Boolean(activeNode)}>
+            <form onSubmit={submit} style={{ width: '100%' }}>
+              <RowSpaceBetween style={{ gap: '1ch', alignItems: 'flex-end', width: '100%' }}>
+                <div style={{ flex: 1 }}>
+                  <Input
+                    label="Content node id"
+                    name="node"
+                    placeholder="paste a node id to view its timeline"
+                    value={nodeInput}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNodeInput(e.target.value)}
+                  />
+                </div>
+                <Button type="submit" isDisabled={!nodeInput.trim()}>
+                  Open node
+                </Button>
+              </RowSpaceBetween>
+            </form>
+          </Accordion>
+        </div>
       </Card>
 
       <div style={{ marginTop: '2ch' }}>

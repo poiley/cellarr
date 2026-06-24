@@ -242,4 +242,88 @@ export function fileLabel(item: LibraryItem): 'DOWNLOADED' | 'MISSING' {
   return item.hasFile ? 'DOWNLOADED' : 'MISSING';
 }
 
+/**
+ * ASCII status glyph for the file state so MISSING stands out beyond colour
+ * alone (a11y / OLED terminal aesthetic): ✓ for a downloaded item, ✗ for a
+ * missing one. Never an emoji — these are plain text glyphs the terminal look
+ * uses elsewhere (toasts, breadcrumbs).
+ */
+export function fileGlyph(item: LibraryItem): '✓' | '✗' {
+  return item.hasFile ? '✓' : '✗';
+}
+
+// ---------------------------------------------------------------------------
+// Sorting — the items table is sortable by Title / Year / Quality / Size /
+// Status. We expose a small, dependency-free comparator the screen drives from
+// its header clicks, plus the sortable-key union and direction type so the page
+// and its test share one contract.
+// ---------------------------------------------------------------------------
+
+/** A column the items table can be sorted by. */
+export type SortKey = 'title' | 'year' | 'quality' | 'size' | 'status';
+
+/** Ascending / descending sort direction. */
+export type SortDir = 'asc' | 'desc';
+
+/** Active sort selection for the items table. */
+export interface SortState {
+  key: SortKey;
+  dir: SortDir;
+}
+
+/** Map a {@link SortDir} to the ARIA `aria-sort` token for a header cell. */
+export function ariaSort(active: boolean, dir: SortDir): 'ascending' | 'descending' | 'none' {
+  if (!active) return 'none';
+  return dir === 'asc' ? 'ascending' : 'descending';
+}
+
+/** A small caret a sortable header shows for the active column (▲/▼). */
+export function sortCaret(active: boolean, dir: SortDir): string {
+  if (!active) return '';
+  return dir === 'asc' ? '▲' : '▼';
+}
+
+/**
+ * A status sort rank so MISSING + monitored (the actionable rows) sort to the
+ * top of an ascending sort: missing-monitored < missing-unmonitored <
+ * downloaded-monitored < downloaded-unmonitored.
+ */
+function statusRank(item: LibraryItem): number {
+  const missing = item.hasFile ? 2 : 0;
+  const unmon = item.monitored ? 0 : 1;
+  return missing + unmon;
+}
+
+/** Comparator for one item against another under a given sort key (ascending). */
+function compareBy(a: LibraryItem, b: LibraryItem, key: SortKey): number {
+  switch (key) {
+    case 'title':
+      return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+    case 'year':
+      return (a.year ?? 0) - (b.year ?? 0);
+    case 'quality':
+      return (a.quality ?? '').localeCompare(b.quality ?? '', undefined, { sensitivity: 'base' });
+    case 'size':
+      return (a.sizeOnDisk ?? 0) - (b.sizeOnDisk ?? 0);
+    case 'status':
+      return statusRank(a) - statusRank(b);
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Return a new, sorted copy of `items` under `sort`. Ties always fall back to a
+ * stable title compare so the order is deterministic, and `desc` simply inverts
+ * the ascending comparator.
+ */
+export function sortItems(items: LibraryItem[], sort: SortState): LibraryItem[] {
+  const factor = sort.dir === 'asc' ? 1 : -1;
+  return [...items].sort((a, b) => {
+    const primary = compareBy(a, b, sort.key) * factor;
+    if (primary !== 0) return primary;
+    return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+  });
+}
+
 export type { ContentNode, ContentRef, Library, MediaFile, Movie, Series };

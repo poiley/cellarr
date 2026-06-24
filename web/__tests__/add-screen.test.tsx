@@ -10,6 +10,7 @@ import { HotkeysProvider } from '@modules/hotkeys';
 const requestV3 = vi.fn();
 const listLibraries = vi.fn();
 const listRootFolders = vi.fn();
+const getQualityProfiles = vi.fn();
 vi.mock('@lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@lib/api/client')>('@lib/api/client');
   return {
@@ -18,11 +19,13 @@ vi.mock('@lib/api/client', async () => {
       requestV3: (...args: unknown[]) => requestV3(...args),
       listLibraries: (...args: unknown[]) => listLibraries(...args),
       listRootFolders: (...args: unknown[]) => listRootFolders(...args),
+      getQualityProfiles: (...args: unknown[]) => getQualityProfiles(...args),
     },
   };
 });
 
 import AddPage from '@app/add/page';
+import { ToastProvider } from '@app/_lib/ToastProvider';
 
 function installMatchMedia() {
   window.matchMedia = vi.fn().mockReturnValue({
@@ -41,9 +44,11 @@ function renderPage() {
   return render(
     <ThemeProvider>
       <HotkeysProvider>
-        <ModalProvider>
-          <AddPage />
-        </ModalProvider>
+        <ToastProvider>
+          <ModalProvider>
+            <AddPage />
+          </ModalProvider>
+        </ToastProvider>
       </HotkeysProvider>
     </ThemeProvider>
   );
@@ -64,6 +69,7 @@ describe('Add / search-new screen', () => {
       },
     ]);
     listRootFolders.mockResolvedValue([{ id: 1, path: '/movies' }]);
+    getQualityProfiles.mockResolvedValue([{ id: 'qp-1', name: 'HD-1080p' }]);
     window.localStorage.clear();
     document.body.className = '';
     installMatchMedia();
@@ -154,6 +160,118 @@ describe('Add / search-new screen', () => {
       )
     );
     await waitFor(() => expect(screen.getByText('added')).toBeTruthy());
+  });
+
+  it('splits results into MOVIES and TV sections', async () => {
+    const series = {
+      title: 'Blade Runner: Black Lotus',
+      titleSlug: 'blade-runner-black-lotus',
+      year: 2021,
+      tvdbId: 999,
+      overview: 'An anime series.',
+      monitored: false,
+      hasFile: false,
+      status: 'continuing',
+    };
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([bladeRunner]);
+      if (path === '/series/lookup') return Promise.resolve([series]);
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'blade' } });
+
+    await waitFor(() => expect(screen.getByText('MOVIES')).toBeTruthy(), { timeout: 2000 });
+    expect(screen.getByText('TV')).toBeTruthy();
+    expect(screen.getByText('Blade Runner')).toBeTruthy();
+    expect(screen.getByText('Blade Runner: Black Lotus')).toBeTruthy();
+  });
+
+  it('ranks the exact-title hit first within a section', async () => {
+    const popular = { ...bladeRunner, title: 'Blade Runner 2049', tmdbId: 335984, popularity: 90 };
+    const exact = { ...bladeRunner, title: 'Blade', tmdbId: 36647, popularity: 10 };
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([popular, exact]);
+      if (path === '/series/lookup') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'blade' } });
+
+    await waitFor(() => expect(screen.getByText('Blade')).toBeTruthy(), { timeout: 2000 });
+    const cells = Array.from(container.querySelectorAll('td, th')).map((c) => c.textContent ?? '');
+    expect(cells.indexOf('Blade')).toBeLessThan(cells.indexOf('Blade Runner 2049'));
+    // Disambiguation aid surfaces popularity.
+    expect(screen.getByText(/pop 90/)).toBeTruthy();
+  });
+
+  it('lets the dialog choose monitor/search and threads them into the POST', async () => {
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([bladeRunner]);
+      if (path === '/series/lookup') return Promise.resolve([]);
+      if (path === '/movie') return Promise.resolve({ id: 'c1' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'blade' } });
+    await waitFor(() => expect(screen.getByText('Blade Runner')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
+
+    // The dialog exposes the field selects + checkboxes.
+    expect(container.querySelector('input[name="add-monitor"]')).toBeTruthy();
+    const searchBox = container.querySelector(
+      'input[name="add-search-on-add"]'
+    ) as HTMLInputElement;
+    expect(searchBox).toBeTruthy();
+    // Untick "search on add".
+    fireEvent.click(searchBox);
+
+    fireEvent.click(screen.getByText('OK'));
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/movie',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.objectContaining({
+            monitored: true,
+            addOptions: { searchForMovie: false },
+          }),
+        })
+      )
+    );
+  });
+
+  it('shows a success toast with a View link after add', async () => {
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([bladeRunner]);
+      if (path === '/series/lookup') return Promise.resolve([]);
+      if (path === '/movie') return Promise.resolve({ id: 'c-new' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'blade' } });
+    await waitFor(() => expect(screen.getByText('Blade Runner')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
+    fireEvent.click(screen.getByText('OK'));
+
+    await waitFor(() => {
+      const view = screen.getByText(/View/) as HTMLAnchorElement;
+      expect(view.getAttribute('href')).toBe('/content?id=c-new');
+    });
   });
 
   it('renders an error banner when both lookups fail', async () => {

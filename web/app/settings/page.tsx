@@ -1,8 +1,11 @@
 'use client';
 
-// Settings hub. SRCL-only: AppShell + ButtonGroup section switcher + the four
-// settings sections, each composed entirely from vendored SRCL primitives and
-// wired to the /api/v1 client.
+// Settings hub. SRCL-only: AppShell + ButtonGroup section switcher + the
+// settings sections (quality profiles, custom formats, indexers, download
+// clients, root folders, remote path mappings), each composed entirely from
+// vendored SRCL primitives and wired to the API client. Naming + Notifications
+// have no backend yet, so they render an honest "coming soon" placeholder rather
+// than a form that saves nowhere.
 
 import * as React from 'react';
 
@@ -13,14 +16,29 @@ import AppShell from '@app/_components/AppShell';
 import QualityProfiles from '@app/settings/_components/QualityProfiles';
 import CustomFormats from '@app/settings/_components/CustomFormats';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
+import RootFolders from '@app/settings/_components/RootFolders';
+import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
+import ComingSoon from '@app/settings/_components/ComingSoon';
 
-type Section = 'profiles' | 'formats' | 'indexers' | 'clients';
+type Section =
+  | 'profiles'
+  | 'formats'
+  | 'indexers'
+  | 'clients'
+  | 'rootfolders'
+  | 'remotepaths'
+  | 'naming'
+  | 'notifications';
 
 const TABS: { id: Section; label: string }[] = [
   { id: 'profiles', label: 'Quality Profiles' },
   { id: 'formats', label: 'Custom Formats' },
   { id: 'indexers', label: 'Indexers' },
   { id: 'clients', label: 'Download Clients' },
+  { id: 'rootfolders', label: 'Root Folders' },
+  { id: 'remotepaths', label: 'Remote Path Mappings' },
+  { id: 'naming', label: 'Naming' },
+  { id: 'notifications', label: 'Notifications' },
 ];
 
 const INDEXER_IMPLS = ['Torznab', 'Newznab', 'Prowlarr', 'Jackett'];
@@ -54,6 +72,20 @@ export default function Page() {
             kind="downloadclients"
             title="Download Clients"
             implementations={CLIENT_IMPLS}
+          />
+        ) : null}
+        {section === 'rootfolders' ? <RootFolders /> : null}
+        {section === 'remotepaths' ? <RemotePathMappings /> : null}
+        {section === 'naming' ? (
+          <ComingSoon
+            title="Naming"
+            summary="Configure how downloaded movie and episode files are renamed and organised on disk."
+          />
+        ) : null}
+        {section === 'notifications' ? (
+          <ComingSoon
+            title="Notifications"
+            summary="Send alerts to Discord, email, webhooks and more when grabs, imports or health events occur."
           />
         ) : null}
       </div>

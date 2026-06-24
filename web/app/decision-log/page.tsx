@@ -7,6 +7,7 @@
 // exclusively from vendored SRCL primitives + the typed API client.
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 
 import Accordion from '@components/Accordion';
@@ -22,6 +23,7 @@ import RowSpaceBetween from '@components/RowSpaceBetween';
 import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 import DecisionDetail from '@app/decision-log/_components/DecisionDetail';
 import { api, ApiError } from '@lib/api/client';
 import type { DecisionLogRecord } from '@lib/api/types';
@@ -89,8 +91,13 @@ function Summary({ records }: { records: TypedDecisionRecord[] }) {
   );
 }
 
+function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
 function DecisionLogScreen() {
   const params = useSearchParams();
+  const { info } = useToast();
   const initialRun = params?.get('run') ?? '';
 
   const [runInput, setRunInput] = React.useState<string>(initialRun);
@@ -128,7 +135,10 @@ function DecisionLogScreen() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    setActiveRun(runInput.trim());
+    const trimmed = runInput.trim();
+    if (!trimmed) return;
+    info(`Loading decision log for run ${shortId(trimmed)}`);
+    setActiveRun(trimmed);
   };
 
   return (
@@ -137,25 +147,36 @@ function DecisionLogScreen() {
         <Text style={{ opacity: 0.7 }}>
           Why cellarr grabbed, upgraded, or rejected each candidate in a pipeline run. Expand any
           record to see the parsed fields, the custom-format score breakdown, and the on-disk
-          comparison behind the verdict.
+          comparison behind the verdict. Open a decision log from a row in{' '}
+          <Link href="/history" style={{ textDecoration: 'underline' }}>
+            History
+          </Link>{' '}
+          — every event that came from a run carries a “why · …” link straight to its trail.
         </Text>
 
-        <form onSubmit={submit} style={{ marginTop: '1ch' }}>
-          <RowSpaceBetween style={{ gap: '1ch', alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <Input
-                label="Run id"
-                name="run"
-                placeholder="pipeline run uuid"
-                value={runInput}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRunInput(e.target.value)}
-              />
-            </div>
-            <Button type="submit" isDisabled={!runInput.trim()}>
-              Load
-            </Button>
-          </RowSpaceBetween>
-        </form>
+        {/* Pasting a raw run uuid is a power-user path — the primary entry is the
+            "why · …" deep-link from History. Keep the manual field behind an SRCL
+            disclosure, opened by default when a run is already in the URL. */}
+        <div style={{ marginTop: '1ch' }}>
+          <Accordion title="Advanced — load a run by id" defaultValue={Boolean(initialRun)}>
+            <form onSubmit={submit} style={{ width: '100%' }}>
+              <RowSpaceBetween style={{ gap: '1ch', alignItems: 'flex-end', width: '100%' }}>
+                <div style={{ flex: 1 }}>
+                  <Input
+                    label="Run id"
+                    name="run"
+                    placeholder="pipeline run uuid"
+                    value={runInput}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRunInput(e.target.value)}
+                  />
+                </div>
+                <Button type="submit" isDisabled={!runInput.trim()}>
+                  Load
+                </Button>
+              </RowSpaceBetween>
+            </form>
+          </Accordion>
+        </div>
       </Card>
 
       <div style={{ marginTop: '2ch' }}>

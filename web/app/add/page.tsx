@@ -1,10 +1,15 @@
 'use client';
 
 // Add / search-new screen (docs/10-ui.md §screen-mapping): find a title and add it.
-// Input to search, a Table of results, an ActionButton per row that opens a Dialog
-// (via SRCL's ModalStack/useModals) to confirm the add. Built only from vendored
-// SRCL components + the API client + relative glue. Empty/loading/error states are
-// all handled and both SRCL themes work (all color comes from --theme-* tokens).
+// An Input drives a debounced lookup; results are split into MOVIES / TV sections,
+// each ranked by relevance + popularity and capped (with a "show more" toggle) so
+// the obvious hit lands first and the long tail stays out of the way. The +ADD
+// ActionButton opens a Dialog (via SRCL's ModalStack/useModals) whose body lets the
+// user pick LIBRARY, QUALITY PROFILE, ROOT FOLDER, MONITOR and SEARCH-ON-ADD before
+// confirming. On success a toast with a "View" link points at the new item and the
+// row keeps its ADDED state. Built only from vendored SRCL components + the API
+// client + relative glue; empty/loading/error states are all handled and both SRCL
+// themes work (all color comes from --theme-* tokens).
 
 import * as React from 'react';
 
@@ -21,21 +26,36 @@ import Divider from '@components/Divider';
 import AlertBanner from '@components/AlertBanner';
 import BlockLoader from '@components/BlockLoader';
 import RowSpaceBetween from '@components/RowSpaceBetween';
+import Select from '@components/Select';
+import Checkbox from '@components/Checkbox';
 import Dialog from '@components/Dialog';
 import ModalStack from '@components/ModalStack';
 import { useModals } from '@components/page/ModalContext';
 
 import { api, ApiError } from '@lib/api/client';
-import type { Library, RootFolder } from '@lib/api/types';
+import type { Library, QualityProfile, RootFolder } from '@lib/api/types';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 
-import { addContent, lookup, type LookupResult } from '../_search/api';
+import { addContent, lookup, rankResults, type LookupResult } from '../_search/api';
 
 type Phase = 'idle' | 'loading' | 'ready' | 'error';
 
+/** How many results to show per section before the "show more" toggle. */
+const SECTION_PAGE = 8;
+
+/** The add targets the dialog lets the user choose for a single add. */
+interface AddSelection {
+  rootFolderPath: string;
+  qualityProfileId?: string;
+  monitor: boolean;
+  searchOnAdd: boolean;
+}
+
 export default function Page() {
   const modals = useModals();
+  const { success, error: toastError } = useToast();
 
   const [term, setTerm] = React.useState('');
   const [phase, setPhase] = React.useState<Phase>('idle');
@@ -45,43 +65,36 @@ export default function Page() {
 
   const abortRef = React.useRef<AbortController | null>(null);
 
-  // Libraries + root folders let the add POST target a real root for the chosen
-  // media type and inherit each library's default quality profile. Held in a ref
-  // so the (memoized) add handler always reads the latest values without being
-  // recreated — avoiding a stale closure when the data loads after first render.
-  const targetsRef = React.useRef<{ libraries: Library[]; rootFolders: RootFolder[] }>({
-    libraries: [],
-    rootFolders: [],
-  });
+  // Libraries + quality profiles + root folders feed the add dialog so the user
+  // can target a real root/profile per add. Held in a ref so the (memoized) add
+  // handlers always read the latest values without being recreated — avoiding a
+  // stale closure when the data loads after first render.
+  const targetsRef = React.useRef<{
+    libraries: Library[];
+    rootFolders: RootFolder[];
+    profiles: QualityProfile[];
+  }>({ libraries: [], rootFolders: [], profiles: [] });
 
   React.useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
-        const [libs, roots] = await Promise.all([
+        const [libs, roots, profiles] = await Promise.all([
           api.listLibraries(controller.signal),
           api.listRootFolders(controller.signal),
+          api.getQualityProfiles(controller.signal),
         ]);
         if (controller.signal.aborted) return;
-        targetsRef.current = { libraries: libs ?? [], rootFolders: roots ?? [] };
+        targetsRef.current = {
+          libraries: libs ?? [],
+          rootFolders: roots ?? [],
+          profiles: profiles ?? [],
+        };
       } catch {
-        // Non-fatal: the add still works against the first available root folder.
+        // Non-fatal: the dialog falls back to sensible defaults if data is missing.
       }
     })();
     return () => controller.abort();
-  }, []);
-
-  // Resolve the root folder + default quality profile for a chosen title's media
-  // type, preferring its library's configured root, falling back to any root.
-  const resolveTarget = React.useCallback((mediaType: string | undefined) => {
-    const { libraries, rootFolders } = targetsRef.current;
-    const lib = libraries.find((l) => l.media_type === mediaType) ?? libraries[0];
-    const libRoot = lib?.root_folders?.[0];
-    const rootPath = libRoot ?? rootFolders[0]?.path ?? '';
-    return {
-      root_folder_path: rootPath,
-      quality_profile_id: lib?.default_quality_profile,
-    };
   }, []);
 
   const runSearch = React.useCallback(async (raw: string) => {
@@ -122,59 +135,69 @@ export default function Page() {
 
   React.useEffect(() => () => abortRef.current?.abort(), []);
 
-  const confirmAdd = React.useCallback(
-    (result: LookupResult) => {
-      const key = result.foreign_id;
-      modals.open(Dialog, {
-        title: `Add "${result.title}"${result.year ? ` (${result.year})` : ''}?`,
-        children: (
-          <Text>
-            This will start monitoring{' '}
-            <strong>{result.title}</strong> and search for it on the configured
-            indexers using the default quality profile.
-          </Text>
-        ),
-        onConfirm: () => {
-          modals.close();
-          void doAdd(result, key);
-        },
-        onCancel: () => modals.close(),
-      });
-    },
-    // doAdd is stable via the closure below; results/added state read fresh inside.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modals]
-  );
-
   const doAdd = React.useCallback(
-    async (result: LookupResult, key: string) => {
-      const target = resolveTarget(result.media_type);
+    async (result: LookupResult, key: string, selection: AddSelection) => {
       try {
-        await addContent({
+        const created = await addContent({
           media_type: result.media_type ?? 'movie',
           title: result.title,
           title_slug: result.title_slug,
           year: result.year,
           tmdb_id: result.tmdb_id,
           tvdb_id: result.tvdb_id,
-          root_folder_path: target.root_folder_path,
-          quality_profile_id: target.quality_profile_id,
-          search_on_add: true,
+          root_folder_path: selection.rootFolderPath,
+          quality_profile_id: selection.qualityProfileId,
+          monitored: selection.monitor,
+          search_on_add: selection.searchOnAdd,
         });
         setAdded((prev) => new Set(prev).add(key));
+        success(
+          <span>
+            Added <strong>{result.title}</strong> —{' '}
+            <a href={`/content?id=${encodeURIComponent(created.id)}`}>View ▸</a>
+          </span>
+        );
       } catch (err) {
         const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : 'Add failed.';
-        modals.open(Dialog, {
-          title: 'Could not add title',
-          children: <Text>{msg}</Text>,
-          onConfirm: () => modals.close(),
-          onCancel: () => modals.close(),
-        });
+        toastError(
+          <span>
+            Could not add <strong>{result.title}</strong> — {msg}
+          </span>
+        );
       }
     },
-    // modals is stable from context.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [resolveTarget]
+    [success, toastError]
+  );
+
+  const confirmAdd = React.useCallback(
+    (result: LookupResult) => {
+      const key = result.foreign_id;
+      // The dialog body manages its own field state and writes the latest values
+      // into this ref; the Dialog's OK button reads it on confirm. (SRCL's Dialog
+      // only surfaces onConfirm/onCancel, so a ref is how we lift the selection.)
+      const { libraries, rootFolders, profiles } = targetsRef.current;
+      const selectionRef: { current: AddSelection } = {
+        current: defaultSelection(result.media_type, libraries, rootFolders),
+      };
+      modals.open(Dialog, {
+        title: `Add "${result.title}"${result.year ? ` (${result.year})` : ''}`,
+        children: (
+          <AddDialogBody
+            result={result}
+            libraries={libraries}
+            rootFolders={rootFolders}
+            profiles={profiles}
+            selectionRef={selectionRef}
+          />
+        ),
+        onConfirm: () => {
+          modals.close();
+          void doAdd(result, key, selectionRef.current);
+        },
+        onCancel: () => modals.close(),
+      });
+    },
+    [modals, doAdd]
   );
 
   return (
@@ -186,7 +209,7 @@ export default function Page() {
             <Input
               label="Search"
               name="add-search"
-              placeholder="Type a movie, series, album, or book…"
+              placeholder="Type a movie or series…"
               autoComplete="off"
               value={term}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTerm(e.target.value)}
@@ -215,6 +238,10 @@ export default function Page() {
     </AppShell>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Results — split into MOVIES / TV sections, ranked + capped per section.
+// ---------------------------------------------------------------------------
 
 const Results: React.FC<{
   phase: Phase;
@@ -252,40 +279,270 @@ const Results: React.FC<{
     );
   }
 
+  const movies = rankResults(
+    results.filter((r) => r.media_type !== 'tv'),
+    term
+  );
+  const tv = rankResults(
+    results.filter((r) => r.media_type === 'tv'),
+    term
+  );
+
   return (
-    <Table>
-      <TableRow>
-        <TableColumn>Title</TableColumn>
-        <TableColumn>Year</TableColumn>
-        <TableColumn>Type</TableColumn>
-        <TableColumn>Overview</TableColumn>
-        <TableColumn>Add</TableColumn>
-      </TableRow>
-      {results.map((r) => {
-        const isAdded = added.has(r.foreign_id) || r.already_added;
-        return (
-          <TableRow key={r.foreign_id}>
-            <TableColumn>{r.title}</TableColumn>
-            <TableColumn>{r.year ?? '—'}</TableColumn>
-            <TableColumn>{r.media_type ? <Badge>{String(r.media_type)}</Badge> : '—'}</TableColumn>
-            <TableColumn>
-              <span style={{ opacity: 0.7 }}>{truncate(r.overview)}</span>
-            </TableColumn>
-            <TableColumn>
-              {isAdded ? (
-                <Badge>added</Badge>
-              ) : (
-                <ActionButton hotkey="＋" onClick={() => onAdd(r)}>
-                  Add
-                </ActionButton>
-              )}
-            </TableColumn>
-          </TableRow>
-        );
-      })}
-    </Table>
+    <>
+      <ResultSection title="MOVIES" results={movies} added={added} onAdd={onAdd} />
+      {movies.length > 0 && tv.length > 0 ? <Divider /> : null}
+      <ResultSection title="TV" results={tv} added={added} onAdd={onAdd} />
+    </>
   );
 };
+
+const ResultSection: React.FC<{
+  title: string;
+  results: LookupResult[];
+  added: Set<string>;
+  onAdd: (r: LookupResult) => void;
+}> = ({ title, results, added, onAdd }) => {
+  const [expanded, setExpanded] = React.useState(false);
+
+  if (results.length === 0) return null;
+
+  const shown = expanded ? results : results.slice(0, SECTION_PAGE);
+  const hiddenCount = results.length - shown.length;
+
+  return (
+    <section style={{ marginBottom: '1ch' }}>
+      <Text style={{ fontWeight: 600, opacity: 0.85 }}>
+        <span aria-hidden="true">▸ </span>
+        <span>{title}</span> <Badge>{results.length}</Badge>
+      </Text>
+      <Table>
+        <TableRow>
+          <TableColumn>Title</TableColumn>
+          <TableColumn>Year</TableColumn>
+          <TableColumn>Popularity</TableColumn>
+          <TableColumn>Overview</TableColumn>
+          <TableColumn>Add</TableColumn>
+        </TableRow>
+        {shown.map((r) => {
+          const isAdded = added.has(r.foreign_id) || r.already_added;
+          return (
+            <TableRow key={r.foreign_id}>
+              <TableColumn>{r.title}</TableColumn>
+              <TableColumn>{r.year ?? '—'}</TableColumn>
+              <TableColumn>
+                <span style={{ opacity: 0.7 }}>{disambiguation(r)}</span>
+              </TableColumn>
+              <TableColumn>
+                <span style={{ opacity: 0.7 }}>{truncate(r.overview)}</span>
+              </TableColumn>
+              <TableColumn>
+                {isAdded ? (
+                  <Badge>added</Badge>
+                ) : (
+                  <ActionButton hotkey="＋" onClick={() => onAdd(r)}>
+                    Add
+                  </ActionButton>
+                )}
+              </TableColumn>
+            </TableRow>
+          );
+        })}
+      </Table>
+      {hiddenCount > 0 ? (
+        <Button theme="SECONDARY" onClick={() => setExpanded(true)}>
+          Show {hiddenCount} more ▾
+        </Button>
+      ) : null}
+      {expanded && results.length > SECTION_PAGE ? (
+        <Button theme="SECONDARY" onClick={() => setExpanded(false)}>
+          Show fewer ▴
+        </Button>
+      ) : null}
+    </section>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Add dialog body — Library / Quality profile / Root folder / Monitor / Search.
+// ---------------------------------------------------------------------------
+
+const AddDialogBody: React.FC<{
+  result: LookupResult;
+  libraries: Library[];
+  rootFolders: RootFolder[];
+  profiles: QualityProfile[];
+  selectionRef: { current: AddSelection };
+}> = ({ result, libraries, rootFolders, profiles, selectionRef }) => {
+  // The library matching this title's media type is the natural default target;
+  // it seeds the root folder + quality profile choices.
+  const defaultLib = React.useMemo(
+    () => libraries.find((l) => l.media_type === result.media_type) ?? libraries[0],
+    [libraries, result.media_type]
+  );
+
+  // Root-folder options: every configured library root + every standalone root
+  // folder, de-duplicated. Falls back to a sensible placeholder if none exist.
+  const rootOptions = React.useMemo(() => {
+    const paths = new Set<string>();
+    for (const l of libraries) for (const p of l.root_folders ?? []) paths.add(p);
+    for (const rf of rootFolders) if (rf.path) paths.add(rf.path);
+    return Array.from(paths);
+  }, [libraries, rootFolders]);
+
+  const profileOptions = React.useMemo(() => profiles.map((p) => p.name), [profiles]);
+  const profileByName = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of profiles) m.set(p.name, p.id);
+    return m;
+  }, [profiles]);
+
+  const defaultRoot =
+    defaultLib?.root_folders?.[0] ?? rootOptions[0] ?? rootFolders[0]?.path ?? '';
+  const defaultProfileId = defaultLib?.default_quality_profile;
+  const defaultProfileName =
+    profiles.find((p) => p.id === defaultProfileId)?.name ?? profileOptions[0] ?? '';
+
+  // Seed the shared selection ref with the defaults so a straight OK (no edits)
+  // still adds with a real target.
+  React.useEffect(() => {
+    selectionRef.current = {
+      rootFolderPath: defaultRoot,
+      qualityProfileId: profileByName.get(defaultProfileName) ?? defaultProfileId,
+      monitor: selectionRef.current.monitor,
+      searchOnAdd: selectionRef.current.searchOnAdd,
+    };
+    // Run once on mount with the resolved defaults.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1ch', minWidth: '40ch' }}>
+      <Text>
+        Add <strong>{result.title}</strong>
+        {result.year ? ` (${result.year})` : ''} to your library.
+      </Text>
+
+      {libraries.length > 1 ? (
+        <Field label="Library">
+          <Select
+            name="add-library"
+            options={libraries.map((l) => l.name)}
+            defaultValue={defaultLib?.name ?? ''}
+            placeholder="Choose a library"
+            onChange={(name) => {
+              const lib = libraries.find((l) => l.name === name);
+              if (!lib) return;
+              const root = lib.root_folders?.[0] ?? selectionRef.current.rootFolderPath;
+              const profId = lib.default_quality_profile ?? selectionRef.current.qualityProfileId;
+              selectionRef.current = {
+                ...selectionRef.current,
+                rootFolderPath: root,
+                qualityProfileId: profId,
+              };
+            }}
+          />
+        </Field>
+      ) : null}
+
+      <Field label="Quality profile">
+        {profileOptions.length > 0 ? (
+          <Select
+            name="add-profile"
+            options={profileOptions}
+            defaultValue={defaultProfileName}
+            placeholder="Choose a quality profile"
+            onChange={(name) => {
+              selectionRef.current = {
+                ...selectionRef.current,
+                qualityProfileId: profileByName.get(name) ?? selectionRef.current.qualityProfileId,
+              };
+            }}
+          />
+        ) : (
+          <Text style={{ opacity: 0.6 }}>No quality profiles configured — using library default.</Text>
+        )}
+      </Field>
+
+      <Field label="Root folder">
+        {rootOptions.length > 0 ? (
+          <Select
+            name="add-root"
+            options={rootOptions}
+            defaultValue={defaultRoot}
+            placeholder="Choose a root folder"
+            onChange={(path) => {
+              selectionRef.current = { ...selectionRef.current, rootFolderPath: path };
+            }}
+          />
+        ) : (
+          <Text style={{ opacity: 0.6 }}>No root folders configured.</Text>
+        )}
+      </Field>
+
+      <Checkbox
+        name="add-monitor"
+        defaultChecked={selectionRef.current.monitor}
+        onChange={(e) => {
+          selectionRef.current = { ...selectionRef.current, monitor: e.target.checked };
+        }}
+      >
+        Monitor
+      </Checkbox>
+
+      <Checkbox
+        name="add-search-on-add"
+        defaultChecked={selectionRef.current.searchOnAdd}
+        onChange={(e) => {
+          selectionRef.current = { ...selectionRef.current, searchOnAdd: e.target.checked };
+        }}
+      >
+        Search for it on add
+      </Checkbox>
+    </div>
+  );
+};
+
+const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div>
+    <Text style={{ opacity: 0.7, marginBottom: '0.5ch' }}>{label}</Text>
+    {children}
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/** The selection a dialog starts from before the user edits anything. */
+function defaultSelection(
+  mediaType: string | undefined,
+  libraries: Library[],
+  rootFolders: RootFolder[]
+): AddSelection {
+  const lib = libraries.find((l) => l.media_type === mediaType) ?? libraries[0];
+  const rootFolderPath =
+    lib?.root_folders?.[0] ?? rootFolders[0]?.path ?? '';
+  return {
+    rootFolderPath,
+    qualityProfileId: lib?.default_quality_profile,
+    monitor: true,
+    searchOnAdd: true,
+  };
+}
+
+/**
+ * A compact disambiguation aid for a result row — popularity / rating / runtime,
+ * whichever the metadata source provided, so identically-named titles can be told
+ * apart at a glance. Falls back to an em dash when nothing is known.
+ */
+function disambiguation(r: LookupResult): string {
+  const bits: string[] = [];
+  if (r.popularity !== undefined) bits.push(`pop ${Math.round(r.popularity)}`);
+  if (r.vote_average !== undefined) bits.push(`★ ${r.vote_average.toFixed(1)}`);
+  if (r.runtime !== undefined && r.runtime > 0) bits.push(`${r.runtime}m`);
+  return bits.length > 0 ? bits.join(' · ') : '—';
+}
 
 function truncate(text?: string, max = 80): string {
   if (!text) return '—';

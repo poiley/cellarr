@@ -111,6 +111,13 @@ impl Daemon {
             search_db,
             search_registry,
         ));
+        // The interactive grab seam (POST /api/v3/release) shares the same DB +
+        // media registry, but — unlike search — builds the download client and
+        // drives the real Grab→Track→Import path for the chosen release. It needs
+        // the shared event bus to surface progress, so it is attached after the
+        // state (which owns the bus) is built.
+        let grab_db = db.clone();
+        let grab_registry = std::sync::Arc::clone(&registry);
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
             std::sync::Arc::new(crate::pipeline::LivePipelineHandler::new(
@@ -122,6 +129,12 @@ impl Daemon {
         })
         .with_metadata(metadata)
         .with_release_search(release_search);
+        let release_grab = std::sync::Arc::new(crate::pipeline::LiveReleaseGrab::new(
+            grab_db,
+            grab_registry,
+            state.events.clone(),
+        ));
+        let state = state.with_release_grab(release_grab);
 
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;

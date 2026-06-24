@@ -27,13 +27,9 @@ import Divider from '@components/Divider';
 import { ApiError, CellarrClient, api as defaultApi } from '@lib/api/client';
 import type { CustomFormat } from '@lib/api/types';
 
+import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
-import {
-  Loading,
-  ErrorBanner,
-  SuccessBanner,
-  EmptyState,
-} from '@app/settings/_components/StatusBanners';
+import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 
 interface FormatRow {
   id: string;
@@ -60,6 +56,8 @@ function toRow(cf: CustomFormat): FormatRow {
 }
 
 const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) => {
+  const { success, error: toastError } = useToast();
+
   const load = React.useCallback(
     (signal: AbortSignal) => client.listCustomFormats(signal),
     [client]
@@ -69,7 +67,6 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
   const [filter, setFilter] = React.useState('');
   const [editing, setEditing] = React.useState<FormatRow | null>(null);
   const [saving, setSaving] = React.useState(false);
-  const [saved, setSaved] = React.useState(false);
   const [saveError, setSaveError] = React.useState<ApiError | undefined>(undefined);
 
   const rows = React.useMemo(() => (data ?? []).map(toRow), [data]);
@@ -93,6 +90,10 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
 
   const save = async () => {
     if (!editing) return;
+    if (!editing.name.trim()) {
+      toastError('Give the custom format a name first.');
+      return;
+    }
     setSaving(true);
     setSaveError(undefined);
     try {
@@ -108,10 +109,12 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
         conditions: [{ type: editing.conditionType, value: editing.conditionValue }],
       });
       setEditing(null);
-      setSaved(true);
+      success('Custom format saved.');
       reload();
     } catch (err) {
-      setSaveError(toApiError(err));
+      const e = toApiError(err);
+      setSaveError(e);
+      toastError(`Could not save custom format — ${e.message}`);
     } finally {
       setSaving(false);
     }
@@ -140,8 +143,6 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
         </div>
         <ButtonGroup items={[{ body: 'Add custom format', onClick: openNew }]} />
       </div>
-
-      {saved ? <SuccessBanner>Custom format saved.</SuccessBanner> : null}
 
       <Divider type="GRADIENT" />
 

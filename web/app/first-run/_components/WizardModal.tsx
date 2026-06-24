@@ -24,6 +24,7 @@ import ButtonGroup from '@components/ButtonGroup';
 import Badge from '@components/Badge';
 import Divider from '@components/Divider';
 import Text from '@components/Text';
+import BarProgress from '@components/BarProgress';
 
 import { useModals } from '@components/page/ModalContext';
 
@@ -92,6 +93,36 @@ const initialState: WizardState = {
   clientImpl: CLIENT_IMPLS[0],
   clientHost: '',
   clientPort: '',
+};
+
+// A compact step indicator composed from ASCII glyphs (no emoji, no icon lib):
+// ● completed/current step, ○ upcoming step, with the active step labelled. A
+// BarProgress underneath gives a coarse progress read-out. Hidden once the
+// wizard finishes (the success screen has no steps).
+const StepIndicator: React.FC<{ current: number }> = ({ current }) => {
+  const total = STEPS.length;
+  const pct = Math.round(((current + 1) / total) * 100);
+  return (
+    <div aria-hidden style={{ margin: '0.5ch 0 1ch' }}>
+      <div style={{ display: 'flex', gap: '0.75ch', flexWrap: 'wrap', marginBottom: '0.5ch' }}>
+        {STEPS.map((label, i) => {
+          const reached = i <= current;
+          return (
+            <span
+              key={label}
+              style={{
+                opacity: reached ? 1 : 0.4,
+                fontWeight: i === current ? 700 : 400,
+              }}
+            >
+              {reached ? '●' : '○'} {label}
+            </span>
+          );
+        })}
+      </div>
+      <BarProgress progress={pct} />
+    </div>
+  );
 };
 
 const WizardModal: React.FC<WizardModalProps> = ({ client = defaultApi, onComplete }) => {
@@ -208,6 +239,13 @@ const WizardModal: React.FC<WizardModalProps> = ({ client = defaultApi, onComple
   const goToLibrary = () => {
     close();
     router.push('/library/');
+  };
+
+  // Fully skippable: bail out of the whole wizard without creating anything and
+  // land on the Library screen.
+  const skipSetup = () => {
+    onComplete?.();
+    goToLibrary();
   };
 
   const body = (() => {
@@ -421,6 +459,7 @@ const WizardModal: React.FC<WizardModalProps> = ({ client = defaultApi, onComple
                   onClick: submitting ? undefined : finish,
                 },
               ]),
+          { body: 'Skip setup', onClick: skipSetup },
           { body: 'Cancel', onClick: () => close() },
         ]}
       />
@@ -444,6 +483,7 @@ const WizardModal: React.FC<WizardModalProps> = ({ client = defaultApi, onComple
         onCancel={() => close()}
         style={{ maxWidth: '64ch', width: '100%' }}
       >
+        {done ? null : <StepIndicator current={step} />}
         {body}
         <Divider type="GRADIENT" />
         {footer}

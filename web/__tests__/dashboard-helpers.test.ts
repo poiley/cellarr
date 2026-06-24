@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   activeDownloads,
   downloadProgress,
+  healthSummary,
   historyEventV3Label,
   notableHealth,
   recentHistory,
+  recentlyAdded,
   summarizeLibrary,
+  upcomingItems,
+  type CalendarItem,
 } from '@app/_lib/dashboard';
 import type {
   HealthCheck,
@@ -155,5 +159,62 @@ describe('historyEventV3Label', () => {
     expect(historyEventV3Label('downloadFolderImported')).toBe('Imported');
     expect(historyEventV3Label('downloadFailed')).toBe('Download failed');
     expect(historyEventV3Label(undefined)).toBe('Event');
+  });
+});
+
+describe('recentlyAdded', () => {
+  it('keeps only monitored items, newest added first, capped', () => {
+    const movies = [
+      movie({ id: 'm1', title: 'Old', year: 1999, monitored: true, added: '2026-01-01T00:00:00Z' }),
+      movie({ id: 'm2', title: 'Unmon', monitored: false, added: '2026-06-01T00:00:00Z' }),
+    ];
+    const tv = [
+      series({ id: 's1', title: 'New', monitored: true, hasFile: true, added: '2026-06-10T00:00:00Z' }),
+    ];
+    const out = recentlyAdded(movies, tv, 5);
+    expect(out.map((r) => r.id)).toEqual(['s1', 'm1']);
+    expect(out[0]).toMatchObject({ kind: 'series', hasFile: true });
+    expect(out[1].title).toBe('Old (1999)');
+  });
+
+  it('sorts items without an added timestamp last and respects the limit', () => {
+    const movies = [
+      movie({ id: 'a', monitored: true, added: '' }),
+      movie({ id: 'b', monitored: true, added: '2026-05-01T00:00:00Z' }),
+      movie({ id: 'c', monitored: true, added: '2026-06-01T00:00:00Z' }),
+    ];
+    const out = recentlyAdded(movies, [], 2);
+    expect(out.map((r) => r.id)).toEqual(['c', 'b']);
+  });
+});
+
+describe('healthSummary', () => {
+  it('reports OK with a ● glyph when there are no notable checks', () => {
+    const s = healthSummary([{ type: 'ok', message: 'fine' }]);
+    expect(s).toEqual({ glyph: '●', word: 'OK', hasWarnings: false, count: 0 });
+  });
+
+  it('reports a ▲ glyph and a pluralized count when warnings exist', () => {
+    const one = healthSummary([{ type: 'warning', message: 'w' }]);
+    expect(one).toMatchObject({ glyph: '▲', word: '1 warning', hasWarnings: true, count: 1 });
+
+    const many = healthSummary([
+      { type: 'warning', message: 'w' },
+      { type: 'error', message: 'e' },
+    ]);
+    expect(many).toMatchObject({ glyph: '▲', word: '2 warnings', count: 2 });
+  });
+});
+
+describe('upcomingItems', () => {
+  it('drops undated rows, sorts earliest first, and caps', () => {
+    const items: CalendarItem[] = [
+      { id: '1', title: 'B', airDate: '2026-06-20' },
+      { id: '2', title: 'no-date' },
+      { id: '3', title: 'A', date: '2026-06-10' },
+      { id: '4', title: 'C', airDate: '2026-06-25' },
+    ];
+    const out = upcomingItems(items, 2);
+    expect(out.map((i) => i.id)).toEqual(['3', '1']);
   });
 });

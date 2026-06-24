@@ -1,17 +1,23 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render as rtlRender } from '@testing-library/react';
+import { cleanup, fireEvent, render as rtlRender, waitFor } from '@testing-library/react';
 
 import { ApiError } from '@lib/api/client';
 import { ThemeProvider } from '@lib/ThemeProvider';
+import { ToastProvider } from '@app/_lib/ToastProvider';
 
-// The screen embeds the AppShell (theme controller); wrap renders in
-// ThemeProvider so its useTheme() resolves.
+// The screen embeds the AppShell (theme controller) + uses the shared toast
+// hook; wrap renders in both providers so useTheme()/useToast() resolve.
 const render = (ui: React.ReactElement) =>
-  rtlRender(<ThemeProvider>{ui}</ThemeProvider>);
+  rtlRender(
+    <ThemeProvider>
+      <ToastProvider>{ui}</ToastProvider>
+    </ThemeProvider>
+  );
 
 const systemStatus = vi.fn();
 const getCommands = vi.fn();
+const requestV3 = vi.fn();
 
 vi.mock('@lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@lib/api/client')>('@lib/api/client');
@@ -20,6 +26,9 @@ vi.mock('@lib/api/client', async () => {
     api: {
       systemStatus: (...args: unknown[]) => systemStatus(...args),
       getCommands: (...args: unknown[]) => getCommands(...args),
+      // The System screen reaches the scheduler surface + 'Run now' command
+      // through the client's generic requestV3 escape hatch.
+      requestV3: (...args: unknown[]) => requestV3(...args),
     },
   };
 });
@@ -38,6 +47,29 @@ const COMMANDS = [
   { name: 'RefreshMetadata', description: 'Refresh metadata.' },
 ];
 
+const TASKS = [
+  {
+    id: 1,
+    name: 'RSS Sync',
+    taskName: 'RssSync',
+    interval: 15,
+    nextExecution: new Date(Date.now() + 5 * 60_000).toISOString(),
+    lastExecution: new Date(Date.now() - 10 * 60_000).toISOString(),
+    lastDuration: '00:00:00',
+    lastStatus: 'ok',
+  },
+  {
+    id: 2,
+    name: 'Refresh Metadata',
+    taskName: 'RefreshMetadata',
+    interval: 720,
+    nextExecution: new Date(Date.now() + 60 * 60_000).toISOString(),
+    lastExecution: null,
+    lastDuration: '00:00:00',
+    lastStatus: 'ok',
+  },
+];
+
 async function loadScreen() {
   const mod = await import('@app/system/page');
   return mod.default;
@@ -47,6 +79,15 @@ describe('System / Status screen', () => {
   beforeEach(() => {
     systemStatus.mockReset();
     getCommands.mockReset();
+    requestV3.mockReset();
+    // Default: route GET /system/task and POST /command. Individual tests
+    // override as needed.
+    requestV3.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/system/task') return Promise.resolve(TASKS);
+      if (path === '/command' && opts?.method === 'POST')
+        return Promise.resolve({ id: 'cmd-1', status: 'queued' });
+      return Promise.resolve(undefined);
+    });
     window.localStorage.clear();
     document.body.className = '';
     window.matchMedia = vi.fn().mockReturnValue({
@@ -73,23 +114,74 @@ describe('System / Status screen', () => {
     expect(getByText(/Loading system status/i)).toBeTruthy();
   });
 
-  it('renders health rows and the raw status JSON', async () => {
+  it('renders health rows and the raw status JSON behind the disclosure', async () => {
     systemStatus.mockResolvedValue(STATUS);
     getCommands.mockResolvedValue(COMMANDS);
     const Screen = await loadScreen();
     const { findByText, container } = render(<Screen />);
     expect(await findByText(/Application/)).toBeTruthy();
-    // The raw CodeBlock contains the serialized status.
+    // Raw JSON is collapsed by default; expand the Raw / Advanced disclosure.
+    expect(container.textContent).not.toContain('"app_name"');
+    fireEvent.click(await findByText('Raw / Advanced'));
     expect(container.textContent).toContain('"app_name"');
   });
 
-  it('lists scheduled tasks from /commands', async () => {
+  it('lists scheduled tasks with their schedule metadata', async () => {
     systemStatus.mockResolvedValue(STATUS);
     getCommands.mockResolvedValue(COMMANDS);
     const Screen = await loadScreen();
     const { findByText } = render(<Screen />);
+    // The rich scheduler tasks drive the table when present.
+    expect(await findByText(/RSS Sync/)).toBeTruthy();
+    expect(await findByText(/Refresh Metadata/)).toBeTruthy();
+    // Cadence is surfaced (15 min for RSS Sync).
+    expect(await findByText(/15 min/)).toBeTruthy();
+  });
+
+  it('falls back to the native command catalogue when the scheduler is absent', async () => {
+    systemStatus.mockResolvedValue(STATUS);
+    getCommands.mockResolvedValue(COMMANDS);
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/system/task') return Promise.reject(new ApiError('http_error', 'no', 404));
+      return Promise.resolve({ id: 'cmd-1', status: 'queued' });
+    });
+    const Screen = await loadScreen();
+    const { findByText } = render(<Screen />);
+    // With no scheduler tasks, rows are synthesized from /commands names.
     expect(await findByText(/RssSync/)).toBeTruthy();
     expect(await findByText(/RefreshMetadata/)).toBeTruthy();
+  });
+
+  it("'Run now' POSTs the task command and confirms via toast", async () => {
+    systemStatus.mockResolvedValue(STATUS);
+    getCommands.mockResolvedValue(COMMANDS);
+    const Screen = await loadScreen();
+    const { findAllByText, findByText } = render(<Screen />);
+    const runButtons = await findAllByText('Run now');
+    expect(runButtons.length).toBeGreaterThan(0);
+    fireEvent.click(runButtons[0]);
+    await waitFor(() =>
+      expect(
+        requestV3.mock.calls.some(
+          ([path, opts]) =>
+            path === '/command' &&
+            (opts as { method?: string; body?: { name?: string } })?.method === 'POST' &&
+            (opts as { body?: { name?: string } })?.body?.name === 'RssSync'
+        )
+      ).toBe(true)
+    );
+    expect(await findByText(/queued\./i)).toBeTruthy();
+  });
+
+  it('keeps the raw status JSON behind a Raw / Advanced disclosure with a copy control', async () => {
+    systemStatus.mockResolvedValue(STATUS);
+    getCommands.mockResolvedValue(COMMANDS);
+    const Screen = await loadScreen();
+    const { findByText, getByText } = render(<Screen />);
+    // The disclosure title is present; expanding it reveals copy + the JSON.
+    const disclosure = await findByText('Raw / Advanced');
+    fireEvent.click(disclosure);
+    expect(getByText('Copy')).toBeTruthy();
   });
 
   it('warns when no indexers are configured', async () => {

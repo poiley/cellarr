@@ -35,7 +35,7 @@ describe('IntegrationSection (indexers / clients)', () => {
     await waitFor(() => expect(screen.getAllByText('Prowlarr').length).toBeGreaterThan(0));
   });
 
-  it('shows a success banner when the test passes', async () => {
+  it('shows a success indicator when the test passes', async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(INDEXERS)) // load
@@ -46,6 +46,7 @@ describe('IntegrationSection (indexers / clients)', () => {
     );
     await waitFor(() => expect(screen.getAllByText('Prowlarr').length).toBeGreaterThan(0));
 
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My indexer' } });
     fireEvent.click(screen.getByText('Test'));
     await waitFor(() =>
       expect(screen.getByText(/connection successful/i)).toBeTruthy()
@@ -58,7 +59,7 @@ describe('IntegrationSection (indexers / clients)', () => {
     expect(testCall).toBeTruthy();
   });
 
-  it('shows an error banner when the test fails', async () => {
+  it('shows a failure indicator when the test fails', async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(INDEXERS))
@@ -69,8 +70,40 @@ describe('IntegrationSection (indexers / clients)', () => {
     );
     await waitFor(() => expect(screen.getAllByText('Prowlarr').length).toBeGreaterThan(0));
 
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My indexer' } });
     fireEvent.click(screen.getByText('Test'));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/host down/));
+    // The inline indicator carries the failure (the same outcome is also toasted,
+    // but the toast lives in the ToastProvider which is not mounted in this unit).
+    await waitFor(() => expect(screen.getByText(/host down/)).toBeTruthy());
+  });
+
+  it('confirms before deleting a config and then DELETEs it', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ id: '7', name: 'Prowlarr', implementation: 'Prowlarr', enabled: true }]))
+      .mockResolvedValueOnce(new Response(null, { status: 204 })) // delete
+      .mockResolvedValueOnce(jsonResponse([])); // reload
+    const client = new CellarrClient({ fetchImpl });
+    render(
+      <IntegrationSection kind="indexers" title="Indexers" implementations={['Prowlarr']} client={client} />
+    );
+    await waitFor(() => expect(screen.getByLabelText('Remove Prowlarr')).toBeTruthy());
+
+    // Clicking Remove opens a confirm dialog — no DELETE yet.
+    fireEvent.click(screen.getByLabelText('Remove Prowlarr'));
+    expect(
+      fetchImpl.mock.calls.find(([, opts]) => opts?.method === 'DELETE')
+    ).toBeFalsy();
+    await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
+
+    // Confirm in the dialog fires the v3 numeric DELETE.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove indexer' }));
+    await waitFor(() => {
+      const del = fetchImpl.mock.calls.find(
+        ([url, opts]) => String(url).endsWith('/api/v3/indexer/7') && opts?.method === 'DELETE'
+      );
+      expect(del).toBeTruthy();
+    });
   });
 
   it('POSTs a new config on save', async () => {

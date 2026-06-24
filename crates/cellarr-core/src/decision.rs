@@ -13,7 +13,7 @@ use crate::media::ContentRef;
 use crate::release::{Release, ReleaseType};
 
 /// The total custom-format score plus the quality rank that produced it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Score {
     /// Quality position in the profile order; higher is better.
     pub quality_rank: u32,

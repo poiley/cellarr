@@ -18,6 +18,7 @@ vi.mock('@lib/api/client', async () => {
 });
 
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
   useSearchParams: () => searchParams,
 }));
 
@@ -122,9 +123,19 @@ describe('Decision-log screen', () => {
     });
   });
 
-  it('loads a run typed into the input', async () => {
+  it('demotes the manual run-id field behind an Advanced disclosure', async () => {
+    // With no run in the URL the Advanced disclosure starts collapsed, so the
+    // raw run-id input is not in the DOM until the user opens it.
+    const { container } = renderPage();
+    expect(container.querySelector('input[name="run"]')).toBeNull();
+    expect(screen.getByText(/Advanced — load a run by id/i)).toBeTruthy();
+  });
+
+  it('loads a run typed into the input after opening the disclosure', async () => {
     getDecisionLog.mockResolvedValue([GRAB_RECORD]);
     const { container } = renderPage();
+    // Open the Advanced disclosure to reveal the manual run-id field.
+    fireEvent.click(screen.getByText(/Advanced — load a run by id/i));
     const input = container.querySelector('input[name="run"]') as HTMLInputElement;
     expect(input).toBeTruthy();
     fireEvent.change(input, { target: { value: 'typed-run' } });
@@ -133,6 +144,14 @@ describe('Decision-log screen', () => {
     await waitFor(() => {
       expect(getDecisionLog).toHaveBeenCalledWith('typed-run', expect.anything());
     });
+  });
+
+  it('opens the disclosure by default when a run is in the URL', async () => {
+    getDecisionLog.mockResolvedValue([GRAB_RECORD]);
+    searchParams = new URLSearchParams('run=run-abc');
+    const { container } = renderPage();
+    // Deep-linked runs keep the field visible so the id can be edited.
+    expect((container.querySelector('input[name="run"]') as HTMLInputElement)?.value).toBe('run-abc');
   });
 
   it('shows the empty state when a run has no records', async () => {

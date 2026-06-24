@@ -157,48 +157,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     /// UI/WS subscribe to. The runner already wrote the authoritative decision
     /// log + history; this surfaces the same transition onto the push bus.
     fn publish_outcome(&self, content: &ContentRef, outcome: &RunOutcome) {
-        match outcome {
-            RunOutcome::Imported {
-                grab_id,
-                destinations,
-            } => {
-                self.events.publish(DomainEvent::QueueProgress {
-                    grab_id: grab_id.to_string(),
-                    status: "imported".to_string(),
-                    progress: Some(1.0),
-                });
-                for path in destinations {
-                    self.events.publish(DomainEvent::ImportCompleted {
-                        content_id: content.id.to_string(),
-                        path: path.clone(),
-                    });
-                }
-            }
-            RunOutcome::Rejected { reason } => {
-                self.events.publish(DomainEvent::DecisionLogged {
-                    run_id: content.id.to_string(),
-                    note: format!("rejected: {reason}"),
-                });
-            }
-            RunOutcome::Failed { detail } => {
-                self.events.publish(DomainEvent::DecisionLogged {
-                    run_id: content.id.to_string(),
-                    note: format!("grab failed: {detail}"),
-                });
-            }
-            RunOutcome::HeldForReview { reason } => {
-                self.events.publish(DomainEvent::DecisionLogged {
-                    run_id: content.id.to_string(),
-                    note: format!("held for review: {reason}"),
-                });
-            }
-            RunOutcome::NothingFound => {
-                self.events.publish(DomainEvent::DecisionLogged {
-                    run_id: content.id.to_string(),
-                    note: "no releases found".to_string(),
-                });
-            }
-        }
+        publish_outcome(&self.events, content, outcome);
     }
 
     /// Drive every monitored-missing node (bounded) through the runner. Used by
@@ -218,6 +177,56 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             }
         }
         JobResult::Success
+    }
+}
+
+/// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the UI/WS
+/// subscribe to, onto `events`. Shared by the automatic pipeline handler and the
+/// interactive grab seam so a manual grab surfaces the same progress an automatic
+/// acquisition does. The runner already wrote the authoritative decision log +
+/// history; this only mirrors the transition onto the push bus.
+fn publish_outcome(events: &EventBus, content: &ContentRef, outcome: &RunOutcome) {
+    match outcome {
+        RunOutcome::Imported {
+            grab_id,
+            destinations,
+        } => {
+            events.publish(DomainEvent::QueueProgress {
+                grab_id: grab_id.to_string(),
+                status: "imported".to_string(),
+                progress: Some(1.0),
+            });
+            for path in destinations {
+                events.publish(DomainEvent::ImportCompleted {
+                    content_id: content.id.to_string(),
+                    path: path.clone(),
+                });
+            }
+        }
+        RunOutcome::Rejected { reason } => {
+            events.publish(DomainEvent::DecisionLogged {
+                run_id: content.id.to_string(),
+                note: format!("rejected: {reason}"),
+            });
+        }
+        RunOutcome::Failed { detail } => {
+            events.publish(DomainEvent::DecisionLogged {
+                run_id: content.id.to_string(),
+                note: format!("grab failed: {detail}"),
+            });
+        }
+        RunOutcome::HeldForReview { reason } => {
+            events.publish(DomainEvent::DecisionLogged {
+                run_id: content.id.to_string(),
+                note: format!("held for review: {reason}"),
+            });
+        }
+        RunOutcome::NothingFound => {
+            events.publish(DomainEvent::DecisionLogged {
+                run_id: content.id.to_string(),
+                note: "no releases found".to_string(),
+            });
+        }
     }
 }
 
@@ -564,6 +573,108 @@ impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
             .await
             .map_err(|e| format!("interactive release search failed: {e}"))?;
         Ok(ReleaseSearchOutcome::Found(candidates))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The interactive grab seam (POST /api/v3/release).
+// ---------------------------------------------------------------------------
+
+/// The daemon's [`ReleaseGrab`](cellarr_api::release_search::ReleaseGrab)
+/// implementation: grabs the release a user picked from the interactive-search
+/// screen and drives it through the real [`PipelineRunner`] Grab→Track→Import.
+///
+/// Unlike [`LiveReleaseSearch`] (which never builds a download client), a grab
+/// **does** build the configured client — that is the whole point of the action.
+/// It resolves the full live env via [`LivePipelineEnv::resolve`] (indexer +
+/// download client + per-node config) and calls
+/// [`PipelineRunner::grab_release`](cellarr_jobs::PipelineRunner::grab_release)
+/// with the chosen guid. A node with no environment ready (no enabled download
+/// client / library root / quality profile) is reported as
+/// [`Unavailable`](cellarr_api::release_search::ReleaseGrabOutcome::Unavailable) —
+/// a benign message, not an error. The matching domain events are published onto
+/// the shared bus so the UI/WS observe the grab the same way an automatic one is
+/// observed.
+pub struct LiveReleaseGrab {
+    db: Database,
+    registry: Arc<MediaRegistry>,
+    events: EventBus,
+    env: LivePipelineEnv,
+    clock: SystemClock,
+}
+
+impl LiveReleaseGrab {
+    /// Build the interactive-grab seam over the persistence handle + shared media
+    /// registry + the shared event bus. It owns its own [`LivePipelineEnv`] so a
+    /// grab resolves the live client/config freshly per call (CRUD writes take
+    /// effect with no restart).
+    #[must_use]
+    pub fn new(db: Database, registry: Arc<MediaRegistry>, events: EventBus) -> Self {
+        let env = LivePipelineEnv::new(db.clone());
+        Self {
+            db,
+            registry,
+            events,
+            env,
+            clock: SystemClock,
+        }
+    }
+}
+
+#[async_trait]
+impl cellarr_api::release_search::ReleaseGrab for LiveReleaseGrab {
+    async fn grab(
+        &self,
+        content: cellarr_core::ContentId,
+        guid: &str,
+    ) -> Result<cellarr_api::release_search::ReleaseGrabOutcome, String> {
+        use cellarr_api::release_search::ReleaseGrabOutcome;
+
+        let node = self
+            .db
+            .content()
+            .get(content)
+            .await
+            .map_err(|e| format!("loading content {content} failed: {e}"))?;
+        let Some(node) = node else {
+            return Err(format!("content {content} not found"));
+        };
+
+        // A grab builds the real download client (unlike a search). No enabled
+        // client / library root / profile -> not ready: a benign message.
+        let Some((indexer, client, config)) = self.env.resolve(&node).await? else {
+            return Ok(ReleaseGrabOutcome::Unavailable(
+                "no enabled download client / library root configured to grab with yet".into(),
+            ));
+        };
+
+        let runner = PipelineRunner::new(
+            &indexer,
+            &client,
+            &self.registry,
+            &self.db,
+            &self.clock,
+            &config,
+        );
+        let outcome = runner
+            .grab_release(&node, guid)
+            .await
+            .map_err(|e| format!("interactive grab failed: {e}"))?;
+
+        // Surface the same domain events an automatic run publishes, then map the
+        // terminal outcome to the FE-facing grab result.
+        publish_outcome(&self.events, &node, &outcome);
+        let imported = matches!(outcome, RunOutcome::Imported { .. });
+        let detail = match &outcome {
+            RunOutcome::Imported { destinations, .. } => {
+                format!("grabbed and imported ({} file(s))", destinations.len())
+            }
+            RunOutcome::Rejected { reason } => format!("not grabbed: {reason}"),
+            RunOutcome::Failed { detail } => format!("grab failed: {detail}"),
+            RunOutcome::HeldForReview { reason } => format!("held for review: {reason}"),
+            RunOutcome::NothingFound => "release is no longer offered by the indexers".to_string(),
+        };
+        Ok(ReleaseGrabOutcome::Grabbed { imported, detail })
     }
 }
 
