@@ -44,6 +44,7 @@ interface NavTarget {
 const NAV: NavTarget[] = [
   { href: '/', label: 'Dashboard' },
   { href: '/library/', label: 'Library' },
+  { href: '/calendar/', label: 'Calendar' },
   { href: '/add/', label: 'Add content' },
   { href: '/activity/', label: 'Activity' },
   { href: '/history/', label: 'History' },

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   activeDownloads,
   downloadProgress,
+  hasRealAddedDate,
   healthSummary,
   historyEventV3Label,
   notableHealth,
@@ -185,6 +186,36 @@ describe('recentlyAdded', () => {
     ];
     const out = recentlyAdded(movies, [], 2);
     expect(out.map((r) => r.id)).toEqual(['c', 'b']);
+  });
+
+  it('treats the year-0001 MinValue sentinel as no added date (no epoch artifact)', () => {
+    // The v3 shim serializes an item with no recorded add time as this sentinel,
+    // which rendered naively yields the '12/31/1' artifact. The row must surface
+    // with an EMPTY added so the page omits the timestamp rather than print it.
+    const movies = [
+      movie({ id: 'sentinel', monitored: true, added: '0001-01-01T00:00:00Z' }),
+      movie({ id: 'real', monitored: true, added: '2026-06-01T00:00:00Z' }),
+    ];
+    const out = recentlyAdded(movies, [], 5);
+    const sentinel = out.find((r) => r.id === 'sentinel');
+    const real = out.find((r) => r.id === 'real');
+    expect(sentinel?.added).toBe('');
+    expect(real?.added).toBe('2026-06-01T00:00:00Z');
+    // The real-dated item sorts ahead of the sentinel one.
+    expect(out.map((r) => r.id)).toEqual(['real', 'sentinel']);
+  });
+});
+
+describe('hasRealAddedDate', () => {
+  it('rejects empty, sentinel, and unparseable values', () => {
+    expect(hasRealAddedDate(undefined)).toBe(false);
+    expect(hasRealAddedDate('')).toBe(false);
+    expect(hasRealAddedDate('0001-01-01T00:00:00Z')).toBe(false);
+    expect(hasRealAddedDate('not-a-date')).toBe(false);
+  });
+
+  it('accepts a genuine recent timestamp', () => {
+    expect(hasRealAddedDate('2026-06-01T00:00:00Z')).toBe(true);
   });
 });
 

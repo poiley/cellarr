@@ -142,9 +142,31 @@ export interface RecentItem {
   hasFile: boolean;
 }
 
-/** Parse an `added` ISO timestamp to epoch ms, or 0 when absent/invalid. */
+/**
+ * Whether an ISO timestamp is a usable, real "added" date.
+ *
+ * The v3 shim serializes a node with no recorded add time as the .NET/Radarr
+ * sentinel `0001-01-01T00:00:00Z` (`MinValue`). Rendered naively that produces
+ * the epoch artifact `12/31/1` in the UI. Treat the year-0001 sentinel (and any
+ * absent/unparseable value) as "no date" so callers can omit it rather than
+ * print garbage. A genuine timestamp is anything that parses and isn't the
+ * sentinel.
+ */
+export function hasRealAddedDate(added: string | undefined): boolean {
+  if (!added) return false;
+  // The sentinel is exactly the year-0001 MinValue; match on the leading year so
+  // any zone/format variant of it is caught too.
+  if (added.startsWith('0001-01-01')) return false;
+  const t = Date.parse(added);
+  if (Number.isNaN(t)) return false;
+  // Anything at/below the year-0001 boundary is the sentinel territory; a real
+  // library add is always far later. Guard with a generous floor (year 1900).
+  return t > Date.parse('1900-01-01T00:00:00Z');
+}
+
+/** Parse an `added` ISO timestamp to epoch ms, or 0 when absent/sentinel/invalid. */
 function addedTime(added: string): number {
-  if (!added) return 0;
+  if (!hasRealAddedDate(added)) return 0;
   const t = Date.parse(added);
   return Number.isNaN(t) ? 0 : t;
 }
@@ -160,6 +182,11 @@ export function recentlyAdded(
   series: Series[],
   limit = 6
 ): RecentItem[] {
+  // Normalize the `added` field to a real date or the empty string, so the page
+  // can render the timestamp only when it is genuine (never the year-0001
+  // sentinel that would otherwise print as the `12/31/1` epoch artifact).
+  const realAdded = (added: string | undefined) =>
+    hasRealAddedDate(added) ? (added as string) : '';
   const rows: RecentItem[] = [];
   for (const m of movies) {
     if (!m.monitored) continue;
@@ -167,7 +194,7 @@ export function recentlyAdded(
       id: m.id,
       title: m.year ? `${m.title} (${m.year})` : m.title,
       kind: 'movie',
-      added: m.added ?? '',
+      added: realAdded(m.added),
       monitored: m.monitored,
       hasFile: m.hasFile,
     });
@@ -176,9 +203,9 @@ export function recentlyAdded(
     if (!s.monitored) continue;
     rows.push({
       id: s.id,
-      title: s.title,
+      title: s.year ? `${s.title} (${s.year})` : s.title,
       kind: 'series',
-      added: s.added ?? '',
+      added: realAdded(s.added),
       monitored: s.monitored,
       hasFile: s.hasFile,
     });

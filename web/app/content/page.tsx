@@ -43,6 +43,7 @@ import {
 import {
   detailKindFor,
   getDetail,
+  mediaCoverUrl,
   setMonitored,
   toDetailView,
   type DetailView,
@@ -132,6 +133,75 @@ function statusLabel(detail: DetailView | undefined, loose: Loose | undefined): 
   return monitoredLabel(loose ?? {});
 }
 
+/** Format a v3 runtime (minutes) as `Nh Mm` / `Mm`, or undefined when unknown. */
+function formatRuntime(minutes: number | undefined): string | undefined {
+  if (minutes === undefined || minutes <= 0) return undefined;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
+/**
+ * The item poster (#20): an `<img>` pointed at the cached-artwork endpoint
+ * (`GET /api/v3/mediacover/{id}/poster`), which 404s when no artwork is cached.
+ * Rather than show a broken-image glyph, we track the load state and swap in an
+ * ASCII placeholder card (the terminal/OLED aesthetic) on error or while there is
+ * no id. The frame keeps a 2:3 poster aspect so the layout doesn't jump.
+ */
+function Poster({ id, title }: { id: string; title: string }) {
+  // 'loading' until the image resolves; 'error' when the endpoint 404s / fails.
+  const [state, setState] = React.useState<'loading' | 'ok' | 'error'>('loading');
+  // Reset when the id changes so a re-navigation re-attempts the fetch.
+  React.useEffect(() => setState('loading'), [id]);
+
+  const frame: React.CSSProperties = {
+    width: '20ch',
+    aspectRatio: '2 / 3',
+    flex: '0 0 auto',
+    border: '1px solid var(--theme-border, var(--theme-text))',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    background: 'var(--theme-background)',
+  };
+
+  if (state === 'error') {
+    return (
+      <div style={frame} aria-label={`No poster for ${title}`} role="img">
+        <div style={{ textAlign: 'center', padding: '1ch' }}>
+          <Text style={{ fontSize: '3ch', opacity: 0.5 }} aria-hidden="true">
+            ▦
+          </Text>
+          <Text style={{ opacity: 0.5 }}>No poster</Text>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={frame}>
+      {/* Real artwork: an <img> is allowed for media (the SRCL-only lint governs
+          component imports, not media tags). Hidden until it actually loads so a
+          half-loaded/404 frame never flashes; onError swaps in the placeholder. */}
+      <img
+        src={mediaCoverUrl('poster', id)}
+        alt={`${title} poster`}
+        onLoad={() => setState('ok')}
+        onError={() => setState('error')}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: state === 'ok' ? 'block' : 'none',
+        }}
+      />
+      {state === 'loading' ? <Text style={{ opacity: 0.5 }}>Loading…</Text> : null}
+    </div>
+  );
+}
+
 /** One labelled metadata row (`Label  value`) in the detail block. */
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -151,6 +221,7 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
 function MetadataBlock({
   detail,
   year,
+  runtime,
   overview,
   profileName,
   monitored,
@@ -159,6 +230,7 @@ function MetadataBlock({
 }: {
   detail: DetailView | undefined;
   year: number | undefined;
+  runtime: string | undefined;
   overview: string | undefined;
   profileName: string | undefined;
   monitored: boolean;
@@ -169,6 +241,7 @@ function MetadataBlock({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
       {year !== undefined ? <MetaRow label="Year" value={year} /> : null}
+      {runtime ? <MetaRow label="Runtime" value={runtime} /> : null}
       <MetaRow
         label="Quality profile"
         value={profileName ?? (detail?.qualityProfileId ? '—' : 'Unassigned')}
@@ -431,6 +504,7 @@ function ItemDetail() {
   // crates/cellarr-api/src/native.rs TODO), so they simply don't render until
   // the identify pipeline persists per-item metadata.
   const year = detail?.year && detail.year > 0 ? detail.year : undefined;
+  const runtime = formatRuntime(detail?.runtime);
   const overview = detail?.overview;
   const isMonitored = detail?.monitored ?? (loose ?? {}).monitored === true;
 
@@ -456,16 +530,24 @@ function ItemDetail() {
 
             <Divider type="GRADIENT" />
 
-            {/* Metadata block (#20): the rich detail surfaced above Files. */}
-            <MetadataBlock
-              detail={detail}
-              year={year}
-              overview={overview}
-              profileName={profileName}
-              monitored={isMonitored}
-              toggling={toggling}
-              onToggleMonitored={toggleMonitored}
-            />
+            {/* Metadata block (#20): the cached poster beside the rich detail.
+                The two stack on a narrow viewport (flex-wrap) and sit side by
+                side otherwise; the metadata column flexes to fill the rest. */}
+            <Row style={{ gap: '2ch', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <Poster id={id} title={title} />
+              <div style={{ flex: '1 1 32ch', minWidth: '28ch' }}>
+                <MetadataBlock
+                  detail={detail}
+                  year={year}
+                  runtime={runtime}
+                  overview={overview}
+                  profileName={profileName}
+                  monitored={isMonitored}
+                  toggling={toggling}
+                  onToggleMonitored={toggleMonitored}
+                />
+              </div>
+            </Row>
 
             <Divider type="GRADIENT" />
 

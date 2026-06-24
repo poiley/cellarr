@@ -330,6 +330,62 @@ describe('Item-detail screen', () => {
     });
   });
 
+  it('renders the poster from the mediacover endpoint and shows year + runtime (#20)', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // A detail resource now carrying real year/overview/runtime.
+    requestV3.mockResolvedValue({
+      id: 'c-series',
+      title: 'Breaking Bad',
+      monitored: true,
+      qualityProfileId: 'qp-1',
+      sizeOnDisk: 1_500_000_000,
+      hasFile: true,
+      status: 'continuing',
+      overview: 'A high-school chemistry teacher turned methamphetamine producer.',
+      year: 2008,
+      runtime: 47,
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      // The poster <img> points at the cached-artwork endpoint for this id.
+      const img = screen.getByAltText('Breaking Bad poster') as HTMLImageElement;
+      expect(img.getAttribute('src')).toContain('/api/v3/mediacover/c-series/poster');
+    });
+    // Year + runtime + overview surface in the metadata block.
+    expect(screen.getByText('Year')).toBeTruthy();
+    expect(screen.getByText('2008')).toBeTruthy();
+    expect(screen.getByText('Runtime')).toBeTruthy();
+    expect(screen.getByText('47m')).toBeTruthy();
+    expect(
+      screen.getByText(/high-school chemistry teacher turned methamphetamine producer/i)
+    ).toBeTruthy();
+  });
+
+  it('falls back to an ASCII placeholder when the poster 404s', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+
+    renderPage();
+
+    let img: HTMLImageElement | null = null;
+    await waitFor(() => {
+      img = screen.getByAltText('Breaking Bad poster') as HTMLImageElement;
+      expect(img).toBeTruthy();
+    });
+    // Simulate the endpoint 404 — the screen swaps in the placeholder card.
+    fireEvent.error(img!);
+    await waitFor(() => {
+      expect(screen.getByText(/No poster/i)).toBeTruthy();
+    });
+  });
+
   it('surfaces an error when the item fails to load', async () => {
     const { ApiError } = await import('@lib/api/client');
     searchParams = new URLSearchParams('id=missing');

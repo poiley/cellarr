@@ -29,6 +29,7 @@ interface NavEntry {
 const NAV: NavEntry[] = [
   { href: '/', label: 'Dashboard' },
   { href: '/library', label: 'Library' },
+  { href: '/calendar', label: 'Calendar' },
   { href: '/activity', label: 'Activity' },
   { href: '/history', label: 'History' },
   { href: '/settings', label: 'Settings' },

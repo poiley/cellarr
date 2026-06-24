@@ -14,7 +14,7 @@ Music/books (Lidarr/Readarr) are a separate media-type axis and are **out of sco
 
 | Pack | Scope | Status |
 |------|-------|--------|
-| **1 — Metadata & artwork & calendar** | Persist year/overview/runtime + episode air dates on identify (closes the content-detail blanks); download/cache/serve artwork (MediaCover); `.nfo` export on import (Kodi/Jellyfin); real Calendar/Upcoming view | ⏳ in progress |
+| **1 — Metadata & artwork & calendar** | Persist year/overview/runtime + episode air dates on identify (closes the content-detail blanks); download/cache/serve artwork (MediaCover); `.nfo` export on import (Kodi/Jellyfin); real Calendar/Upcoming view | ✅ done |
 | **2 — Notifications & media-server** | Provider set (Discord/Telegram/Pushover/email/custom-script) + Plex/Jellyfin/Emby rescan-on-import; fire on grab/import/health; Settings>Notifications UI (replaces ComingSoon) | ☐ |
 | **3 — Library management** | Delete movie/series (+files) + recycle bin; manual import (scan→match→import loose files); per-season/episode monitoring options; wire bulk delete | ☐ |
 | **4 — Decision & quality depth** | Custom-format editor (author/edit specs); naming-config UI + token coverage + permissions + extra-file import; delay profiles | ☐ |

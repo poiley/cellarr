@@ -9,7 +9,7 @@
 // the catalogue identity (title/overview/size/profile). The v3 detail resource —
 // keyed by the SAME id the Library screen drills in with — does.
 
-import { api } from '@lib/api/client';
+import { api, resolveBaseUrl } from '@lib/api/client';
 import type { Movie, Series } from '@lib/api/types';
 
 /** Which v3 catalogue a node belongs to, inferred from its media type / kind. */
@@ -71,6 +71,8 @@ function num(v: unknown): number | undefined {
 export interface DetailView {
   title?: string;
   year?: number;
+  /** Runtime in minutes (v3 exposes it this way); 0/absent means unknown. */
+  runtime?: number;
   overview?: string;
   qualityProfileId?: string;
   sizeOnDisk?: number;
@@ -87,6 +89,7 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
   return {
     title: str(r.title),
     year: num(r.year),
+    runtime: num(r.runtime),
     overview: str(r.overview),
     qualityProfileId: str(r.qualityProfileId),
     sizeOnDisk: num(r.sizeOnDisk),
@@ -95,4 +98,16 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
     monitored: r.monitored === true,
     path: str(r.path),
   };
+}
+
+/**
+ * The cached-artwork URL for a node's poster/fanart, served by
+ * `GET /api/v3/mediacover/{contentId}/{kind}` (crates/cellarr-api/src/mediacover.rs).
+ * Returns a same-origin-or-base-prefixed URL the screen can drop straight into an
+ * `<img src>`; the endpoint 404s when no artwork is cached, which the screen
+ * handles by swapping in an ASCII placeholder on the image's error event.
+ */
+export function mediaCoverUrl(kind: 'poster' | 'fanart', id: string): string {
+  const base = resolveBaseUrl();
+  return `${base}/api/v3/mediacover/${encodeURIComponent(id)}/${kind}`;
 }

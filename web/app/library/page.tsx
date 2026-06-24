@@ -49,6 +49,7 @@ import {
   type SortKey,
   type SortState,
 } from '@app/library/format';
+import { mediaCoverUrl } from '@app/content/_lib/detail';
 
 const STATUS_OPTIONS = ['All', 'Monitored', 'Unmonitored'];
 
@@ -82,6 +83,45 @@ function searchCommandFor(item: LibraryItem): string {
 function searchIdFieldFor(item: LibraryItem): 'seriesId' | 'movieId' {
   return item.kind === 'series' ? 'seriesId' : 'movieId';
 }
+
+/**
+ * A small poster thumbnail for a library row, served by the cached-artwork
+ * endpoint (`GET /api/v3/mediacover/{id}/poster`). The endpoint 404s when no
+ * artwork is cached, so the thumb hides itself on error (an empty fixed-size
+ * frame keeps the column from jumping). An <img> is allowed for real media (the
+ * SRCL-only lint governs component imports, not media tags).
+ */
+const PosterThumb: React.FC<{ id: string; title: string }> = ({ id, title }) => {
+  const [ok, setOk] = React.useState<boolean>(false);
+  React.useEffect(() => setOk(false), [id]);
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        display: 'inline-block',
+        width: '3ch',
+        height: '4.5ch',
+        flex: '0 0 auto',
+        border: ok ? '1px solid var(--theme-border, var(--theme-text))' : 'none',
+        overflow: 'hidden',
+        verticalAlign: 'middle',
+      }}
+    >
+      <img
+        src={mediaCoverUrl('poster', id)}
+        alt={`${title} poster`}
+        onLoad={() => setOk(true)}
+        onError={() => setOk(false)}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: ok ? 'block' : 'none',
+        }}
+      />
+    </span>
+  );
+};
 
 /** Sortable header cell: an SRCL TableColumn with aria-sort + a click handler. */
 const SortHeader: React.FC<{
@@ -455,7 +495,10 @@ function LibraryBrowser() {
                           style={{ cursor: 'pointer' }}
                           title={`Open ${item.title}`}
                         >
-                          {item.title}
+                          <Row style={{ gap: '1ch', alignItems: 'center' }}>
+                            <PosterThumb id={item.id} title={item.title} />
+                            <span>{item.title}</span>
+                          </Row>
                         </TableColumn>
                         <TableColumn>{item.year ? String(item.year) : '—'}</TableColumn>
                         {showType ? <TableColumn>{item.kind}</TableColumn> : null}
