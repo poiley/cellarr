@@ -122,15 +122,22 @@ fn assert_request_matches(label: &str, expect: &Value, req: &HttpRequest) {
             );
         }
     }
-    if let Some(needle) = expect["body_contains"].as_str() {
-        let body = req.body.as_deref().unwrap_or("");
-        // Compare ignoring whitespace so JSON spacing differences don't matter.
-        let body_compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-        let needle_compact: String = needle.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(
-            body_compact.contains(&needle_compact),
-            "[{label}] body {body:?} does not contain {needle:?}"
-        );
+    for key in [
+        "body_contains",
+        "body_contains_2",
+        "body_contains_3",
+        "body_contains_4",
+    ] {
+        if let Some(needle) = expect[key].as_str() {
+            let body = req.body.as_deref().unwrap_or("");
+            // Compare ignoring whitespace so JSON spacing differences don't matter.
+            let body_compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            let needle_compact: String = needle.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                body_compact.contains(&needle_compact),
+                "[{label}] body {body:?} does not contain {needle:?}"
+            );
+        }
     }
     if let Some(obj) = expect["header_equals"].as_object() {
         for (name, want) in obj {

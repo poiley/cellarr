@@ -42,6 +42,7 @@ pub mod lifecycle;
 pub mod nzbget;
 pub mod qbittorrent;
 pub mod sabnzbd;
+pub mod transmission;
 
 pub use blackhole::{BlackholeClient, BlackholeSettings};
 pub use error::DownloadError;
@@ -50,6 +51,7 @@ pub use lifecycle::{DownloadProgress, RemovePolicy};
 pub use nzbget::{NzbgetClient, NzbgetSettings};
 pub use qbittorrent::{QbittorrentClient, QbittorrentSettings};
 pub use sabnzbd::{SabnzbdClient, SabnzbdSettings};
+pub use transmission::{TransmissionClient, TransmissionSettings};
 
 use async_trait::async_trait;
 use cellarr_core::{DownloadClient, DownloadStatus, GrabRequest};
@@ -79,6 +81,35 @@ impl DownloadClient for QbittorrentClient {
         // the richer `QbittorrentClient::remove(_, RemovePolicy)`. Here we honour
         // the caller's explicit delete intent immediately.
         QbittorrentClient::remove(self, download_id, RemovePolicy::immediate(delete_data)).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DownloadClient for TransmissionClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        TransmissionClient::name(self)
+    }
+
+    async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error> {
+        // The core trait has no paused flag; cellarr adds active so tracking
+        // observes real progress. The richer `TransmissionClient::add(_, paused)`
+        // is available for callers that want a paused add.
+        TransmissionClient::add(self, grab, false).await
+    }
+
+    async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        Ok(TransmissionClient::progress(self, download_id)
+            .await?
+            .to_core_status())
+    }
+
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        // The core trait's `remove` is unconditional; ratio/time-gated removal is
+        // the richer `TransmissionClient::remove(_, RemovePolicy)`.
+        TransmissionClient::remove(self, download_id, RemovePolicy::immediate(delete_data)).await?;
         Ok(())
     }
 }

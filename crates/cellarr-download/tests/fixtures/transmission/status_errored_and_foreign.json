@@ -1,0 +1,29 @@
+{
+  "scenario": "Transmission: errorString -> Failed; and a completed torrent under a foreign label is reported with its own category so callers scope cellarr out, with content_path = downloadDir/name",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "url_contains": "/transmission/rpc", "body_contains": "\"method\":\"torrent-get\"" },
+      "response": {
+        "status": 409,
+        "headers": { "x-transmission-session-id": "s2" },
+        "body": "409"
+      }
+    },
+    {
+      "expect": { "method": "POST", "header_equals": { "x-transmission-session-id": "s2" } },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"hashString\":\"erroredhash\",\"name\":\"Bad\",\"percentDone\":0.3,\"status\":4,\"downloadDir\":\"/downloads\",\"labels\":[\"cellarr-tv\"],\"uploadRatio\":0.0,\"secondsSeeding\":0,\"errorString\":\"tracker timed out\"}]}}"
+      }
+    },
+    {
+      "expect": { "method": "POST", "body_contains": "\"method\":\"torrent-get\"" },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"hashString\":\"foreignhash\",\"name\":\"thing\",\"percentDone\":1.0,\"status\":6,\"downloadDir\":\"/other\",\"labels\":[\"manual-stuff\"],\"uploadRatio\":3.0,\"secondsSeeding\":100000,\"errorString\":\"\"}]}}"
+      }
+    }
+  ]
+}

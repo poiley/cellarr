@@ -1249,6 +1249,7 @@ fn dc_implementation(kind: &str, protocol: cellarr_core::Protocol) -> &'static s
             cellarr_core::Protocol::Usenet => "UsenetBlackhole",
         },
         "qbittorrent" => "QBittorrent",
+        "transmission" => "Transmission",
         "sabnzbd" => "Sabnzbd",
         "nzbget" => "Nzbget",
         _ => "Blackhole",
@@ -1262,12 +1263,12 @@ async fn list_download_clients(State(fs): State<FaceState>) -> ApiResult<Json<Ve
 
 /// v3 `downloadclient/schema` — the implementation templates the ecosystem
 /// round-trips a pushed client through. cellarr advertises the *universal*
-/// blackhole pair (`TorrentBlackhole` / `UsenetBlackhole`) since it is the one
-/// adapter that works with any client a user runs; the API-driven clients are
-/// configured natively. Each template carries the `watchFolder` / `completedFolder`
-/// fields the blackhole needs, plus the `category` field the apps hard-deref.
+/// blackhole pair (`TorrentBlackhole` / `UsenetBlackhole`) since it works with any
+/// client a user runs, plus the natively-driven `Transmission` template (host /
+/// port / urlBase / username / password / category). Each template carries the
+/// `category` field the apps hard-deref.
 async fn download_client_schema() -> Json<Vec<Value>> {
-    let entry = |impl_name: &str, protocol: &str| {
+    let blackhole = |impl_name: &str, protocol: &str| {
         json!({
             "name": "",
             "implementation": impl_name,
@@ -1286,9 +1287,34 @@ async fn download_client_schema() -> Json<Vec<Value>> {
             "tags": [],
         })
     };
+    // The Transmission template mirrors the real Transmission download-client
+    // fields the ecosystem pushes (host/port/urlBase + optional Basic creds) plus
+    // the category field cellarr files torrents under.
+    let transmission = json!({
+        "name": "",
+        "implementation": "Transmission",
+        "implementationName": "Transmission",
+        "configContract": "TransmissionSettings",
+        "infoLink": "",
+        "protocol": "torrent",
+        "priority": 1,
+        "enable": true,
+        "fields": [
+            json!({ "order": 0, "name": "host", "label": "Host", "type": "textbox", "advanced": false, "value": "localhost" }),
+            json!({ "order": 1, "name": "port", "label": "Port", "type": "number", "advanced": false, "value": 9091 }),
+            json!({ "order": 2, "name": "urlBase", "label": "URL Base", "helpText": "Adds a prefix to the Transmission RPC path, e.g. /transmission for a reverse-proxy mount", "type": "textbox", "advanced": true }),
+            json!({ "order": 3, "name": "username", "label": "Username", "type": "textbox", "advanced": false }),
+            json!({ "order": 4, "name": "password", "label": "Password", "type": "password", "advanced": false, "privacy": "password" }),
+            json!({ "order": 5, "name": "downloadDir", "label": "Directory", "helpText": "Optional absolute download root; cellarr files torrents under <root>/<category>. Leave blank to use Transmission's own download dir (Transmission rejects a relative path)", "type": "textbox", "advanced": true }),
+            json!({ "order": 6, "name": "category", "label": "Category", "type": "textbox", "advanced": false }),
+        ],
+        "presets": [],
+        "tags": [],
+    });
     Json(vec![
-        entry("TorrentBlackhole", "torrent"),
-        entry("UsenetBlackhole", "usenet"),
+        blackhole("TorrentBlackhole", "torrent"),
+        blackhole("UsenetBlackhole", "usenet"),
+        transmission,
     ])
 }
 
@@ -1338,6 +1364,7 @@ fn download_client_from_body(
         Some(i) if i.eq_ignore_ascii_case("torrentblackhole") => "blackhole".to_string(),
         Some(i) if i.eq_ignore_ascii_case("usenetblackhole") => "blackhole".to_string(),
         Some(i) if i.eq_ignore_ascii_case("qbittorrent") => "qbittorrent".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("transmission") => "transmission".to_string(),
         Some(i) if i.eq_ignore_ascii_case("sabnzbd") => "sabnzbd".to_string(),
         Some(i) if i.eq_ignore_ascii_case("nzbget") => "nzbget".to_string(),
         Some(i) => i.to_ascii_lowercase(),

@@ -1,0 +1,84 @@
+{
+  "scenario": "Transmission: 409 session handshake on first add (magnet, paused, label + download-dir) -> torrent-get downloading -> torrent-get completed (content_path) -> ratio-gated torrent-remove",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "body_contains": "\"method\":\"torrent-add\""
+      },
+      "response": {
+        "status": 409,
+        "headers": { "x-transmission-session-id": "sess-abc-123" },
+        "body": "<h1>409: Conflict</h1>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "header_equals": { "x-transmission-session-id": "sess-abc-123" },
+        "body_contains": "\"filename\":\"magnet:?xt=urn:btih:deadbeefcafef00d&dn=Show.S01E01\"",
+        "body_contains_2": "\"labels\":[\"cellarr-tv\"]",
+        "body_contains_3": "\"paused\":true",
+        "body_contains_4": "\"download-dir\":\"/downloads/cellarr-tv\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrent-added\":{\"id\":7,\"name\":\"Show.S01E01\",\"hashString\":\"deadbeefcafef00d\"}}}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "header_equals": { "x-transmission-session-id": "sess-abc-123" },
+        "body_contains": "\"method\":\"torrent-get\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"id\":7,\"hashString\":\"deadbeefcafef00d\",\"name\":\"Show.S01E01\",\"percentDone\":0.4,\"status\":4,\"downloadDir\":\"/downloads/cellarr-tv\",\"labels\":[\"cellarr-tv\"],\"doneDate\":0,\"uploadRatio\":0.0,\"secondsSeeding\":0,\"errorString\":\"\"}]}}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "body_contains": "\"method\":\"torrent-get\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"id\":7,\"hashString\":\"deadbeefcafef00d\",\"name\":\"Show.S01E01\",\"percentDone\":1.0,\"status\":6,\"downloadDir\":\"/downloads/cellarr-tv\",\"labels\":[\"cellarr-tv\"],\"doneDate\":1700000000,\"uploadRatio\":1.5,\"secondsSeeding\":7200,\"errorString\":\"\"}]}}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "body_contains": "\"method\":\"torrent-get\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"id\":7,\"hashString\":\"deadbeefcafef00d\",\"name\":\"Show.S01E01\",\"percentDone\":1.0,\"status\":6,\"downloadDir\":\"/downloads/cellarr-tv\",\"labels\":[\"cellarr-tv\"],\"doneDate\":1700000000,\"uploadRatio\":2.5,\"secondsSeeding\":90000,\"errorString\":\"\"}]}}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/transmission/rpc",
+        "body_contains": "\"method\":\"torrent-remove\"",
+        "body_contains_2": "\"delete-local-data\":true",
+        "body_contains_3": "\"ids\":[\"deadbeefcafef00d\"]"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"success\",\"arguments\":{}}"
+      }
+    }
+  ]
+}

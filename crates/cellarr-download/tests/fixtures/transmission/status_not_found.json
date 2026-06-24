@@ -1,0 +1,13 @@
+{
+  "scenario": "Transmission: torrent-get returning an empty torrents array maps to NotFound",
+  "exchanges": [
+    {
+      "expect": { "method": "POST", "url_contains": "/transmission/rpc", "body_contains": "\"method\":\"torrent-get\"" },
+      "response": {
+        "status": 200,
+        "headers": { "x-transmission-session-id": "s3" },
+        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[]}}"
+      }
+    }
+  ]
+}

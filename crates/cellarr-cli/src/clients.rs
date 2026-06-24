@@ -19,7 +19,8 @@ use async_trait::async_trait;
 use cellarr_core::{DownloadClient, DownloadClientConfig, DownloadStatus, GrabRequest};
 use cellarr_download::{
     BlackholeClient, BlackholeSettings, DownloadError, NzbgetClient, NzbgetSettings,
-    QbittorrentClient, QbittorrentSettings, SabnzbdClient, SabnzbdSettings,
+    QbittorrentClient, QbittorrentSettings, SabnzbdClient, SabnzbdSettings, TransmissionClient,
+    TransmissionSettings,
 };
 
 /// A failure building a download client from its persisted configuration.
@@ -52,6 +53,8 @@ pub enum DownloadClientFactoryError {
 pub enum ConfiguredDownloadClient {
     /// qBittorrent (torrent, WebUI v2).
     Qbittorrent(QbittorrentClient),
+    /// Transmission (torrent, RPC).
+    Transmission(TransmissionClient),
     /// SABnzbd (Usenet).
     Sabnzbd(SabnzbdClient),
     /// NZBGet (Usenet, JSON-RPC).
@@ -82,6 +85,13 @@ impl ConfiguredDownloadClient {
                 let settings: QbittorrentSettings =
                     parse_settings(config).map_err(&misconfigured)?;
                 Ok(Self::Qbittorrent(QbittorrentClient::new(
+                    name, settings, category,
+                )))
+            }
+            "transmission" | "transmissionbt" => {
+                let settings: TransmissionSettings =
+                    parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Transmission(TransmissionClient::new(
                     name, settings, category,
                 )))
             }
@@ -128,6 +138,7 @@ impl DownloadClient for ConfiguredDownloadClient {
     fn name(&self) -> &str {
         match self {
             Self::Qbittorrent(c) => <QbittorrentClient as DownloadClient>::name(c),
+            Self::Transmission(c) => <TransmissionClient as DownloadClient>::name(c),
             Self::Sabnzbd(c) => <SabnzbdClient as DownloadClient>::name(c),
             Self::Nzbget(c) => <NzbgetClient as DownloadClient>::name(c),
             Self::Blackhole(c) => <BlackholeClient as DownloadClient>::name(c),
@@ -141,6 +152,7 @@ impl DownloadClient for ConfiguredDownloadClient {
         // (which projects the rich progress onto the core `DownloadStatus`).
         match self {
             Self::Qbittorrent(c) => DownloadClient::add(c, grab).await,
+            Self::Transmission(c) => DownloadClient::add(c, grab).await,
             Self::Sabnzbd(c) => DownloadClient::add(c, grab).await,
             Self::Nzbget(c) => DownloadClient::add(c, grab).await,
             Self::Blackhole(c) => DownloadClient::add(c, grab).await,
@@ -150,6 +162,7 @@ impl DownloadClient for ConfiguredDownloadClient {
     async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
         match self {
             Self::Qbittorrent(c) => DownloadClient::status(c, download_id).await,
+            Self::Transmission(c) => DownloadClient::status(c, download_id).await,
             Self::Sabnzbd(c) => DownloadClient::status(c, download_id).await,
             Self::Nzbget(c) => DownloadClient::status(c, download_id).await,
             Self::Blackhole(c) => DownloadClient::status(c, download_id).await,
@@ -159,6 +172,7 @@ impl DownloadClient for ConfiguredDownloadClient {
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
         match self {
             Self::Qbittorrent(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Transmission(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Sabnzbd(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Nzbget(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Blackhole(c) => DownloadClient::remove(c, download_id, delete_data).await,
@@ -194,6 +208,25 @@ mod tests {
         let built = ConfiguredDownloadClient::from_config(&c).expect("qbit builds");
         assert!(matches!(built, ConfiguredDownloadClient::Qbittorrent(_)));
         assert_eq!(DownloadClient::name(&built), "test-qbittorrent");
+    }
+
+    #[test]
+    fn builds_transmission_from_settings() {
+        let c = config(
+            "transmission",
+            json!({"host": "localhost", "port": 9091, "category": "cellarr-tv"}),
+        );
+        let built = ConfiguredDownloadClient::from_config(&c).expect("transmission builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Transmission(_)));
+        assert_eq!(DownloadClient::name(&built), "test-transmission");
+    }
+
+    #[test]
+    fn builds_transmission_from_base_url() {
+        // The simpler base_url shape (no host/port) is also accepted.
+        let c = config("transmission", json!({"base_url": "http://localhost:9091"}));
+        let built = ConfiguredDownloadClient::from_config(&c).expect("transmission builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Transmission(_)));
     }
 
     #[test]
