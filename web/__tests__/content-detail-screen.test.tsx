@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const getContent = vi.fn();
 const listContentFiles = vi.fn();
 const listContent = vi.fn();
+const listMovies = vi.fn();
+const listSeries = vi.fn();
 const runCommand = vi.fn();
+const push = vi.fn();
 let searchParams = new URLSearchParams();
 
 vi.mock('@lib/api/client', async () => {
@@ -15,13 +18,15 @@ vi.mock('@lib/api/client', async () => {
       getContent: (...a: unknown[]) => getContent(...a),
       listContentFiles: (...a: unknown[]) => listContentFiles(...a),
       listContent: (...a: unknown[]) => listContent(...a),
+      listMovies: (...a: unknown[]) => listMovies(...a),
+      listSeries: (...a: unknown[]) => listSeries(...a),
       runCommand: (...a: unknown[]) => runCommand(...a),
     },
   };
 });
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push }),
   useSearchParams: () => searchParams,
 }));
 
@@ -77,7 +82,13 @@ describe('Item-detail screen', () => {
     getContent.mockReset();
     listContentFiles.mockReset();
     listContent.mockReset();
+    listMovies.mockReset();
+    listSeries.mockReset();
     runCommand.mockReset();
+    push.mockReset();
+    // Default: empty catalogues unless a test overrides them.
+    listMovies.mockResolvedValue([]);
+    listSeries.mockResolvedValue([]);
   });
   afterEach(() => cleanup());
 
@@ -139,6 +150,47 @@ describe('Item-detail screen', () => {
     await waitFor(() => {
       expect(screen.getByText(/No files on disk yet/i)).toBeTruthy();
     });
+  });
+
+  it('resolves the title from the v3 catalogue when the node carries none', async () => {
+    // The real /api/v1/content/{id} node has no title — only a title_id.
+    const NODE = { id: 'cdb67951', library_id: 'lib-movies', media_type: 'movie', kind: 'movie', monitored: true, coords: { type: 'movie' }, title_id: 'tid-1' };
+    searchParams = new URLSearchParams('id=cdb67951');
+    getContent.mockResolvedValue(NODE);
+    listContent.mockResolvedValue([]);
+    listContentFiles.mockResolvedValue([]);
+    listMovies.mockResolvedValue([{ id: 'cdb67951', title: 'Synthetic Movie Two' }]);
+    listSeries.mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Synthetic Movie Two').length).toBeGreaterThan(0);
+      // The raw #shortid fallback must NOT be shown.
+      expect(screen.queryByText('#cdb6795')).toBeNull();
+    });
+  });
+
+  it('navigates to interactive search and history with the content id', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^⌘H\s*History$/ })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Search/ }));
+    expect(push).toHaveBeenCalledWith(expect.stringContaining('/interactive?id=c-series'));
+    expect(push).toHaveBeenCalledWith(expect.stringContaining('content=c-series'));
+
+    push.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /^⌘H\s*History$/ }));
+    expect(push).toHaveBeenCalledWith('/history?id=c-series');
   });
 
   it('surfaces an error when the item fails to load', async () => {

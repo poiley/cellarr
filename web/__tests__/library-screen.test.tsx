@@ -122,6 +122,35 @@ describe('Library browse screen', () => {
     });
   });
 
+  it('auto-selects the first library and renders its items on load (no lib param)', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    // No `lib` search param — the screen should still show content immediately
+    // by defaulting to the first library, instead of only library names.
+    renderPage();
+
+    await waitFor(() => expect(listMovies).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByText('Synthetic Movie One')).toBeTruthy();
+      expect(screen.getByText('Synthetic Movie Two')).toBeTruthy();
+    });
+    // The switcher remains usable: every library is still listed.
+    expect(screen.getByText(/TV — tv/)).toBeTruthy();
+  });
+
+  it('falls back to the first library when the requested lib id is unknown', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=does-not-exist');
+    renderPage();
+
+    // Stale/bad id → still renders the first library's items rather than nothing.
+    await waitFor(() => expect(listMovies).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByText('Synthetic Movie One')).toBeTruthy();
+    });
+  });
+
   it('renders the movies that belong to a movie library', async () => {
     listLibraries.mockResolvedValue(LIBS);
     listMovies.mockResolvedValue(MOVIES);

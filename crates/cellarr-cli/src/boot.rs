@@ -102,6 +102,15 @@ impl Daemon {
         let registry = std::sync::Arc::new(media);
         let handler_db = db.clone();
         let handler_registry = std::sync::Arc::clone(&registry);
+        // The interactive release-search seam (GET /api/v3/release) shares the
+        // same DB + media registry, driving the runner's read-only Discover→Decide
+        // preview (no grab).
+        let search_db = db.clone();
+        let search_registry = std::sync::Arc::clone(&registry);
+        let release_search = std::sync::Arc::new(crate::pipeline::LiveReleaseSearch::new(
+            search_db,
+            search_registry,
+        ));
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
             std::sync::Arc::new(crate::pipeline::LivePipelineHandler::new(
@@ -111,7 +120,8 @@ impl Daemon {
                 env,
             ))
         })
-        .with_metadata(metadata);
+        .with_metadata(metadata)
+        .with_release_search(release_search);
 
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;

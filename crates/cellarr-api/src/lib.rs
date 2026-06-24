@@ -25,6 +25,7 @@ pub mod fs_health;
 pub mod metadata;
 pub mod native;
 pub mod openapi;
+pub mod release_search;
 pub mod shim;
 pub mod state;
 pub mod stream;

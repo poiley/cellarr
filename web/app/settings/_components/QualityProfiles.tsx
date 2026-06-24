@@ -30,6 +30,12 @@ import ListItem from '@components/ListItem';
 import { ApiError, CellarrClient, api as defaultApi } from '@lib/api/client';
 import type { QualityProfile, QualityDefinition } from '@lib/api/types';
 
+import {
+  buildQualityNameMap,
+  resolveQualityName,
+  type QualityNameMap,
+} from '@app/_lib/quality';
+
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import {
   Loading,
@@ -56,36 +62,42 @@ interface ProfileForm {
 }
 
 // Flatten the v3 `items[]` ladder (each row carries a `quality` or is a group)
-// into the simple {id,name,allowed} list the form edits.
-function asQualities(items: QualityProfile['items']): QualityItem[] {
+// into the simple {id,name,allowed} list the form edits. Names are resolved
+// against the quality-definition map so the unhelpful "rank-N" placeholders the
+// profile carries become human names ("WEBDL-1080p", "Bluray-1080p", …).
+function asQualities(items: QualityProfile['items'], names: QualityNameMap): QualityItem[] {
   if (!Array.isArray(items)) return [];
   return items.map((item, i) => {
     const q = item.quality;
     const id = q ? String(q.id) : String(item.id ?? item.name ?? i);
-    const name = q?.name ?? item.name ?? `Quality ${i + 1}`;
-    return { id, name, allowed: item.allowed !== false };
+    const fallback = q?.name ?? item.name;
+    return { id, name: resolveQualityName(id, fallback, names), allowed: item.allowed !== false };
   });
 }
 
-function toForm(p: QualityProfile): ProfileForm {
+function toForm(p: QualityProfile, names: QualityNameMap): ProfileForm {
   return {
     id: p.id,
     name: typeof p.name === 'string' ? p.name : p.id,
     upgradesAllowed: p.upgradeAllowed !== false,
     cutoff: p.cutoff !== undefined && p.cutoff !== null ? String(p.cutoff) : '',
     minScore: typeof p.minFormatScore === 'number' ? p.minFormatScore : 0,
-    qualities: asQualities(p.items),
+    qualities: asQualities(p.items, names),
   };
 }
 
 // Build a blank form for a brand-new profile. When the quality definitions are
 // available, seed the ladder from them (all allowed) so the user can immediately
 // pick a cutoff; otherwise start empty.
-function blankForm(defs: QualityDefinition[] | undefined): ProfileForm {
+function blankForm(defs: QualityDefinition[] | undefined, names: QualityNameMap): ProfileForm {
   const qualities: QualityItem[] = Array.isArray(defs)
     ? defs
         .filter((d) => d && d.quality)
-        .map((d) => ({ id: String(d.quality.id), name: d.quality.name, allowed: true }))
+        .map((d) => ({
+          id: String(d.quality.id),
+          name: resolveQualityName(String(d.quality.id), d.quality.name, names),
+          allowed: true,
+        }))
     : [];
   return {
     id: '',
@@ -115,6 +127,11 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
   );
   const { data: defsData } = useAsync<QualityDefinition[]>(loadDefs);
 
+  // id -> human name lookup from the quality definitions. The profile payload's
+  // own `quality.name` is an unreliable "rank-N" placeholder, so the qualities
+  // list and cutoff selector resolve names through this map.
+  const nameMap = React.useMemo(() => buildQualityNameMap(defsData), [defsData]);
+
   const [selectedId, setSelectedId] = React.useState<string>('');
   const [creating, setCreating] = React.useState(false);
   const [form, setForm] = React.useState<ProfileForm | undefined>(undefined);
@@ -137,18 +154,18 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
   // Load the selected profile (or a blank one when creating) into the form.
   React.useEffect(() => {
     if (creating) {
-      setForm(blankForm(defsData));
+      setForm(blankForm(defsData, nameMap));
       setSaved(false);
       setSaveError(undefined);
       setConfirmDelete(false);
       return;
     }
     const found = profiles.find((p) => p.id === selectedId);
-    setForm(found ? toForm(found) : undefined);
+    setForm(found ? toForm(found, nameMap) : undefined);
     setSaved(false);
     setSaveError(undefined);
     setConfirmDelete(false);
-  }, [selectedId, data, creating, defsData]);
+  }, [selectedId, data, creating, defsData, nameMap]);
 
   if (loading) return <Loading label="Loading quality profiles" />;
   if (error) return <ErrorBanner error={error} />;

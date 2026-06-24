@@ -5,12 +5,12 @@ import { ThemeProvider } from '@lib/ThemeProvider';
 import { ModalProvider } from '@components/page/ModalContext';
 import { HotkeysProvider } from '@modules/hotkeys';
 
-const request = vi.fn();
+const requestV3 = vi.fn();
 vi.mock('@lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@lib/api/client')>('@lib/api/client');
   return {
     ...actual,
-    api: { request: (...args: unknown[]) => request(...args) },
+    api: { requestV3: (...args: unknown[]) => requestV3(...args) },
   };
 });
 
@@ -49,7 +49,7 @@ function renderPage() {
 
 describe('Interactive / manual-search screen', () => {
   beforeEach(() => {
-    request.mockReset();
+    requestV3.mockReset();
     searchValue = '';
     window.localStorage.clear();
     document.body.className = '';
@@ -65,9 +65,9 @@ describe('Interactive / manual-search screen', () => {
     expect(screen.getByText(/Enter a content id/i)).toBeTruthy();
   });
 
-  it('auto-searches when arriving with ?content= and shows quality + score badges', async () => {
-    searchValue = 'content=c1';
-    request.mockResolvedValue([
+  it('auto-searches when arriving with ?id= and shows quality + score badges', async () => {
+    searchValue = 'id=c1';
+    requestV3.mockResolvedValue([
       {
         guid: 'g1',
         title: 'Some.Movie.2024.Bluray-1080p',
@@ -82,7 +82,10 @@ describe('Interactive / manual-search screen', () => {
     renderPage();
 
     await waitFor(() =>
-      expect(request).toHaveBeenCalledWith('/releases', expect.objectContaining({ query: { content: 'c1' } }))
+      expect(requestV3).toHaveBeenCalledWith(
+        '/release',
+        expect.objectContaining({ query: { contentId: 'c1' } })
+      )
     );
     await waitFor(() => expect(screen.getByText('Bluray-1080p')).toBeTruthy());
     expect(screen.getByText('+120')).toBeTruthy();
@@ -90,9 +93,21 @@ describe('Interactive / manual-search screen', () => {
     expect(screen.getByText('42')).toBeTruthy();
   });
 
-  it('grabs a release through the command endpoint', async () => {
-    searchValue = 'content=c1';
-    request
+  it('still honours the legacy ?content= alias', async () => {
+    searchValue = 'content=legacy1';
+    requestV3.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/release',
+        expect.objectContaining({ query: { contentId: 'legacy1' } })
+      )
+    );
+  });
+
+  it('grabs a release through the release endpoint', async () => {
+    searchValue = 'id=c1';
+    requestV3
       .mockResolvedValueOnce([{ guid: 'g1', title: 'rel', quality: 'WEBDL-720p', cf_score: 0 }])
       .mockResolvedValueOnce({ accepted: true });
     renderPage();
@@ -109,21 +124,21 @@ describe('Interactive / manual-search screen', () => {
     fireEvent.click(grabButton);
 
     await waitFor(() =>
-      expect(request).toHaveBeenCalledWith('/releases/grab', expect.objectContaining({ method: 'POST' }))
+      expect(requestV3).toHaveBeenCalledWith('/release', expect.objectContaining({ method: 'POST' }))
     );
     await waitFor(() => expect(screen.getByText('grabbed')).toBeTruthy());
   });
 
   it('renders an empty state when no releases are found', async () => {
-    searchValue = 'content=c1';
-    request.mockResolvedValue([]);
+    searchValue = 'id=c1';
+    requestV3.mockResolvedValue([]);
     renderPage();
     await waitFor(() => expect(screen.getByText(/No candidate releases/i)).toBeTruthy());
   });
 
   it('renders an error banner when the release search fails', async () => {
-    searchValue = 'content=c1';
-    request.mockRejectedValue(new Error('nope'));
+    searchValue = 'id=c1';
+    requestV3.mockRejectedValue(new Error('nope'));
     renderPage();
     await waitFor(() => expect(screen.getByText(/Release search failed/i)).toBeTruthy());
   });

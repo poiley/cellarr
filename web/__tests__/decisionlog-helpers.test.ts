@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   asDecisionRecord,
+  asGlobalHistoryRow,
   asHistoryRecord,
   contentRefLabel,
   formatBytes,
   formatConfidence,
+  formatHistoryDate,
   formatSigned,
   formatTimestamp,
   historyEventLabel,
@@ -13,9 +15,11 @@ import {
   stageLabel,
   transitionKindLabel,
   transitionLabel,
+  v3EventLabel,
   verdictSummary,
 } from '@app/_lib/decisionlog';
 import type { Score, Transition } from '@app/_lib/decisionlog';
+import type { HistoryRecordV3 } from '@lib/api/types';
 
 describe('decision-log domain helpers', () => {
   it('formats signed custom-format scores', () => {
@@ -125,5 +129,51 @@ describe('decision-log domain helpers', () => {
     expect(typed.content_id).toBe('c1');
     expect(typed.run_id).toBe('run-9');
     expect(typed.event.event).toBe('grabbed');
+  });
+
+  it('narrows a v3 global-feed history row', () => {
+    // The shim serializes `date` as unix seconds (a number); the loose
+    // HistoryRecordV3 type still declares it `string`, so cast for the literal.
+    const row = asGlobalHistoryRow({
+      id: 'node-1',
+      eventType: 'grabbed',
+      date: 1_700_000_000,
+      sourceTitle: 'Blade Runner (1982)',
+      data: { runId: 'run-7', contentId: 'node-1' },
+    } as unknown as HistoryRecordV3);
+    expect(row.eventType).toBe('grabbed');
+    expect(row.sourceTitle).toBe('Blade Runner (1982)');
+    expect(row.contentId).toBe('node-1');
+    expect(row.runId).toBe('run-7');
+    expect(row.date).toBe(1_700_000_000);
+  });
+
+  it('reads alternate run/content key spellings in a v3 row', () => {
+    const row = asGlobalHistoryRow({
+      eventType: 'downloadFolderImported',
+      date: '1700000000',
+      run_id: 'run-snake',
+      content_id: 'node-snake',
+    });
+    expect(row.runId).toBe('run-snake');
+    expect(row.contentId).toBe('node-snake');
+    expect(row.date).toBe('1700000000');
+  });
+
+  it('labels v3 event types, humanizing unknown ones', () => {
+    expect(v3EventLabel('grabbed')).toBe('Grabbed');
+    expect(v3EventLabel('downloadFolderImported')).toBe('Imported');
+    expect(v3EventLabel('movieFileDeleted')).toBe('Deleted');
+    expect(v3EventLabel('someNewEvent')).toBe('Some New Event');
+    expect(v3EventLabel('snake_case_thing')).toBe('Snake case thing');
+  });
+
+  it('formats history dates from unix seconds and ISO alike', () => {
+    expect(formatHistoryDate('')).toBe('—');
+    expect(formatHistoryDate(0)).toBe('—');
+    expect(formatHistoryDate('not-a-date')).toBe('not-a-date');
+    // A real unix-seconds value and its string form resolve to the same instant.
+    expect(formatHistoryDate(1_700_000_000)).toBe(formatHistoryDate('1700000000'));
+    expect(formatHistoryDate('2024-01-02T03:04:05Z')).not.toBe('—');
   });
 });

@@ -25,7 +25,8 @@ import Dialog from '@components/Dialog';
 import ModalStack from '@components/ModalStack';
 import { useModals } from '@components/page/ModalContext';
 
-import { ApiError } from '@lib/api/client';
+import { api, ApiError } from '@lib/api/client';
+import type { Library, RootFolder } from '@lib/api/types';
 
 import AppShell from '@app/_components/AppShell';
 
@@ -43,6 +44,45 @@ export default function Page() {
   const [added, setAdded] = React.useState<Set<string>>(new Set());
 
   const abortRef = React.useRef<AbortController | null>(null);
+
+  // Libraries + root folders let the add POST target a real root for the chosen
+  // media type and inherit each library's default quality profile. Held in a ref
+  // so the (memoized) add handler always reads the latest values without being
+  // recreated — avoiding a stale closure when the data loads after first render.
+  const targetsRef = React.useRef<{ libraries: Library[]; rootFolders: RootFolder[] }>({
+    libraries: [],
+    rootFolders: [],
+  });
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const [libs, roots] = await Promise.all([
+          api.listLibraries(controller.signal),
+          api.listRootFolders(controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        targetsRef.current = { libraries: libs ?? [], rootFolders: roots ?? [] };
+      } catch {
+        // Non-fatal: the add still works against the first available root folder.
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
+  // Resolve the root folder + default quality profile for a chosen title's media
+  // type, preferring its library's configured root, falling back to any root.
+  const resolveTarget = React.useCallback((mediaType: string | undefined) => {
+    const { libraries, rootFolders } = targetsRef.current;
+    const lib = libraries.find((l) => l.media_type === mediaType) ?? libraries[0];
+    const libRoot = lib?.root_folders?.[0];
+    const rootPath = libRoot ?? rootFolders[0]?.path ?? '';
+    return {
+      root_folder_path: rootPath,
+      quality_profile_id: lib?.default_quality_profile,
+    };
+  }, []);
 
   const runSearch = React.useCallback(async (raw: string) => {
     const q = raw.trim();
@@ -106,29 +146,36 @@ export default function Page() {
     [modals]
   );
 
-  const doAdd = React.useCallback(async (result: LookupResult, key: string) => {
-    try {
-      await addContent({
-        // library_id is resolved server-side by media type in v1; the UI passes
-        // the chosen title's identity. (Library selection lives in a later iteration.)
-        library_id: result.media_type ? String(result.media_type) : '',
-        foreign_id: result.foreign_id,
-        title: result.title,
-        search_on_add: true,
-      });
-      setAdded((prev) => new Set(prev).add(key));
-    } catch (err) {
-      const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : 'Add failed.';
-      modals.open(Dialog, {
-        title: 'Could not add title',
-        children: <Text>{msg}</Text>,
-        onConfirm: () => modals.close(),
-        onCancel: () => modals.close(),
-      });
-    }
+  const doAdd = React.useCallback(
+    async (result: LookupResult, key: string) => {
+      const target = resolveTarget(result.media_type);
+      try {
+        await addContent({
+          media_type: result.media_type ?? 'movie',
+          title: result.title,
+          title_slug: result.title_slug,
+          year: result.year,
+          tmdb_id: result.tmdb_id,
+          tvdb_id: result.tvdb_id,
+          root_folder_path: target.root_folder_path,
+          quality_profile_id: target.quality_profile_id,
+          search_on_add: true,
+        });
+        setAdded((prev) => new Set(prev).add(key));
+      } catch (err) {
+        const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : 'Add failed.';
+        modals.open(Dialog, {
+          title: 'Could not add title',
+          children: <Text>{msg}</Text>,
+          onConfirm: () => modals.close(),
+          onCancel: () => modals.close(),
+        });
+      }
+    },
     // modals is stable from context.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    [resolveTarget]
+  );
 
   return (
     <AppShell>

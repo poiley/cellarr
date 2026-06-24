@@ -43,14 +43,17 @@ const PROFILE = {
   minUpgradeFormatScore: 1,
   language: { id: -2, name: 'Original' },
   formatItems: [],
+  // The profile carries the unhelpful "rank-N" placeholder names the seeded
+  // daemon serves; the editor must resolve these to human names via the
+  // quality definitions (id 20 -> WEBDL-1080p, id 21 -> Bluray-1080p).
   items: [
-    { allowed: true, items: [], quality: { id: 20, name: 'WEB-1080p', resolution: 0, source: 'unknown' } },
-    { allowed: true, items: [], quality: { id: 21, name: 'Bluray-1080p', resolution: 0, source: 'unknown' } },
+    { allowed: true, items: [], quality: { id: 20, name: 'rank-20', resolution: 0, source: 'unknown' } },
+    { allowed: true, items: [], quality: { id: 21, name: 'rank-21', resolution: 0, source: 'unknown' } },
   ],
 };
 
 const DEFINITIONS = [
-  { id: 1, title: 'WEB-1080p', weight: 1, minSize: 0, maxSize: null, preferredSize: null, quality: { id: 20, name: 'WEB-1080p', resolution: 0, source: 'unknown' } },
+  { id: 1, title: 'WEBDL-1080p', weight: 1, minSize: 0, maxSize: null, preferredSize: null, quality: { id: 20, name: 'WEBDL-1080p', resolution: 0, source: 'unknown' } },
   { id: 2, title: 'Bluray-1080p', weight: 2, minSize: 0, maxSize: null, preferredSize: null, quality: { id: 21, name: 'Bluray-1080p', resolution: 0, source: 'unknown' } },
 ];
 
@@ -97,7 +100,12 @@ describe('QualityProfiles (settings)', () => {
     expect(screen.getByRole('status').textContent).toMatch(/loading/i);
     await waitFor(() => expect(screen.getByLabelText('Profile name')).toBeTruthy());
     expect((screen.getByLabelText('Profile name') as HTMLInputElement).value).toBe('HD-1080p');
-    expect(screen.getByLabelText('Move WEB-1080p down')).toBeTruthy();
+    expect(screen.getByLabelText('Move WEBDL-1080p down')).toBeTruthy();
+    // The "rank-N" placeholder carried on the profile is resolved to the human
+    // name from the quality definitions — it must not leak into the UI.
+    expect(screen.queryByLabelText(/Move rank-20/)).toBeNull();
+    // Bluray-1080p appears in both the qualities list and the cutoff selector.
+    expect(screen.getAllByText('Bluray-1080p').length).toBeGreaterThan(0);
   });
 
   it('renders an error banner when the load fails', async () => {
@@ -140,15 +148,15 @@ describe('QualityProfiles (settings)', () => {
     const fetchImpl = makeRouter();
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
-    await waitFor(() => expect(screen.getByLabelText('Move WEB-1080p down')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Move WEBDL-1080p down')).toBeTruthy());
 
-    fireEvent.click(screen.getByLabelText('Move WEB-1080p down'));
+    fireEvent.click(screen.getByLabelText('Move WEBDL-1080p down'));
     fireEvent.click(screen.getByText('Save profile'));
 
     await waitFor(() => expect(findSaveCall(fetchImpl)).toBeTruthy());
     const body = JSON.parse((findSaveCall(fetchImpl)![1] as RequestInit).body as string);
     expect(body.items[0].quality.id).toBe(21); // Bluray-1080p moved up
-    expect(body.items[1].quality.id).toBe(20); // WEB-1080p moved down
+    expect(body.items[1].quality.id).toBe(20); // WEBDL-1080p moved down
   });
 
   it('creates a new profile via POST, seeding qualities from definitions', async () => {
@@ -164,7 +172,7 @@ describe('QualityProfiles (settings)', () => {
     );
     expect(screen.getByText('Create profile')).toBeTruthy();
     // The ladder is seeded from the quality definitions.
-    await waitFor(() => expect(screen.getByLabelText('Move WEB-1080p down')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Move WEBDL-1080p down')).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Fresh' } });
     fireEvent.click(screen.getByText('Create profile'));

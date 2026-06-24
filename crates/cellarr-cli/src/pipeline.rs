@@ -415,6 +415,91 @@ impl PipelineEnv for LivePipelineEnv {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The interactive release-search seam (GET /api/v3/release).
+// ---------------------------------------------------------------------------
+
+/// The daemon's [`ReleaseSearch`](cellarr_api::release_search::ReleaseSearch)
+/// implementation: drives the **read-only** Discover→Decide preview for one
+/// content node through the real [`PipelineRunner`], returning ranked candidates
+/// without grabbing.
+///
+/// It resolves the same live seams a pipeline run does (the DB-backed indexer set
+/// and per-node [`RunnerConfig`]) via a [`LivePipelineEnv`], so the score,
+/// quality, and reject reason the interactive-search screen shows match exactly
+/// what a real acquisition would compute. A node with no environment ready (no
+/// enabled indexer/client/library root) is reported as
+/// [`Unavailable`](cellarr_api::release_search::ReleaseSearchOutcome::Unavailable)
+/// — a benign empty result, not an error.
+///
+/// The download client the env resolves is **never driven** here: the preview
+/// stops before Grab, so no download is ever created by an interactive search.
+pub struct LiveReleaseSearch {
+    db: Database,
+    registry: Arc<MediaRegistry>,
+    env: LivePipelineEnv,
+    clock: SystemClock,
+}
+
+impl LiveReleaseSearch {
+    /// Build the interactive-search seam over the persistence handle + the shared
+    /// media registry. It owns its own [`LivePipelineEnv`] so a search resolves
+    /// indexers/config freshly per call (CRUD writes take effect with no restart).
+    #[must_use]
+    pub fn new(db: Database, registry: Arc<MediaRegistry>) -> Self {
+        let env = LivePipelineEnv::new(db.clone());
+        Self {
+            db,
+            registry,
+            env,
+            clock: SystemClock,
+        }
+    }
+}
+
+#[async_trait]
+impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
+    async fn search(
+        &self,
+        content: cellarr_core::ContentId,
+    ) -> Result<cellarr_api::release_search::ReleaseSearchOutcome, String> {
+        use cellarr_api::release_search::ReleaseSearchOutcome;
+
+        let node = self
+            .db
+            .content()
+            .get(content)
+            .await
+            .map_err(|e| format!("loading content {content} failed: {e}"))?;
+        let Some(node) = node else {
+            return Err(format!("content {content} not found"));
+        };
+
+        // Resolve the live indexer + config for this node. `None` means the env is
+        // not ready (no enabled client/indexer/library root) — an empty,
+        // clearly-flagged interactive result rather than an error.
+        let Some((indexer, client, config)) = self.env.resolve(&node).await? else {
+            return Ok(ReleaseSearchOutcome::Unavailable(
+                "no enabled indexer/download client/library root configured yet".into(),
+            ));
+        };
+
+        let runner = PipelineRunner::new(
+            &indexer,
+            &client,
+            &self.registry,
+            &self.db,
+            &self.clock,
+            &config,
+        );
+        let candidates = runner
+            .preview_releases(&node)
+            .await
+            .map_err(|e| format!("interactive release search failed: {e}"))?;
+        Ok(ReleaseSearchOutcome::Found(candidates))
+    }
+}
+
 /// The default rename format per media type — the `{Token}` shape cellarr-fs
 /// `render_name` interpolates against the media module's naming tokens. A
 /// deployment can later make this configurable per library; this is the safe

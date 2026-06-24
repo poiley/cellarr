@@ -67,7 +67,7 @@ async function loadLibraryItems(lib: Library, signal: AbortSignal): Promise<Libr
 function LibraryBrowser() {
   const router = useRouter();
   const params = useSearchParams();
-  const activeLib = params.get('lib') ?? undefined;
+  const requestedLib = params.get('lib') ?? undefined;
 
   const [libs, setLibs] = React.useState<LoadState<Library[]>>({ phase: 'loading' });
   const [content, setContent] = React.useState<LoadState<LibraryItem[]>>({ phase: 'idle' });
@@ -92,7 +92,16 @@ function LibraryBrowser() {
   }, []);
 
   const libraries = libs.phase === 'ready' ? libs.data : [];
-  const selectedLibrary = libraries.find((l) => l.id === activeLib);
+
+  // Auto-select the first library on load so items render immediately, while the
+  // URL stays the source of truth for an explicit pick. If the requested `lib`
+  // doesn't resolve (stale/bad id), we also fall back to the first one so the
+  // screen is never stuck showing only library names.
+  const explicitLibrary = requestedLib
+    ? libraries.find((l) => l.id === requestedLib)
+    : undefined;
+  const selectedLibrary = explicitLibrary ?? libraries[0];
+  const activeLib = selectedLibrary?.id;
 
   // Load the selected library's items whenever it changes (and once the library
   // list is available, so we know its media type + root folders).

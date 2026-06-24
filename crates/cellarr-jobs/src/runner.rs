@@ -165,6 +165,37 @@ pub enum RunOutcome {
     NothingFound,
 }
 
+/// One ranked candidate from an **interactive (manual) release search** — the
+/// read-only Discover→Parse→Identify→Decide preview that powers the
+/// `GET /api/v3/release` interactive-search screen.
+///
+/// Unlike a pipeline run, producing these performs **no grab**: every discovered
+/// release is parsed, identified, and scored, and the resulting verdict is
+/// reported so the UI can show what *would* be grabbed (and why each rejected
+/// release was rejected) and let the user grab one by hand. It mirrors the
+/// Sonarr/Radarr interactive-search row: identity + quality + score + the
+/// rejected/reason flags.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReleaseCandidate {
+    /// The candidate release as advertised by the indexer (carries the guid,
+    /// title, protocol, size, seeders the UI renders and a later grab uses).
+    pub release: Release,
+    /// The resolved quality (name + rank) the candidate was graded on, from
+    /// cellarr's quality catalogue. The Unknown sentinel (rank 0) is used for a
+    /// title the parser could not bucket.
+    pub quality: cellarr_core::Quality,
+    /// The total custom-format score the decision engine computed for the
+    /// candidate (0 when no custom formats match).
+    pub custom_format_score: i32,
+    /// Whether the candidate was rejected (not grabbable as-is). A non-rejected
+    /// candidate is one the pipeline would Grab or accept as an Upgrade.
+    pub rejected: bool,
+    /// A human-readable reason: why it was rejected, or — when accepted — the
+    /// grab/upgrade rationale. Always populated so the UI never shows a blank
+    /// row.
+    pub reason: String,
+}
+
 /// Everything the runner needs that is *not* a live integration seam: the
 /// decision inputs and the on-disk naming/target configuration.
 ///
@@ -394,6 +425,111 @@ where
         }
         let reason = last_reject.unwrap_or_else(|| "no acceptable release".into());
         Ok(RunOutcome::Rejected { reason })
+    }
+
+    /// Run the **read-only interactive search** for `content`: Discover→Parse→
+    /// Identify→Decide every release the configured indexers offer, returning the
+    /// scored candidates **without grabbing any of them**.
+    ///
+    /// This is the engine behind `GET /api/v3/release` (the interactive-search
+    /// screen). It reuses the exact same Discover, parse, identify, blocklist, and
+    /// Decide steps a real run takes — so the score, quality, and reject reason a
+    /// user sees match what the pipeline would actually do — but stops short of the
+    /// Grab stage and writes nothing to the decision log or history (a preview is
+    /// not a pipeline run).
+    ///
+    /// Candidates are returned ranked best-first: grabbable releases (Grab /
+    /// Upgrade) before rejected ones, each group ordered by quality rank then
+    /// custom-format score, descending — the order the interactive UI lists them
+    /// in. A release that does not confidently identify to `content` is dropped
+    /// (it is not a candidate for this node). An anime absolute that cannot be
+    /// resolved, or an identify error, is skipped rather than aborting the whole
+    /// search, so one un-placeable release never blanks the screen.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only for infrastructure failures (a Discover seam
+    /// error, or a repository read failure). Per-release domain outcomes —
+    /// reject, unmatched — are carried in the returned candidates, never errored.
+    pub async fn preview_releases(&self, content: &ContentRef) -> Result<Vec<ReleaseCandidate>> {
+        let releases = self.discover(content).await?;
+        let mut out: Vec<ReleaseCandidate> = Vec::new();
+
+        for release in &releases {
+            // Parse the advertised title (real cellarr-parse), then reconcile any
+            // anime absolute coordinate the same way a real run does. An
+            // unresolvable absolute (or identify failure) is skipped for the
+            // preview rather than held — the user is browsing candidates, not
+            // committing a placement.
+            let parsed = cellarr_parse::parse_title(&release.title);
+            let parsed = match self.remap_absolute_coords(content, parsed).await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let matches = match self.identify(content, &parsed).await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let Some(matched) = self.best_match(content, matches) else {
+                // Did not confidently identify to this node: not a candidate.
+                continue;
+            };
+
+            // The quality the candidate is graded on, from cellarr's catalogue.
+            let quality = cellarr_core::resolve_quality(&parsed, &self.config.ranking);
+
+            // A blocklisted release is reported as rejected (so the user sees it
+            // and why) but never grabbable.
+            if self.is_blocklisted(matched.content_ref.id, release).await? {
+                out.push(ReleaseCandidate {
+                    release: release.clone(),
+                    quality,
+                    custom_format_score: 0,
+                    rejected: true,
+                    reason: "release is blocklisted".to_string(),
+                });
+                continue;
+            }
+
+            // Decide (real cellarr-decide) against the current on-disk file, so
+            // the verdict and score match what a real run would compute.
+            let on_disk = self.on_disk_for(content).await?;
+            let decision = self.decide(&matched.content_ref, release, &parsed, on_disk)?;
+            let (rejected, cf_score, reason) = match &decision.verdict {
+                // A reject verdict carries no score (the engine stops scoring once
+                // it rejects), so a rejected row reports 0 — it would not be
+                // grabbed regardless of its custom-format score.
+                Verdict::Reject { reason } => (true, 0, reason_text(reason)),
+                Verdict::Grab { score } => (false, score.custom_format_score, "grab".to_string()),
+                Verdict::Upgrade { from, to, .. } => (
+                    false,
+                    to.custom_format_score,
+                    format!(
+                        "upgrade (rank {}->{}, score {}->{})",
+                        from.quality_rank,
+                        to.quality_rank,
+                        from.custom_format_score,
+                        to.custom_format_score
+                    ),
+                ),
+            };
+            out.push(ReleaseCandidate {
+                release: release.clone(),
+                quality,
+                custom_format_score: cf_score,
+                rejected,
+                reason,
+            });
+        }
+
+        // Rank best-first: grabbable before rejected, then by quality rank and
+        // custom-format score (both descending) — the interactive-search order.
+        out.sort_by(|a, b| {
+            a.rejected
+                .cmp(&b.rejected)
+                .then(b.quality.rank.cmp(&a.quality.rank))
+                .then(b.custom_format_score.cmp(&a.custom_format_score))
+        });
+        Ok(out)
     }
 
     /// Walk the discovered `releases` for the best **grabbable** candidate this

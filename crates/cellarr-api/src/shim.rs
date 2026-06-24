@@ -165,6 +165,7 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/movie", get(list_movies))
         .route("/movie/lookup", get(movie_lookup))
         .route("/series/lookup", get(series_lookup))
+        .route("/release", get(release_search))
         .route("/calendar", get(calendar))
         .route("/queue", get(queue))
         .route("/history", get(history))
@@ -2811,6 +2812,132 @@ async fn list_commands(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>
         })
         .collect();
     Ok(Json(out))
+}
+
+// --- release (interactive search) ------------------------------------------
+
+/// The `GET /api/v3/release` query: which content node to search for. The
+/// ecosystem (and cellarr's own UI) addresses the node by id; we accept the three
+/// spellings the *arr apps use interchangeably — `movieId` (Radarr), `seriesId`
+/// (Sonarr), and the cellarr-native `contentId` — all carrying the same cellarr
+/// [`ContentId`] uuid.
+#[derive(Debug, Deserialize)]
+struct ReleaseQuery {
+    #[serde(rename = "contentId")]
+    content_id: Option<String>,
+    #[serde(rename = "movieId")]
+    movie_id: Option<String>,
+    #[serde(rename = "seriesId")]
+    series_id: Option<String>,
+}
+
+/// v3 `GET /api/v3/release` — the **interactive (manual) release search**.
+///
+/// For the addressed content node, runs the read-only Discover→Parse→Identify→
+/// Decide preview (the real pipeline's [`preview_releases`] path) across the
+/// configured indexers and returns the **ranked candidates without grabbing any**
+/// of them — exactly what Sonarr/Radarr's interactive-search screen consumes.
+///
+/// The response mirrors the originals' release shape closely (`guid`, `title`,
+/// `indexerId`/`indexer`, `protocol`, `quality.quality.{id,name}`,
+/// `customFormatScore`, `size`, `seeders`, `rejected`, `rejections[]`) and adds
+/// the cellarr-native aliases the interactive-search FE reads (`cf_score`,
+/// `score_reason`, `rejection_reason`).
+///
+/// When no pipeline is wired (the offline/test default) or no environment is
+/// ready to run a search, this returns an **empty array** rather than erroring —
+/// the interactive screen degrades to "no releases" rather than breaking.
+///
+/// [`preview_releases`]: cellarr_jobs::PipelineRunner::preview_releases
+async fn release_search(
+    State(fs): State<FaceState>,
+    Query(q): Query<ReleaseQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let raw = q
+        .content_id
+        .or(q.movie_id)
+        .or(q.series_id)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "a contentId (or movieId/seriesId) query parameter is required".into(),
+            )
+        })?;
+    let content_id = cellarr_core::ContentId::from_uuid(
+        raw.parse::<uuid::Uuid>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid contentId: {raw}")))?,
+    );
+
+    // No pipeline wiring (offline/test): degrade to an empty list, never 500.
+    let Some(search) = fs.state.release_search.as_ref() else {
+        return Ok(Json(Vec::new()));
+    };
+    let outcome = search
+        .search(content_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("release search failed: {e}")))?;
+    let candidates = match outcome {
+        crate::release_search::ReleaseSearchOutcome::Found(c) => c,
+        // No indexer/client/library ready: an empty interactive list, not an error.
+        crate::release_search::ReleaseSearchOutcome::Unavailable(_) => return Ok(Json(Vec::new())),
+    };
+
+    // Map indexer ids -> display names once, so each row can carry the human
+    // indexer name the interactive screen shows.
+    let indexers = fs.state.db.config().list_indexers().await?;
+    let indexer_name = |id: cellarr_core::IndexerId| -> String {
+        indexers
+            .iter()
+            .find(|ix| ix.id == id)
+            .map(|ix| ix.name.clone())
+            .unwrap_or_default()
+    };
+
+    let rows: Vec<Value> = candidates
+        .into_iter()
+        .map(|c| v3_release(&c, &indexer_name, fs.face))
+        .collect();
+    Ok(Json(rows))
+}
+
+/// Render one [`ReleaseCandidate`] into the v3 interactive-search release row.
+fn v3_release(
+    c: &cellarr_jobs::ReleaseCandidate,
+    indexer_name: &dyn Fn(cellarr_core::IndexerId) -> String,
+    face: Face,
+) -> Value {
+    let quality_name = face_quality_name(&c.quality.name, face).into_owned();
+    // The reason field is reported under both the *arr-native `rejections[]`
+    // (only populated when rejected) and the cellarr alias `rejection_reason`;
+    // a non-rejected row carries its grab/upgrade rationale in `score_reason`.
+    let rejections: Vec<Value> = if c.rejected {
+        vec![json!(c.reason)]
+    } else {
+        Vec::new()
+    };
+    json!({
+        "guid": c.release.guid.clone().unwrap_or_else(|| c.release.download_url.clone()),
+        "title": c.release.title,
+        "indexerId": ix_numeric_id(c.release.indexer_id),
+        "indexer": indexer_name(c.release.indexer_id),
+        "protocol": protocol_str(c.release.protocol),
+        "quality": {
+            "quality": { "id": c.quality.rank, "name": quality_name },
+            "revision": { "version": 1, "real": 0, "isRepack": false },
+        },
+        "customFormatScore": c.custom_format_score,
+        // cellarr-native alias the interactive-search FE reads.
+        "cf_score": c.custom_format_score,
+        "size": c.release.size.unwrap_or(0),
+        "seeders": c.release.seeders,
+        "downloadUrl": c.release.download_url,
+        "rejected": c.rejected,
+        "rejections": rejections,
+        // cellarr-native aliases: the rejection reason when rejected, and the
+        // grab/upgrade/score rationale always (so the row is never blank).
+        "rejection_reason": if c.rejected { Some(c.reason.clone()) } else { None },
+        "score_reason": c.reason,
+    })
 }
 
 // --- calendar / queue / history / wanted -----------------------------------

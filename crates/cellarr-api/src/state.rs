@@ -15,6 +15,7 @@ use crate::auth::AuthConfig;
 use crate::commands::{build_scheduler, build_scheduler_with, ApiScheduler};
 use crate::events::EventBus;
 use crate::metadata::MetadataLookup;
+use crate::release_search::ReleaseSearch;
 use crate::tags::TagStore;
 
 /// The injected dependency bundle for the API.
@@ -37,6 +38,11 @@ pub struct AppState {
     /// configured at all (every lookup then reports unavailable); the wiring
     /// crate injects a live implementation over `cellarr-meta`.
     pub metadata: Option<Arc<dyn MetadataLookup>>,
+    /// The interactive release-search seam `GET /api/v3/release` reads from.
+    /// `None` means no pipeline wiring at all (the shim then reports every
+    /// interactive search as unavailable); the daemon injects a live
+    /// implementation over the real [`PipelineRunner`](cellarr_jobs::PipelineRunner).
+    pub release_search: Option<Arc<dyn ReleaseSearch>>,
 }
 
 impl AppState {
@@ -84,6 +90,7 @@ impl AppState {
             auth: Arc::new(auth),
             tags: TagStore::default(),
             metadata: None,
+            release_search: None,
         }
     }
 
@@ -94,6 +101,16 @@ impl AppState {
     #[must_use]
     pub fn with_metadata(mut self, metadata: Arc<dyn MetadataLookup>) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Attach the interactive release-search source (the live pipeline wiring), so
+    /// `GET /api/v3/release` returns real ranked candidates. Builder form so the
+    /// base [`AppState::new`] stays offline (the shim reports searches
+    /// unavailable) and tests can opt a fake in.
+    #[must_use]
+    pub fn with_release_search(mut self, release_search: Arc<dyn ReleaseSearch>) -> Self {
+        self.release_search = Some(release_search);
         self
     }
 }

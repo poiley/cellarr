@@ -10,7 +10,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import Card from '@components/Card';
 import CardDouble from '@components/CardDouble';
@@ -49,6 +49,24 @@ type LoadState<T> =
 function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return `${err.message} (${err.code})`;
   return err instanceof Error ? err.message : fallback;
+}
+
+/**
+ * Resolve the human title for a content node.
+ *
+ * The `/api/v1/content/{id}` node carries no `title` (only a `title_id` and the
+ * structural `coords`/`kind`), so `titleOf` would otherwise fall back to the raw
+ * `#shortid`. The readable title lives in the v3 catalogues (`/api/v3/movie`,
+ * `/api/v3/series`), keyed by the SAME id the Library screen drills in with.
+ * Prefer any title already on the node, then the catalogue match, then the
+ * structural fallback.
+ */
+function resolveTitle(node: Loose | undefined, catalogueTitle: string | undefined): string {
+  if (!node) return 'Item';
+  const direct = node.title ?? node.name;
+  if (typeof direct === 'string' && direct.length) return direct;
+  if (catalogueTitle) return catalogueTitle;
+  return titleOf(node);
 }
 
 /** Build a parent→children index from the library's flat content list. */
@@ -96,12 +114,14 @@ function ContentBranch({
 }
 
 function ItemDetail() {
+  const router = useRouter();
   const params = useSearchParams();
   const id = params.get('id') ?? undefined;
 
   const [node, setNode] = React.useState<LoadState<ContentNode>>({ phase: 'loading' });
   const [files, setFiles] = React.useState<LoadState<MediaFile[]>>({ phase: 'loading' });
   const [siblings, setSiblings] = React.useState<ContentRef[]>([]);
+  const [catalogueTitle, setCatalogueTitle] = React.useState<string | undefined>(undefined);
   const [command, setCommand] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -110,6 +130,24 @@ function ItemDetail() {
     setNode({ phase: 'loading' });
     setFiles({ phase: 'loading' });
     setSiblings([]);
+    setCatalogueTitle(undefined);
+
+    // Resolve the readable title from the v3 catalogues. The content node itself
+    // carries no title (only a title_id), so look this id up among movies/series
+    // — the same ids the Library screen drills in with. Best-effort: failures
+    // just leave the structural fallback in place.
+    Promise.allSettled([
+      api.listMovies(controller.signal),
+      api.listSeries(controller.signal),
+    ]).then(([movies, series]) => {
+      const pool = [
+        ...(movies.status === 'fulfilled' ? movies.value : []),
+        ...(series.status === 'fulfilled' ? series.value : []),
+      ];
+      const match = pool.find((m) => m.id === id);
+      const title = match ? (match as Loose).title : undefined;
+      if (typeof title === 'string' && title.length) setCatalogueTitle(title);
+    });
 
     api
       .getContent(id, controller.signal)
@@ -171,12 +209,16 @@ function ItemDetail() {
   const data = node.phase === 'ready' ? node.data : undefined;
   const loose = data as Loose | undefined;
 
+  // The header / breadcrumb title: resolved from the v3 catalogue rather than
+  // the raw `#shortid` the content node alone would yield.
+  const title = resolveTitle(loose, catalogueTitle);
+
   const breadcrumbs = [
     { name: 'Library', url: '/library/' },
     ...(loose && typeof loose.library_id === 'string'
       ? [{ name: 'Content', url: `/library/?lib=${encodeURIComponent(loose.library_id)}` }]
       : []),
-    { name: data ? titleOf(loose ?? {}) : 'Item' },
+    { name: data ? title : 'Item' },
   ];
 
   // Assemble the hierarchy: find this node's root, render the tree from there.
@@ -207,7 +249,7 @@ function ItemDetail() {
     <AppShell>
       <BreadCrumbs items={breadcrumbs} />
 
-      <CardDouble title={data ? titleOf(loose ?? {}) : 'Item detail'}>
+      <CardDouble title={data ? title : 'Item detail'}>
         {node.phase === 'loading' ? <Text>Loading item…</Text> : null}
         {node.phase === 'error' ? <Text>Could not load item: {node.message}</Text> : null}
 
@@ -229,8 +271,21 @@ function ItemDetail() {
               <ActionButton hotkey="⌘R" onClick={() => runCommand('RefreshContent')}>
                 Refresh
               </ActionButton>
-              <ActionButton hotkey="⌘F" onClick={() => runCommand('ManualSearch')}>
+              <ActionButton
+                hotkey="⌘F"
+                onClick={() =>
+                  router.push(
+                    `/interactive?id=${encodeURIComponent(id)}&content=${encodeURIComponent(id)}`
+                  )
+                }
+              >
                 Search
+              </ActionButton>
+              <ActionButton
+                hotkey="⌘H"
+                onClick={() => router.push(`/history?id=${encodeURIComponent(id)}`)}
+              >
+                History
               </ActionButton>
             </Row>
             {command ? <Text>{command}</Text> : null}

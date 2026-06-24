@@ -40,7 +40,8 @@ type GrabState = 'idle' | 'grabbing' | 'grabbed' | 'failed';
 
 function InteractiveSearch() {
   const params = useSearchParams();
-  const initialContent = params.get('content') ?? '';
+  // Opened from an item with `?id=…`; also accept the legacy `?content=…` alias.
+  const initialContent = params.get('id') ?? params.get('content') ?? '';
 
   const [contentId, setContentId] = React.useState(initialContent);
   const [phase, setPhase] = React.useState<Phase>('idle');

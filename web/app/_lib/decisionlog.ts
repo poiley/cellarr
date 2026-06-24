@@ -10,7 +10,7 @@
 // This file contains NO UI primitives — it is pure data shaping for the two
 // screens and is unit-tested in isolation.
 
-import type { DecisionLogRecord, HistoryRecord } from '@lib/api/types';
+import type { DecisionLogRecord, HistoryRecord, HistoryRecordV3 } from '@lib/api/types';
 
 // --- pipeline -------------------------------------------------------------
 
@@ -159,6 +159,51 @@ export function asHistoryRecord(r: HistoryRecord): TypedHistoryRecord {
   };
 }
 
+// --- global history feed (v3) ---------------------------------------------
+
+// The global, paged history feed (`GET /api/v3/history` → `Page<HistoryRecordV3>`)
+// is the default History view: a recent-activity stream across every content
+// node, so the operator never has to paste a node uuid to see what happened.
+//
+// The v3 shim flattens cellarr's native `HistoryEvent` to a Radarr-style
+// `eventType` string and serializes `date` as unix seconds (not ISO). It may
+// also carry the originating content node and pipeline run under a handful of
+// key spellings depending on the daemon build, so we read all of them.
+export interface TypedGlobalHistoryRow {
+  /** ISO or unix-seconds timestamp as the daemon serialized it. */
+  date: string | number;
+  /** Radarr-style event name (e.g. `grabbed`, `downloadFolderImported`). */
+  eventType: string;
+  /** Human title for the row, when the daemon provides one. */
+  sourceTitle?: string;
+  /** The content node this event belongs to, for deep-linking into `?id=`. */
+  contentId?: string;
+  /** The pipeline run that produced it, for linking into the decision log. */
+  runId?: string;
+}
+
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === 'string' && v) return v;
+  }
+  return undefined;
+}
+
+/** Narrow a loose v3 history record to the global-feed row shape (best-effort). */
+export function asGlobalHistoryRow(r: HistoryRecordV3): TypedGlobalHistoryRow {
+  const rec = r as Record<string, unknown>;
+  const data = (rec.data as Record<string, unknown> | undefined) ?? {};
+  const date =
+    typeof rec.date === 'number' || typeof rec.date === 'string' ? rec.date : '';
+  return {
+    date,
+    eventType: asString(rec.eventType) ?? 'unknown',
+    sourceTitle: asString(rec.sourceTitle),
+    contentId: firstString(rec.contentId, rec.content_id, rec.movieId, rec.seriesId, data.contentId),
+    runId: firstString(rec.runId, rec.run_id, data.runId, data.run_id),
+  };
+}
+
 // --- formatting -----------------------------------------------------------
 
 const STAGE_LABEL: Record<Stage, string> = {
@@ -209,6 +254,35 @@ const HISTORY_EVENT_LABEL: Record<HistoryEventKind, string> = {
 
 export function historyEventLabel(kind: HistoryEventKind): string {
   return HISTORY_EVENT_LABEL[kind] ?? kind;
+}
+
+// The v3 shim exposes event types as Radarr-style camelCase/snake strings rather
+// than cellarr's native `HistoryEventKind`. Map the ones the daemon emits to the
+// same friendly labels; fall back to humanizing anything unrecognized.
+const V3_EVENT_LABEL: Record<string, string> = {
+  grabbed: 'Grabbed',
+  downloadFolderImported: 'Imported',
+  downloadFailed: 'Download failed',
+  download_failed: 'Download failed',
+  download_completed: 'Download completed',
+  imported: 'Imported',
+  upgraded: 'Upgraded',
+  deleted: 'Deleted',
+  movieFileDeleted: 'Deleted',
+  episodeFileDeleted: 'Deleted',
+  held_for_review: 'Held for review',
+};
+
+export function v3EventLabel(eventType: string): string {
+  if (V3_EVENT_LABEL[eventType]) return V3_EVENT_LABEL[eventType];
+  // Humanize a camelCase / snake_case token, e.g. `downloadFolderImported`
+  // → "Download folder imported".
+  const spaced = eventType
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  if (!spaced) return eventType;
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 const REJECT_REASON_LABEL: Record<string, string> = {
@@ -264,6 +338,24 @@ export function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString();
+}
+
+/**
+ * Format a history date that may arrive as an ISO string (native `/api/v1`) or
+ * as unix seconds (the v3 shim serializes `date` as a unix timestamp). Numbers,
+ * and all-digit strings, are treated as unix seconds.
+ */
+export function formatHistoryDate(date: string | number): string {
+  if (date === '' || date === 0 || date == null) return '—';
+  if (typeof date === 'number') {
+    const d = new Date(date * 1000);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+  if (/^\d+$/.test(date)) {
+    const d = new Date(Number(date) * 1000);
+    return Number.isNaN(d.getTime()) ? date : d.toLocaleString();
+  }
+  return formatTimestamp(date);
 }
 
 export function formatConfidence(value: number): string {
