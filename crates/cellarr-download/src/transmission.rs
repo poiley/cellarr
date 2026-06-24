@@ -187,14 +187,23 @@ impl TransmissionClient {
     }
 
     /// The full RPC endpoint URL, honouring an optional `urlBase` path prefix.
+    ///
+    /// `url_base` is a reverse-proxy path prefix prepended to Transmission's
+    /// standard `/transmission/rpc` endpoint (so `/proxy` → `/proxy/transmission/rpc`).
+    /// But a user commonly copies Transmission's *own* default rpc-url
+    /// (`/transmission` or `/transmission/`) into this field — prepending that
+    /// verbatim would yield `/transmission/transmission/rpc` and a 404. So a
+    /// `url_base` that is already exactly `transmission` is treated as the standard
+    /// endpoint, not doubled.
     fn rpc_url(&self) -> String {
         let prefix = self
             .settings
             .url_base
             .as_deref()
             .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(|p| format!("/{}", p.trim_matches('/')))
+            .map(|p| p.trim_matches('/'))
+            .filter(|p| !p.is_empty() && *p != "transmission")
+            .map(|p| format!("/{p}"))
             .unwrap_or_default();
         format!("{}{}/transmission/rpc", self.base(), prefix)
     }
@@ -600,6 +609,21 @@ mod tests {
         s.url_base = Some("/proxy/".into());
         let c = client(s, "cat");
         assert_eq!(c.rpc_url(), "http://localhost:9091/proxy/transmission/rpc");
+
+        // A url_base of Transmission's own default rpc-url must NOT double the
+        // /transmission segment (the live 404 we hit). "/transmission/",
+        // "transmission", and "/transmission" all resolve to the standard endpoint.
+        for ub in ["/transmission/", "transmission", "/transmission"] {
+            let mut s = base_settings();
+            s.host = Some("tr.local".into());
+            s.url_base = Some(ub.into());
+            let c = client(s, "cat");
+            assert_eq!(
+                c.rpc_url(),
+                "http://tr.local:9091/transmission/rpc",
+                "url_base {ub:?} must not double /transmission"
+            );
+        }
     }
 
     #[test]
