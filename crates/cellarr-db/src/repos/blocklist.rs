@@ -83,13 +83,21 @@ impl BlocklistRepository for BlocklistRepo {
     }
 
     async fn list(&self) -> Result<Vec<BlocklistEntry>> {
-        let rows = sqlx::query("SELECT body FROM blocklist ORDER BY blocklisted_at DESC, id ASC")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, body FROM blocklist ORDER BY blocklisted_at DESC, id ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter()
             .map(|row| {
+                let id: String = row.try_get("id")?;
                 let body: String = row.try_get("body")?;
-                serde_json::from_str(&body).map_err(DbError::from)
+                let mut entry: BlocklistEntry = serde_json::from_str(&body)?;
+                // The `id` column is authoritative: an idempotent re-add keeps the
+                // original row id while refreshing the body (whose embedded id is
+                // the would-be new one), so the column — not the body — is the id
+                // `remove`/the API must use.
+                entry.id = id;
+                Ok(entry)
             })
             .collect()
     }

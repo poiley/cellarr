@@ -22,9 +22,19 @@
 //! Each stage's failure takes a *logged* transition, never a silent drop:
 //! - Decide → [`Stage::Rejected`] for a normal reject (with the [`Decision`]).
 //! - Grab/Track failures → [`Stage::Failed`] with a `grab-failed` note; the grab
-//!   row is moved to [`GrabStatus::Failed`]/[`GrabStatus::Blocklisted`] so a
-//!   re-search never re-grabs the same bad release.
+//!   row is moved to [`GrabStatus::Blocklisted`], the release is added to the
+//!   blocklist, and the dead download is removed from the client (with its local
+//!   data) so a re-search never re-grabs the same bad release.
 //! - Import failures → [`Stage::HeldForReview`] (`import-failed → hold`).
+//!
+//! ## Failure-resilient acquisition (self-heal)
+//!
+//! A download that fails — or **stalls** (no progress and zero peers for a bounded
+//! number of polls, see [`STALL_MAX_STAGNANT_POLLS`]) — does not end the run. The
+//! runner blocklists the release, removes it from the client, and **grabs the next
+//! best non-blocklisted candidate in the same run**, repeating up to
+//! [`MAX_GRAB_NEXT_ATTEMPTS`] times (and stopping when no candidate remains). This
+//! is the bounded "grab next release on failure" self-healing Sonarr/Radarr do.
 
 use std::sync::Arc;
 
@@ -50,6 +60,67 @@ use time::OffsetDateTime;
 use crate::clock::Clock;
 use crate::error::{BoxError, JobError, Result};
 use crate::notify::WebhookNotifier;
+
+/// How many consecutive poll cycles a download may sit with **stagnant progress
+/// and zero connected peers** before the runner treats it as a dead torrent and
+/// fails it (a *stall*). A torrent making no progress with nobody to download
+/// from will never complete; failing it after a bounded wait lets the self-heal
+/// path blocklist it and grab the next release rather than waiting out the whole
+/// `max_track_polls` budget.
+///
+/// The signal is conservative: a stall requires the client to *report* zero peers
+/// (`Some(0)`); an unknown peer count (`None`, e.g. Usenet) never trips it, and
+/// any forward progress resets the counter. Default 3 cycles.
+const STALL_MAX_STAGNANT_POLLS: u32 = 3;
+
+/// The maximum number of grab-next iterations the runner performs for one content
+/// node in a single run before giving up. After a download fails (or stalls) the
+/// runner blocklists the release, removes it from the client, and re-decides over
+/// the remaining (non-blocklisted) candidates to grab the next-best — capped here
+/// so a content with many failing releases can never loop unboundedly. The loop
+/// also stops naturally as soon as no non-blocklisted candidate remains. Mirrors
+/// Sonarr/Radarr's bounded "grab next release on failure". Default 5.
+const MAX_GRAB_NEXT_ATTEMPTS: u32 = 5;
+
+/// The result of tracking one download to a terminal point.
+enum TrackOutcome {
+    /// The download completed; carries the client-reported content path (if any).
+    Completed(Option<String>),
+    /// The download terminated in a failure (hard failure, stall, or exhausted
+    /// polls); carries the human detail used for the blocklist reason + log.
+    Failed(String),
+}
+
+/// One candidate that passed Parse/Identify/Decide and is ready to grab.
+struct PickedCandidate {
+    matched_ref: ContentRef,
+    release: Release,
+    parsed: ParsedRelease,
+    decision: Decision,
+    score: Score,
+}
+
+/// What walking the candidate list for a grabbable release yielded.
+enum PickResult {
+    /// A candidate is ready to grab. Boxed: it carries the (large) parsed release
+    /// + decision, which would otherwise bloat every variant of this enum.
+    Grabbable(Box<PickedCandidate>),
+    /// The run must be held for manual resolution (an unresolved anime absolute or
+    /// an identify failure) — never grab-next over a node we cannot place safely.
+    Held(String),
+    /// No grabbable candidate remains (all rejected/blocklisted/unmatched).
+    None,
+}
+
+/// The outcome of one grab→track→import attempt.
+enum GrabTrackResult {
+    /// A terminal outcome for the whole run (imported, or held for review).
+    Done(RunOutcome),
+    /// The download failed or stalled; the release was blocklisted and removed
+    /// from the client. The caller should grab the next-best release. Carries the
+    /// failure detail for the run's terminal `Failed` outcome if the loop ends.
+    FailedGrabNext(String),
+}
 
 /// The terminal outcome of driving a candidate through the pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,17 +306,95 @@ where
         }
         stage = self.advance(run_id, stage, None).await?; // -> Parse
 
-        // The pipeline considers the candidates in indexer order; the first that
-        // is identified and not rejected is the one grabbed. A reject is logged
-        // and the next candidate tried (grab-failed → next release).
+        // The grab-next self-heal loop: pick the best non-blocklisted candidate,
+        // grab+track+import it, and — if the download FAILS or STALLS — blocklist
+        // it, remove it from the client, and re-decide over the remaining
+        // candidates to grab the *next*-best. Bounded by [`MAX_GRAB_NEXT_ATTEMPTS`]
+        // so a content whose every release fails can never loop forever; it also
+        // stops as soon as no non-blocklisted grabbable candidate remains. This
+        // mirrors Sonarr/Radarr's "grab next release on failure" self-healing.
         let mut last_reject: Option<String> = None;
-        for release in &releases {
+        let mut last_failure: Option<String> = None;
+        for _attempt in 0..MAX_GRAB_NEXT_ATTEMPTS {
+            // Walk the candidates for the best grabbable one this attempt. A
+            // blocklisted release (including one this run just failed) is skipped;
+            // a reject is logged and the next candidate tried.
+            let picked = match self
+                .pick_grabbable(run_id, &mut stage, content, &releases, &mut last_reject)
+                .await?
+            {
+                PickResult::Grabbable(picked) => picked,
+                // An anime absolute that cannot be resolved (or an identify
+                // failure) holds the whole run for manual resolution — never a
+                // guess, never a grab-next over a node we cannot place safely.
+                PickResult::Held(reason) => return Ok(RunOutcome::HeldForReview { reason }),
+                // No grabbable candidate remains this attempt: stop the loop and
+                // return the last logged reject/failure below.
+                PickResult::None => break,
+            };
+
+            match self
+                .grab_track_import(
+                    run_id,
+                    &mut stage,
+                    content,
+                    &picked.matched_ref,
+                    &picked.release,
+                    &picked.parsed,
+                    picked.decision,
+                    picked.score,
+                )
+                .await?
+            {
+                // Imported or held-for-review: a terminal outcome for this run.
+                GrabTrackResult::Done(outcome) => return Ok(outcome),
+                // The download failed/stalled and was blocklisted + removed from
+                // the client. Loop again to grab the next-best release (the failed
+                // one is now blocklisted, so the next walk skips it).
+                GrabTrackResult::FailedGrabNext(detail) => {
+                    tracing::warn!(
+                        content = %content.id,
+                        detail = %detail,
+                        "download failed; blocklisted and grabbing next release"
+                    );
+                    last_failure = Some(detail);
+                    // The failed attempt logged its own Grab->Failed transition; a
+                    // grab-next is a fresh Decide->Grab cycle under the same run.
+                    // Reset the local stage cursor to Decide so the next attempt's
+                    // advances are legal (the decision log is an append-only event
+                    // stream, so several grab cycles in one run read correctly).
+                    stage = Stage::Decide;
+                    continue;
+                }
+            }
+        }
+
+        // No candidate imported within the attempt budget. If at least one grab
+        // failed, the run's terminal state is Failed (every grabbed release died);
+        // otherwise it is a normal Rejected (nothing acceptable was offered).
+        if let Some(detail) = last_failure {
+            return Ok(RunOutcome::Failed { detail });
+        }
+        let reason = last_reject.unwrap_or_else(|| "no acceptable release".into());
+        Ok(RunOutcome::Rejected { reason })
+    }
+
+    /// Walk the discovered `releases` for the best **grabbable** candidate this
+    /// attempt: the first that identifies to `content`, is not blocklisted, and
+    /// whose decision is Grab/Upgrade. Rejects and blocklisted/unmatched
+    /// candidates are logged and skipped (recording the last reject for the
+    /// caller). Returns `Ok(None)` when no candidate is grabbable.
+    async fn pick_grabbable(
+        &self,
+        run_id: PipelineRunId,
+        stage: &mut Stage,
+        content: &ContentRef,
+        releases: &[Release],
+        last_reject: &mut Option<String>,
+    ) -> Result<PickResult> {
+        for release in releases {
             // --- Parse (real cellarr-parse on the *title*) ----------------
             let parsed = cellarr_parse::parse_title(&release.title);
-            // (already advanced to Parse above for the first candidate; for
-            // subsequent candidates the machine logically re-enters at Parse —
-            // we keep `stage` at the furthest point reached so transitions stay
-            // legal and the log reads as one run.)
 
             // --- Identify: anime absolute->episode remap (the XEM call-site) --
             // An anime release advertises an *absolute* episode number; the
@@ -265,7 +414,7 @@ where
                         Some(reason.clone()),
                     )
                     .await?;
-                    return Ok(RunOutcome::HeldForReview { reason });
+                    return Ok(PickResult::Held(reason));
                 }
             };
 
@@ -273,37 +422,36 @@ where
             let matches = match self.identify(content, &parsed).await {
                 Ok(m) => m,
                 Err(e) => {
+                    let reason = format!("identify failed: {e}");
                     self.log(
                         run_id,
                         Stage::Identify,
                         Stage::HeldForReview,
                         TransitionKind::Hold,
                         None,
-                        Some(format!("identify failed: {e}")),
+                        Some(reason.clone()),
                     )
                     .await?;
-                    return Ok(RunOutcome::HeldForReview {
-                        reason: format!("identify failed: {e}"),
-                    });
+                    return Ok(PickResult::Held(reason));
                 }
             };
-            if stage == Stage::Parse {
-                stage = self.advance(run_id, stage, None).await?; // -> Identify
+            if *stage == Stage::Parse {
+                *stage = self.advance(run_id, *stage, None).await?; // -> Identify
             }
             let Some(matched) = self.best_match(content, matches) else {
-                last_reject = Some("no confident content match".into());
+                *last_reject = Some("no confident content match".into());
                 continue;
             };
-            if stage == Stage::Identify {
-                stage = self.advance(run_id, stage, None).await?; // -> Decide
+            if *stage == Stage::Identify {
+                *stage = self.advance(run_id, *stage, None).await?; // -> Decide
             }
 
             // --- Blocklist consultation (before Decide) -------------------
             // A previously-failed release for this content must never be
             // re-grabbed; skip it and try the next candidate (the
-            // download-failed -> blocklist + re-search transition). The decision
-            // engine also hard-rejects a blocklisted release, so we pass the
-            // membership through to keep the reject reason precise and logged.
+            // download-failed -> blocklist + re-search transition). This is also
+            // what makes grab-next converge: the release this run just failed is
+            // blocklisted, so the next walk passes over it to the next-best.
             let blocklisted = self.is_blocklisted(matched.content_ref.id, release).await?;
             if blocklisted {
                 let note = "rejected: release is blocklisted".to_string();
@@ -316,7 +464,7 @@ where
                     Some(note.clone()),
                 )
                 .await?;
-                last_reject = Some(note);
+                *last_reject = Some(note);
                 continue;
             }
 
@@ -335,34 +483,22 @@ where
                         Some(note.clone()),
                     )
                     .await?;
-                    last_reject = Some(note);
-                    // Try the next candidate; the loop's exhaustion returns the
-                    // last logged reject.
+                    *last_reject = Some(note);
                     continue;
                 }
                 Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => {
                     let score = *score;
-                    // Log the grab verdict on the Decide->Grab advance.
-                    return self
-                        .grab_track_import(
-                            run_id,
-                            &mut stage,
-                            content,
-                            &matched.content_ref,
-                            release,
-                            &parsed,
-                            decision,
-                            score,
-                        )
-                        .await;
+                    return Ok(PickResult::Grabbable(Box::new(PickedCandidate {
+                        matched_ref: matched.content_ref,
+                        release: release.clone(),
+                        parsed,
+                        decision,
+                        score,
+                    })));
                 }
             }
         }
-
-        // No candidate was grabbed. The run ends Rejected (the last logged
-        // reason) — a normal, fully-logged outcome.
-        let reason = last_reject.unwrap_or_else(|| "no acceptable release".into());
-        Ok(RunOutcome::Rejected { reason })
+        Ok(PickResult::None)
     }
 
     // --- Stage implementations -------------------------------------------
@@ -597,7 +733,7 @@ where
         parsed: &ParsedRelease,
         decision: Decision,
         _score: Score,
-    ) -> Result<RunOutcome> {
+    ) -> Result<GrabTrackResult> {
         // --- Grab: persist the grab, hand to the download client ----------
         // Derive the durable release type from the title parse ONCE, here, and
         // persist it on the grab. Everything downstream (media_file, history,
@@ -626,12 +762,14 @@ where
         let download_id = match self.client.add(&request).await {
             Ok(id) => id,
             Err(e) => {
+                // The client never accepted the grab, so there is nothing to
+                // remove from it. Blocklist the release so grab-next moves past it.
                 return self
                     .fail_grab(
                         run_id,
                         content.id,
                         grab_id,
-                        GrabStatus::Failed,
+                        None,
                         format!("grab failed: {e}"),
                         release,
                     )
@@ -656,9 +794,9 @@ where
 
         *stage = self.advance(run_id, *stage, None).await?; // -> Track
 
-        // --- Track: poll to completion, read content_path -----------------
+        // --- Track: poll to completion, terminal failure, or stall --------
         let content_path = match self.track(&download_id).await {
-            Ok(Some(path)) => {
+            TrackOutcome::Completed(Some(path)) => {
                 // Shared remote-path remapping: the client reports the path from
                 // its own vantage point; rewrite it to where cellarr can see it
                 // before Import. Applied here, once, for every download client.
@@ -668,25 +806,30 @@ where
                     &path,
                 )
             }
-            Ok(None) => {
+            TrackOutcome::Completed(None) => {
+                // Completed but the client reported no importable path: treat as a
+                // failure, blocklist + remove, and grab the next release.
                 return self
                     .fail_grab(
                         run_id,
                         content.id,
                         grab_id,
-                        GrabStatus::Blocklisted,
+                        Some(&download_id),
                         "download completed without a content path".into(),
                         release,
                     )
                     .await;
             }
-            Err(detail) => {
+            // A hard failure, a sustained stall, or exhausted polls: blocklist the
+            // release, remove the dead download (with its local data) from the
+            // client, and signal grab-next.
+            TrackOutcome::Failed(detail) => {
                 return self
                     .fail_grab(
                         run_id,
                         content.id,
                         grab_id,
-                        GrabStatus::Blocklisted,
+                        Some(&download_id),
                         detail,
                         release,
                     )
@@ -734,14 +877,16 @@ where
                     .await?;
                 self.advance(run_id, *stage, Some("imported".into()))
                     .await?; // -> Done
-                Ok(RunOutcome::Imported {
+                Ok(GrabTrackResult::Done(RunOutcome::Imported {
                     grab_id,
                     destinations,
-                })
+                }))
             }
             Err(detail) => {
                 // import-failed -> hold for review (never silently drop, never
-                // force-fit a destructive write).
+                // force-fit a destructive write). A held import is NOT a grab-next
+                // trigger: the bytes are on disk and need a human, not another
+                // grab.
                 self.log(
                     run_id,
                     Stage::Import,
@@ -759,29 +904,69 @@ where
                     },
                 )
                 .await?;
-                Ok(RunOutcome::HeldForReview { reason: detail })
+                Ok(GrabTrackResult::Done(RunOutcome::HeldForReview {
+                    reason: detail,
+                }))
             }
         }
     }
 
-    /// Poll the download client until completion or terminal failure.
+    /// Poll the download client to a terminal point: completion, a hard failure,
+    /// a sustained **stall**, or exhausted polls.
     ///
-    /// Returns `Ok(Some(path))` on completion with a content path,
-    /// `Ok(None)` on completion with no path (a caller-handled anomaly), and
-    /// `Err(detail)` on a failed download or exhausted polls. Uses a bounded
-    /// poll count rather than a tight loop; the logical clock advances between
-    /// polls so tests never sleep.
-    async fn track(&self, download_id: &str) -> std::result::Result<Option<String>, String> {
+    /// Three terminal signals end tracking:
+    /// - [`DownloadState::Completed`] → [`TrackOutcome::Completed`] with the
+    ///   client-reported content path.
+    /// - [`DownloadState::Failed`] → [`TrackOutcome::Failed`], surfacing the
+    ///   client's `error_string` when present (qBittorrent `error`, SAB `Failed`).
+    /// - A **stall**: the download is still in flight but has made no forward
+    ///   progress *and* the client reports zero connected peers for
+    ///   [`STALL_MAX_STAGNANT_POLLS`] consecutive cycles. A torrent with no peers
+    ///   and no progress will never complete; failing it lets self-heal grab the
+    ///   next release rather than waiting out the full poll budget. Progress (or a
+    ///   peer appearing) resets the counter; an *unknown* peer count (`None`, e.g.
+    ///   Usenet) never trips the stall.
+    ///
+    /// Bounded by `max_track_polls`; the logical clock advances between polls so
+    /// tests never sleep.
+    async fn track(&self, download_id: &str) -> TrackOutcome {
+        let mut last_progress = f32::NEG_INFINITY;
+        let mut stagnant_no_peer_polls: u32 = 0;
         for _ in 0..self.config.max_track_polls {
-            let status = self
-                .client
-                .status(download_id)
-                .await
-                .map_err(|e| format!("status poll failed: {e}"))?;
+            let status = match self.client.status(download_id).await {
+                Ok(s) => s,
+                Err(e) => return TrackOutcome::Failed(format!("status poll failed: {e}")),
+            };
             match status.state {
-                DownloadState::Completed => return Ok(status.content_path),
-                DownloadState::Failed => return Err("download failed".into()),
+                DownloadState::Completed => return TrackOutcome::Completed(status.content_path),
+                DownloadState::Failed => {
+                    let detail = status
+                        .error_string
+                        .filter(|s| !s.trim().is_empty())
+                        .map_or_else(
+                            || "download failed".to_string(),
+                            |e| format!("download failed: {e}"),
+                        );
+                    return TrackOutcome::Failed(detail);
+                }
                 DownloadState::Queued | DownloadState::Downloading => {
+                    // Stall accounting: a poll counts toward a stall only when the
+                    // client *reports* zero peers AND progress did not advance.
+                    let advanced = status.progress > last_progress;
+                    let no_peers = status.peers == Some(0);
+                    if !advanced && no_peers {
+                        stagnant_no_peer_polls += 1;
+                        if stagnant_no_peer_polls >= STALL_MAX_STAGNANT_POLLS {
+                            return TrackOutcome::Failed(format!(
+                                "download stalled: no progress and no peers for \
+                                 {STALL_MAX_STAGNANT_POLLS} polls (progress {:.0}%)",
+                                status.progress * 100.0
+                            ));
+                        }
+                    } else {
+                        stagnant_no_peer_polls = 0;
+                    }
+                    last_progress = last_progress.max(status.progress);
                     // Event-driven progress is preferred (docs/03-pipeline.md);
                     // absent a webhook, poll with the (logical) clock advancing.
                     let _ = self.clock.now_secs();
@@ -789,7 +974,7 @@ where
                 }
             }
         }
-        Err("tracking timed out".into())
+        TrackOutcome::Failed("tracking timed out".into())
     }
 
     /// Build and execute the import plan for one completed download.
@@ -865,24 +1050,46 @@ where
 
     // --- Failure / transition / log helpers ------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    /// Handle a failed/stalled grab: mark it Blocklisted, record the release in the
+    /// blocklist, remove the dead download from the client (with its local data),
+    /// log the failure transition + history, and signal grab-next.
+    ///
+    /// `download_id` is `Some` once the client accepted the grab (so there is a
+    /// download to remove) and `None` when the client never accepted it (nothing
+    /// to remove). Removal is best-effort: a client that errors on remove (or has
+    /// already dropped the download) must not abort the self-heal — the release is
+    /// still blocklisted and the next-best is still grabbed.
     async fn fail_grab(
         &self,
         run_id: PipelineRunId,
         content_id: cellarr_core::ContentId,
         grab_id: GrabId,
-        terminal: GrabStatus,
+        download_id: Option<&str>,
         detail: String,
         release: &Release,
-    ) -> Result<RunOutcome> {
-        self.set_grab_status(grab_id, terminal).await?;
-        // A download/grab failure that reaches a Blocklisted terminal records the
-        // release in the blocklist so a re-search never re-grabs it (the
-        // download-failed -> blocklist + re-search transition). A plain Failed is
-        // re-searchable and is not blocklisted.
-        if terminal == GrabStatus::Blocklisted {
-            self.blocklist_release(content_id, release, &detail).await?;
+    ) -> Result<GrabTrackResult> {
+        // Mark the grab Blocklisted so even outside this run a re-search never
+        // re-grabs the same dead release.
+        self.set_grab_status(grab_id, GrabStatus::Blocklisted)
+            .await?;
+        self.blocklist_release(content_id, release, &detail).await?;
+
+        // Remove the dead download from the client, deleting its local data, so a
+        // stalled/failed download is not left consuming disk or a slot. Best-effort.
+        if let Some(download_id) = download_id {
+            if let Err(e) = self
+                .client
+                .remove(download_id, /* delete_data = */ true)
+                .await
+            {
+                tracing::warn!(
+                    %download_id,
+                    error = %e,
+                    "removing failed download from client failed; continuing self-heal"
+                );
+            }
         }
+
         self.log(
             run_id,
             Stage::Grab,
@@ -901,7 +1108,7 @@ where
             },
         )
         .await?;
-        Ok(RunOutcome::Failed { detail })
+        Ok(GrabTrackResult::FailedGrabNext(detail))
     }
 
     /// Add a failed release to the blocklist (idempotent on content+release key).

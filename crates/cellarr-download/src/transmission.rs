@@ -111,6 +111,9 @@ struct Torrent {
     upload_ratio: f64,
     #[serde(rename = "secondsSeeding", default)]
     seconds_seeding: i64,
+    /// Connected peers, for the no-peers stall signal.
+    #[serde(rename = "peersConnected", default)]
+    peers_connected: i64,
     #[serde(rename = "errorString", default)]
     error_string: String,
 }
@@ -452,6 +455,8 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
         content_path,
         ratio: Some(t.upload_ratio),
         seeding_time_secs: Some(t.seconds_seeding.max(0) as u64),
+        peers: Some(t.peers_connected.max(0) as u32),
+        error_string: (!t.error_string.is_empty()).then(|| t.error_string.clone()),
         category: t.labels.first().cloned(),
     }
 }
@@ -496,6 +501,7 @@ mod tests {
             labels: vec!["cellarr-tv".into()],
             upload_ratio: 1.0,
             seconds_seeding: 10,
+            peers_connected: 5,
             error_string: String::new(),
         };
         let p = progress_from_torrent(&t);
@@ -517,6 +523,7 @@ mod tests {
             labels: vec![],
             upload_ratio: 0.0,
             seconds_seeding: 0,
+            peers_connected: 3,
             error_string: String::new(),
         };
         let p = progress_from_torrent(&t);
@@ -535,6 +542,7 @@ mod tests {
             labels: vec![],
             upload_ratio: 0.0,
             seconds_seeding: 0,
+            peers_connected: 0,
             error_string: "tracker error".into(),
         };
         assert_eq!(progress_from_torrent(&t).state, DownloadState::Failed);

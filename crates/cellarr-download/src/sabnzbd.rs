@@ -95,6 +95,9 @@ struct HistorySlot {
     /// Final on-disk path of the unpacked content.
     #[serde(default)]
     storage: String,
+    /// SABnzbd's failure detail for a `Failed` slot, when present.
+    #[serde(default)]
+    fail_message: String,
 }
 
 /// SABnzbd's `{"status": false, "error": "..."}` error envelope.
@@ -292,6 +295,8 @@ fn progress_from_queue(slot: &QueueSlot) -> DownloadProgress {
         content_path: None,
         ratio: None,
         seeding_time_secs: None,
+        peers: None,
+        error_string: None,
         category: if slot.cat.is_empty() {
             None
         } else {
@@ -317,6 +322,8 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
             },
             ratio: None,
             seeding_time_secs: None,
+            peers: None,
+            error_string: None,
             category,
         }),
         "Failed" => Ok(DownloadProgress {
@@ -325,6 +332,8 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
             content_path: None,
             ratio: None,
             seeding_time_secs: None,
+            peers: None,
+            error_string: (!slot.fail_message.is_empty()).then(|| slot.fail_message.clone()),
             category,
         }),
         // Still post-processing in history (Extracting/Verifying/Repairing):
@@ -335,6 +344,8 @@ fn progress_from_history(slot: &HistorySlot) -> Result<DownloadProgress, Downloa
             content_path: None,
             ratio: None,
             seeding_time_secs: None,
+            peers: None,
+            error_string: None,
             category,
         }),
     }

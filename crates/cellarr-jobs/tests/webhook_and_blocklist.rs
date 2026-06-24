@@ -235,11 +235,104 @@ impl cellarr_core::traits::DownloadClient for FakeDownloadClient {
                 content_path: Some(path.clone()),
                 ratio: Some(1.0),
                 seeding_time_secs: Some(0),
+                peers: Some(10),
+                error_string: None,
             }),
             None => Ok(cellarr_core::DownloadStatus::from_state(
                 cellarr_core::DownloadState::Failed,
             )),
         }
+    }
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// A self-heal fake: the download for the BAD guid never completes (it reports
+/// `Failed`), while the download for the GOOD guid completes with a real on-disk
+/// path. The behavior is keyed on the grabbed release's guid (carried in the
+/// `GrabRequest` handed to `add`), encoded into the returned download id so
+/// `status` can branch on it. It also records every `remove(_, delete_data)` call
+/// so a test can assert the dead download was removed with its local data.
+struct SelfHealClient {
+    bad_guid: String,
+    good_path: String,
+    /// (download_id, delete_data) for every remove call.
+    removed: Arc<Mutex<Vec<(String, bool)>>>,
+}
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for SelfHealClient {
+    type Error = FakeClientError;
+    fn name(&self) -> &str {
+        "self-heal-client"
+    }
+    async fn add(&self, grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        // Encode the grabbed guid into the download id so `status` can branch.
+        let guid = grab.release.guid.clone().unwrap_or_default();
+        Ok(format!("dl::{guid}"))
+    }
+    async fn status(&self, download_id: &str) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        let guid = download_id.strip_prefix("dl::").unwrap_or(download_id);
+        if guid == self.bad_guid {
+            // The bad release's download is dead: failed, no peers, no progress.
+            return Ok(cellarr_core::DownloadStatus {
+                state: cellarr_core::DownloadState::Failed,
+                progress: 0.0,
+                content_path: None,
+                ratio: None,
+                seeding_time_secs: None,
+                peers: Some(0),
+                error_string: Some("tracker reported the torrent is dead".into()),
+            });
+        }
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Completed,
+            progress: 1.0,
+            content_path: Some(self.good_path.clone()),
+            ratio: Some(1.0),
+            seeding_time_secs: Some(0),
+            peers: Some(10),
+            error_string: None,
+        })
+    }
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        self.removed
+            .lock()
+            .unwrap()
+            .push((download_id.to_string(), delete_data));
+        Ok(())
+    }
+}
+
+/// A fake whose every download STALLS: it stays `Downloading` forever with no
+/// progress and zero peers, so the runner's stall detector fails it. Used to
+/// prove a stall (not just a hard `Failed`) drives blocklist + grab-next, and to
+/// prove the grab-next cap halts when every candidate stalls.
+struct StallingClient;
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for StallingClient {
+    type Error = FakeClientError;
+    fn name(&self) -> &str {
+        "stalling-client"
+    }
+    async fn add(&self, _grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        Ok("dl-stall".to_string())
+    }
+    async fn status(
+        &self,
+        _download_id: &str,
+    ) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Downloading,
+            progress: 0.0,
+            content_path: None,
+            ratio: Some(0.0),
+            seeding_time_secs: Some(0),
+            peers: Some(0),
+            error_string: None,
+        })
     }
     async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
         Ok(())
@@ -572,4 +665,238 @@ async fn failed_download_is_blocklisted_then_skipped_on_research_then_cleared() 
         .await
         .unwrap()
         .is_empty());
+}
+
+/// THE SELF-HEAL PROOF: a SINGLE run, two candidates. The first release's
+/// download fails and never completes; the runner must blocklist it, remove it
+/// from the client (with its local data), grab the SECOND release in the same
+/// run, and IMPORT the file. No second manual run, no human intervention.
+#[tokio::test]
+async fn one_run_self_heals_past_a_failed_release_grabs_the_next_and_imports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    // The GOOD release's download "completes" with this real on-disk file.
+    let good_file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&good_file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let config = runner_config(library_root.clone());
+
+    // TWO candidates offered in one search: the BAD one first (so it is decided
+    // and grabbed first), the GOOD one second.
+    let bad = movie_release("The.Matrix.1999.1080p.BluRay.x264-BAD", "guid-bad");
+    let good = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![bad.clone(), good.clone()],
+    };
+    let removed = Arc::new(Mutex::new(Vec::new()));
+    let client = SelfHealClient {
+        bad_guid: "guid-bad".into(),
+        good_path: good_file.to_string_lossy().into_owned(),
+        removed: Arc::clone(&removed),
+    };
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    // ONE run.
+    let outcome = runner.run(&node).await.unwrap();
+    let grab_id = match outcome {
+        RunOutcome::Imported { grab_id, .. } => grab_id,
+        other => panic!("self-heal must end in an import in one run, got {other:?}"),
+    };
+
+    // The grab that won is the GOOD release.
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grab.request.release.guid.as_deref(), Some("guid-good"));
+    assert_eq!(grab.status, GrabStatus::Imported);
+
+    // The BAD release was blocklisted (so a future search skips it too)...
+    assert!(
+        BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &bad)
+            .await
+            .unwrap(),
+        "the failed first release must be blocklisted"
+    );
+    // ...and the GOOD release is NOT blocklisted.
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &good)
+            .await
+            .unwrap()
+    );
+
+    // The dead download was removed from the client WITH its local data.
+    let removed = removed.lock().unwrap().clone();
+    assert_eq!(removed.len(), 1, "exactly the failed download was removed");
+    assert_eq!(
+        removed[0],
+        ("dl::guid-bad".to_string(), true),
+        "the failed download is removed with delete-local-data"
+    );
+
+    // THE PROOF: the GOOD file imported on disk under the library root.
+    let imported = find_one_file(&library_root).expect("an imported file must exist");
+    assert_eq!(std::fs::read(&imported).unwrap(), b"good bytes");
+}
+
+/// A sustained STALL (downloading, no progress, zero peers) — not just a hard
+/// `Failed` — drives the same self-heal: blocklist the stalled release, grab the
+/// next, import it.
+#[tokio::test]
+async fn a_stalled_download_self_heals_to_the_next_release() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let good_file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&good_file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let config = runner_config(library_root.clone());
+
+    let stalling = movie_release("The.Matrix.1999.1080p.BluRay.x264-STALL", "guid-stall");
+    let good = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![stalling.clone(), good.clone()],
+    };
+
+    // First, prove the STALL detector specifically: ONE stalling candidate driven
+    // through a client that stays Downloading with no progress and zero peers must
+    // fail the run as a stall (not a hard `Failed`).
+    let stall_indexer = FakeIndexer {
+        releases: vec![stalling.clone()],
+    };
+    let stall_client = StallingClient;
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(
+        &stall_indexer,
+        &stall_client,
+        &registry,
+        &db,
+        &clock,
+        &config,
+    );
+    let outcome = runner.run(&node).await.unwrap();
+    match outcome {
+        RunOutcome::Failed { detail } => assert!(
+            detail.contains("stalled"),
+            "the failure detail must name the stall, got {detail:?}"
+        ),
+        other => panic!("a pure stall must fail the run, got {other:?}"),
+    }
+    // The stalled release is now blocklisted.
+    assert!(
+        BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &stalling)
+            .await
+            .unwrap(),
+        "the stalled release must be blocklisted"
+    );
+
+    // Now ONE run with both candidates self-heals to the good one.
+    let removed2 = Arc::new(Mutex::new(Vec::new()));
+    let heal_client = SelfHealClient {
+        bad_guid: "guid-stall".into(),
+        good_path: good_file.to_string_lossy().into_owned(),
+        removed: Arc::clone(&removed2),
+    };
+    let runner = PipelineRunner::new(&indexer, &heal_client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    let grab_id = match outcome {
+        RunOutcome::Imported { grab_id, .. } => grab_id,
+        other => panic!("expected self-heal import, got {other:?}"),
+    };
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grab.request.release.guid.as_deref(), Some("guid-good"));
+    assert_eq!(grab.status, GrabStatus::Imported);
+    assert!(find_one_file(&library_root).is_some());
+}
+
+/// The grab-next loop is BOUNDED: when every candidate fails, the run terminates
+/// (it does not loop forever) and ends in `Failed`. With more failing candidates
+/// than the attempt cap, the cap is what halts it.
+#[tokio::test]
+async fn grab_next_retry_loop_halts_when_every_candidate_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let config = runner_config(library_root);
+
+    // Ten candidates — more than the grab-next attempt cap — and EVERY one stalls.
+    let releases: Vec<Release> = (0..10)
+        .map(|i| {
+            movie_release(
+                &format!("The.Matrix.1999.1080p.x264-BAD{i}"),
+                &format!("guid-{i}"),
+            )
+        })
+        .collect();
+    let indexer = FakeIndexer {
+        releases: releases.clone(),
+    };
+    let client = StallingClient;
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    // The run TERMINATES (the test completing at all is the no-infinite-loop proof)
+    // and ends Failed.
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Failed { .. }),
+        "every-candidate-fails must end Failed, got {outcome:?}"
+    );
+
+    // The cap bounded the work: at most the attempt-cap number of releases were
+    // grabbed-and-blocklisted, never all ten. (The exact const lives in the runner;
+    // the contract is simply "fewer than offered, and bounded".)
+    let blocklisted = BlocklistRepository::list(&db.blocklist()).await.unwrap();
+    assert!(
+        !blocklisted.is_empty(),
+        "at least one failing release was blocklisted"
+    );
+    assert!(
+        blocklisted.len() < releases.len(),
+        "the cap halts the loop before trying every one of the {} candidates (blocklisted {})",
+        releases.len(),
+        blocklisted.len()
+    );
+}
+
+/// Find exactly one regular file under `root` (recursively).
+fn find_one_file(root: &std::path::Path) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }

@@ -36,6 +36,13 @@ pub struct DownloadProgress {
     pub ratio: Option<f64>,
     /// Seeding time in seconds for torrents, when known. `None` for Usenet.
     pub seeding_time_secs: Option<u64>,
+    /// Connected peers (seeds + leechers) for torrents, when the client reports
+    /// it. `None` for Usenet / clients that omit it; the stall detector treats
+    /// `None` as unknown and only a reported `Some(0)` as a no-peers signal.
+    pub peers: Option<u32>,
+    /// The client's terminal error text, when it reports one. Carried through to
+    /// the core status so a failed download names *why* it failed.
+    pub error_string: Option<String>,
     /// The category/label the client has the download filed under. Used to scope
     /// cellarr to its own downloads; a foreign category means "not ours".
     pub category: Option<String>,
@@ -57,6 +64,8 @@ impl DownloadProgress {
             content_path: self.content_path.clone(),
             ratio: self.ratio.map(|r| r as f32),
             seeding_time_secs: self.seeding_time_secs,
+            peers: self.peers,
+            error_string: self.error_string.clone(),
         }
     }
 

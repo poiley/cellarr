@@ -280,6 +280,8 @@ fn progress_from_group(g: &Group) -> DownloadProgress {
         content_path: None,
         ratio: None,
         seeding_time_secs: None,
+        peers: None,
+        error_string: None,
         category: if g.category.is_empty() {
             None
         } else {
@@ -313,6 +315,8 @@ fn progress_from_history(h: &HistoryItem) -> DownloadProgress {
         },
         ratio: None,
         seeding_time_secs: None,
+        peers: None,
+        error_string: matches!(state, DownloadState::Failed).then(|| h.status.clone()),
         category,
     }
 }

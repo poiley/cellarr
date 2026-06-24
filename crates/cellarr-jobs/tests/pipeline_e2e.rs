@@ -90,6 +90,8 @@ impl cellarr_core::traits::DownloadClient for FakeDownloadClient {
             content_path: Some(self.content_path.clone()),
             ratio: Some(1.0),
             seeding_time_secs: Some(0),
+            peers: Some(10),
+            error_string: None,
         })
     }
     async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {

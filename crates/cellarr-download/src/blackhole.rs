@@ -196,6 +196,10 @@ impl BlackholeClient {
                 // a blackhole job is unconditional.
                 ratio: None,
                 seeding_time_secs: None,
+                // The blackhole has no client API: it observes neither peers nor a
+                // failure reason.
+                peers: None,
+                error_string: None,
                 category: Some(self.category.clone()),
             });
         }
@@ -207,6 +211,8 @@ impl BlackholeClient {
                 content_path: None,
                 ratio: None,
                 seeding_time_secs: None,
+                peers: None,
+                error_string: None,
                 category: Some(self.category.clone()),
             });
         }

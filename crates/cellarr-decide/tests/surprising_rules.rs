@@ -104,6 +104,54 @@ mod rank {
 }
 
 #[test]
+fn a_blocklisted_release_is_excluded_before_ranking_even_when_it_would_otherwise_grab() {
+    // A candidate that — on quality + CF score — would be a clear Grab (nothing on
+    // disk, an allowed quality) must still be REJECTED purely because it is
+    // blocklisted. This pins that the blocklist filter takes precedence over the
+    // whole ranking path: a previously-failed release is never re-ranked back in.
+    let ranking = QualityRanking::default();
+    let formats: Vec<CustomFormat> = vec![];
+    let prof = profile(&[rank::BLURAY_1080P], rank::BLURAY_2160P, 100_000);
+    let rel = release("Movie.2024.1080p.BluRay-GROUP", &[]);
+    let p = parsed(Source::Bluray, Resolution::R1080p);
+
+    // Sanity: identical inputs with blocklisted=false would GRAB (nothing on disk).
+    let grab = decide(
+        content_ref(),
+        &rel,
+        &p,
+        None,
+        &ctx(&prof, &formats, &ranking),
+    )
+    .unwrap();
+    assert!(
+        matches!(grab.verdict, Verdict::Grab { .. }),
+        "control: a non-blocklisted allowed release grabs, got {:?}",
+        grab.verdict
+    );
+
+    // The same release, blocklisted, is hard-rejected.
+    let blocklisted_ctx = DecisionContext {
+        profile: &prof,
+        custom_formats: &formats,
+        ranking: &ranking,
+        blocklisted: true,
+        proper_repack_policy: ProperRepackPolicy::Prefer,
+    };
+    let decision = decide(content_ref(), &rel, &p, None, &blocklisted_ctx).unwrap();
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Reject {
+                reason: cellarr_core::RejectReason::Blocklisted
+            }
+        ),
+        "a blocklisted release must be rejected as Blocklisted, got {:?}",
+        decision.verdict
+    );
+}
+
+#[test]
 fn quality_rank_dominates_a_lower_quality_with_a_huge_cf_score_is_never_an_upgrade() {
     // Candidate: WEBDL-1080p (rank 20) carrying a +5000 CF score.
     // On disk:   Bluray-1080p (rank 21) with CF score 0.

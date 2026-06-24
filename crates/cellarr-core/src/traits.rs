@@ -155,6 +155,19 @@ pub struct DownloadStatus {
     /// Seeding time in seconds for torrents, when known. `None` for Usenet. Used
     /// to time-gate removal.
     pub seeding_time_secs: Option<u64>,
+    /// Connected peers (seeds + leechers) for torrents, when known. `None` means
+    /// the client does not report it (Usenet, or a client that omits it) — which
+    /// the stall detector treats as *unknown*, never as zero. A reported `Some(0)`
+    /// is a torrent with no one to download from: a stall signal when paired with
+    /// stagnant [`progress`](DownloadStatus::progress).
+    #[serde(default)]
+    pub peers: Option<u32>,
+    /// The client's terminal error text, when it reports one (qBittorrent's
+    /// `error`/`missingFiles`, SABnzbd's `Failed` status line). Surfaced on a
+    /// [`DownloadState::Failed`] so the failure detail — and the blocklist reason
+    /// — names *why* the download died rather than a bare "download failed".
+    #[serde(default)]
+    pub error_string: Option<String>,
 }
 
 impl DownloadStatus {
@@ -168,6 +181,8 @@ impl DownloadStatus {
             content_path: None,
             ratio: None,
             seeding_time_secs: None,
+            peers: None,
+            error_string: None,
         }
     }
 

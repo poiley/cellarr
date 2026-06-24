@@ -75,6 +75,12 @@ struct TorrentInfo {
     ratio: f64,
     #[serde(default)]
     seeding_time: u64,
+    /// Connected seeds, for the no-peers stall signal.
+    #[serde(default)]
+    num_seeds: u32,
+    /// Connected leechers, for the no-peers stall signal.
+    #[serde(default)]
+    num_leechs: u32,
     #[serde(default)]
     category: String,
 }
@@ -481,6 +487,8 @@ fn progress_from_info(info: &TorrentInfo) -> DownloadProgress {
         },
         ratio: Some(info.ratio),
         seeding_time_secs: Some(info.seeding_time),
+        peers: Some(info.num_seeds + info.num_leechs),
+        error_string: None,
         category: if info.category.is_empty() {
             None
         } else {

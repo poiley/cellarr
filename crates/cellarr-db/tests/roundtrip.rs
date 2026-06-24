@@ -813,3 +813,105 @@ async fn verdict_decision_persists_in_log() {
     let got = log.for_run(run_id).await.expect("query");
     assert_eq!(got[0].decision, Some(decision));
 }
+
+#[tokio::test]
+async fn blocklist_add_list_is_blocklisted_and_remove_round_trip() {
+    use cellarr_core::blocklist::{BlocklistEntry, BlocklistRepository};
+
+    let (_dir, db) = temp_db().await;
+
+    // The blocklist FK requires a real library + content node.
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data/movies".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    db.config()
+        .upsert_library(&library)
+        .await
+        .expect("upsert library");
+    let content_id = ContentId::new();
+    db.content()
+        .upsert(&movie_node(library.id, content_id))
+        .await
+        .expect("upsert content");
+
+    let bad = Release {
+        indexer_id: IndexerId::new(),
+        title: "Bad.Movie.2024.1080p.BluRay-BAD".to_string(),
+        download_url: "magnet:?xt=urn:btih:bad".to_string(),
+        guid: Some("guid-bad".to_string()),
+        protocol: Protocol::Torrent,
+        size: Some(8_000_000_000),
+        seeders: Some(0),
+        indexer_flags: vec![],
+    };
+    let other = Release {
+        indexer_id: IndexerId::new(),
+        title: "Good.Movie.2024.1080p.WEB-DL-OK".to_string(),
+        download_url: "magnet:?xt=urn:btih:ok".to_string(),
+        guid: Some("guid-ok".to_string()),
+        protocol: Protocol::Torrent,
+        size: Some(8_000_000_000),
+        seeders: Some(50),
+        indexer_flags: vec![],
+    };
+
+    let blocklist = db.blocklist();
+    // Not blocklisted before adding.
+    assert!(!blocklist
+        .is_blocklisted(content_id, &bad)
+        .await
+        .expect("query"));
+
+    let entry = BlocklistEntry::from_release(
+        content_id,
+        &bad,
+        "download failed",
+        OffsetDateTime::now_utc(),
+    );
+    blocklist.add(&entry).await.expect("add");
+
+    // is_blocklisted matches the added release by its stable key, and a different
+    // release for the same content is NOT blocklisted.
+    assert!(blocklist
+        .is_blocklisted(content_id, &bad)
+        .await
+        .expect("query bad"));
+    assert!(!blocklist
+        .is_blocklisted(content_id, &other)
+        .await
+        .expect("query other"));
+
+    // list returns the entry.
+    let listed = blocklist.list().await.expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].title, "Bad.Movie.2024.1080p.BluRay-BAD");
+
+    // add is idempotent on (content_id, release_key): re-adding refreshes, not dups.
+    let refreshed = BlocklistEntry::from_release(
+        content_id,
+        &bad,
+        "download stalled",
+        OffsetDateTime::now_utc(),
+    );
+    blocklist.add(&refreshed).await.expect("re-add");
+    let listed = blocklist.list().await.expect("list after re-add");
+    assert_eq!(listed.len(), 1, "re-blocklisting the same release dedupes");
+    assert_eq!(listed[0].reason, "download stalled", "reason refreshed");
+
+    // remove clears it (idempotent on a second call), and it is grabbable again.
+    let removed_id = &listed[0].id;
+    assert!(blocklist.remove(removed_id).await.expect("remove"));
+    assert!(
+        !blocklist.remove(removed_id).await.expect("remove again"),
+        "removing an already-removed entry returns false"
+    );
+    assert!(!blocklist
+        .is_blocklisted(content_id, &bad)
+        .await
+        .expect("query after remove"));
+    assert!(blocklist.list().await.expect("list empty").is_empty());
+}
