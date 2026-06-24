@@ -1,7 +1,9 @@
 //! The structural `content` tree repository.
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
-use cellarr_core::repo::ContentRepository;
+use cellarr_core::repo::{ContentRepository, DeletedContent};
 use cellarr_core::{
     ContentId, ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, LibraryId,
     MediaType, TitleId,
@@ -167,6 +169,143 @@ impl ContentRepo {
         .fetch_optional(&self.pool)
         .await?;
         row.map(row_to_node).transpose()
+    }
+
+    /// Delete a content node identified by `id`, but only when its `kind` matches
+    /// `expected_kind`. Returns the [`DeletedContent`] receipt, or `None` when the
+    /// node does not exist or is the wrong kind (so the caller can 404 the
+    /// addressed surface). Deletes the whole subtree (a series → its
+    /// season/episode descendants), the orphaned `media_file` rows, the FTS index
+    /// rows, and the node's history — all in **one** transaction so a crash can
+    /// never leave the library half-deleted.
+    ///
+    /// `content_file` and `content_meta` rows fall away via `ON DELETE CASCADE`
+    /// when the content node is removed; the virtual FTS table and `media_file`
+    /// (referenced *by* `content_file`, so not reached by the content cascade) are
+    /// cleaned explicitly here.
+    async fn delete_subtree(
+        &self,
+        id: ContentId,
+        expected_kind: ContentKind,
+    ) -> Result<Option<DeletedContent>> {
+        let want_kind = kind_to_str(expected_kind)?;
+        let id_str = id.to_string();
+        // The receipt is filled inside the write transaction and read back out
+        // after it commits (the writer job returns `()` on success).
+        let receipt: Arc<Mutex<Option<DeletedContent>>> = Arc::new(Mutex::new(None));
+        let receipt_inner = Arc::clone(&receipt);
+
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    // Guard the kind first: a wrong-kind / missing node deletes
+                    // nothing and leaves an empty receipt → the caller 404s.
+                    let row = sqlx::query("SELECT kind FROM content WHERE id = ?1")
+                        .bind(&id_str)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                    let Some(row) = row else { return Ok(()) };
+                    let kind: String = row.try_get("kind")?;
+                    if kind != want_kind {
+                        return Ok(());
+                    }
+
+                    // 1. Collect the whole subtree (root + descendants) by walking
+                    //    the adjacency list breadth-first. A depth/size bound is
+                    //    implicit: every id is visited once (we never revisit), so
+                    //    even a malformed cycle terminates.
+                    let mut ids: Vec<String> = vec![id_str.clone()];
+                    let mut frontier: Vec<String> = vec![id_str.clone()];
+                    while let Some(parent) = frontier.pop() {
+                        let children = sqlx::query("SELECT id FROM content WHERE parent_id = ?1")
+                            .bind(&parent)
+                            .fetch_all(&mut *conn)
+                            .await?;
+                        for c in children {
+                            let cid: String = c.try_get("id")?;
+                            if !ids.contains(&cid) {
+                                ids.push(cid.clone());
+                                frontier.push(cid);
+                            }
+                        }
+                    }
+
+                    // 2. The media files linked anywhere under the subtree, and
+                    //    their on-disk paths (the receipt the file step recycles).
+                    let mut media_ids: Vec<String> = Vec::new();
+                    let mut media_paths: Vec<String> = Vec::new();
+                    for cid in &ids {
+                        let rows = sqlx::query(
+                            "SELECT mf.id AS id, mf.path AS path
+                             FROM content_file cf
+                             JOIN media_file mf ON mf.id = cf.media_file_id
+                             WHERE cf.content_id = ?1",
+                        )
+                        .bind(cid)
+                        .fetch_all(&mut *conn)
+                        .await?;
+                        for r in rows {
+                            let mid: String = r.try_get("id")?;
+                            if !media_ids.contains(&mid) {
+                                media_ids.push(mid);
+                                media_paths.push(r.try_get("path")?);
+                            }
+                        }
+                    }
+
+                    // 3. Clean the rows the content cascade does NOT reach: the FTS
+                    //    virtual table, the per-node history, and any grab whose
+                    //    JSON content_ref targets a removed node.
+                    for cid in &ids {
+                        sqlx::query("DELETE FROM content_fts WHERE content_id = ?1")
+                            .bind(cid)
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("DELETE FROM history WHERE content_id = ?1")
+                            .bind(cid)
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query(
+                            "DELETE FROM grab WHERE json_extract(content_ref, '$.id') = ?1",
+                        )
+                        .bind(cid)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+
+                    // 4. Remove the root node. `parent_id ... ON DELETE CASCADE`
+                    //    takes the descendants, `content_file`, and `content_meta`
+                    //    with it.
+                    sqlx::query("DELETE FROM content WHERE id = ?1")
+                        .bind(&id_str)
+                        .execute(&mut *conn)
+                        .await?;
+
+                    // 5. The media_file rows are referenced *by* content_file (the
+                    //    cascade runs the other way), so removing the content does
+                    //    not touch them. Delete the now-orphaned files explicitly.
+                    for mid in &media_ids {
+                        sqlx::query("DELETE FROM media_file WHERE id = ?1")
+                            .bind(mid)
+                            .execute(&mut *conn)
+                            .await?;
+                    }
+
+                    let content_ids = ids
+                        .iter()
+                        .map(|s| parse_uuid("content_id", s).map(ContentId::from_uuid))
+                        .collect::<Result<Vec<_>>>()?;
+                    *receipt_inner.lock().expect("receipt mutex poisoned") = Some(DeletedContent {
+                        content_ids,
+                        media_file_paths: media_paths,
+                    });
+                    Ok(())
+                })
+            })
+            .await?;
+
+        let out = receipt.lock().expect("receipt mutex poisoned").take();
+        Ok(out)
     }
 }
 
@@ -369,6 +508,14 @@ impl ContentRepository for ContentRepo {
         .fetch_optional(&self.pool)
         .await?;
         row.map(row_to_content_metadata).transpose()
+    }
+
+    async fn delete_movie(&self, id: ContentId) -> Result<Option<DeletedContent>> {
+        self.delete_subtree(id, ContentKind::Movie).await
+    }
+
+    async fn delete_series(&self, id: ContentId) -> Result<Option<DeletedContent>> {
+        self.delete_subtree(id, ContentKind::Series).await
     }
 }
 

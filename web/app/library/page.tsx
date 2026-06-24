@@ -152,6 +152,126 @@ const SortHeader: React.FC<{
   );
 };
 
+/**
+ * The bulk-delete confirm dialog: a destructive-action gate before the
+ * library-destroying DELETE fan-out. Composed only from SRCL primitives — a
+ * bordered <Card> floated over the theme overlay scrim (mirroring the settings
+ * ConfirmDialog), an unmistakable danger button (tinted with --ansi-9-red + a ✗
+ * glyph), and two opt-in <Checkbox>es that both default OFF (safe: remove only
+ * the records, keep the files). Dismisses on Escape. It does not delete by
+ * itself — it only surfaces the choice and calls back.
+ */
+const DANGER_STYLE: React.CSSProperties = {
+  background: 'var(--ansi-9-red)',
+  color: 'var(--ansi-15-white)',
+};
+
+const BulkDeleteDialog: React.FC<{
+  items: LibraryItem[];
+  deleteFiles: boolean;
+  addExclusion: boolean;
+  pending: boolean;
+  onToggleDeleteFiles: (next: boolean) => void;
+  onToggleAddExclusion: (next: boolean) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}> = ({
+  items,
+  deleteFiles,
+  addExclusion,
+  pending,
+  onToggleDeleteFiles,
+  onToggleAddExclusion,
+  onConfirm,
+  onCancel,
+}) => {
+  const count = items.length;
+
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !pending) onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, pending]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--theme-overlay)',
+        zIndex: 60,
+        padding: '2ch',
+      }}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={`Delete ${count} item${count === 1 ? '' : 's'}`}
+        style={{ maxWidth: '64ch', width: '100%' }}
+      >
+        <Card title={`✗ Delete ${count} item${count === 1 ? '' : 's'}`} mode="left">
+          <Text style={{ margin: '0.5ch 0' }}>
+            The following will be removed from the library:
+          </Text>
+          {/* What's about to go — capped so a huge selection can't blow out the
+              dialog; the leftover count is summarised. */}
+          <ul style={{ margin: '1ch 0', paddingLeft: '2ch', maxHeight: '24ch', overflow: 'auto' }}>
+            {items.slice(0, 12).map((item) => (
+              <li key={item.id}>
+                {item.title}
+                {item.year ? ` (${item.year})` : ''} — {item.kind}
+              </li>
+            ))}
+            {count > 12 ? <li>…and {count - 12} more</li> : null}
+          </ul>
+
+          <div style={{ margin: '1ch 0' }}>
+            <Checkbox
+              name="bulk-delete-files"
+              defaultChecked={deleteFiles}
+              onChange={(e) => onToggleDeleteFiles(e.target.checked)}
+            >
+              Also delete files from disk
+            </Checkbox>
+            <Checkbox
+              name="bulk-delete-exclusion"
+              defaultChecked={addExclusion}
+              onChange={(e) => onToggleAddExclusion(e.target.checked)}
+            >
+              Add to import-exclusion list (don&rsquo;t re-add on the next sync)
+            </Checkbox>
+          </div>
+
+          <Text style={{ opacity: 0.5, margin: '1ch 0' }}>
+            {deleteFiles
+              ? 'Files are recycled into the configured recycle bin when set, otherwise unlinked. This cannot be undone.'
+              : 'Only the library records are removed; the media files stay on disk.'}
+          </Text>
+
+          <div style={{ display: 'flex', gap: '1ch', marginTop: '1ch' }}>
+            <Button
+              aria-label={`Delete ${count} item${count === 1 ? '' : 's'}`}
+              style={DANGER_STYLE}
+              isDisabled={pending}
+              onClick={pending ? undefined : onConfirm}
+            >
+              {pending ? 'Deleting…' : `✗ Delete ${count} item${count === 1 ? '' : 's'}`}
+            </Button>
+            <Button theme="SECONDARY" isDisabled={pending} onClick={pending ? undefined : onCancel}>
+              Cancel
+            </Button>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
 function LibraryBrowser() {
   const router = useRouter();
   const params = useSearchParams();
@@ -166,6 +286,13 @@ function LibraryBrowser() {
   const [sort, setSort] = React.useState<SortState>({ key: 'title', dir: 'asc' });
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [busy, setBusy] = React.useState(false);
+  // Bulk-delete confirm dialog: null when closed, otherwise the rows it targets.
+  // The dialog is the only path to a delete — the library-destroying action is
+  // never one click away. `deleteFiles`/`addImportExclusion` start OFF (the safe
+  // default: remove only the records, keep the files on disk).
+  const [deleteDialog, setDeleteDialog] = React.useState<LibraryItem[] | null>(null);
+  const [deleteFiles, setDeleteFiles] = React.useState(false);
+  const [addExclusion, setAddExclusion] = React.useState(false);
 
   // Load the library list once.
   React.useEffect(() => {
@@ -313,15 +440,73 @@ function LibraryBrowser() {
     }
   };
 
-  // Bulk delete is intentionally NOT wired: the v3 shim exposes no
-  // DELETE /movie/{id} or /series/{id} route (only GET + PUT monitored), and
-  // cellarr's persistence layer has no movie/series removal seam yet. Surfacing
-  // a button that no-ops or fakes success would risk the user's library, so we
-  // defer it and tell the operator plainly.
-  // TODO(library): wire bulk delete once the backend grows DELETE /movie/{id} +
-  // /series/{id} (and a confirm dialog) — frontend selection plumbing is ready.
-  const deleteSelected = () => {
-    error('Delete is not available yet — the daemon has no movie/series removal endpoint.');
+  // Open the bulk-delete confirm dialog for the current selection. The dialog
+  // (not this opener) carries the destructive gate + the two opt-in toggles, so
+  // a stray click on the bar's Delete only surfaces the dialog — it never
+  // deletes. Toggles reset to their safe default each time the dialog opens.
+  const openDeleteDialog = () => {
+    if (visibleSelected.length === 0 || busy) return;
+    setDeleteFiles(false);
+    setAddExclusion(false);
+    setDeleteDialog(visibleSelected);
+  };
+
+  const closeDeleteDialog = () => {
+    if (busy) return;
+    setDeleteDialog(null);
+  };
+
+  // Confirmed bulk delete, backed by the real v3 removal routes (DELETE
+  // /movie/{id} + /series/{id}). The dialog's toggles decide whether the media
+  // files are recycled/unlinked (deleteFiles) and whether an import-exclusion is
+  // written so a sync cannot re-add the title (addImportExclusion). We fan out
+  // one DELETE per row and report a single summary toast, then drop the deleted
+  // rows from the local view.
+  const confirmDelete = async () => {
+    const targets = deleteDialog;
+    if (!targets || targets.length === 0 || busy) return;
+    const count = targets.length;
+    const opts = { deleteFiles, addImportExclusion: addExclusion };
+    setBusy(true);
+    info(`Deleting ${count} item${count === 1 ? '' : 's'}…`);
+    const deletedIds: string[] = [];
+    let failed = 0;
+    for (const item of targets) {
+      try {
+        if (item.kind === 'series') {
+          await api.deleteSeries(item.id, opts);
+        } else {
+          await api.deleteMovie(item.id, opts);
+        }
+        deletedIds.push(item.id);
+      } catch {
+        failed += 1;
+      }
+    }
+    setBusy(false);
+    setDeleteDialog(null);
+    // Drop the deleted rows from the local view so the table reflects reality
+    // without a full reload.
+    if (deletedIds.length > 0) {
+      const gone = new Set(deletedIds);
+      setContent((prev) =>
+        prev.phase === 'ready'
+          ? { phase: 'ready', data: prev.data.filter((i) => !gone.has(i.id)) }
+          : prev
+      );
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of deletedIds) next.delete(id);
+        return next;
+      });
+    }
+    if (failed === 0) {
+      success(`Deleted ${deletedIds.length} item${deletedIds.length === 1 ? '' : 's'}.`);
+    } else if (deletedIds.length === 0) {
+      error(`Could not delete any items (${failed} failed).`);
+    } else {
+      error(`Deleted ${deletedIds.length}, but ${failed} failed.`);
+    }
   };
 
   return (
@@ -434,7 +619,11 @@ function LibraryBrowser() {
                   >
                     ▸ Search missing
                   </Button>
-                  <Button theme="SECONDARY" onClick={deleteSelected} isDisabled={busy}>
+                  <Button
+                    theme="SECONDARY"
+                    onClick={openDeleteDialog}
+                    isDisabled={busy}
+                  >
                     ✗ Delete
                   </Button>
                   <Button theme="SECONDARY" onClick={clearSelection} isDisabled={busy}>
@@ -530,6 +719,21 @@ function LibraryBrowser() {
             </>
           ) : null}
         </Card>
+      ) : null}
+
+      {deleteDialog ? (
+        <BulkDeleteDialog
+          items={deleteDialog}
+          deleteFiles={deleteFiles}
+          addExclusion={addExclusion}
+          pending={busy}
+          onToggleDeleteFiles={setDeleteFiles}
+          onToggleAddExclusion={setAddExclusion}
+          onConfirm={() => {
+            void confirmDelete();
+          }}
+          onCancel={closeDeleteDialog}
+        />
       ) : null}
     </AppShell>
   );

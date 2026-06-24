@@ -53,6 +53,61 @@ async fn start_with(auth: AuthConfig) -> TestServer {
     start_with_inner(auth, None).await
 }
 
+/// Spin up an open server whose content delete recycles removed media into
+/// `recycle_bin` (the media-management `recycleBinPath` setting) instead of
+/// unlinking it. Used by the delete-files tests to prove the reversible path.
+pub async fn start_with_recycle_bin(recycle_bin: std::path::PathBuf) -> TestServer {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("cellarr-test.db");
+    let db = Database::open(db_path.to_str().expect("utf-8 path"))
+        .await
+        .expect("open file db");
+    let state = AppState::new(db, AuthConfig::disabled()).with_recycle_bin_path(recycle_bin);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let base_url = format!("http://{addr}");
+    let serve_state = state.clone();
+    let handle = tokio::spawn(async move {
+        let _ = cellarr_api::serve(listener, serve_state).await;
+    });
+    TestServer {
+        base_url,
+        state,
+        _dir: dir,
+        _handle: handle,
+    }
+}
+
+/// Insert a library of the given media type with an explicit root folder (a real
+/// directory under a test temp dir), so file-deleting tests can place media on
+/// disk inside the library boundary.
+pub async fn seed_library_rooted(
+    state: &AppState,
+    media_type: MediaType,
+    name: &str,
+    root: &str,
+) -> LibraryId {
+    let profile_id = seed_profile(state, &format!("{name}-profile")).await;
+    let library = Library {
+        id: LibraryId::new(),
+        media_type,
+        name: name.to_string(),
+        root_folders: vec![root.to_string()],
+        default_quality_profile: profile_id,
+    };
+    let id = library.id;
+    state
+        .db
+        .config()
+        .upsert_library(&library)
+        .await
+        .expect("seed library");
+    id
+}
+
 async fn start_with_inner(
     auth: AuthConfig,
     metadata: Option<std::sync::Arc<dyn cellarr_api::MetadataLookup>>,

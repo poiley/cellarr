@@ -267,6 +267,45 @@ export class CellarrClient {
     });
   }
 
+  /**
+   * Delete a movie (`DELETE /api/v3/movie/{id}`). `deleteFiles` recycles/unlinks
+   * its media; `addImportExclusion` records an exclusion so an import list cannot
+   * re-add it. Both default off, matching the Radarr delete contract.
+   */
+  deleteMovie(
+    id: string,
+    opts: { deleteFiles?: boolean; addImportExclusion?: boolean } = {},
+    signal?: AbortSignal
+  ) {
+    return this.requestV3<void>(`/movie/${id}`, {
+      method: 'DELETE',
+      query: {
+        deleteFiles: opts.deleteFiles ?? false,
+        addImportExclusion: opts.addImportExclusion ?? false,
+      },
+      signal,
+    });
+  }
+
+  /**
+   * Delete a series and its season/episode subtree (`DELETE /api/v3/series/{id}`).
+   * Same flags as {@link deleteMovie}; mirrors the Sonarr delete contract.
+   */
+  deleteSeries(
+    id: string,
+    opts: { deleteFiles?: boolean; addImportExclusion?: boolean } = {},
+    signal?: AbortSignal
+  ) {
+    return this.requestV3<void>(`/series/${id}`, {
+      method: 'DELETE',
+      query: {
+        deleteFiles: opts.deleteFiles ?? false,
+        addImportExclusion: opts.addImportExclusion ?? false,
+      },
+      signal,
+    });
+  }
+
   /** Free-text movie lookup (`/api/v3/movie/lookup?term=…`). */
   movieLookup(term: string, signal?: AbortSignal) {
     return this.requestV3<LookupCandidate[]>('/movie/lookup', {

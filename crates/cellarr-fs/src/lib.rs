@@ -13,6 +13,8 @@
 //! - [`scan`] — inventory an existing library root (read-only).
 //! - [`plan_import`] — the **Stage** step: a pure plan, no mutation.
 //! - [`execute_import`] — the **Verify→Commit→Cleanup** steps, crash-safe.
+//! - [`recycle_or_delete`] — crash-safe removal of a content's media files,
+//!   into the recycle bin (reversible) or by unlink, never outside the library.
 //! - [`render_name`] — the deterministic rename engine.
 //! - [`hardlink_or_copy`] — the durable placement primitive.
 //! - [`check_same_filesystem`] — the loud cross-filesystem (silent-copy-fallback)
@@ -27,6 +29,7 @@ mod fsops;
 mod health;
 mod import;
 mod nfo;
+mod recycle;
 mod rename;
 mod scan;
 
@@ -40,6 +43,7 @@ pub use import::{
     NoHooks, PlacedAs,
 };
 pub use nfo::{render_nfo, sidecar_path, write_sidecar, NfoKind, NfoMetadata};
+pub use recycle::{recycle_or_delete, RecycleDisposition, RecycleResult};
 pub use rename::{
     render_name, render_name_with, ColonReplacement, MultiEpisodeStyle, RenderOptions,
     TargetPlatform,

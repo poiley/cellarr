@@ -144,6 +144,13 @@ impl Daemon {
             .with_context(|| format!("creating artwork dir {}", artwork_dir.display()))?;
         let state = state.with_artwork_dir(artwork_dir);
 
+        // The recycle bin a `deleteFiles` content delete moves removed media into
+        // (making the delete reversible). Unset → deletes unlink outright.
+        let state = match config.media_management.recycle_bin_path.clone() {
+            Some(bin) => state.with_recycle_bin_path(bin),
+            None => state,
+        };
+
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;
 

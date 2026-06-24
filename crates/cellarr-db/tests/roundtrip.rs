@@ -1085,3 +1085,283 @@ async fn blocklist_add_list_is_blocklisted_and_remove_round_trip() {
         .expect("query after remove"));
     assert!(blocklist.list().await.expect("list empty").is_empty());
 }
+
+#[tokio::test]
+async fn delete_movie_removes_node_files_and_links() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data/movies".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    let movie = movie_node(library.id, ContentId::new());
+    content.upsert(&movie).await.unwrap();
+    content.index_title(movie.id, "Blade Runner").await.unwrap();
+    content
+        .set_metadata(
+            movie.id,
+            &cellarr_core::ContentMetadata {
+                title: Some("Blade Runner".into()),
+                year: Some(1982),
+                overview: None,
+                runtime: Some(117),
+                air_date: None,
+                digital_date: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/data/movies/Blade Runner (1982)/movie.mkv".to_string(),
+        size: 9_000_000_000,
+        quality: Quality::new("Bluray-1080p", 14),
+        languages: vec!["en".to_string()],
+        media_info: None,
+        custom_format_score: None,
+        release_type: None,
+    };
+    media_files.create(&file).await.unwrap();
+    media_files.link(movie.id, file.id).await.unwrap();
+
+    // The delete returns the receipt: the node id and the file path to recycle.
+    let receipt = content
+        .delete_movie(movie.id)
+        .await
+        .expect("delete")
+        .expect("a movie was deleted");
+    assert_eq!(receipt.content_ids, vec![movie.id]);
+    assert_eq!(
+        receipt.media_file_paths,
+        vec!["/data/movies/Blade Runner (1982)/movie.mkv".to_string()]
+    );
+
+    // The node, its metadata, its FTS row, and the media_file row are all gone.
+    assert!(content.get(movie.id).await.unwrap().is_none());
+    assert!(content.metadata(movie.id).await.unwrap().is_none());
+    assert!(media_files.get(file.id).await.unwrap().is_none());
+    let fts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_fts WHERE content_id = ?1")
+        .bind(movie.id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(fts, 0, "FTS index row must be removed too");
+    let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_file WHERE content_id = ?1")
+        .bind(movie.id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(links, 0, "content_file link must cascade away");
+}
+
+#[tokio::test]
+async fn delete_movie_wrong_kind_or_missing_is_none() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // A series node addressed as a movie deletes nothing.
+    let series = ContentNode {
+        id: ContentId::new(),
+        library_id: library.id,
+        media_type: MediaType::Tv,
+        parent_id: None,
+        kind: ContentKind::Series,
+        coords: Coordinates::Episode {
+            season: 0,
+            episode: 0,
+            absolute: None,
+        },
+        monitored: true,
+        title_id: None,
+    };
+    content.upsert(&series).await.unwrap();
+    assert!(content.delete_movie(series.id).await.unwrap().is_none());
+    assert!(content.get(series.id).await.unwrap().is_some(), "untouched");
+
+    // A missing id is None, not an error.
+    assert!(content
+        .delete_movie(ContentId::new())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn delete_series_removes_whole_subtree() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // series -> season -> two episodes; one file linked to an episode.
+    let series = ContentNode {
+        id: ContentId::new(),
+        library_id: library.id,
+        media_type: MediaType::Tv,
+        parent_id: None,
+        kind: ContentKind::Series,
+        coords: Coordinates::Episode {
+            season: 0,
+            episode: 0,
+            absolute: None,
+        },
+        monitored: true,
+        title_id: None,
+    };
+    content.upsert(&series).await.unwrap();
+    let season = ContentNode {
+        id: ContentId::new(),
+        parent_id: Some(series.id),
+        kind: ContentKind::Season,
+        coords: Coordinates::SeasonPack { season: 1 },
+        ..series.clone()
+    };
+    content.upsert(&season).await.unwrap();
+    let ep1 = ContentNode {
+        id: ContentId::new(),
+        parent_id: Some(season.id),
+        kind: ContentKind::Episode,
+        coords: Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+        ..series.clone()
+    };
+    let ep2 = ContentNode {
+        id: ContentId::new(),
+        parent_id: Some(season.id),
+        kind: ContentKind::Episode,
+        coords: Coordinates::Episode {
+            season: 1,
+            episode: 2,
+            absolute: None,
+        },
+        ..series.clone()
+    };
+    content.upsert(&ep1).await.unwrap();
+    content.upsert(&ep2).await.unwrap();
+
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/tv/Show/S01E01.mkv".to_string(),
+        size: 2_000_000_000,
+        quality: Quality::new("WEBDL-1080p", 13),
+        languages: vec![],
+        media_info: None,
+        custom_format_score: None,
+        release_type: None,
+    };
+    media_files.create(&file).await.unwrap();
+    media_files.link(ep1.id, file.id).await.unwrap();
+
+    // A history row on the episode should be cleaned by the delete.
+    db.history()
+        .append(&HistoryRecord {
+            at: OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+            content_id: ep1.id,
+            run_id: PipelineRunId::new(),
+            event: HistoryEvent::Imported {
+                grab_id: cellarr_core::GrabId::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let receipt = content
+        .delete_series(series.id)
+        .await
+        .expect("delete")
+        .expect("a series was deleted");
+    // The receipt covers every node in the subtree.
+    assert_eq!(receipt.content_ids.len(), 4);
+    for id in [series.id, season.id, ep1.id, ep2.id] {
+        assert!(receipt.content_ids.contains(&id));
+    }
+    assert_eq!(
+        receipt.media_file_paths,
+        vec!["/tv/Show/S01E01.mkv".to_string()]
+    );
+
+    // Every node, the file, and the episode's history are gone.
+    for id in [series.id, season.id, ep1.id, ep2.id] {
+        assert!(content.get(id).await.unwrap().is_none());
+    }
+    assert!(media_files.get(file.id).await.unwrap().is_none());
+    assert!(db.history().for_content(ep1.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn delete_movie_leaves_other_content_intact() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    let keep = movie_node(library.id, ContentId::new());
+    let drop = movie_node(library.id, ContentId::new());
+    content.upsert(&keep).await.unwrap();
+    content.upsert(&drop).await.unwrap();
+
+    // A file shared by neither — one per movie — proves we only orphan the right one.
+    let keep_file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/data/keep.mkv".to_string(),
+        size: 1,
+        quality: Quality::new("Bluray-1080p", 14),
+        languages: vec![],
+        media_info: None,
+        custom_format_score: None,
+        release_type: None,
+    };
+    media_files.create(&keep_file).await.unwrap();
+    media_files.link(keep.id, keep_file.id).await.unwrap();
+
+    content
+        .delete_movie(drop.id)
+        .await
+        .unwrap()
+        .expect("deleted");
+
+    // The kept movie and its file survive untouched.
+    assert!(content.get(keep.id).await.unwrap().is_some());
+    assert!(media_files.get(keep_file.id).await.unwrap().is_some());
+    assert!(content.get(drop.id).await.unwrap().is_none());
+}

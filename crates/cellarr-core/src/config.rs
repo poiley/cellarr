@@ -18,6 +18,30 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{DownloadClientId, IndexerId};
 use crate::release::Protocol;
 
+/// Media-management settings: the cross-library file-handling policy.
+///
+/// This is the small set of file-handling toggles the *arr ecosystem groups
+/// under "Media Management". cellarr keeps only the fields its file operations
+/// actually reason about; the long tail of cosmetic naming options stays in the
+/// `/api/v3` projection, not here.
+///
+/// The headline field is [`recycle_bin_path`](Self::recycle_bin_path): when set,
+/// a content delete that removes media **moves** the files into the recycle bin
+/// (preserving their layout relative to the library root) instead of unlinking
+/// them, so a mistaken delete is reversible. `None` (the default) unlinks
+/// directly, matching the *arr default of an empty recycle-bin path. Mirrors
+/// Sonarr/Radarr `recycleBin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaManagement {
+    /// The recycle-bin directory deleted media is moved into instead of being
+    /// unlinked. `None`/empty means delete unlinks the file outright (the *arr
+    /// default). An absolute path: deleted files land under it, preserving their
+    /// path relative to the library root so a restore is unambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycle_bin_path: Option<String>,
+}
+
 /// A configured root folder a library imports into.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootFolder {

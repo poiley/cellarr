@@ -38,3 +38,6 @@ web/out/
 # python bytecode (tests/e2e mock)
 __pycache__/
 *.pyc
+
+# agent verify screenshots
+.run-screenshots/

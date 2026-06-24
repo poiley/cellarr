@@ -43,6 +43,25 @@ pub struct Config {
     pub tvdb: TvdbConfig,
     /// TMDb (movie metadata) credentials, from `CELLARR_TMDB__*`.
     pub tmdb: TmdbConfig,
+    /// Media-management file-handling settings (the recycle-bin path a delete
+    /// moves removed media into instead of unlinking).
+    pub media_management: MediaManagementConfig,
+}
+
+/// Media-management file-handling configuration.
+///
+/// The operational mirror of the *arr "Media Management" section: file-handling
+/// toggles that change how cellarr touches the library on disk. Only the small
+/// set cellarr's file ops reason about lives here; the cosmetic naming options
+/// stay in the `/api/v3` projection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaManagementConfig {
+    /// The recycle-bin directory a `deleteFiles` content delete moves removed
+    /// media into (preserving its layout relative to the library root), making a
+    /// mistaken delete reversible. `None`/unset unlinks the files outright (the
+    /// *arr default). From `CELLARR_MEDIA_MANAGEMENT__RECYCLE_BIN_PATH`.
+    pub recycle_bin_path: Option<PathBuf>,
 }
 
 /// HTTP API server settings.
@@ -129,6 +148,7 @@ impl Default for Config {
             metrics: MetricsConfig::default(),
             tvdb: TvdbConfig::default(),
             tmdb: TmdbConfig::default(),
+            media_management: MediaManagementConfig::default(),
         }
     }
 }

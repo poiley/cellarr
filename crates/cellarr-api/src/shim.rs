@@ -185,8 +185,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/rootFolder/{id}", delete(delete_root_folder))
         .route("/movie", post(add_movie))
         .route("/movie/{id}", put(update_content))
+        .route("/movie/{id}", delete(delete_movie))
         .route("/series", post(add_series))
         .route("/series/{id}", put(update_content))
+        .route("/series/{id}", delete(delete_series))
         .route("/release", post(grab_release))
         .route("/command", post(command))
         .route("/tag", post(create_tag))
@@ -3103,6 +3105,183 @@ async fn update_content(
     content_detail(&fs.state, &id, node.media_type)
         .await
         .map(Json)
+}
+
+// --- content delete (DELETE /movie/{id}, DELETE /series/{id}) --------------
+
+/// The v3 content-delete query — the same two flags Sonarr/Radarr expose on a
+/// movie/series delete. Both default to `false` (the *arr default): the record is
+/// removed but the files stay and the title may be re-added by an import list.
+#[derive(Debug, Deserialize)]
+struct DeleteContentQuery {
+    /// Whether to remove the media files from disk (recycled when a recycle bin
+    /// is configured, otherwise unlinked).
+    #[serde(rename = "deleteFiles", default)]
+    delete_files: bool,
+    /// Whether to add an import-list exclusion so the title is never re-added by a
+    /// future import-list sync.
+    #[serde(rename = "addImportExclusion", default)]
+    add_import_exclusion: bool,
+}
+
+/// v3 `DELETE /movie/{id}` — remove a movie, optionally its files and re-add
+/// guard. Mirrors Radarr: `deleteFiles` recycles/unlinks the media, and
+/// `addImportExclusion` records an exclusion so an import list cannot re-add it.
+async fn delete_movie(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteContentQuery>,
+) -> ApiResult<Json<Value>> {
+    delete_content(&fs.state, &id, MediaType::Movie, &q).await
+}
+
+/// v3 `DELETE /series/{id}` — remove a series and its whole season/episode
+/// subtree, optionally its files and a re-add guard. Mirrors Sonarr.
+async fn delete_series(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteContentQuery>,
+) -> ApiResult<Json<Value>> {
+    delete_content(&fs.state, &id, MediaType::Tv, &q).await
+}
+
+/// Resolve a v3 content id (a full uuid as the native UI sends, or the numeric
+/// projection an *arr client may key on) to the addressed [`ContentNode`] of the
+/// expected media type, or `None` when nothing matches. The numeric fallback
+/// scans the library roots of the surface and re-projects each id, the same
+/// stateless projection [`v3_resource_item`] emits.
+async fn resolve_content_node(
+    state: &AppState,
+    id: &str,
+    expected: MediaType,
+) -> ApiResult<Option<cellarr_core::ContentNode>> {
+    let content = state.db.content();
+    if let Ok(uuid) = id.parse::<uuid::Uuid>() {
+        let node = content
+            .get_node(cellarr_core::ContentId::from_uuid(uuid))
+            .await?
+            .filter(|n| n.media_type == expected);
+        return Ok(node);
+    }
+    // Numeric projection: match a root node of this media type whose projected id
+    // equals the requested integer.
+    let numeric = parse_i64(id, "content")?;
+    for lib in state.db.config().list_libraries().await? {
+        if lib.media_type != expected {
+            continue;
+        }
+        for node in content.roots(lib.id).await? {
+            if rpm_numeric_id(&node.id.to_string()) == numeric {
+                return Ok(Some(node));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The shared content-delete path for both surfaces: resolve the node, remove the
+/// DB record (subtree-aware for a series), optionally recycle/unlink its files,
+/// and optionally record an import-list exclusion. Returns `200 {}` on success —
+/// the *arr delete contract. The DB record is removed first; a file-removal
+/// failure surfaces as an error *after* the record is gone, never leaving a
+/// dangling record (the library never re-grabs a deleted title).
+async fn delete_content(
+    state: &AppState,
+    id: &str,
+    surface: MediaType,
+    q: &DeleteContentQuery,
+) -> ApiResult<Json<Value>> {
+    let Some(node) = resolve_content_node(state, id, surface).await? else {
+        // Idempotent delete: a missing/already-deleted title still returns 200,
+        // matching the *arr clients' expectation that a re-issued delete succeeds.
+        return Ok(Json(json!({})));
+    };
+
+    // The title to record as an exclusion (before the node is gone). Falls back to
+    // the id when the node was never identified with a title.
+    let title = state
+        .db
+        .content()
+        .title_for(node.id)
+        .await?
+        .unwrap_or_else(|| node.id.to_string());
+
+    // Remove the DB record (subtree for a series), getting back the file paths.
+    let content = state.db.content();
+    let receipt = match surface {
+        MediaType::Tv => content.delete_series(node.id).await?,
+        _ => content.delete_movie(node.id).await?,
+    };
+    let Some(receipt) = receipt else {
+        // Resolved a node but the typed delete found a kind mismatch; treat as a
+        // no-op 200 rather than a 500 (the resolve already kind-filtered, so this
+        // is unreachable in practice but keeps the path total).
+        return Ok(Json(json!({})));
+    };
+
+    // Optionally remove the files. The record is already gone; recycle (reversible)
+    // when a bin is configured, else unlink. Guarded against escaping the library
+    // root inside `cellarr-fs`.
+    if q.delete_files && !receipt.media_file_paths.is_empty() {
+        recycle_content_files(state, &node, &receipt.media_file_paths).await?;
+    }
+
+    // Optionally record an import-list exclusion so a sync cannot re-add it.
+    if q.add_import_exclusion {
+        add_content_exclusion(state, &node, &title).await?;
+    }
+
+    Ok(Json(json!({})))
+}
+
+/// Recycle (or unlink) the deleted content's media files, rooted at the node's
+/// library root so the path-escape guard has a boundary. Each file path is the
+/// absolute on-disk path stored on its `media_file` row.
+async fn recycle_content_files(
+    state: &AppState,
+    node: &cellarr_core::ContentNode,
+    paths: &[String],
+) -> ApiResult<()> {
+    use std::path::PathBuf;
+    // The library root the files must stay within. A library with no root folder
+    // has no boundary to enforce against, so we skip the file step rather than
+    // risk deleting with an empty/`/` root.
+    let root = state
+        .db
+        .config()
+        .get_library(node.library_id)
+        .await?
+        .and_then(|l| l.root_folders.into_iter().next());
+    let Some(root) = root.filter(|r| !r.is_empty()) else {
+        return Ok(());
+    };
+    let root = PathBuf::from(root);
+    let files: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let bin = state.recycle_bin_path.as_deref();
+    cellarr_fs::recycle_or_delete(&files, &root, bin)
+        .await
+        .map_err(|e| ApiError::Internal(format!("removing media files: {e}")))?;
+    Ok(())
+}
+
+/// Record an import-list exclusion for a deleted title, keyed by its node id so a
+/// future import-list sync skips it. cellarr does not yet resolve a title to a
+/// stable external id at delete time, so the node id is the stable exclusion key
+/// (the same key the title was added under in this library).
+async fn add_content_exclusion(
+    state: &AppState,
+    node: &cellarr_core::ContentNode,
+    title: &str,
+) -> ApiResult<()> {
+    use cellarr_core::importlist::{ImportListExclusion, ImportListRepository};
+    let exclusion = ImportListExclusion {
+        id: uuid::Uuid::new_v4().to_string(),
+        id_type: "cellarrContentId".to_string(),
+        id_value: node.id.to_string(),
+        title: title.to_string(),
+    };
+    state.db.import_lists().upsert_exclusion(&exclusion).await?;
+    Ok(())
 }
 
 // --- add -------------------------------------------------------------------

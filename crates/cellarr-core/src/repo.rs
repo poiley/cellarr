@@ -65,6 +65,45 @@ pub trait ContentRepository: Send + Sync {
         &self,
         id: ContentId,
     ) -> Result<Option<crate::media::ContentMetadata>, Self::Error>;
+
+    /// Delete a **movie** node and everything attached to it, transactionally.
+    ///
+    /// `id` must address a `movie` node; addressing a non-movie (or a missing)
+    /// node deletes nothing and returns [`None`] so the caller can 404 the
+    /// addressed kind. On success returns the [`DeletedContent`] receipt: the
+    /// content ids removed and the on-disk paths of the media files that were
+    /// detached — the input the on-disk recycle/unlink step (`cellarr-fs`) needs.
+    /// The DB removal and the file removal are deliberately split: the database
+    /// record is gone before any byte is touched, and the returned paths are what
+    /// the file step then recycles or deletes.
+    async fn delete_movie(&self, id: ContentId) -> Result<Option<DeletedContent>, Self::Error>;
+
+    /// Delete a **series** node, its season/episode subtree, and everything
+    /// attached to it, transactionally.
+    ///
+    /// `id` must address a `series` node; addressing a non-series (or a missing)
+    /// node deletes nothing and returns [`None`]. On success returns the
+    /// [`DeletedContent`] receipt covering the whole subtree, including every
+    /// media file path detached anywhere under the series.
+    async fn delete_series(&self, id: ContentId) -> Result<Option<DeletedContent>, Self::Error>;
+}
+
+/// The receipt of a content delete: what was removed from the database, and the
+/// on-disk paths the file step should now recycle or unlink.
+///
+/// Returning this (rather than touching the filesystem inside the repository)
+/// keeps the database layer free of file I/O and lets the caller honor the
+/// `deleteFiles` choice: the DB record is always removed; the files are removed
+/// only when asked, using [`media_file_paths`](Self::media_file_paths).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletedContent {
+    /// The content node ids removed (the addressed node plus, for a series, its
+    /// whole subtree).
+    pub content_ids: Vec<ContentId>,
+    /// The on-disk paths of the media files detached by the delete (the files
+    /// that became orphaned and were removed from `media_file`). These are what
+    /// the caller recycles/unlinks when `deleteFiles` is set.
+    pub media_file_paths: Vec<String>,
 }
 
 /// Reads and writes for `media_file` rows.

@@ -42,8 +42,8 @@ pub mod webhook;
 pub use blocklist::{release_key, BlocklistEntry, BlocklistRepository};
 
 pub use config::{
-    apply_remote_path_mappings, DownloadClientConfig, IndexerConfig, NotificationConfig,
-    RemotePathMapping, RootFolder,
+    apply_remote_path_mappings, DownloadClientConfig, IndexerConfig, MediaManagement,
+    NotificationConfig, RemotePathMapping, RootFolder,
 };
 pub use decision::{
     Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,
@@ -76,7 +76,7 @@ pub use profile::{
 };
 pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType};
 pub use repo::{
-    ContentRepository, DecisionLogRepository, GrabRepository, HistoryRepository,
+    ContentRepository, DecisionLogRepository, DeletedContent, GrabRepository, HistoryRepository,
     MediaFileRepository, ProfileRepository,
 };
 pub use traits::{

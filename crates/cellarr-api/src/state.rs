@@ -56,6 +56,12 @@ pub struct AppState {
     /// (the default) disables artwork serving (the route then always 404s) — the
     /// offline/test path; the daemon injects the real dir.
     pub artwork_dir: Option<PathBuf>,
+    /// The recycle-bin directory a content delete moves media into instead of
+    /// unlinking it (the media-management `recycleBinPath` setting). `None` (the
+    /// default) makes a `deleteFiles` delete unlink outright; setting it makes the
+    /// delete reversible — the bytes land under the bin, preserving their layout
+    /// relative to the library root. The daemon injects the configured path.
+    pub recycle_bin_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -106,6 +112,7 @@ impl AppState {
             release_search: None,
             release_grab: None,
             artwork_dir: None,
+            recycle_bin_path: None,
         }
     }
 
@@ -146,6 +153,16 @@ impl AppState {
     #[must_use]
     pub fn with_artwork_dir(mut self, dir: PathBuf) -> Self {
         self.artwork_dir = Some(dir);
+        self
+    }
+
+    /// Set the recycle-bin directory a `deleteFiles` content delete moves media
+    /// into (the media-management `recycleBinPath` setting). Builder form so the
+    /// base [`AppState::new`] unlinks outright and the daemon opts a reversible
+    /// recycle bin in.
+    #[must_use]
+    pub fn with_recycle_bin_path(mut self, dir: PathBuf) -> Self {
+        self.recycle_bin_path = Some(dir);
         self
     }
 }

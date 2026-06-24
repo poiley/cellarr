@@ -67,6 +67,18 @@ pub enum FsError {
         detail: String,
     },
 
+    /// A path the operation was asked to act on escaped the library root it must
+    /// stay within. Refusing it is a core safety property: a delete (or any
+    /// destructive op) must never touch a file outside the library, no matter how
+    /// the path was constructed (`..` traversal, an absolute path, a symlink).
+    #[error("path escapes the library root: {path} is not within {root}")]
+    PathEscape {
+        /// The offending path that fell outside the root.
+        path: PathBuf,
+        /// The library root the path was required to stay within.
+        root: PathBuf,
+    },
+
     /// An underlying filesystem operation failed. The path it was operating on
     /// is attached so failures are diagnosable without a backtrace.
     #[error("io error on {path}: {source}")]

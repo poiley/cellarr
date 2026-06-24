@@ -11,6 +11,8 @@ const listLibraries = vi.fn();
 const listMovies = vi.fn();
 const listSeries = vi.fn();
 const runCommandV3 = vi.fn();
+const deleteMovie = vi.fn();
+const deleteSeries = vi.fn();
 const push = vi.fn();
 let searchParams = new URLSearchParams();
 
@@ -23,6 +25,8 @@ vi.mock('@lib/api/client', async () => {
       listMovies: (...a: unknown[]) => listMovies(...a),
       listSeries: (...a: unknown[]) => listSeries(...a),
       runCommandV3: (...a: unknown[]) => runCommandV3(...a),
+      deleteMovie: (...a: unknown[]) => deleteMovie(...a),
+      deleteSeries: (...a: unknown[]) => deleteSeries(...a),
     },
   };
 });
@@ -106,6 +110,10 @@ describe('Library browse screen', () => {
     listSeries.mockReset();
     runCommandV3.mockReset();
     runCommandV3.mockResolvedValue({ id: 'cmd-1' });
+    deleteMovie.mockReset();
+    deleteMovie.mockResolvedValue(undefined);
+    deleteSeries.mockReset();
+    deleteSeries.mockResolvedValue(undefined);
     push.mockReset();
   });
   afterEach(() => cleanup());
@@ -350,5 +358,151 @@ describe('Library browse screen', () => {
     await waitFor(() =>
       expect(runCommandV3).toHaveBeenCalledWith({ name: 'MoviesSearch', movieId: 'm2' })
     );
+  });
+
+  // --- bulk delete ----------------------------------------------------------
+
+  it('opens a confirm dialog from the bulk bar instead of deleting immediately', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    const m1 = container.querySelector('input[name="select-m1"]') as HTMLInputElement;
+    fireEvent.click(m1);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+
+    // Clicking the bar's Delete only surfaces the dialog — nothing is deleted yet.
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+    await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
+    expect(deleteMovie).not.toHaveBeenCalled();
+
+    // The dialog spells out what will be removed and offers both safe-default toggles.
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog.textContent).toMatch(/Synthetic Movie One/);
+    expect(container.querySelector('input[name="bulk-delete-files"]')).toBeTruthy();
+    expect(container.querySelector('input[name="bulk-delete-exclusion"]')).toBeTruthy();
+  });
+
+  it('deletes with deleteFiles=false&addImportExclusion=false by default on confirm', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    fireEvent.click(container.querySelector('input[name="select-m1"]') as HTMLInputElement);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+
+    // Confirm without touching the toggles → safe defaults (both off).
+    const confirm = await screen.findByRole('button', { name: /Delete 1 item/ });
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(deleteMovie).toHaveBeenCalledWith('m1', {
+        deleteFiles: false,
+        addImportExclusion: false,
+      })
+    );
+    // The deleted row drops out of the table without a reload.
+    await waitFor(() => expect(screen.queryByText('Synthetic Movie One')).toBeNull());
+  });
+
+  it('passes deleteFiles + addImportExclusion when both toggles are checked', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    fireEvent.click(container.querySelector('input[name="select-m2"]') as HTMLInputElement);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+
+    await screen.findByRole('alertdialog');
+    fireEvent.click(container.querySelector('input[name="bulk-delete-files"]') as HTMLInputElement);
+    fireEvent.click(
+      container.querySelector('input[name="bulk-delete-exclusion"]') as HTMLInputElement
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Delete 1 item/ }));
+
+    await waitFor(() =>
+      expect(deleteMovie).toHaveBeenCalledWith('m2', {
+        deleteFiles: true,
+        addImportExclusion: true,
+      })
+    );
+  });
+
+  it('routes a series row to deleteSeries', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listSeries.mockResolvedValue(SERIES);
+    searchParams = new URLSearchParams('lib=lib-tv');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Series')).toBeTruthy());
+
+    fireEvent.click(container.querySelector('input[name="select-s1"]') as HTMLInputElement);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Delete 1 item/ }));
+
+    await waitFor(() =>
+      expect(deleteSeries).toHaveBeenCalledWith('s1', {
+        deleteFiles: false,
+        addImportExclusion: false,
+      })
+    );
+    expect(deleteMovie).not.toHaveBeenCalled();
+  });
+
+  it('cancel dismisses the dialog without deleting', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    fireEvent.click(container.querySelector('input[name="select-m1"]') as HTMLInputElement);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(deleteMovie).not.toHaveBeenCalled();
+  });
+
+  it('reports a partial-failure toast when some deletes fail', async () => {
+    const { ApiError } = await import('@lib/api/client');
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    deleteMovie.mockImplementation((id: string) =>
+      id === 'm2'
+        ? Promise.reject(new ApiError('internal_error', 'boom', 500))
+        : Promise.resolve(undefined)
+    );
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+
+    fireEvent.click(container.querySelector('input[name="select-all-visible"]') as HTMLInputElement);
+    await waitFor(() => expect(screen.getByText(/2 selected/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '✗ Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Delete 2 items/ }));
+
+    // Both DELETEs are attempted (one per selected row).
+    await waitFor(() => expect(deleteMovie).toHaveBeenCalledTimes(2));
+    // Partial failure: the succeeded row (m1) drops out of the table while the
+    // failed row (m2) stays visible — the partial-failure path, observed via the
+    // table rather than the toast (toasts run under ToastProvider in the app).
+    await waitFor(() => expect(screen.queryByText('Synthetic Movie One')).toBeNull());
+    expect(screen.getByText('Synthetic Movie Two')).toBeTruthy();
   });
 });
