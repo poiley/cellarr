@@ -147,6 +147,79 @@ async fn episode_monitor_skips_unknown_ids() {
 }
 
 #[tokio::test]
+async fn list_episodes_returns_the_series_episode_set() {
+    let server = start_open().await;
+    let library = seed_library(&server.state, MediaType::Tv, "TV").await;
+    let (series, _season, e1, e2) = seed_series_tree(&server.state, library).await;
+
+    // Give e1 a real indexed title + a persisted air date, and unmonitor e2, so the
+    // response carries real per-episode facts the monitor tree renders.
+    let content = server.state.db.content();
+    content.index_title(e1, "The Pilot").await.unwrap();
+    content
+        .set_metadata(
+            e1,
+            &cellarr_core::ContentMetadata {
+                title: Some("The Pilot".into()),
+                year: Some(2020),
+                overview: None,
+                runtime: None,
+                air_date: Some("2020-04-01".into()),
+                digital_date: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut e2_node = content.get_node(e2).await.unwrap().unwrap();
+    e2_node.monitored = false;
+    content.upsert(&e2_node).await.unwrap();
+
+    let resp = server
+        .client()
+        .get(server.url(&format!("/api/v3/episode?seriesId={series}")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let rows = body.as_array().expect("an array of episodes");
+    assert_eq!(rows.len(), 2, "both episodes of the series are returned");
+
+    // Ordered by season then episode.
+    assert_eq!(rows[0]["seasonNumber"], 1);
+    assert_eq!(rows[0]["episodeNumber"], 1);
+    assert_eq!(rows[1]["episodeNumber"], 2);
+
+    // e1 carries its identified facts; every row carries the parent series id.
+    let row1 = &rows[0];
+    assert_eq!(row1["title"], "The Pilot");
+    assert_eq!(row1["monitored"], true);
+    assert_eq!(row1["hasFile"], false, "no media file linked yet");
+    assert_eq!(row1["airDate"], "2020-04-01");
+    let series_numeric = row1["seriesId"].as_i64().expect("a numeric seriesId");
+    assert_eq!(rows[1]["seriesId"].as_i64().unwrap(), series_numeric);
+
+    // e2's monitor flag is reflected.
+    assert_eq!(rows[1]["monitored"], false);
+
+    // An unknown series id yields an empty array, never a 404.
+    let resp = server
+        .client()
+        .get(server.url(&format!("/api/v3/episode?seriesId={}", ContentId::new())))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn season_monitor_toggle_cascades_to_episodes() {
     let server = start_open().await;
     let library = seed_library(&server.state, MediaType::Tv, "TV").await;

@@ -91,13 +91,19 @@ impl ContentLookup for DbContentLookup {
 }
 
 /// A [`MetadataLookup`] backed by the DB's indexed content title (the FTS
-/// `title_for` query). This resolves a node's identity — the title used to build
-/// search terms and to render naming tokens — directly from the title cellarr
-/// already indexes on ingest, so the pipeline's Discover/Identify/Rename stages
-/// have a real title to work with rather than reporting every node unresolved.
-/// External ids / year are not yet modeled on the content row, so they are left
-/// empty; a node with no indexed title still reports unresolved (graceful
-/// degrade) rather than fabricating one.
+/// `title_for` query) and the persisted content-scoped metadata row
+/// (`content_meta`). The title — used to build search terms and to render naming
+/// tokens — comes from the title cellarr already indexes on ingest, so the
+/// pipeline's Discover/Identify/Rename stages have a real title to work with
+/// rather than reporting every node unresolved. The **release year** (and, when
+/// present, the persisted title) is read from the `content_meta` row written at
+/// Identify/Refresh, so an identified movie's `{Release Year}` token renders and
+/// its commit lands under `Title (Year)/…`.
+///
+/// A node with no `content_meta` row simply reports `year: None` (the naming
+/// engine then drops the optional `{Release Year}` token gracefully); a node with
+/// no indexed title at all still reports unresolved (graceful degrade) rather
+/// than fabricating an identity.
 struct DbMetadataLookup {
     db: Database,
 }
@@ -117,13 +123,14 @@ impl MetadataLookup for DbMetadataLookup {
         content: ContentId,
         _title_id: Option<TitleId>,
     ) -> Result<Option<MovieMeta>, Self::Error> {
-        let Some(title) = self.db.content().title_for(content).await? else {
+        let Some(title) = self.resolve_title(content).await? else {
             return Ok(None);
         };
+        let year = self.persisted_year(content).await?;
         Ok(Some(MovieMeta {
             title,
             aliases: Vec::new(),
-            year: None,
+            year,
             external_ids: Vec::new(),
         }))
     }
@@ -133,15 +140,44 @@ impl MetadataLookup for DbMetadataLookup {
         content: ContentId,
         _title_id: Option<TitleId>,
     ) -> Result<Option<SeriesMeta>, Self::Error> {
-        let Some(title) = self.db.content().title_for(content).await? else {
+        let Some(title) = self.resolve_title(content).await? else {
             return Ok(None);
         };
+        let year = self.persisted_year(content).await?;
         Ok(Some(SeriesMeta {
             title,
             aliases: Vec::new(),
-            year: None,
+            year,
             external_ids: Vec::new(),
         }))
+    }
+}
+
+impl DbMetadataLookup {
+    /// Resolve a node's identity title: the persisted `content_meta.title` when an
+    /// Identify/Refresh has written one, else the FTS-indexed title from ingest.
+    /// `None` when neither exists — the node has no usable identity yet, so the
+    /// module reports it unresolved rather than fabricating a title.
+    async fn resolve_title(&self, content: ContentId) -> Result<Option<String>, DbError> {
+        let repo = self.db.content();
+        if let Some(meta) = repo.metadata(content).await? {
+            if let Some(title) = meta.title.filter(|t| !t.trim().is_empty()) {
+                return Ok(Some(title));
+            }
+        }
+        repo.title_for(content).await
+    }
+
+    /// The persisted release year for a node, read from the `content_meta` row.
+    /// `None` when the node has no metadata row (or the row carries no year) — the
+    /// naming engine then drops the optional `{Release Year}` token gracefully.
+    async fn persisted_year(&self, content: ContentId) -> Result<Option<u16>, DbError> {
+        Ok(self
+            .db
+            .content()
+            .metadata(content)
+            .await?
+            .and_then(|m| m.year))
     }
 }
 

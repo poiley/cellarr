@@ -156,6 +156,30 @@ impl ContentRepo {
         }
     }
 
+    /// Read the persisted content-scoped metadata for a node, or `None` when the
+    /// node has never been identified/refreshed.
+    ///
+    /// This is the inherent twin of the [`ContentRepository::metadata`] trait
+    /// method (which delegates here): it lets in-crate and sibling-crate callers
+    /// — the registry's metadata seam, the detail endpoints — read the node's
+    /// real facts (`title`/`year`/…) without first importing the repository
+    /// trait. A `None` means the node carries no `content_meta` row yet (its
+    /// year/overview are unknown), and the caller degrades gracefully rather than
+    /// fabricating facts.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn metadata(&self, id: ContentId) -> Result<Option<ContentMetadata>> {
+        let row = sqlx::query(
+            "SELECT title, year, overview, runtime, air_date, digital_date
+             FROM content_meta WHERE content_id = ?1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(row_to_content_metadata).transpose()
+    }
+
     /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]).
     ///
     /// # Errors
@@ -500,14 +524,7 @@ impl ContentRepository for ContentRepo {
     }
 
     async fn metadata(&self, id: ContentId) -> Result<Option<ContentMetadata>> {
-        let row = sqlx::query(
-            "SELECT title, year, overview, runtime, air_date, digital_date
-             FROM content_meta WHERE content_id = ?1",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(row_to_content_metadata).transpose()
+        ContentRepo::metadata(self, id).await
     }
 
     async fn delete_movie(&self, id: ContentId) -> Result<Option<DeletedContent>> {

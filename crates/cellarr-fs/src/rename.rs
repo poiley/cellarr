@@ -172,9 +172,13 @@ pub fn render_name(format: &str, tokens: &NamingTokens) -> Result<String> {
 /// surprise empty directory.
 ///
 /// # Errors
-/// - [`FsError::MissingToken`] if the format references a token the module did
-///   not supply (we refuse to silently produce a misnamed file). The optional
-///   `{-Release Group}` token is exempt: it renders to nothing when absent.
+/// - [`FsError::MissingToken`] if the format references a *required* token the
+///   module did not supply (we refuse to silently produce a misnamed file). The
+///   optional `{-Release Group}` token and the enrichment tokens listed by
+///   [`is_optional_token`] (e.g. `{Release Year}`, `{Edition}`) are exempt: they
+///   render to nothing when absent, and any bracket/paren group left empty by the
+///   dropped token (`({Release Year})`) is cleaned up, so a movie with no known
+///   year still renders a valid `Movie Title/Movie Title.ext`.
 /// - [`FsError::InvalidName`] if, after rendering and sanitizing, the result is
 ///   empty (no usable name at all), or the format is malformed (unterminated
 ///   token, stray brace).
@@ -283,13 +287,50 @@ fn render_token(
         return Ok(());
     }
 
-    let value = lookup(tokens, name_part).ok_or_else(|| FsError::MissingToken {
-        token: name_part.to_string(),
-    })?;
+    let Some(value) = lookup(tokens, name_part) else {
+        // An *optional* token the module did not supply (a movie with no known
+        // release year, an absent edition) renders to nothing rather than failing
+        // the whole import — the surrounding bracket/paren group, if any, is
+        // cleaned up during sanitization so no dangling `()` is left. A *required*
+        // token still hard-errors: refusing to silently produce a misnamed file
+        // is the core safety property (a missing title/extension is never
+        // optional).
+        if is_optional_token(name_part) {
+            return Ok(());
+        }
+        return Err(FsError::MissingToken {
+            token: name_part.to_string(),
+        });
+    };
 
     let formatted = apply_spec(value, spec);
     push_value(out, &formatted);
     Ok(())
+}
+
+/// Whether a token is *optional* — its absence renders to nothing instead of
+/// erroring. These are the enrichment tokens the metadata source may legitimately
+/// not know (a movie with no looked-up release year, an absent edition tag,
+/// best-effort MediaInfo, external ids), where dropping the token (and any
+/// now-empty surrounding `()`/`[]`/`{}` group) yields a still-valid name. The
+/// structural tokens a name cannot do without — title and extension — are
+/// deliberately *not* listed: their absence is a real fault that must surface.
+fn is_optional_token(name: &str) -> bool {
+    const OPTIONAL: &[&str] = &[
+        "Release Year",
+        "Year",
+        "Edition",
+        "Edition Tags",
+        "Custom Formats",
+        "MediaInfo VideoCodec",
+        "MediaInfo AudioCodec",
+        "MediaInfo AudioChannels",
+        "ImdbId",
+        "TmdbId",
+        "TvdbId",
+        "Absolute Episode",
+    ];
+    OPTIONAL.iter().any(|o| o.eq_ignore_ascii_case(name))
 }
 
 /// Push a token value into the output, neutralizing any `/` so a value cannot
@@ -442,6 +483,11 @@ fn sanitize_segment(segment: &str, opts: RenderOptions) -> String {
         })
         .collect();
 
+    // Drop bracket/paren groups left empty by a dropped optional token (an
+    // identified movie with no known year renders `{Movie Title} ({Release Year})`
+    // → `Movie Title ()` → `Movie Title`), so the name carries no dangling `()`.
+    cleaned = drop_empty_bracket_groups(&cleaned);
+
     // Collapse runs of whitespace introduced by replacement, then trim.
     cleaned = collapse_whitespace(&cleaned);
 
@@ -500,6 +546,38 @@ fn replace_colons(segment: &str, opts: RenderOptions) -> String {
         // Space (and Keep on a colon-hostile platform) -> a single space.
         ColonReplacement::Space | ColonReplacement::Keep => segment.replace(':', " "),
     }
+}
+
+/// Remove bracket/paren groups that hold only whitespace — `()`, `[]`, `{}`,
+/// `(  )` — left behind when an optional token inside them rendered to nothing
+/// (e.g. `{Movie Title} ({Release Year})` for a movie with no known year). The
+/// matched pair *and* its empty interior are dropped; non-empty groups and
+/// unbalanced stray brackets are left untouched so a real `(2017)` or a literal
+/// brace from `{{…}}` is never disturbed. Whitespace introduced/left around the
+/// removed group is collapsed by the caller.
+fn drop_empty_bracket_groups(s: &str) -> String {
+    const PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}')];
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some((_, close)) = PAIRS.iter().find(|(open, _)| *open == c) {
+            // Scan past any whitespace to see if the matching close follows
+            // immediately (an empty group). If so, skip the whole group.
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == *close {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// Collapse internal runs of spaces/tabs to a single space and trim the ends.
@@ -678,6 +756,54 @@ mod tests {
         let t = tk(&[("Title", "Movie"), ("Release Group", "")]);
         let out = render_name("{Title}{-Release Group}", &t).unwrap();
         assert_eq!(out, "Movie");
+    }
+
+    // --- optional tokens (graceful absence) ---
+
+    #[test]
+    fn movie_with_year_renders_title_year() {
+        let t = tk(&[("Movie Title", "Blade Runner"), ("Release Year", "1982")]);
+        let out = render_name(
+            "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+            &tk(&[
+                ("Movie Title", "Blade Runner"),
+                ("Release Year", "1982"),
+                ("Extension", "mkv"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(out, "Blade Runner (1982)/Blade Runner.mkv");
+        let _ = t;
+    }
+
+    #[test]
+    fn missing_optional_year_drops_token_and_empty_parens() {
+        // A movie whose year is unknown: the optional {Release Year} renders to
+        // nothing and the now-empty `()` is cleaned up, so the import still lands.
+        let t = tk(&[("Movie Title", "Unknown Movie"), ("Extension", "mkv")]);
+        let out = render_name(
+            "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+            &t,
+        )
+        .unwrap();
+        assert_eq!(out, "Unknown Movie/Unknown Movie.mkv");
+    }
+
+    #[test]
+    fn missing_required_token_still_errors() {
+        // The extension is structural, never optional: its absence must surface.
+        let t = tk(&[("Movie Title", "Some Movie")]);
+        let err = render_name("{Movie Title}.{Extension}", &t).unwrap_err();
+        assert!(matches!(err, FsError::MissingToken { token } if token == "Extension"));
+    }
+
+    #[test]
+    fn empty_bracket_groups_are_dropped_but_real_ones_kept() {
+        assert_eq!(drop_empty_bracket_groups("Movie ()"), "Movie ");
+        assert_eq!(drop_empty_bracket_groups("Movie [ ]"), "Movie ");
+        assert_eq!(drop_empty_bracket_groups("Movie (2017)"), "Movie (2017)");
+        // an unbalanced stray bracket is left alone
+        assert_eq!(drop_empty_bracket_groups("Movie ("), "Movie (");
     }
 
     // --- multi-episode styles ---

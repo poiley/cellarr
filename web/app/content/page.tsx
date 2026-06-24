@@ -28,7 +28,7 @@ import BreadCrumbs from '@components/BreadCrumbs';
 import AppShell from '@app/_components/AppShell';
 import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
-import type { ContentNode, ContentRef, MediaFile, QualityProfile } from '@lib/api/types';
+import type { ContentNode, ContentRef, Episode, MediaFile, QualityProfile } from '@lib/api/types';
 import {
   basename,
   coordsLabel,
@@ -140,52 +140,112 @@ function ContentBranch({
 }
 
 /**
- * The per-season / per-episode monitoring control (TV nodes). Lists each season
+ * A season group for the monitor tree, assembled from the `GET /api/v3/episode`
+ * rows (the real `list_episodes` projection): the season number, every episode
+ * row beneath it (carrying the numeric episode id, `monitored`, `hasFile`, and
+ * `airDate`), and — when resolvable from the structural sibling list — the season
+ * *node* id the `/season/monitor` route toggles. When no season node id is known
+ * the season toggle cascades over its episode ids instead (via `/episode/monitor`).
+ */
+interface SeasonGroup {
+  seasonNumber: number;
+  /** The season content-node id (from the sibling tree), for `/season/monitor`. */
+  seasonId?: string;
+  episodes: Episode[];
+}
+
+/** The episode's id as a string (the v3 projection is a JSON number). */
+function epId(ep: Episode): string {
+  return String(ep.id);
+}
+
+/** A short `SxxEyy` coordinate label for an episode row. */
+function episodeCoord(ep: Episode): string {
+  const s = String(ep.seasonNumber ?? 0).padStart(2, '0');
+  const e = String(ep.episodeNumber ?? 0).padStart(2, '0');
+  return `S${s}E${e}`;
+}
+
+/** The on-disk glyph for an episode: `✓` when a file is linked, `✗` when not. */
+function fileGlyphFor(ep: Episode): '✓' | '✗' {
+  return ep.hasFile ? '✓' : '✗';
+}
+
+/**
+ * The per-season / per-episode monitor tree (TV nodes), sourced from
+ * `GET /api/v3/episode?seriesId=…` (the real `list_episodes`). Lists each season
  * with a monitor toggle that cascades to its episodes (Sonarr behavior, via
  * `PUT /api/v3/season/monitor`), and each episode with its own toggle (via
- * `PUT /api/v3/episode/monitor`). Renders nothing for a movie/library with no
- * season nodes. Composed from SRCL primitives; toast feedback is wired by the
- * parent through the supplied handlers.
+ * `PUT /api/v3/episode/monitor`) plus an inline ●/○ monitored glyph, an on-disk
+ * ✓/✗ glyph, and its air date. Renders nothing for a movie/series with no
+ * episodes. Composed from SRCL primitives; toast feedback is wired by the parent.
  */
 const SeasonMonitoring: React.FC<{
-  seasons: Array<{ season: ContentRef; episodes: ContentRef[] }>;
-  isMonitored: (node: ContentRef) => boolean;
+  seasons: SeasonGroup[];
+  /** Resolved monitored state for an episode id (local override wins). */
+  isEpisodeMonitored: (id: string) => boolean;
+  /** Whether every episode in a season group is currently monitored. */
+  isSeasonMonitored: (group: SeasonGroup) => boolean;
   isToggling: (id: string) => boolean;
-  onToggleSeason: (node: ContentRef) => void;
-  onToggleEpisode: (node: ContentRef) => void;
-}> = ({ seasons, isMonitored, isToggling, onToggleSeason, onToggleEpisode }) => {
+  onToggleSeason: (group: SeasonGroup) => void;
+  onToggleEpisode: (ep: Episode) => void;
+}> = ({ seasons, isEpisodeMonitored, isSeasonMonitored, isToggling, onToggleSeason, onToggleEpisode }) => {
   if (seasons.length === 0) return null;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1ch' }}>
-      {seasons.map(({ season, episodes }) => {
-        const seasonOn = isMonitored(season);
+      {seasons.map((group) => {
+        const seasonOn = isSeasonMonitored(group);
+        const seasonLabel =
+          group.seasonNumber === 0 ? 'Specials' : `Season ${group.seasonNumber}`;
+        // The toggle key is the season node id when known, else a stable synthetic
+        // key so the in-flight guard still tracks the cascade.
+        const seasonKey = group.seasonId ?? `season:${group.seasonNumber}`;
         return (
-          <div key={season.id}>
+          <div key={seasonKey}>
             <RowSpaceBetween style={{ gap: '2ch', alignItems: 'center' }}>
-              <Text style={{ fontWeight: 600 }}>{titleOf(season as Loose)}</Text>
+              <Text style={{ fontWeight: 600 }}>
+                {seasonOn ? '● ' : '○ '}
+                {seasonLabel}
+              </Text>
               <Button
                 theme="SECONDARY"
-                isDisabled={isToggling(season.id)}
-                onClick={() => onToggleSeason(season)}
+                isDisabled={isToggling(seasonKey)}
+                onClick={() => onToggleSeason(group)}
                 aria-pressed={seasonOn}
-                aria-label={`${seasonOn ? 'Unmonitor' : 'Monitor'} ${titleOf(season as Loose)}`}
+                aria-label={`${seasonOn ? 'Unmonitor' : 'Monitor'} ${seasonLabel}`}
               >
                 {seasonOn ? '● Monitored' : '○ Not monitored'}
               </Button>
             </RowSpaceBetween>
-            {episodes.length > 0 ? (
+            {group.episodes.length > 0 ? (
               <div style={{ paddingLeft: '2ch', marginTop: '0.5ch' }}>
-                {episodes.map((ep) => {
-                  const epOn = isMonitored(ep);
+                {group.episodes.map((ep) => {
+                  const id = epId(ep);
+                  const epOn = isEpisodeMonitored(id);
+                  const label = ep.title?.length ? ep.title : episodeCoord(ep);
                   return (
-                    <RowSpaceBetween key={ep.id} style={{ gap: '2ch', alignItems: 'center' }}>
-                      <Text style={{ opacity: 0.8 }}>{titleOf(ep as Loose)}</Text>
+                    <RowSpaceBetween key={id} style={{ gap: '2ch', alignItems: 'center' }}>
+                      <Row style={{ gap: '1ch', alignItems: 'center' }}>
+                        <Text style={{ opacity: 0.5 }} aria-hidden="true">
+                          {epOn ? '●' : '○'}
+                        </Text>
+                        <Text style={{ opacity: 0.8 }}>
+                          {episodeCoord(ep)} {label}
+                        </Text>
+                        <Badge>
+                          {fileGlyphFor(ep)}
+                          {ep.hasFile ? ' file' : ' missing'}
+                        </Badge>
+                        {ep.airDate ? (
+                          <Text style={{ opacity: 0.45 }}>{String(ep.airDate)}</Text>
+                        ) : null}
+                      </Row>
                       <Button
                         theme="SECONDARY"
-                        isDisabled={isToggling(ep.id)}
+                        isDisabled={isToggling(id)}
                         onClick={() => onToggleEpisode(ep)}
                         aria-pressed={epOn}
-                        aria-label={`${epOn ? 'Unmonitor' : 'Monitor'} ${titleOf(ep as Loose)}`}
+                        aria-label={`${epOn ? 'Unmonitor' : 'Monitor'} ${episodeCoord(ep)} ${label}`}
                       >
                         {epOn ? '● Monitored' : '○ Not monitored'}
                       </Button>
@@ -372,11 +432,15 @@ function ItemDetail() {
   const [detail, setDetail] = React.useState<DetailView | undefined>(undefined);
   const [profiles, setProfiles] = React.useState<QualityProfile[]>([]);
   const [libraryName, setLibraryName] = React.useState<string | undefined>(undefined);
+  // The series' episode rows (GET /api/v3/episode?seriesId=…) that back the
+  // per-season/episode monitor tree — the real `list_episodes` projection
+  // carrying each episode's numeric id, monitored flag, on-disk state, air date.
+  const [episodes, setEpisodes] = React.useState<Episode[]>([]);
   // In-flight guard for the monitored toggle (#21).
   const [toggling, setToggling] = React.useState(false);
   // Per-node monitored overrides for the season/episode toggles: a node id ->
-  // its locally-applied monitored flag (wins over the loaded sibling value until
-  // a reload), plus the set of nodes whose toggle is mid-flight.
+  // its locally-applied monitored flag (wins over the loaded value until a
+  // reload), plus the set of nodes whose toggle is mid-flight.
   const [monitorOverrides, setMonitorOverrides] = React.useState<Record<string, boolean>>({});
   const [togglingNodes, setTogglingNodes] = React.useState<Set<string>>(new Set());
 
@@ -389,6 +453,7 @@ function ItemDetail() {
     setCatalogueTitle(undefined);
     setDetail(undefined);
     setLibraryName(undefined);
+    setEpisodes([]);
     setMonitorOverrides({});
     setTogglingNodes(new Set());
 
@@ -425,6 +490,19 @@ function ItemDetail() {
         getDetail(detailKindFor(data as Loose), id, controller.signal)
           .then((d) => setDetail(toDetailView(d)))
           .catch(() => setDetail(undefined));
+
+        // For a TV node, fetch its episode rows from the v3 episode endpoint
+        // (the real `list_episodes`) to drive the per-season/episode monitor
+        // tree. Best-effort: a non-series id / empty series yields [], which
+        // renders no Monitoring card. The id sent is the same one the Library
+        // screen drills in with (a full content id or numeric projection); the
+        // endpoint accepts both as `seriesId`.
+        if (detailKindFor(data as Loose) === 'series') {
+          api
+            .listEpisodes(id, controller.signal)
+            .then(setEpisodes)
+            .catch(() => setEpisodes([]));
+        }
 
         // Once we know the library, fetch its content to assemble the tree, and
         // its name for the breadcrumb middle crumb (#24).
@@ -496,13 +574,26 @@ function ItemDetail() {
       .finally(() => setToggling(false));
   };
 
-  /** Resolve a node's monitored flag: a local override wins over the loaded value. */
+  /** Resolve a structural node's monitored flag (the inline glyph in the tree). */
   const nodeMonitored = React.useCallback(
     (n: ContentRef): boolean => {
       if (n.id in monitorOverrides) return monitorOverrides[n.id];
       return (n as Loose).monitored === true;
     },
     [monitorOverrides]
+  );
+
+  /**
+   * Resolve an episode's monitored flag from the episode-endpoint rows: a local
+   * override (applied optimistically on toggle) wins over the loaded value.
+   */
+  const episodeMonitored = React.useCallback(
+    (id: string): boolean => {
+      if (id in monitorOverrides) return monitorOverrides[id];
+      const ep = episodes.find((e) => String(e.id) === id);
+      return ep?.monitored === true;
+    },
+    [monitorOverrides, episodes]
   );
 
   const markToggling = (nodeId: string, on: boolean) =>
@@ -514,43 +605,59 @@ function ItemDetail() {
     });
 
   /**
-   * Toggle a season's monitoring (cascades to its episodes server-side). Flips the
-   * season AND every episode override locally on success so the tree + table stay
-   * in sync without a reload, and surfaces the cascade count as a toast.
+   * Toggle a whole season's monitoring. When the season's content-node id is
+   * known (resolved from the structural sibling tree) the `/season/monitor` route
+   * cascades to its episodes server-side; otherwise we fall back to a bulk
+   * `/episode/monitor` over the season's episode ids. Either way every episode
+   * override flips locally on success so the tree stays in sync without a reload.
    */
-  const toggleSeasonMonitored = (season: ContentRef, episodes: ContentRef[]) => {
-    if (togglingNodes.has(season.id)) return;
-    const next = !nodeMonitored(season);
-    markToggling(season.id, true);
-    setSeasonMonitored(season.id, next)
-      .then((res) => {
-        setMonitorOverrides((prev) => {
-          const merged = { ...prev, [season.id]: next };
-          for (const ep of episodes) merged[ep.id] = next;
-          return merged;
-        });
-        success(
-          next
-            ? `Monitoring ${titleOf(season as Loose)} (${res.episodesUpdated} episode${res.episodesUpdated === 1 ? '' : 's'})`
-            : `Stopped monitoring ${titleOf(season as Loose)}`
-        );
-      })
+  const toggleSeasonMonitored = (group: SeasonGroup) => {
+    const key = group.seasonId ?? `season:${group.seasonNumber}`;
+    if (togglingNodes.has(key)) return;
+    const seasonOn = group.episodes.length > 0 && group.episodes.every((e) => episodeMonitored(epId(e)));
+    const next = !seasonOn;
+    const epIds = group.episodes.map(epId);
+    const seasonLabel = group.seasonNumber === 0 ? 'Specials' : `Season ${group.seasonNumber}`;
+    markToggling(key, true);
+
+    const apply = (count: number) => {
+      setMonitorOverrides((prev) => {
+        const merged = { ...prev };
+        if (group.seasonId) merged[group.seasonId] = next;
+        for (const id of epIds) merged[id] = next;
+        return merged;
+      });
+      success(
+        next
+          ? `Monitoring ${seasonLabel} (${count} episode${count === 1 ? '' : 's'})`
+          : `Stopped monitoring ${seasonLabel}`
+      );
+    };
+
+    const req = group.seasonId
+      ? setSeasonMonitored(group.seasonId, next).then((res) => res.episodesUpdated)
+      : setEpisodesMonitored(epIds, next).then((res) => res.updated);
+
+    req
+      .then((count) => apply(count))
       .catch((err: unknown) => toastError(errorMessage(err, 'failed to update season monitoring')))
-      .finally(() => markToggling(season.id, false));
+      .finally(() => markToggling(key, false));
   };
 
   /** Toggle a single episode's monitoring via the episode-monitor route. */
-  const toggleEpisodeMonitored = (episode: ContentRef) => {
-    if (togglingNodes.has(episode.id)) return;
-    const next = !nodeMonitored(episode);
-    markToggling(episode.id, true);
-    setEpisodesMonitored([episode.id], next)
+  const toggleEpisodeMonitored = (ep: Episode) => {
+    const id = epId(ep);
+    if (togglingNodes.has(id)) return;
+    const next = !episodeMonitored(id);
+    const label = ep.title?.length ? ep.title : episodeCoord(ep);
+    markToggling(id, true);
+    setEpisodesMonitored([id], next)
       .then(() => {
-        setMonitorOverrides((prev) => ({ ...prev, [episode.id]: next }));
-        success(next ? `Monitoring ${titleOf(episode as Loose)}` : `Stopped monitoring ${titleOf(episode as Loose)}`);
+        setMonitorOverrides((prev) => ({ ...prev, [id]: next }));
+        success(next ? `Monitoring ${label}` : `Stopped monitoring ${label}`);
       })
       .catch((err: unknown) => toastError(errorMessage(err, 'failed to update episode monitoring')))
-      .finally(() => markToggling(episode.id, false));
+      .finally(() => markToggling(id, false));
   };
 
   /**
@@ -637,27 +744,52 @@ function ItemDetail() {
     ? ['left', 'left', 'right', 'right']
     : ['left', 'left', 'right'];
 
-  // Season -> episodes grouping for the per-season/episode monitoring control.
-  // Built from the same flat sibling list the structure tree uses: every Season
-  // node under this item's subtree, each with its Episode children in order.
-  const seasons = React.useMemo(() => {
-    const seasonNodes = siblings.filter((s) => (s as Loose).kind === 'season');
-    const sortKey = (n: ContentRef): number => {
-      const coords = (n as Loose).coords as Loose | undefined;
-      const v = coords?.season ?? coords?.episode;
-      return typeof v === 'number' ? v : 0;
+  // Season -> episodes grouping for the per-season/episode monitor tree, built
+  // from the `GET /api/v3/episode` rows (the real `list_episodes`): group the
+  // episode rows by `seasonNumber`, sort seasons then episodes in numbering
+  // order, and resolve each season's content-node id from the structural sibling
+  // tree (by matching `coords.season`) so the `/season/monitor` route has a
+  // season id to toggle. Seasons with no resolvable node id still render and
+  // toggle (the handler falls back to a bulk episode-monitor cascade).
+  const seasons = React.useMemo<SeasonGroup[]>(() => {
+    if (episodes.length === 0) return [];
+    // Resolve a season's content-node id from the structural sibling list so the
+    // `/season/monitor` route has a node id to toggle. The `/api/v1/libraries/
+    // {id}/content` projection carries only `id`/`media_type`/`coords` (no `kind`
+    // / `parent_id`), so identify a season node by its coordinate shape: same
+    // `season` number with `episode` 0 / absent (an episode leaf carries a
+    // non-zero `episode`). Fall back to the `kind` field when a richer projection
+    // does carry it.
+    const seasonNodeId = (n: number): string | undefined => {
+      const match = siblings.find((s) => {
+        const loose = s as Loose;
+        const coords = loose.coords as Loose | undefined;
+        if (coords?.season !== n) return false;
+        if (loose.kind === 'season') return true;
+        if (loose.kind === 'episode') return false;
+        // No `kind`: a season node has no (or a zero) episode coordinate.
+        const ep = coords?.episode;
+        return ep === undefined || ep === null || ep === 0;
+      });
+      return match?.id;
     };
-    return seasonNodes
-      .slice()
-      .sort((a, b) => sortKey(a) - sortKey(b))
-      .map((season) => ({
-        season,
-        episodes: (byParent.get(season.id) ?? [])
-          .filter((c) => (c as Loose).kind === 'episode')
+    const byNumber = new Map<number, Episode[]>();
+    for (const ep of episodes) {
+      const n = typeof ep.seasonNumber === 'number' ? ep.seasonNumber : 0;
+      const bucket = byNumber.get(n) ?? [];
+      bucket.push(ep);
+      byNumber.set(n, bucket);
+    }
+    return [...byNumber.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([seasonNumber, eps]) => ({
+        seasonNumber,
+        seasonId: seasonNodeId(seasonNumber),
+        episodes: eps
           .slice()
-          .sort((a, b) => sortKey(a) - sortKey(b)),
+          .sort((a, b) => (a.episodeNumber ?? 0) - (b.episodeNumber ?? 0)),
       }));
-  }, [siblings, byParent]);
+  }, [episodes, siblings]);
 
   // Quality-profile display name for the metadata block (#20).
   const profileName = detail?.qualityProfileId
@@ -759,17 +891,18 @@ function ItemDetail() {
         <Card title="Monitoring" style={{ marginTop: '2ch' }}>
           <Text style={{ opacity: 0.6 }}>
             Toggle which seasons and episodes cellarr watches for. Toggling a season
-            cascades to its episodes.
+            cascades to its episodes. ● monitored · ○ not · ✓ on disk · ✗ missing.
           </Text>
           <Divider type="GRADIENT" />
           <SeasonMonitoring
             seasons={seasons}
-            isMonitored={nodeMonitored}
+            isEpisodeMonitored={episodeMonitored}
+            isSeasonMonitored={(group) =>
+              group.episodes.length > 0 &&
+              group.episodes.every((e) => episodeMonitored(epId(e)))
+            }
             isToggling={(nodeId) => togglingNodes.has(nodeId)}
-            onToggleSeason={(season) => {
-              const match = seasons.find((s) => s.season.id === season.id);
-              toggleSeasonMonitored(season, match?.episodes ?? []);
-            }}
+            onToggleSeason={toggleSeasonMonitored}
             onToggleEpisode={toggleEpisodeMonitored}
           />
         </Card>

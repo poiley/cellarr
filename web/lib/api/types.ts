@@ -390,15 +390,21 @@ export interface Series {
   [key: string]: unknown;
 }
 
-/** A v3 episode (`GET /api/v3/episode?seriesId=…`). */
+/**
+ * A v3 episode (`GET /api/v3/episode?seriesId=…`). `id`/`seriesId` come back as
+ * the numeric projection the v3 list endpoints emit (a JSON number), which the
+ * `/episode/monitor` + `/season/monitor` routes accept as their ids. `airDate` is
+ * the persisted `content_meta.air_date` (null when unidentified).
+ */
 export interface Episode {
-  id: string;
-  seriesId?: string;
+  id: number | string;
+  seriesId?: number | string;
   seasonNumber?: number;
   episodeNumber?: number;
   title?: string;
   monitored?: boolean;
   hasFile?: boolean;
+  airDate?: string | null;
   airDateUtc?: string;
   [key: string]: unknown;
 }

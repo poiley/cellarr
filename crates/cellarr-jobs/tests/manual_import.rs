@@ -31,7 +31,7 @@ use cellarr_jobs::clock::LogicalClock;
 use cellarr_jobs::runner::{ManualImportRequest, PipelineRunner, RunnerConfig};
 use cellarr_media::{
     ContentCandidate, ContentLookup, MediaRegistry, MetadataLookup, MovieMeta, MovieModule,
-    SeriesMeta,
+    SeriesMeta, TvModule,
 };
 
 // ---------------------------------------------------------------------------
@@ -398,6 +398,229 @@ async fn commit_imports_a_chosen_file_through_the_crash_safe_path() {
         files_after.len(),
         1,
         "no duplicate media_file on a re-commit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pack-3b: graceful optional-year token + per-node (mixed-media) naming format.
+// ---------------------------------------------------------------------------
+
+/// A content lookup that resolves its single candidate for any non-empty query
+/// (the mixed-media tests drive a single seeded node and don't exercise the
+/// title-confidence gate the Matrix lookup does).
+struct AnyContentLookup {
+    candidate: ContentCandidate,
+}
+
+#[async_trait]
+impl ContentLookup for AnyContentLookup {
+    type Error = MockLookupError;
+    async fn candidates_for_title(
+        &self,
+        media_type: MediaType,
+        _title_query: &str,
+    ) -> Result<Vec<ContentCandidate>, Self::Error> {
+        if self.candidate.content_ref.media_type == media_type {
+            Ok(vec![self.candidate.clone()])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// A metadata seam that answers movie or series identity from fixed values.
+struct FixedMetadata {
+    movie: Option<MovieMeta>,
+    series: Option<SeriesMeta>,
+}
+
+#[async_trait]
+impl MetadataLookup for FixedMetadata {
+    type Error = MockLookupError;
+    async fn movie_meta(
+        &self,
+        _content: ContentId,
+        _title_id: Option<cellarr_core::TitleId>,
+    ) -> Result<Option<MovieMeta>, Self::Error> {
+        Ok(self.movie.clone())
+    }
+    async fn series_meta(
+        &self,
+        _content: ContentId,
+        _title_id: Option<cellarr_core::TitleId>,
+    ) -> Result<Option<SeriesMeta>, Self::Error> {
+        Ok(self.series.clone())
+    }
+}
+
+#[tokio::test]
+async fn movie_with_no_known_year_still_imports_via_graceful_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    // The movie is identified by title but its release year is UNKNOWN (year:None):
+    // the {Release Year} token in the format is dropped gracefully and the empty
+    // `()` cleaned up, so the import still lands as `Title/Title.ext`.
+    let candidate = ContentCandidate {
+        content_ref: node.clone(),
+        title: "Untitled Indie".into(),
+        aliases: Vec::new(),
+    };
+    let mut registry = MediaRegistry::new();
+    registry.register(MovieModule::new(
+        AnyContentLookup { candidate },
+        FixedMetadata {
+            movie: Some(MovieMeta {
+                title: "Untitled Indie".into(),
+                aliases: Vec::new(),
+                year: None,
+                external_ids: Vec::new(),
+            }),
+            series: None,
+        },
+    ));
+
+    let loose = tmp.path().join("downloads");
+    std::fs::create_dir_all(&loose).unwrap();
+    let source = loose.join("Untitled.Indie.1080p.WEB.mkv");
+    std::fs::write(&source, b"indie-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    let request = ManualImportRequest {
+        path: source.to_string_lossy().into_owned(),
+        content_id: node.id,
+    };
+    let (imported, errors) = runner.import_manual(&[request]).await.unwrap();
+    assert!(
+        errors.is_empty(),
+        "a movie with no year must still import (graceful optional token): {errors:?}"
+    );
+    assert_eq!(imported.len(), 1);
+    let dest = PathBuf::from(&imported[0].destination_path);
+    assert!(dest.exists());
+    // No dangling empty parens: the path is `Untitled Indie/Untitled Indie.mkv`.
+    let rel = dest
+        .strip_prefix(&lib_root)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(rel, "Untitled Indie/Untitled Indie.mkv", "dest: {dest:?}");
+    assert!(
+        !rel.contains("()"),
+        "no empty year parens left behind: {rel}"
+    );
+}
+
+#[tokio::test]
+async fn tv_node_imports_even_when_a_movie_library_sorts_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    // A movie library exists (and the run config carries the MOVIE naming format,
+    // as the daemon's first-library-by-sort resolution would produce). The node we
+    // commit is a TV episode: it must render with the SERIES format, not the movie
+    // one (which has no {Series Title}/{Episode} tokens and would hard-error).
+    let series_lib = LibraryId::new();
+    db.config()
+        .upsert_library(&cellarr_core::Library {
+            id: series_lib,
+            media_type: MediaType::Tv,
+            name: "tv lib".into(),
+            root_folders: vec![lib_root.to_str().unwrap().into()],
+            default_quality_profile: QualityProfileId::new(),
+        })
+        .await
+        .unwrap();
+
+    let coords = Coordinates::Episode {
+        season: 1,
+        episode: 4,
+        absolute: None,
+    };
+    let ep_id = ContentId::new();
+    db.content()
+        .upsert(&cellarr_core::ContentNode {
+            id: ep_id,
+            library_id: series_lib,
+            media_type: MediaType::Tv,
+            parent_id: None,
+            kind: cellarr_core::ContentKind::Episode,
+            coords: coords.clone(),
+            monitored: true,
+            title_id: None,
+        })
+        .await
+        .unwrap();
+    let ep_ref = ContentRef::new(ep_id, series_lib, MediaType::Tv, coords).unwrap();
+
+    let candidate = ContentCandidate {
+        content_ref: ep_ref.clone(),
+        title: "The Show".into(),
+        aliases: Vec::new(),
+    };
+    let mut registry = MediaRegistry::new();
+    registry.register(TvModule::new(
+        AnyContentLookup { candidate },
+        FixedMetadata {
+            movie: None,
+            series: Some(SeriesMeta {
+                title: "The Show".into(),
+                aliases: Vec::new(),
+                year: Some(2020),
+                external_ids: Vec::new(),
+            }),
+        },
+    ));
+
+    let loose = tmp.path().join("downloads");
+    std::fs::create_dir_all(&loose).unwrap();
+    let source = loose.join("The.Show.S01E04.1080p.WEB.mkv");
+    std::fs::write(&source, b"episode-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    // The config carries the MOVIE format — the bug condition the fix guards against.
+    let config = runner_config(lib_root.clone());
+    assert!(config.naming_format.contains("{Movie Title}"));
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    let request = ManualImportRequest {
+        path: source.to_string_lossy().into_owned(),
+        content_id: ep_id,
+    };
+    let (imported, errors) = runner.import_manual(&[request]).await.unwrap();
+    assert!(
+        errors.is_empty(),
+        "a TV node must import with the series format even under a movie config: {errors:?}"
+    );
+    assert_eq!(imported.len(), 1);
+    let dest = PathBuf::from(&imported[0].destination_path);
+    let rel = dest
+        .strip_prefix(&lib_root)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    // Rendered with the SERIES format. The TV module zero-pads season/episode to
+    // two digits (`{season:02}`), so the default `Season {Season}` / `S{Season}E{Episode}`
+    // format yields `Season 01` / `S01E04`.
+    assert_eq!(
+        rel, "The Show/Season 01/The Show - S01E04.mkv",
+        "dest: {dest:?}"
     );
 }
 

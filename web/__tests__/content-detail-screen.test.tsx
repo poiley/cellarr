@@ -6,6 +6,7 @@ const listContentFiles = vi.fn();
 const listContent = vi.fn();
 const listMovies = vi.fn();
 const listSeries = vi.fn();
+const listEpisodes = vi.fn();
 const runCommand = vi.fn();
 const getQualityProfiles = vi.fn();
 const getLibrary = vi.fn();
@@ -23,6 +24,7 @@ vi.mock('@lib/api/client', async () => {
       listContent: (...a: unknown[]) => listContent(...a),
       listMovies: (...a: unknown[]) => listMovies(...a),
       listSeries: (...a: unknown[]) => listSeries(...a),
+      listEpisodes: (...a: unknown[]) => listEpisodes(...a),
       runCommand: (...a: unknown[]) => runCommand(...a),
       getQualityProfiles: (...a: unknown[]) => getQualityProfiles(...a),
       getLibrary: (...a: unknown[]) => getLibrary(...a),
@@ -84,6 +86,14 @@ const FILES = [
   { id: 'f1', path: '/tv/Breaking Bad/S01E01.mkv', size: 1_500_000_000, quality: { name: 'Bluray-1080p', rank: 9 }, custom_format_score: 25 },
 ];
 
+// The v3 episode rows the monitor tree is sourced from (GET /api/v3/episode).
+// Ids come back as the numeric projection, the same value the monitor routes
+// accept. The season node id (`c-s1`) is resolved from SIBLINGS by season number.
+const EPISODES = [
+  { id: 1001, seriesId: 42, seasonNumber: 1, episodeNumber: 1, title: 'Pilot', monitored: true, hasFile: true, airDate: '2008-01-20' },
+  { id: 1002, seriesId: 42, seasonNumber: 1, episodeNumber: 2, title: 'Cat in the Bag', monitored: true, hasFile: false, airDate: '2008-01-27' },
+];
+
 describe('Item-detail screen', () => {
   beforeEach(() => {
     installMatchMedia();
@@ -94,6 +104,7 @@ describe('Item-detail screen', () => {
     listContent.mockReset();
     listMovies.mockReset();
     listSeries.mockReset();
+    listEpisodes.mockReset();
     runCommand.mockReset();
     getQualityProfiles.mockReset();
     getLibrary.mockReset();
@@ -102,6 +113,10 @@ describe('Item-detail screen', () => {
     // Default: empty catalogues unless a test overrides them.
     listMovies.mockResolvedValue([]);
     listSeries.mockResolvedValue([]);
+    // Default: no episodes (so the Monitoring card is absent unless a test seeds
+    // the v3 episode endpoint). The per-season/episode monitor tree is sourced
+    // from GET /api/v3/episode?seriesId=… (the real `list_episodes`).
+    listEpisodes.mockResolvedValue([]);
     getQualityProfiles.mockResolvedValue([]);
     getLibrary.mockResolvedValue({ id: 'lib-tv', name: 'TV Shows' });
     // The v3 detail resource (GET) and monitored-PUT both go through requestV3;
@@ -400,38 +415,43 @@ describe('Item-detail screen', () => {
     });
   });
 
-  it('renders a per-season/episode Monitoring card for a TV item', async () => {
+  it('renders a per-season/episode Monitoring tree sourced from GET /api/v3/episode', async () => {
     searchParams = new URLSearchParams('id=c-series');
     getContent.mockResolvedValue(SERIES);
     listContent.mockResolvedValue(SIBLINGS);
     listContentFiles.mockResolvedValue([]);
+    listEpisodes.mockResolvedValue(EPISODES);
 
     renderPage();
 
     await waitFor(() => {
-      // The Monitoring card surfaces the season + its episode with toggle buttons.
+      // The tree is fetched from the real `list_episodes` for this series id.
+      expect(listEpisodes).toHaveBeenCalledWith('c-series', expect.anything());
+      // The Monitoring card surfaces the season + its episodes with toggle buttons.
       expect(screen.getByText('Monitoring')).toBeTruthy();
-      expect(
-        screen.getByRole('button', { name: /Monitor.*Season 1/i })
-      ).toBeTruthy();
-      expect(
-        screen.getByRole('button', { name: /Monitor.*Pilot/i })
-      ).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Unmonitor Season 1/i })).toBeTruthy();
+      // Each episode row carries its SxxEyy coordinate, title and on-disk badge.
+      expect(screen.getByText(/S01E01 Pilot/)).toBeTruthy();
+      expect(screen.getByText(/S01E02 Cat in the Bag/)).toBeTruthy();
+      // hasFile state surfaces as ✓ file / ✗ missing badges (the legend line
+      // also mentions both glyphs, so allow it among the matches).
+      expect(screen.getAllByText(/✓ file/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/✗ missing/).length).toBeGreaterThan(0);
     });
   });
 
-  it('toggles a season via the season-monitor route and cascades the episodes', async () => {
+  it('toggles a season via the season-monitor route using the resolved season id', async () => {
     searchParams = new URLSearchParams('id=c-series');
     getContent.mockResolvedValue(SERIES);
     listContent.mockResolvedValue(SIBLINGS);
     listContentFiles.mockResolvedValue([]);
-    // The season-monitor PUT returns the cascade count.
+    listEpisodes.mockResolvedValue(EPISODES);
     requestV3.mockImplementation((path: string, opts?: { body?: { monitored?: boolean } }) => {
       if (path === '/season/monitor') {
         return Promise.resolve({
           seasonId: 'c-s1',
           monitored: opts?.body?.monitored ?? false,
-          episodesUpdated: 1,
+          episodesUpdated: 2,
         });
       }
       return Promise.resolve({
@@ -444,7 +464,9 @@ describe('Item-detail screen', () => {
 
     renderPage();
 
-    const seasonBtn = await screen.findByRole('button', { name: /Unmonitor.*Season 1/i });
+    // Both episodes monitored -> the season reads as monitored; toggling it OFF
+    // PUTs the season-monitor route with the season node id resolved from siblings.
+    const seasonBtn = await screen.findByRole('button', { name: /Unmonitor Season 1/i });
     requestV3.mockClear();
     fireEvent.click(seasonBtn);
 
@@ -457,19 +479,57 @@ describe('Item-detail screen', () => {
         })
       )
     );
-    // Season was monitored -> toggling it OFF stops monitoring and cascades the
-    // override to its episode, which flips to "Not monitored".
+    // The cascade flips both episode overrides off and surfaces the count.
     await waitFor(() => {
       expect(screen.getByText(/Stopped monitoring Season 1/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: /^Monitor Pilot$/i })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Monitor S01E01 Pilot/i })).toBeTruthy();
     });
   });
 
-  it('toggles a single episode via the episode-monitor route', async () => {
+  it('resolves the season node id from the kind-less v1 content projection (coords shape)', async () => {
+    // The live `/api/v1/libraries/{id}/content` projection carries only
+    // id/media_type/coords — NO `kind` / `parent_id`. The season node must still
+    // be identified (season N with episode 0) so the season toggle uses the
+    // `/season/monitor` route rather than falling back to a bulk episode cascade.
+    const COORDS_ONLY_SIBLINGS = [
+      { id: 'c-series', media_type: 'tv', coords: { type: 'episode', season: 0, episode: 0 } },
+      { id: 'c-s1', media_type: 'tv', coords: { type: 'episode', season: 1, episode: 0 } },
+      { id: 'c-e1', media_type: 'tv', coords: { type: 'episode', season: 1, episode: 1 } },
+      { id: 'c-e2', media_type: 'tv', coords: { type: 'episode', season: 1, episode: 2 } },
+    ];
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(COORDS_ONLY_SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    listEpisodes.mockResolvedValue(EPISODES);
+    requestV3.mockImplementation((path: string, opts?: { body?: { monitored?: boolean } }) => {
+      if (path === '/season/monitor') {
+        return Promise.resolve({ seasonId: 'c-s1', monitored: opts?.body?.monitored ?? false, episodesUpdated: 2 });
+      }
+      return Promise.resolve({ id: 'c-series', title: 'Breaking Bad', monitored: true, status: 'continuing' });
+    });
+
+    renderPage();
+
+    const seasonBtn = await screen.findByRole('button', { name: /Unmonitor Season 1/i });
+    requestV3.mockClear();
+    fireEvent.click(seasonBtn);
+
+    await waitFor(() =>
+      // The season id resolved from coords -> the season-monitor route is used.
+      expect(requestV3).toHaveBeenCalledWith(
+        '/season/monitor',
+        expect.objectContaining({ method: 'PUT', body: { seasonId: 'c-s1', monitored: false } })
+      )
+    );
+  });
+
+  it('toggles a single episode via the episode-monitor route with its numeric id', async () => {
     searchParams = new URLSearchParams('id=c-series');
     getContent.mockResolvedValue(SERIES);
     listContent.mockResolvedValue(SIBLINGS);
     listContentFiles.mockResolvedValue([]);
+    listEpisodes.mockResolvedValue(EPISODES);
     requestV3.mockImplementation((path: string, opts?: { body?: { monitored?: boolean } }) => {
       if (path === '/episode/monitor') {
         return Promise.resolve({ updated: 1, monitored: opts?.body?.monitored ?? false });
@@ -484,7 +544,9 @@ describe('Item-detail screen', () => {
 
     renderPage();
 
-    const epBtn = await screen.findByRole('button', { name: /Unmonitor Pilot/i });
+    // The Pilot episode is monitored -> its row toggle reads "Unmonitor"; clicking
+    // it PUTs the episode-monitor route with the episode's numeric projection id.
+    const epBtn = await screen.findByRole('button', { name: /Unmonitor S01E01 Pilot/i });
     requestV3.mockClear();
     fireEvent.click(epBtn);
 
@@ -493,16 +555,16 @@ describe('Item-detail screen', () => {
         '/episode/monitor',
         expect.objectContaining({
           method: 'PUT',
-          body: { episodeIds: ['c-e1'], monitored: false },
+          body: { episodeIds: ['1001'], monitored: false },
         })
       )
     );
     await waitFor(() =>
-      expect(screen.getByText(/Stopped monitoring/i)).toBeTruthy()
+      expect(screen.getByText(/Stopped monitoring Pilot/i)).toBeTruthy()
     );
   });
 
-  it('shows no Monitoring card for a movie with no seasons', async () => {
+  it('shows no Monitoring card for a movie (no episode endpoint hit)', async () => {
     const MOVIE = { id: 'c-movie', library_id: 'lib-movies', media_type: 'movie', kind: 'movie', monitored: true, coords: { type: 'movie' }, title: 'Blade Runner' };
     searchParams = new URLSearchParams('id=c-movie');
     getContent.mockResolvedValue(MOVIE);
@@ -515,6 +577,25 @@ describe('Item-detail screen', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Blade Runner').length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText('Monitoring')).toBeNull();
+    // A movie node never queries the per-series episode endpoint.
+    expect(listEpisodes).not.toHaveBeenCalled();
+  });
+
+  it('shows no Monitoring card for a series with no episodes', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    listEpisodes.mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Breaking Bad').length).toBeGreaterThan(0);
+    });
+    // The endpoint was queried, but an empty result renders no Monitoring card.
+    expect(listEpisodes).toHaveBeenCalledWith('c-series', expect.anything());
     expect(screen.queryByText('Monitoring')).toBeNull();
   });
 });

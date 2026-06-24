@@ -1558,7 +1558,6 @@ where
     /// TV episode, one `<file>.nfo` per episode file plus a `tvshow.nfo` in the
     /// series root. Entirely best-effort: any error is logged and swallowed.
     async fn write_nfo_sidecars(&self, matched_ref: &ContentRef, destinations: &[String]) {
-        use cellarr_core::repo::ContentRepository;
         use cellarr_core::Coordinates;
         let meta = self
             .db
@@ -2133,9 +2132,15 @@ where
             .await
             .map_err(|e| format!("naming tokens: {e}"))?;
         let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-        let rel =
-            cellarr_fs::render_name(&self.config.naming_format, &with_ext_token(&tokens, ext))
-                .map_err(|e| format!("render name: {e}"))?;
+        // The naming format must match the *matched node's* media type, not the
+        // config's (a manual import scans one config across a mixed library set, so
+        // the config's format — derived from whichever library sorted first — can be
+        // the wrong shape for this node). Render against the node's media-type
+        // format so a TV node renders with the series format even when a movie
+        // library was picked to build the config, and vice-versa.
+        let naming_format = naming_format_for(&self.config.naming_format, matched_ref.media_type);
+        let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
+            .map_err(|e| format!("render name: {e}"))?;
         let dest = self.config.library_root.join(&rel);
 
         // Verify the file's parse does not contradict the chosen node's coordinates
@@ -2227,6 +2232,46 @@ fn reason_text(reason: &cellarr_core::RejectReason) -> String {
         R::CutoffAlreadyMet => "cutoff already met".into(),
         R::NotAnUpgrade => "not an upgrade over existing file".into(),
         R::Other { detail } => detail.clone(),
+    }
+}
+
+/// Choose the naming format to render a node of `media_type` with.
+///
+/// `configured` is the per-run format from [`RunnerConfig::naming_format`]. For an
+/// automatic acquisition (one node, config built from that node's library) it
+/// already targets the node's media type and is returned unchanged — user naming
+/// customization is honored. For a *manual* import, one config is reused across a
+/// mixed library set, so the configured format can be the wrong shape for this
+/// node (a movie format applied to a TV node has no `{Series Title}` token and
+/// would hard-error). When the configured format does not reference the node's
+/// primary title token, fall back to the built-in default for the node's media
+/// type so the import still lands with a correctly-shaped name.
+fn naming_format_for(configured: &str, media_type: cellarr_core::MediaType) -> &str {
+    use cellarr_core::MediaType;
+    let primary_token = match media_type {
+        MediaType::Movie => "{Movie Title}",
+        MediaType::Tv => "{Series Title}",
+        // Music/book formats key off the generic {Title} token.
+        MediaType::Music | MediaType::Book => "{Title}",
+    };
+    if configured.contains(primary_token) {
+        return configured;
+    }
+    default_naming_format(media_type)
+}
+
+/// The built-in per-media-type naming format — the safe default shape used when a
+/// configured format does not fit the node's media type (see [`naming_format_for`]).
+/// Mirrors the daemon's default so a node renders with its type's conventional
+/// layout regardless of which library supplied the run config.
+fn default_naming_format(media_type: cellarr_core::MediaType) -> &'static str {
+    use cellarr_core::MediaType;
+    match media_type {
+        MediaType::Tv => {
+            "{Series Title}/Season {Season}/{Series Title} - S{Season}E{Episode}.{Extension}"
+        }
+        MediaType::Movie => "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+        MediaType::Music | MediaType::Book => "{Title}.{Extension}",
     }
 }
 
@@ -2387,6 +2432,43 @@ mod tests {
         assert_eq!(ext.1, "mkv");
         // The source tokens are untouched (no extension leaked in).
         assert_eq!(base.tokens.len(), 2);
+    }
+
+    // --- naming_format_for: per-node media-type format selection -------------
+
+    #[test]
+    fn naming_format_for_keeps_matching_configured_format() {
+        use cellarr_core::MediaType;
+        // A configured movie format is honored for a movie node (user naming
+        // customization is preserved when the shape fits the node).
+        let movie_fmt = "{Movie Title} {{custom}} ({Release Year})/{Movie Title}.{Extension}";
+        assert_eq!(
+            naming_format_for(movie_fmt, MediaType::Movie),
+            movie_fmt,
+            "a movie format fits a movie node and is kept verbatim"
+        );
+        let tv_fmt = "{Series Title}/{Series Title} S{Season}E{Episode}.{Extension}";
+        assert_eq!(naming_format_for(tv_fmt, MediaType::Tv), tv_fmt);
+    }
+
+    #[test]
+    fn naming_format_for_falls_back_when_configured_format_mismatches_node() {
+        use cellarr_core::MediaType;
+        // The bug: a manual import builds one config from whichever library sorted
+        // first. A TV node committed under a *movie* config must NOT render with the
+        // movie format (it has no {Series Title} token); it falls back to the TV
+        // default so the import lands.
+        let movie_fmt = "{Movie Title} ({Release Year})/{Movie Title}.{Extension}";
+        let tv_default = naming_format_for(movie_fmt, MediaType::Tv);
+        assert!(tv_default.contains("{Series Title}"));
+        assert!(tv_default.contains("{Episode}"));
+        // And the reverse: a movie node under a TV config falls back to the movie
+        // default.
+        let tv_fmt =
+            "{Series Title}/Season {Season}/{Series Title} - S{Season}E{Episode}.{Extension}";
+        let movie_default = naming_format_for(tv_fmt, MediaType::Movie);
+        assert!(movie_default.contains("{Movie Title}"));
+        assert!(movie_default.contains("{Release Year}"));
     }
 
     // --- coords_agree: the library-safety second-parse agreement -------------

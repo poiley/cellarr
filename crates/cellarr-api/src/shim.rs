@@ -2961,10 +2961,154 @@ async fn list_movies(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>>
     Ok(Json(list_resources(&fs, MediaType::Movie).await?))
 }
 
-/// v3 `episode` list — Bazarr reads per-series episodes. cellarr has no episode
-/// projection wired here yet, so this returns a correctly-shaped empty array.
-async fn list_episodes() -> Json<Vec<Value>> {
-    Json(Vec::new())
+/// The `GET /api/v3/episode` query — the addressed series. The *arr clients
+/// (Bazarr, the content-detail UI's monitor tree) pass `seriesId`; cellarr also
+/// accepts the `contentId` spelling for its own face.
+#[derive(Debug, Deserialize)]
+struct EpisodeListQuery {
+    #[serde(rename = "seriesId", default)]
+    series_id: Option<String>,
+    #[serde(rename = "contentId", default)]
+    content_id: Option<String>,
+}
+
+/// v3 `episode` list — the per-series episode set Bazarr and the content-detail
+/// monitor tree read.
+///
+/// Resolves the addressed series (by `seriesId`/`contentId`, accepting both the
+/// full uuid and the numeric projection the list endpoints emit), walks its
+/// season→episode subtree, and renders one v3 episode resource per leaf episode
+/// node: `id`, `seriesId`, `seasonNumber`/`episodeNumber` (from the node's
+/// [`Coordinates::Episode`]), `title` (the indexed/identified episode title),
+/// `monitored`, `hasFile` (whether a media file is linked), and `airDate` (the
+/// persisted air date, when identified). Sorted by season then episode so the
+/// monitor tree renders in numbering order.
+///
+/// A missing/invalid `seriesId` yields an empty array (the same benign shape the
+/// originals return for a series with no episodes), never a 404 — the UI then
+/// shows an empty tree rather than an error.
+async fn list_episodes(
+    State(fs): State<FaceState>,
+    Query(q): Query<EpisodeListQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let raw = q
+        .series_id
+        .as_deref()
+        .or(q.content_id.as_deref())
+        .filter(|s| !s.is_empty());
+    let Some(raw) = raw else {
+        return Ok(Json(Vec::new()));
+    };
+    let Some(series) = resolve_series_node(&fs.state, raw).await? else {
+        return Ok(Json(Vec::new()));
+    };
+
+    let content = fs.state.db.content();
+    let series_numeric = rpm_numeric_id(&series.id.to_string());
+
+    // Walk the series subtree for its episode leaves.
+    let mut episodes = Vec::new();
+    let mut stack = content.children(series.id).await?;
+    while let Some(node) = stack.pop() {
+        if node.kind == cellarr_core::ContentKind::Episode {
+            episodes.push(node);
+        } else {
+            stack.extend(content.children(node.id).await?);
+        }
+    }
+
+    let mut out = Vec::with_capacity(episodes.len());
+    for node in &episodes {
+        out.push(v3_episode(&fs.state, node, series_numeric).await?);
+    }
+    // Order the tree by season then episode (the node walk is id-ordered).
+    out.sort_by_key(|e| {
+        (
+            e.get("seasonNumber").and_then(Value::as_i64).unwrap_or(0),
+            e.get("episodeNumber").and_then(Value::as_i64).unwrap_or(0),
+        )
+    });
+    Ok(Json(out))
+}
+
+/// Render one episode [`ContentNode`] as the v3 episode resource the monitor tree
+/// reads. `series_numeric` is the parent series' projected id, carried on every
+/// row as `seriesId`.
+async fn v3_episode(
+    state: &AppState,
+    node: &cellarr_core::ContentNode,
+    series_numeric: i64,
+) -> ApiResult<Value> {
+    use cellarr_core::repo::MediaFileRepository;
+    let (season, episode) = match &node.coords {
+        cellarr_core::Coordinates::Episode {
+            season, episode, ..
+        } => (*season, *episode),
+        // A non-episode coordinate on an episode-kind node is degenerate; surface
+        // zeros rather than failing the whole list.
+        _ => (0, 0),
+    };
+    let content = state.db.content();
+    let title = content
+        .title_for(node.id)
+        .await?
+        .unwrap_or_else(|| node.id.to_string());
+    let has_file = !state
+        .db
+        .media_files()
+        .list_for_content(node.id)
+        .await?
+        .is_empty();
+    // The persisted air date, written by Identify/Refresh; absent for an
+    // unidentified episode.
+    let air_date = content
+        .metadata(node.id)
+        .await?
+        .and_then(|m| m.air_date)
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "id": rpm_numeric_id(&node.id.to_string()),
+        "seriesId": series_numeric,
+        "seasonNumber": season,
+        "episodeNumber": episode,
+        "title": title,
+        "monitored": node.monitored,
+        "hasFile": has_file,
+        "airDate": air_date,
+    }))
+}
+
+/// Resolve a series id (full uuid or numeric projection) to its Series-kind
+/// [`ContentNode`], or `None` when nothing matches. The numeric fallback scans the
+/// TV libraries' roots and re-projects each id (the stateless projection the list
+/// endpoints emit).
+async fn resolve_series_node(
+    state: &AppState,
+    id: &str,
+) -> ApiResult<Option<cellarr_core::ContentNode>> {
+    let content = state.db.content();
+    if let Ok(uuid) = id.parse::<uuid::Uuid>() {
+        let node = content
+            .get_node(cellarr_core::ContentId::from_uuid(uuid))
+            .await?
+            .filter(|n| n.kind == cellarr_core::ContentKind::Series);
+        return Ok(node);
+    }
+    let numeric = parse_i64(id, "series")?;
+    for lib in state.db.config().list_libraries().await? {
+        if lib.media_type != MediaType::Tv {
+            continue;
+        }
+        for node in content.roots(lib.id).await? {
+            if node.kind == cellarr_core::ContentKind::Series
+                && rpm_numeric_id(&node.id.to_string()) == numeric
+            {
+                return Ok(Some(node));
+            }
+        }
+    }
+    Ok(None)
 }
 
 // --- content detail (GET /movie/{id}, GET /series/{id}) --------------------
