@@ -1,0 +1,27 @@
+# Feature gaps → Sonarr/Radarr drop-in parity (Tier A + B program)
+
+Tracks the remaining feature work to be a no-regression Sonarr+Radarr replacement. The core
+acquisition loop, decision engine (TRaSH CFs), self-heal, and the UI are done (see
+[REPLACEMENT-ROADMAP.md](REPLACEMENT-ROADMAP.md), [TESTING.md](TESTING.md)). These are the
+management/integration surfaces that make it a daily driver.
+
+Executed as a **sequence of feature packs**, each on a clean committed base (backend → frontend →
+verify, with tests), to avoid cross-feature conflicts on shared files (the `/api/v3` router, the
+migration sequence, the settings UI, the API client). SRCL-only for all UI; clean-room; design
+patterns + DoD maintained.
+
+Music/books (Lidarr/Readarr) are a separate media-type axis and are **out of scope** for this program.
+
+| Pack | Scope | Status |
+|------|-------|--------|
+| **1 — Metadata & artwork & calendar** | Persist year/overview/runtime + episode air dates on identify (closes the content-detail blanks); download/cache/serve artwork (MediaCover); `.nfo` export on import (Kodi/Jellyfin); real Calendar/Upcoming view | ⏳ in progress |
+| **2 — Notifications & media-server** | Provider set (Discord/Telegram/Pushover/email/custom-script) + Plex/Jellyfin/Emby rescan-on-import; fire on grab/import/health; Settings>Notifications UI (replaces ComingSoon) | ☐ |
+| **3 — Library management** | Delete movie/series (+files) + recycle bin; manual import (scan→match→import loose files); per-season/episode monitoring options; wire bulk delete | ☐ |
+| **4 — Decision & quality depth** | Custom-format editor (author/edit specs); naming-config UI + token coverage + permissions + extra-file import; delay profiles | ☐ |
+| **5 — Download clients & indexers** | Deluge + rTorrent adapters; per-indexer priority / seed criteria / freeleech flags; Cardigann depth | ☐ |
+| **6 — Lists & queue & ops & auth** | Import lists fully wired (Trakt/TMDb/Plex/IMDb) + collections; queue management (remove / manual-import / category); backup/restore + log viewer + health breadth; authentication / user accounts | ☐ |
+
+"In full" = all the features with the common/important variants + tests; genuinely long-tail
+breadth (every Cardigann definition, every niche download client/notification provider) is filled
+incrementally and noted where partial. Anything that can't be completed is deferred **with a reason +
+TODO**, never faked.
