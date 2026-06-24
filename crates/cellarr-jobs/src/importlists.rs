@@ -73,15 +73,13 @@ pub struct ListSyncReport {
 }
 
 /// Resolves the set of external-id identity keys already represented in the
-/// library, so the sync only adds genuinely-new items.
+/// library, so the sync only adds genuinely-new items (idempotent re-sync) and a
+/// clean action can compute the correct removable set.
 ///
-/// This is a seam because the content layer's external-id ↔ node link is a
-/// documented core gap (the identify pipeline does not yet persist a reverse
-/// external-id index). The DB-backed default returns an empty set today, which is
-/// **safe**: it only affects *additions* (a duplicate add is corrected by the
-/// node upsert being keyed on identity once the link lands) — never removals,
-/// which are governed solely by the confirmed-good-fetch safeguard. Tests inject a
-/// concrete set to exercise the de-duplication path.
+/// The DB-backed [`DbLibraryIndex`] reads the keys persisted on each node's typed
+/// `*_meta` identity row (written when the node is added — see
+/// `ContentRepo::link_external_id`). Tests inject a concrete set (`FixedIndex`) to
+/// exercise the de-duplication path in isolation.
 #[async_trait]
 pub trait LibraryIndex: Send + Sync {
     /// The normalized `(id_type, id_value)` keys already present for `media_type`.
@@ -91,19 +89,21 @@ pub trait LibraryIndex: Send + Sync {
     ) -> Result<Vec<(String, String)>, cellarr_db::DbError>;
 }
 
-/// The DB-backed [`LibraryIndex`]. Returns an empty set until the identify
-/// pipeline persists an external-id index (documented core gap); additions are
-/// still de-duplicated against the list-exclusion set, which *is* persisted.
+/// The DB-backed [`LibraryIndex`]. Reads the external-id identity keys persisted
+/// for the library's content nodes (via the typed `*_meta` rows), so the sync's
+/// "skip already-present" dedup runs against the live library — making a re-sync
+/// of the same list idempotent (no duplicate nodes) and letting a clean action
+/// compute a correct removable set.
 #[derive(Clone)]
 pub struct DbLibraryIndex {
-    _db: Database,
+    db: Database,
 }
 
 impl DbLibraryIndex {
     /// Build over the database handle.
     #[must_use]
     pub fn new(db: Database) -> Self {
-        Self { _db: db }
+        Self { db }
     }
 }
 
@@ -111,9 +111,9 @@ impl DbLibraryIndex {
 impl LibraryIndex for DbLibraryIndex {
     async fn existing_keys(
         &self,
-        _media_type: MediaType,
+        media_type: MediaType,
     ) -> Result<Vec<(String, String)>, cellarr_db::DbError> {
-        Ok(Vec::new())
+        self.db.content().external_keys(media_type).await
     }
 }
 
@@ -313,6 +313,20 @@ impl ImportListSync {
             };
             content.upsert(&node).await?;
             content.index_title(node.id, &item.title).await?;
+            // Persist the item's external id (tmdb/imdb/tvdb) the way the identify
+            // pipeline does, so a re-sync of the same list dedups against it (it
+            // shows up in existing_keys) and the v3 projection surfaces a real id
+            // instead of 0. A failure here is a hard persistence error (the node is
+            // already written, so we must not silently lose its identity).
+            content
+                .link_external_id(
+                    node.id,
+                    list.media_type,
+                    &item.id_type,
+                    &item.id_value,
+                    &item.title,
+                )
+                .await?;
             added += 1;
             tracing::info!(list = %list.name, title = %item.title, "import list added item");
         }

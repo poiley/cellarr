@@ -133,6 +133,97 @@ async fn confirmed_good_list_adds_monitored_items() {
 }
 
 // ---------------------------------------------------------------------------
+// IDEMPOTENCY: re-syncing the SAME list adds nothing the second time, because
+// the first sync persisted each node's external id and the DB-backed index now
+// reads it back.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resyncing_same_list_adds_no_duplicates() {
+    let (db, _tmp, library) = db_with_movie_library().await;
+    let list = movie_list(CleanAction::None);
+    db.import_lists().upsert(&list).await.unwrap();
+
+    let fetched = || {
+        Arc::new(MockSourceFactory::new(FetchResult::Fetched(vec![
+            item("100", "Heat"),
+            item("200", "Collateral"),
+        ])))
+    };
+
+    // First sync: both items are new.
+    let first = ImportListSync::new(db.clone(), fetched());
+    let r1 = first.sync_all().await.unwrap();
+    assert!(r1[0].fetch_succeeded);
+    assert_eq!(r1[0].added, 2);
+    assert_eq!(movie_count(&db, library).await, 2);
+
+    // The first sync persisted the external ids, so the DB-backed index now sees
+    // them — this is what makes the dedup real against the live library.
+    let mut keys = db.content().external_keys(MediaType::Movie).await.unwrap();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            ("tmdb".to_string(), "100".to_string()),
+            ("tmdb".to_string(), "200".to_string()),
+        ],
+        "the first sync persisted both tmdb ids"
+    );
+
+    // Second sync of the SAME list: nothing new, no duplicate nodes (was 4->8).
+    let second = ImportListSync::new(db.clone(), fetched());
+    let r2 = second.sync_all().await.unwrap();
+    assert!(r2[0].fetch_succeeded);
+    assert_eq!(r2[0].added, 0, "a re-sync of the same list adds nothing");
+    assert_eq!(
+        movie_count(&db, library).await,
+        2,
+        "the re-sync must not duplicate the existing nodes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A re-sync that drops an item, with clean=Remove, computes the right removable
+// set from the persisted external ids (and only on a confirmed-good fetch).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resync_with_clean_remove_computes_removable_from_persisted_ids() {
+    let (db, _tmp, library) = db_with_movie_library().await;
+    let list = movie_list(CleanAction::Remove);
+    db.import_lists().upsert(&list).await.unwrap();
+
+    // Seed two items via a first confirmed-good sync (persists their ids).
+    let first = ImportListSync::new(
+        db.clone(),
+        Arc::new(MockSourceFactory::new(FetchResult::Fetched(vec![
+            item("100", "Heat"),
+            item("200", "Collateral"),
+        ]))),
+    );
+    let r1 = first.sync_all().await.unwrap();
+    assert_eq!(r1[0].added, 2);
+    assert_eq!(movie_count(&db, library).await, 2);
+
+    // Re-sync a list that now carries only "100" -> "200" is no longer on the
+    // list, so it is clean-eligible (computed from the persisted external ids).
+    let second = ImportListSync::new(
+        db.clone(),
+        Arc::new(MockSourceFactory::new(FetchResult::Fetched(vec![item(
+            "100", "Heat",
+        )]))),
+    );
+    let r2 = second.sync_all().await.unwrap();
+    assert!(r2[0].fetch_succeeded);
+    assert_eq!(r2[0].added, 0, "100 is already present");
+    assert_eq!(
+        r2[0].cleaned, 1,
+        "200 fell off the list and is clean-eligible"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // THE SAFEGUARD: a failing fetch changes nothing.
 // ---------------------------------------------------------------------------
 

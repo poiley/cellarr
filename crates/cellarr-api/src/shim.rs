@@ -3848,6 +3848,14 @@ async fn v3_resource_item(
         format!("{}/{}", root.trim_end_matches('/'), slug(title))
     };
     let size_on_disk: u64 = files.iter().map(|f| f.size).sum();
+    // The persisted external id (tmdb/tvdb/imdb), when the node carries one — e.g.
+    // an import-list-added node now links its identity. `None` falls back to 0,
+    // matching an un-identified node.
+    let external = state
+        .db
+        .content()
+        .external_id_for(node.id, node.media_type)
+        .await?;
     let base = json!({
         "title": title,
         "monitored": node.monitored,
@@ -3861,12 +3869,30 @@ async fn v3_resource_item(
         "titleSlug": slug(title),
         "tags": [],
     });
+    // The numeric id (tmdb/tvdb) the ecosystem keys on, projected from the
+    // persisted external id; 0 when the node carries no such id yet.
+    let numeric_external_id = |ns: &str| -> i64 {
+        external
+            .as_ref()
+            .filter(|(t, _)| t == ns)
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    let imdb_external = || -> Option<String> {
+        external
+            .as_ref()
+            .filter(|(t, _)| t == "imdb")
+            .map(|(_, v)| v.clone())
+    };
     Ok(match node.media_type {
         MediaType::Tv => {
             let mut v = merge(
                 base,
-                json!({ "tvdbId": 0, "seriesType": "standard", "status": "continuing" }),
+                json!({ "tvdbId": numeric_external_id("tvdb"), "seriesType": "standard", "status": "continuing" }),
             );
+            if let Some(imdb) = imdb_external() {
+                merge_into(&mut v, json!({ "imdbId": imdb }));
+            }
             if let Some(f) = file {
                 merge_into(
                     &mut v,
@@ -3879,8 +3905,11 @@ async fn v3_resource_item(
         _ => {
             let mut v = merge(
                 base,
-                json!({ "tmdbId": 0, "year": 0, "status": "released", "hasFile": file.is_some() }),
+                json!({ "tmdbId": numeric_external_id("tmdb"), "year": 0, "status": "released", "hasFile": file.is_some() }),
             );
+            if let Some(imdb) = imdb_external() {
+                merge_into(&mut v, json!({ "imdbId": imdb }));
+            }
             if let Some(f) = file {
                 merge_into(
                     &mut v,

@@ -90,6 +90,234 @@ impl ContentRepo {
             .transpose()
     }
 
+    /// Persist an external id (`id_type` + `id_value`) for a content node, the way
+    /// the identify pipeline does: mint a `title_id`, link it onto the node, and
+    /// write the matching typed `*_meta` identity row carrying the external id.
+    ///
+    /// This is what lets an import-list-added node carry its `tmdb`/`tvdb`/`imdb`
+    /// id, so re-syncing the same list dedups against it (via
+    /// [`external_keys`](Self::external_keys)) instead of adding a duplicate, and so
+    /// the v3 projection surfaces a real `tmdbId`/`tvdbId` instead of `0`.
+    ///
+    /// Only the `movie`/`series` identity tables are written (the kinds import
+    /// lists add as roots); other kinds carry their identity elsewhere and are a
+    /// no-op here. The whole link is one writer transaction so a crash can never
+    /// leave a node pointing at a missing `*_meta` row.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn link_external_id(
+        &self,
+        id: ContentId,
+        media_type: MediaType,
+        id_type: &str,
+        id_value: &str,
+        title: &str,
+    ) -> Result<()> {
+        // Reuse any title_id already linked to the node so a re-link updates the
+        // existing identity row in place rather than orphaning the old one.
+        let existing_title_id: Option<String> =
+            sqlx::query("SELECT title_id FROM content WHERE id = ?1")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .and_then(|r| r.try_get::<Option<String>, _>("title_id").ok().flatten());
+        let title_id = existing_title_id.unwrap_or_else(|| TitleId::new().to_string());
+
+        // The numeric id sources (tmdb/tvdb) store an INTEGER; imdb is a TEXT id.
+        let key = id_type.trim().to_ascii_lowercase();
+        let numeric_id: Option<i64> = id_value.trim().parse::<i64>().ok();
+        let imdb_id: Option<String> = (key == "imdb").then(|| id_value.trim().to_string());
+
+        let content_id = id.to_string();
+        let title = title.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    // Link the title_id onto the node.
+                    sqlx::query("UPDATE content SET title_id = ?1 WHERE id = ?2")
+                        .bind(&title_id)
+                        .bind(&content_id)
+                        .execute(&mut *conn)
+                        .await?;
+
+                    match media_type {
+                        MediaType::Movie => {
+                            let (tmdb_id, imdb) = if key == "imdb" {
+                                (None, imdb_id.clone())
+                            } else {
+                                (numeric_id, None)
+                            };
+                            sqlx::query(
+                                "INSERT INTO movie_meta (title_id, title, tmdb_id, imdb_id)
+                                 VALUES (?1, ?2, ?3, ?4)
+                                 ON CONFLICT(title_id) DO UPDATE SET
+                                    title = excluded.title,
+                                    tmdb_id = COALESCE(excluded.tmdb_id, movie_meta.tmdb_id),
+                                    imdb_id = COALESCE(excluded.imdb_id, movie_meta.imdb_id)",
+                            )
+                            .bind(&title_id)
+                            .bind(&title)
+                            .bind(tmdb_id)
+                            .bind(imdb)
+                            .execute(&mut *conn)
+                            .await?;
+                        }
+                        MediaType::Tv => {
+                            let (tvdb_id, tmdb_id, imdb) = match key.as_str() {
+                                "tvdb" => (numeric_id, None, None),
+                                "imdb" => (None, None, imdb_id.clone()),
+                                _ => (None, numeric_id, None),
+                            };
+                            sqlx::query(
+                                "INSERT INTO series_meta (title_id, title, tvdb_id, tmdb_id, imdb_id)
+                                 VALUES (?1, ?2, ?3, ?4, ?5)
+                                 ON CONFLICT(title_id) DO UPDATE SET
+                                    title = excluded.title,
+                                    tvdb_id = COALESCE(excluded.tvdb_id, series_meta.tvdb_id),
+                                    tmdb_id = COALESCE(excluded.tmdb_id, series_meta.tmdb_id),
+                                    imdb_id = COALESCE(excluded.imdb_id, series_meta.imdb_id)",
+                            )
+                            .bind(&title_id)
+                            .bind(&title)
+                            .bind(tvdb_id)
+                            .bind(tmdb_id)
+                            .bind(imdb)
+                            .execute(&mut *conn)
+                            .await?;
+                        }
+                        // Music/book identity tables are deferred (see migration 0001);
+                        // the node's title_id link is still written above so a future
+                        // identity table can attach without re-keying.
+                        MediaType::Music | MediaType::Book => {}
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// The set of external-id identity keys `(id_type, id_value)` already present
+    /// for `media_type`, read back from the typed `*_meta` identity rows linked to
+    /// this library's content nodes.
+    ///
+    /// This is the read side of [`link_external_id`](Self::link_external_id): it is
+    /// what the import-list sync's `existing_keys` resolves so a re-sync of the same
+    /// list skips items already in the library (idempotency). Keys are normalized
+    /// (lowercased namespace) to match [`ImportListItem::key`]. A node with no
+    /// linked identity contributes nothing (it is simply not yet de-dupable).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn external_keys(&self, media_type: MediaType) -> Result<Vec<(String, String)>> {
+        // Only movie/series carry typed external-id tables today; the music/book
+        // identity tables are deferred, so those media types have nothing to read
+        // back yet (returning an empty set is safe — it only relaxes de-dup).
+        let rows = match media_type {
+            MediaType::Movie => {
+                sqlx::query(
+                    "SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
+                     FROM content c JOIN movie_meta m ON m.title_id = c.title_id
+                     WHERE c.media_type = 'movie'",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+            MediaType::Tv => {
+                sqlx::query(
+                    "SELECT s.tmdb_id AS tmdb_id, s.imdb_id AS imdb_id, s.tvdb_id AS tvdb_id
+                     FROM content c JOIN series_meta s ON s.title_id = c.title_id
+                     WHERE c.media_type = 'tv'",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+            MediaType::Music | MediaType::Book => Vec::new(),
+        };
+
+        let mut keys = Vec::new();
+        for row in &rows {
+            if let Ok(Some(tmdb)) = row.try_get::<Option<i64>, _>("tmdb_id") {
+                keys.push(("tmdb".to_string(), tmdb.to_string()));
+            }
+            if let Ok(Some(imdb)) = row.try_get::<Option<String>, _>("imdb_id") {
+                let v = imdb.trim().to_ascii_lowercase();
+                if !v.is_empty() {
+                    keys.push(("imdb".to_string(), v));
+                }
+            }
+            if media_type == MediaType::Tv {
+                if let Ok(Some(tvdb)) = row.try_get::<Option<i64>, _>("tvdb_id") {
+                    keys.push(("tvdb".to_string(), tvdb.to_string()));
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Read back the primary external id for a single content node as
+    /// `(id_type, id_value)` — the `tmdb`/`tvdb`/`imdb` id the v3 projection
+    /// surfaces. `None` when the node carries no linked identity row yet.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn external_id_for(
+        &self,
+        id: ContentId,
+        media_type: MediaType,
+    ) -> Result<Option<(String, String)>> {
+        let row = match media_type {
+            MediaType::Movie => sqlx::query(
+                "SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
+                 FROM content c JOIN movie_meta m ON m.title_id = c.title_id
+                 WHERE c.id = ?1",
+            )
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|r| {
+                let tmdb: Option<i64> = r.try_get("tmdb_id").unwrap_or(None);
+                let imdb: Option<String> = r.try_get("imdb_id").unwrap_or(None);
+                (tmdb, None::<i64>, imdb)
+            }),
+            MediaType::Tv => sqlx::query(
+                "SELECT s.tvdb_id AS tvdb_id, s.tmdb_id AS tmdb_id, s.imdb_id AS imdb_id
+                 FROM content c JOIN series_meta s ON s.title_id = c.title_id
+                 WHERE c.id = ?1",
+            )
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|r| {
+                let tvdb: Option<i64> = r.try_get("tvdb_id").unwrap_or(None);
+                let tmdb: Option<i64> = r.try_get("tmdb_id").unwrap_or(None);
+                let imdb: Option<String> = r.try_get("imdb_id").unwrap_or(None);
+                (tmdb, tvdb, imdb)
+            }),
+            MediaType::Music | MediaType::Book => None,
+        };
+        let Some((tmdb, tvdb, imdb)) = row else {
+            return Ok(None);
+        };
+        // Prefer the namespace the media type primarily keys on (tvdb for TV, tmdb
+        // for movies), then fall back to whatever id is present.
+        if media_type == MediaType::Tv {
+            if let Some(v) = tvdb {
+                return Ok(Some(("tvdb".to_string(), v.to_string())));
+            }
+        }
+        if let Some(v) = tmdb {
+            return Ok(Some(("tmdb".to_string(), v.to_string())));
+        }
+        if let Some(v) = imdb {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return Ok(Some(("imdb".to_string(), v)));
+            }
+        }
+        Ok(None)
+    }
+
     /// Resolve a content node to the **TVDB id of the series it belongs to**.
     ///
     /// This is the identity-link query the anime absolute→episode remap is gated
