@@ -533,13 +533,23 @@ impl LivePipelineEnv {
             .await
             .map_err(|e| format!("loading delay profiles failed: {e}"))?;
 
+        // The library-wide media-management settings drive the on-disk naming
+        // format (per media type), the post-commit chmod/chown policy, and the
+        // extra-file import policy. Absent settings resolve to defaults, preserving
+        // prior behavior (built-in naming, no permission changes, no extras).
+        let media_management = config_repo
+            .get_media_management()
+            .await
+            .map_err(|e| format!("loading media-management settings failed: {e}"))?;
+        let naming_format = media_management.naming.format_for(content.media_type);
+
         Ok(Some(RunnerConfig {
             profile,
             custom_formats,
             ranking: QualityRanking::default(),
             proper_repack_policy: ProperRepackPolicy::default(),
             library_root: std::path::PathBuf::from(library_root),
-            naming_format: default_naming_format(content.media_type),
+            naming_format,
             // The aggregate indexer is type-erased; attribution ids identify the
             // configured set/client the grab is tagged to.
             indexer_id: cellarr_core::IndexerId::new(),
@@ -560,6 +570,9 @@ impl LivePipelineEnv {
             // Content tags are not yet modeled on the node; the catch-all (tagless)
             // delay profile governs every node until per-node tags are wired.
             content_tags: Vec::new(),
+            // Post-commit, best-effort policies from media-management settings.
+            permissions: media_management.permissions.clone(),
+            extra_files: media_management.extra_files.clone(),
         }))
     }
 }
@@ -938,21 +951,5 @@ fn default_coords(media_type: MediaType) -> cellarr_core::Coordinates {
         MediaType::Book => cellarr_core::Coordinates::Book {
             series_position: None,
         },
-    }
-}
-
-/// The default rename format per media type — the `{Token}` shape cellarr-fs
-/// `render_name` interpolates against the media module's naming tokens. A
-/// deployment can later make this configurable per library; this is the safe
-/// built-in default the daemon uses today.
-fn default_naming_format(media_type: MediaType) -> String {
-    match media_type {
-        MediaType::Tv => {
-            "{Series Title}/Season {Season}/{Series Title} - S{Season}E{Episode}.{Extension}".into()
-        }
-        MediaType::Movie => "{Movie Title} ({Release Year})/{Movie Title}.{Extension}".into(),
-        // Music/book libraries are not acquisition targets in v1; a flat,
-        // extension-preserving default keeps any future node import safe.
-        _ => "{Title}.{Extension}".into(),
     }
 }

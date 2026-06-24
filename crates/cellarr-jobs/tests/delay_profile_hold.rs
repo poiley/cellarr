@@ -238,6 +238,8 @@ fn runner_config(library_root: PathBuf, delay_profiles: Vec<DelayProfile>) -> Ru
         write_nfo: false,
         delay_profiles,
         content_tags: Vec::new(),
+        permissions: Default::default(),
+        extra_files: Default::default(),
     }
 }
 

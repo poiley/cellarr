@@ -144,6 +144,8 @@ impl PipelineEnv for FakeEnv {
             write_nfo: false,
             delay_profiles: Vec::new(),
             content_tags: Vec::new(),
+            permissions: Default::default(),
+            extra_files: Default::default(),
         };
         Ok(Some((
             FakeIndexer { release },

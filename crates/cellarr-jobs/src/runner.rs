@@ -327,6 +327,18 @@ pub struct RunnerConfig {
     /// The tags on the content this runner acquires, used to resolve which delay
     /// profile applies. Empty selects the catch-all (tagless) profile.
     pub content_tags: Vec<String>,
+    /// The Unix permission policy (`chmod`/`chown`) applied to imported media and
+    /// the folders created for it, **after** the crash-safe commit. Best-effort and
+    /// Unix-only: a failure is logged and never rolls back the import. The default
+    /// ([`ImportPermissions::default`](cellarr_core::ImportPermissions)) applies
+    /// nothing, preserving prior behavior.
+    pub permissions: cellarr_core::ImportPermissions,
+    /// Whether (and which) sibling "extra" files (subtitles, `.nfo`, …) are imported
+    /// alongside each media file, renamed to match it. Applied **after** the media
+    /// commit, best-effort: an extra-file failure never breaks the media import.
+    /// The default ([`ExtraFileImport::default`](cellarr_core::ExtraFileImport)) is
+    /// disabled, preserving prior behavior.
+    pub extra_files: cellarr_core::ExtraFileImport,
 }
 
 /// Drives candidates through the pipeline state machine.
@@ -1645,6 +1657,22 @@ where
             .map(|m| m.destination_path.to_string_lossy().into_owned())
             .collect();
 
+        // Post-commit, best-effort, never library-critical: import sibling extra
+        // files (subtitles, .nfo, …) and apply the chmod/chown permission policy.
+        // All of this runs after the media is durably committed, so a failure is
+        // logged and swallowed — it never rolls back or corrupts the import.
+        // `sources` and `destinations` are in the same plan order.
+        for (src, dst) in plan.moves.iter().zip(destinations.iter()) {
+            apply_post_commit(
+                &self.config.extra_files,
+                &self.config.permissions,
+                std::path::Path::new(&src.source_path),
+                std::path::Path::new(dst),
+                &self.config.library_root,
+            )
+            .await;
+        }
+
         // Best-effort, post-commit metadata sidecars (Kodi/Jellyfin `.nfo`). The
         // media is already durable; a sidecar failure is logged and never fails
         // the import (so the crash-safe stage->verify->commit guarantee stands).
@@ -2275,6 +2303,18 @@ where
             .map(|m| m.destination_path.to_string_lossy().into_owned())
             .unwrap_or_default();
 
+        // Post-commit, best-effort extras + permissions (see the automatic import).
+        if !destination_path.is_empty() {
+            apply_post_commit(
+                &self.config.extra_files,
+                &self.config.permissions,
+                src,
+                std::path::Path::new(&destination_path),
+                &self.config.library_root,
+            )
+            .await;
+        }
+
         // Persist the media-file row + content link so the library recognizes the
         // import (the node is no longer "missing"), the same authoritative write the
         // automatic import makes — but idempotently: a manual re-commit of an
@@ -2391,6 +2431,95 @@ fn with_ext_token(tokens: &NamingTokens, ext: &str) -> NamingTokens {
     let mut t = tokens.tokens.clone();
     t.push(("Extension".to_string(), ext.to_string()));
     NamingTokens { tokens: t }
+}
+
+/// Apply the post-commit, best-effort policies to one just-imported media file:
+/// import its sibling extra files, then apply the chmod/chown permission policy to
+/// the placed media (and the extras) plus the folders the import created under the
+/// library root.
+///
+/// **Library-safety contract:** every step here runs *after* the media is durably
+/// committed and is purely additive. A chmod/chown or extra-file failure is logged
+/// (`tracing::warn`) and swallowed — it never rolls back, corrupts, or fails the
+/// import. Permissions are applied *after* extras so a placed subtitle inherits the
+/// configured mode too.
+async fn apply_post_commit(
+    extra_files: &cellarr_core::ExtraFileImport,
+    permissions: &cellarr_core::ImportPermissions,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    library_root: &std::path::Path,
+) {
+    // 1) Sibling extra files (subtitles, .nfo, …) next to the renamed media.
+    let mut extra_dests: Vec<std::path::PathBuf> = Vec::new();
+    for o in cellarr_fs::import_extras(source, destination, extra_files).await {
+        match o {
+            cellarr_fs::ExtraOutcome::Imported { destination, .. } => {
+                extra_dests.push(destination);
+            }
+            cellarr_fs::ExtraOutcome::Failed { source, reason } => {
+                tracing::warn!(
+                    source = %source.display(),
+                    %reason,
+                    "extra-file import failed (media import unaffected)"
+                );
+            }
+        }
+    }
+
+    // 2) Permissions on the media file, the placed extras, and the created folders.
+    let has_policy = permissions.chmod_file.is_some()
+        || permissions.chmod_folder.is_some()
+        || permissions.chown.is_some();
+    if !has_policy {
+        return;
+    }
+
+    // Files: the media and each extra.
+    for file in std::iter::once(destination.to_path_buf()).chain(extra_dests) {
+        let outcome = cellarr_fs::apply_to_file(&file, permissions).await;
+        warn_if_permission_failed(&outcome);
+    }
+
+    // Folders: every directory the import created between the library root and the
+    // file (the series/season/movie folders), deepest-first so a restrictive mode
+    // does not block setting a parent.
+    for folder in created_folders(destination, library_root) {
+        let outcome = cellarr_fs::apply_to_folder(&folder, permissions).await;
+        warn_if_permission_failed(&outcome);
+    }
+}
+
+/// Log a permission outcome if it failed; otherwise a no-op.
+fn warn_if_permission_failed(outcome: &cellarr_fs::PermissionOutcome) {
+    if let cellarr_fs::PermissionOutcome::Failed { path, reason } = outcome {
+        tracing::warn!(
+            path = %path.display(),
+            %reason,
+            "applying import permissions failed (media import unaffected)"
+        );
+    }
+}
+
+/// The directory chain from `destination`'s parent up to (but excluding)
+/// `library_root`, deepest-first. These are the folders an import may have created
+/// for the media; applying the folder mode to them mirrors the *arr behavior of
+/// chmod-ing the destination tree. A destination outside the root yields nothing
+/// (we never touch paths above the library).
+fn created_folders(
+    destination: &std::path::Path,
+    library_root: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut cur = destination.parent();
+    while let Some(dir) = cur {
+        if dir == library_root || !dir.starts_with(library_root) {
+            break;
+        }
+        out.push(dir.to_path_buf());
+        cur = dir.parent();
+    }
+    out
 }
 
 /// Collect importable source files: the file itself, or every file under a

@@ -47,7 +47,7 @@
 //! spaces are all handled. [`RenderOptions`] tunes the colon replacement and the
 //! target platform.
 
-use cellarr_core::NamingTokens;
+use cellarr_core::{MediaType, NameTarget, NamingTokens};
 
 use crate::error::{FsError, Result};
 
@@ -202,6 +202,126 @@ pub fn render_name_with(
     }
 
     Ok(segments.join("/"))
+}
+
+/// One entry in a [`NameTarget`]'s naming-token vocabulary: the `{Token}` name a
+/// format may reference, a short human label, whether it is required (its absence
+/// fails the render) or optional (renders to nothing), and an example value.
+///
+/// This is the data the `GET /config/naming/tokens` endpoint exposes so the UI can
+/// offer the user a palette of insertable tokens per name target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamingToken {
+    /// The token name as written inside `{...}` in a format (without the braces).
+    pub token: String,
+    /// A short human-facing label for the token.
+    pub label: String,
+    /// Whether the token is required: a format that references a required token
+    /// the module does not supply hard-errors ([`FsError::MissingToken`]); an
+    /// optional token renders to nothing when absent (see [`is_optional_token`]).
+    pub required: bool,
+    /// An example rendered value, used for the live preview's sample context.
+    pub example: String,
+}
+
+/// The token vocabulary a [`NameTarget`] may reference, in display order.
+///
+/// Required tokens (title, and — for an episode file — the season/episode block)
+/// gate a valid name; optional enrichment tokens (year, edition) render to nothing
+/// when the module does not know them. The vocabulary doubles as the sample
+/// context for the preview: [`sample_tokens`] is built from these examples.
+#[must_use]
+pub fn token_vocabulary(target: NameTarget) -> Vec<NamingToken> {
+    let tok = |token: &str, label: &str, required: bool, example: &str| NamingToken {
+        token: token.to_string(),
+        label: label.to_string(),
+        required,
+        example: example.to_string(),
+    };
+    match target {
+        NameTarget::MovieFile => vec![
+            tok("Movie Title", "Movie Title", true, "Blade Runner"),
+            tok("Release Year", "Release Year", false, "1982"),
+            tok("Edition", "Edition", false, "Final Cut"),
+            tok("Release Group", "Release Group", false, "NTb"),
+            tok("MediaInfo VideoCodec", "Video Codec", false, "x265"),
+            tok("MediaInfo AudioCodec", "Audio Codec", false, "DTS"),
+            tok("ImdbId", "IMDb Id", false, "tt0083658"),
+            tok("TmdbId", "TMDb Id", false, "78"),
+            tok("Extension", "File Extension", true, "mkv"),
+        ],
+        NameTarget::SeriesFolder => vec![
+            tok("Series Title", "Series Title", true, "The Expanse"),
+            tok("Release Year", "Series Year", false, "2015"),
+            tok("TvdbId", "TVDb Id", false, "280619"),
+            tok("ImdbId", "IMDb Id", false, "tt3230854"),
+        ],
+        NameTarget::SeasonFolder => vec![
+            tok("Series Title", "Series Title", true, "The Expanse"),
+            tok("Season", "Season Number", true, "2"),
+        ],
+        NameTarget::EpisodeFile => vec![
+            tok("Series Title", "Series Title", true, "The Expanse"),
+            tok("Season", "Season Number", true, "2"),
+            tok("Episode", "Episode Number", true, "6"),
+            tok("Episodes", "Episode Numbers", false, "6,7"),
+            tok("Episode Block", "Season/Episode Block", false, "S02E06"),
+            tok("Absolute Episode", "Absolute Number", false, "19"),
+            tok("Release Group", "Release Group", false, "NTb"),
+            tok("Extension", "File Extension", true, "mkv"),
+        ],
+    }
+}
+
+/// A sample [`NamingTokens`] for a name target, built from its
+/// [`token_vocabulary`]'s example values. Used to render a live preview of a
+/// candidate format without touching real metadata.
+#[must_use]
+pub fn sample_tokens(target: NameTarget) -> NamingTokens {
+    let tokens = token_vocabulary(target)
+        .into_iter()
+        .map(|t| (t.token, t.example))
+        .collect();
+    NamingTokens { tokens }
+}
+
+/// Render a candidate `format` for a name target against the built-in
+/// [`sample_tokens`] (or a caller-supplied override), producing the example string
+/// the UI shows beneath the naming input.
+///
+/// Required-token strictness and the graceful optional-token behavior are exactly
+/// those of [`render_name`]: a format referencing a *required* token absent from
+/// the sample errors, while an absent optional token (and any now-empty bracket
+/// group) renders away.
+///
+/// # Errors
+/// See [`render_name`].
+pub fn render_preview(
+    format: &str,
+    target: NameTarget,
+    sample: Option<&NamingTokens>,
+) -> Result<String> {
+    let owned;
+    let tokens = match sample {
+        Some(t) => t,
+        None => {
+            owned = sample_tokens(target);
+            &owned
+        }
+    };
+    render_name(format, tokens)
+}
+
+/// Map a [`MediaType`] to the name target whose composed format the rename engine
+/// renders for it. TV composes the episode file path; movie the movie file path.
+#[must_use]
+pub fn primary_target(media_type: MediaType) -> NameTarget {
+    match media_type {
+        MediaType::Movie => NameTarget::MovieFile,
+        // Music/books have no v1 naming surface; the episode file is the closest
+        // single-file target for a preview.
+        MediaType::Tv | MediaType::Music | MediaType::Book => NameTarget::EpisodeFile,
+    }
 }
 
 /// Substitute `{Token}` placeholders. Supports `{{`/`}}` for literal braces, a
@@ -938,6 +1058,80 @@ mod tests {
             render_colon(ColonReplacement::Smart, TargetPlatform::Windows, "16:9"),
             "16-9"
         );
+    }
+
+    // --- token vocabulary + preview ---
+
+    #[test]
+    fn preview_renders_movie_sample_with_defaults() {
+        let out = render_preview(
+            "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+            NameTarget::MovieFile,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, "Blade Runner (1982)/Blade Runner.mkv");
+    }
+
+    #[test]
+    fn preview_renders_episode_sample_block() {
+        let out = render_preview(
+            "{Series Title}/Season {Season}/{Series Title} - S{Season}E{Episode}.{Extension}",
+            NameTarget::EpisodeFile,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, "The Expanse/Season 2/The Expanse - S2E6.mkv");
+    }
+
+    #[test]
+    fn preview_keeps_required_token_strictness() {
+        // A movie format that references {Series Title} (not in the movie sample)
+        // must surface MissingToken — preview shares render_name's strictness.
+        let err =
+            render_preview("{Series Title}.{Extension}", NameTarget::MovieFile, None).unwrap_err();
+        assert!(matches!(err, FsError::MissingToken { token } if token == "Series Title"));
+    }
+
+    #[test]
+    fn preview_drops_optional_token_gracefully() {
+        // {Edition} is optional; absent from a custom sample its empty `[]` group
+        // is cleaned up and the preview still renders (no MissingToken), exactly
+        // like a real import. The leftover space before the extension mirrors the
+        // engine's segment handling and is harmless.
+        let sample = tk(&[("Movie Title", "Heat"), ("Extension", "mkv")]);
+        let out = render_preview(
+            "{Movie Title} [{Edition}]/{Movie Title}.{Extension}",
+            NameTarget::MovieFile,
+            Some(&sample),
+        )
+        .unwrap();
+        assert_eq!(out, "Heat/Heat.mkv");
+    }
+
+    #[test]
+    fn vocabulary_marks_title_and_extension_required() {
+        let v = token_vocabulary(NameTarget::MovieFile);
+        let title = v.iter().find(|t| t.token == "Movie Title").unwrap();
+        let ext = v.iter().find(|t| t.token == "Extension").unwrap();
+        let year = v.iter().find(|t| t.token == "Release Year").unwrap();
+        assert!(title.required);
+        assert!(ext.required);
+        assert!(!year.required);
+    }
+
+    #[test]
+    fn sample_tokens_render_every_required_token_in_vocabulary() {
+        // Building a format from each target's required tokens must render cleanly
+        // against that target's own sample (the preview is internally consistent).
+        for target in NameTarget::all() {
+            let sample = sample_tokens(target);
+            for t in token_vocabulary(target).into_iter().filter(|t| t.required) {
+                let fmt = format!("{{{}}}", t.token);
+                let rendered = render_name(&fmt, &sample).unwrap();
+                assert!(!rendered.is_empty(), "{} rendered empty", t.token);
+            }
+        }
     }
 
     #[test]

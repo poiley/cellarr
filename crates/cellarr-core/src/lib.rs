@@ -44,8 +44,9 @@ pub mod webhook;
 pub use blocklist::{release_key, BlocklistEntry, BlocklistRepository};
 
 pub use config::{
-    apply_remote_path_mappings, DownloadClientConfig, IndexerConfig, MediaManagement,
-    NotificationConfig, RemotePathMapping, RootFolder,
+    apply_remote_path_mappings, DownloadClientConfig, ExtraFileImport, ImportPermissions,
+    IndexerConfig, MediaManagement, NameTarget, NamingFormats, NotificationConfig,
+    RemotePathMapping, RootFolder,
 };
 pub use decision::{
     Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,

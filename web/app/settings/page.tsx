@@ -2,10 +2,8 @@
 
 // Settings hub. SRCL-only: AppShell + ButtonGroup section switcher + the
 // settings sections (quality profiles, custom formats, indexers, download
-// clients, root folders, remote path mappings, notifications), each composed
-// entirely from vendored SRCL primitives and wired to the API client. Naming has
-// no backend yet, so it renders an honest "coming soon" placeholder rather than a
-// form that saves nowhere.
+// clients, root folders, remote path mappings, naming, notifications), each
+// composed entirely from vendored SRCL primitives and wired to the API client.
 
 import * as React from 'react';
 
@@ -20,7 +18,7 @@ import IntegrationSection from '@app/settings/_components/IntegrationSection';
 import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
 import Notifications from '@app/settings/_components/Notifications';
-import ComingSoon from '@app/settings/_components/ComingSoon';
+import Naming from '@app/settings/_components/Naming';
 
 type Section =
   | 'profiles'
@@ -81,12 +79,7 @@ export default function Page() {
         ) : null}
         {section === 'rootfolders' ? <RootFolders /> : null}
         {section === 'remotepaths' ? <RemotePathMappings /> : null}
-        {section === 'naming' ? (
-          <ComingSoon
-            title="Naming"
-            summary="Configure how downloaded movie and episode files are renamed and organised on disk."
-          />
-        ) : null}
+        {section === 'naming' ? <Naming /> : null}
         {section === 'notifications' ? <Notifications /> : null}
       </div>
     </AppShell>

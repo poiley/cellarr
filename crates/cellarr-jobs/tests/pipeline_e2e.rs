@@ -291,6 +291,8 @@ fn runner_config(library_root: PathBuf, profile: QualityProfile, naming: &str) -
         write_nfo: false,
         delay_profiles: Vec::new(),
         content_tags: Vec::new(),
+        permissions: Default::default(),
+        extra_files: Default::default(),
     }
 }
 

@@ -58,7 +58,13 @@ async fn open_runs_migrations_and_creates_tables() {
     assert_eq!(count, 0);
 
     // The typed identity side-tables and the FTS table exist too.
-    for table in ["movie_meta", "series_meta", "episode_meta", "cache"] {
+    for table in [
+        "movie_meta",
+        "series_meta",
+        "episode_meta",
+        "cache",
+        "media_management",
+    ] {
         let q = format!("SELECT COUNT(*) FROM {table}");
         let n: i64 = sqlx::query_scalar(&q)
             .fetch_one(db.pool())
@@ -66,6 +72,55 @@ async fn open_runs_migrations_and_creates_tables() {
             .unwrap_or_else(|e| panic!("table {table} should exist: {e}"));
         assert_eq!(n, 0);
     }
+}
+
+#[tokio::test]
+async fn media_management_defaults_then_round_trips() {
+    use cellarr_core::{ExtraFileImport, ImportPermissions, MediaManagement};
+
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+
+    // With no row written, the settings resolve to defaults (the daemon's prior
+    // built-in behavior) rather than erroring.
+    let defaults = config.get_media_management().await.expect("get default");
+    assert_eq!(defaults, MediaManagement::default());
+
+    // Persist a customized policy and read it back unchanged.
+    let mut settings = MediaManagement::default();
+    settings.naming.movie_file_format = "{Movie Title}/movie.{Extension}".into();
+    settings.naming.season_folder_format = "S{Season:00}".into();
+    settings.permissions = ImportPermissions {
+        chmod_file: Some("640".into()),
+        chmod_folder: Some("750".into()),
+        chown: Some("media:media".into()),
+    };
+    settings.extra_files = ExtraFileImport {
+        enabled: true,
+        extensions: vec!["srt".into(), "ass".into()],
+    };
+    config
+        .set_media_management(&settings)
+        .await
+        .expect("set settings");
+
+    let back = config.get_media_management().await.expect("get settings");
+    assert_eq!(back, settings);
+
+    // A second write replaces the single document in place (no duplicate rows).
+    let mut settings2 = settings.clone();
+    settings2.naming.movie_file_format = "{Movie Title}.{Extension}".into();
+    config
+        .set_media_management(&settings2)
+        .await
+        .expect("overwrite settings");
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_management")
+        .fetch_one(db.pool())
+        .await
+        .expect("count");
+    assert_eq!(n, 1, "media_management is a singleton row");
+    let back2 = config.get_media_management().await.expect("get settings 2");
+    assert_eq!(back2.naming.movie_file_format, "{Movie Title}.{Extension}");
 }
 
 #[tokio::test]

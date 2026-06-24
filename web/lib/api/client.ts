@@ -45,7 +45,13 @@ import type {
   Library,
   LookupCandidate,
   MediaFile,
+  MediaManagement,
   Movie,
+  NamingConfig,
+  NamingConfigBody,
+  NamingPreview,
+  NamingPreviewBody,
+  NamingTokens,
   NotificationConfigV3,
   NotificationSchema,
   Page,
@@ -619,6 +625,65 @@ export class CellarrClient {
   deleteRemotePathMapping(id: number, signal?: AbortSignal) {
     return this.requestV3<void>(`/remotepathmapping/${id}`, {
       method: 'DELETE',
+      signal,
+    });
+  }
+
+  // =========================================================================
+  // Media management — naming config (Radarr/Sonarr-compatible /api/v3/config)
+  // =========================================================================
+
+  /** The persisted per-media-type naming formats (`GET /api/v3/config/naming`). */
+  getNamingConfig(signal?: AbortSignal) {
+    return this.requestV3<NamingConfig>('/config/naming', { signal });
+  }
+
+  /**
+   * Update one or more naming formats (`PUT /api/v3/config/naming`). The body is a
+   * partial merge; an invalid/under-specified format is rejected with 400 and
+   * nothing is persisted. Returns the full, updated naming config.
+   */
+  updateNamingConfig(body: NamingConfigBody, signal?: AbortSignal) {
+    return this.requestV3<NamingConfig>('/config/naming', {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  /** The insertable token vocabulary per target (`GET /api/v3/config/naming/tokens`). */
+  getNamingTokens(signal?: AbortSignal) {
+    return this.requestV3<NamingTokens>('/config/naming/tokens', { signal });
+  }
+
+  /**
+   * Render a candidate format against a sample context for the live preview
+   * (`POST /api/v3/config/naming/preview`). A malformed / missing-required-token
+   * format → 400.
+   */
+  previewNaming(body: NamingPreviewBody, signal?: AbortSignal) {
+    return this.requestV3<NamingPreview>('/config/naming/preview', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  /**
+   * The persisted media-management blob — naming, recycle-bin, post-commit
+   * permissions, and extra-files config (`GET /api/v3/config/mediamanagement`).
+   * Permissions + extra-files apply AFTER a media commit and never roll the
+   * imported media back on failure.
+   */
+  getMediaManagement(signal?: AbortSignal) {
+    return this.requestV3<MediaManagement>('/config/mediamanagement', { signal });
+  }
+
+  /** Partial-merge update of the media-management blob (`PUT /api/v3/config/mediamanagement`). */
+  updateMediaManagement(body: Partial<MediaManagement>, signal?: AbortSignal) {
+    return this.requestV3<MediaManagement>('/config/mediamanagement', {
+      method: 'PUT',
+      body,
       signal,
     });
   }

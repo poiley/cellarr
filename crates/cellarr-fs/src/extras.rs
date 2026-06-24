@@ -1,0 +1,289 @@
+//! Extra-file (sidecar) import: subtitles and friends, alongside the media.
+//!
+//! When importing `Show.S01E01.mkv`, a release often ships sibling files that
+//! belong to it — `Show.S01E01.en.srt`, `Show.S01E01.idx`, `Show.S01E01.nfo`.
+//! With the media-management *import extra files* setting enabled, this module
+//! finds those siblings (same basename, a configured extension) and places them
+//! next to the **renamed** media, carrying the media's new basename and the
+//! sibling's language/format suffix: `… - S01E01.en.srt`.
+//!
+//! ### Best-effort, never library-critical
+//! This runs **after** the media is durably committed by
+//! [`execute_import`](crate::execute_import). It is a pure addition: each extra is
+//! placed via the same durable [`hardlink_or_copy`](crate::hardlink_or_copy)
+//! primitive (no partial destination on failure), and a failure on any single
+//! extra is recorded and skipped — it never rolls back, corrupts, or fails the
+//! media import. The worst case is a missing subtitle, which a re-run re-imports.
+
+use std::path::{Path, PathBuf};
+
+use cellarr_core::ExtraFileImport;
+
+use crate::error::FsError;
+use crate::fsops::{self, LinkOutcome};
+
+/// The outcome of one extra file's import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraOutcome {
+    /// The extra was placed at `destination`.
+    Imported {
+        /// Where the extra was placed.
+        destination: PathBuf,
+        /// Whether it was hardlinked (vs. copied).
+        hardlinked: bool,
+    },
+    /// Importing this extra failed; the media import is unaffected. Logged.
+    Failed {
+        /// The source extra that could not be placed.
+        source: PathBuf,
+        /// Why (already formatted for a log line).
+        reason: String,
+    },
+}
+
+/// Find and import the sibling extra files belonging to `media_source`, placing
+/// each next to `media_destination` with the destination's basename.
+///
+/// `media_source` is the original media file (its directory is searched for
+/// siblings); `media_destination` is where that media now lives (already
+/// committed). Returns one [`ExtraOutcome`] per discovered extra. When the policy
+/// is disabled, or there are no matching siblings, the result is empty.
+///
+/// Never returns an error: the media import already succeeded, so any per-extra
+/// failure is folded into [`ExtraOutcome::Failed`] for the caller to log.
+pub async fn import_extras(
+    media_source: impl AsRef<Path>,
+    media_destination: impl AsRef<Path>,
+    policy: &ExtraFileImport,
+) -> Vec<ExtraOutcome> {
+    if !policy.enabled {
+        return Vec::new();
+    }
+    let media_source = media_source.as_ref().to_path_buf();
+    let media_destination = media_destination.as_ref().to_path_buf();
+    let policy = policy.clone();
+
+    let plan = match siblings_for(&media_source, &media_destination, &policy) {
+        Ok(plan) => plan,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut outcomes = Vec::with_capacity(plan.len());
+    for (source, destination) in plan {
+        // The media destination directory already exists (the media landed there),
+        // but a defensive create keeps this independent of placement order.
+        if let Some(parent) = destination.parent() {
+            if let Err(e) = fsops::create_dir_all(parent).await {
+                outcomes.push(ExtraOutcome::Failed {
+                    source,
+                    reason: format!("create extra dir: {e}"),
+                });
+                continue;
+            }
+        }
+        match fsops::hardlink_or_copy(&source, &destination).await {
+            Ok(LinkOutcome::Hardlinked) => outcomes.push(ExtraOutcome::Imported {
+                destination,
+                hardlinked: true,
+            }),
+            Ok(LinkOutcome::Copied) => outcomes.push(ExtraOutcome::Imported {
+                destination,
+                hardlinked: false,
+            }),
+            Err(e) => outcomes.push(ExtraOutcome::Failed {
+                source,
+                reason: e.to_string(),
+            }),
+        }
+    }
+    outcomes
+}
+
+/// Compute the (source → destination) pairs for the extras belonging to
+/// `media_source`, renamed to sit beside `media_destination`.
+///
+/// A sibling qualifies when, in the media's source directory, its file name
+/// *starts with the media source stem* and *ends with a configured extra
+/// extension*. The "suffix" between the stem and the matched extension (e.g.
+/// `.en` in `Show.S01E01.en.srt`, or empty for `Show.S01E01.srt`) is preserved and
+/// appended to the destination stem, so language/format tags survive the rename.
+fn siblings_for(
+    media_source: &Path,
+    media_destination: &Path,
+    policy: &ExtraFileImport,
+) -> std::result::Result<Vec<(PathBuf, PathBuf)>, FsError> {
+    let dir = match media_source.parent() {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+    let src_stem = match media_source.file_stem().and_then(|s| s.to_str()) {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(Vec::new()),
+    };
+    let dest_dir = media_destination.parent().unwrap_or_else(|| Path::new("."));
+    let dest_stem = media_destination
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(src_stem);
+
+    let mut pairs = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        // The source dir vanished (a single-file resume): nothing to import.
+        Err(_) => return Ok(Vec::new()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        // The media file itself is not its own extra.
+        if path == *media_source {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let Some(suffix) = matching_suffix(name, src_stem, policy) else {
+            continue;
+        };
+        // `suffix` includes the matched extension (e.g. ".en.srt" or ".srt").
+        let dest_name = format!("{dest_stem}{suffix}");
+        pairs.push((path.clone(), dest_dir.join(dest_name)));
+    }
+    // Deterministic order so a multi-extra import is reproducible.
+    pairs.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(pairs)
+}
+
+/// If `name` is an extra sibling of `stem` with a configured extension, return the
+/// portion of the name *after* the stem (the language/format tag plus the
+/// extension, e.g. `.en.srt`); otherwise `None`.
+///
+/// The boundary after the stem must be a `.` so `Show.S01E01` does not match
+/// `Show.S01E011.srt` (a different episode).
+fn matching_suffix(name: &str, stem: &str, policy: &ExtraFileImport) -> Option<String> {
+    let rest = name.strip_prefix(stem)?;
+    if !rest.starts_with('.') {
+        return None;
+    }
+    // The matched extension is everything after the final dot.
+    let ext = rest.rsplit('.').next().unwrap_or("");
+    if ext.is_empty() || !policy.matches_extension(ext) {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> ExtraFileImport {
+        ExtraFileImport {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matching_suffix_preserves_language_tag() {
+        let p = policy();
+        assert_eq!(
+            matching_suffix("Show.S01E01.en.srt", "Show.S01E01", &p),
+            Some(".en.srt".to_string())
+        );
+        assert_eq!(
+            matching_suffix("Show.S01E01.srt", "Show.S01E01", &p),
+            Some(".srt".to_string())
+        );
+    }
+
+    #[test]
+    fn matching_suffix_rejects_non_extras_and_episode_bleed() {
+        let p = policy();
+        // Different episode (no dot boundary after the stem).
+        assert_eq!(matching_suffix("Show.S01E011.srt", "Show.S01E01", &p), None);
+        // The media file itself.
+        assert_eq!(matching_suffix("Show.S01E01.mkv", "Show.S01E01", &p), None);
+        // Unconfigured extension.
+        assert_eq!(matching_suffix("Show.S01E01.txt", "Show.S01E01", &p), None);
+    }
+
+    #[tokio::test]
+    async fn disabled_policy_imports_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("Movie.2021.mkv");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::write(dir.path().join("Movie.2021.en.srt"), b"s").unwrap();
+        let out = import_extras(
+            &src,
+            dir.path().join("dest/Movie (2021).mkv"),
+            &ExtraFileImport::default(),
+        )
+        .await;
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn imports_sibling_srt_next_to_renamed_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("download");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("Movie.2021.1080p.mkv");
+        std::fs::write(&src, b"media").unwrap();
+        std::fs::write(src_dir.join("Movie.2021.1080p.en.srt"), b"subs").unwrap();
+        std::fs::write(src_dir.join("Movie.2021.1080p.idx"), b"idx").unwrap();
+        // An unrelated file must be ignored.
+        std::fs::write(src_dir.join("readme.txt"), b"hi").unwrap();
+
+        let dest = dir.path().join("library/Movie (2021)/Movie (2021).mkv");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"media").unwrap();
+
+        let out = import_extras(&src, &dest, &policy()).await;
+        assert_eq!(out.len(), 2, "{out:?}");
+        let dests: Vec<_> = out
+            .iter()
+            .filter_map(|o| match o {
+                ExtraOutcome::Imported { destination, .. } => Some(
+                    destination
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            dests.contains(&"Movie (2021).en.srt".to_string()),
+            "{dests:?}"
+        );
+        assert!(dests.contains(&"Movie (2021).idx".to_string()), "{dests:?}");
+        // The renamed subtitle exists on disk with the right content.
+        let placed = dest.parent().unwrap().join("Movie (2021).en.srt");
+        assert_eq!(std::fs::read(placed).unwrap(), b"subs");
+    }
+
+    #[tokio::test]
+    async fn a_failing_extra_does_not_break_the_others() {
+        // Point the destination directory at a path that cannot be created (a file
+        // sits where the dir must be) and confirm we get a Failed outcome, never a
+        // panic/propagated error.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("Movie.mkv");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::write(dir.path().join("Movie.srt"), b"s").unwrap();
+
+        // A regular file occupies "blocked", so creating "blocked/Movie.*" fails.
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, b"file-not-dir").unwrap();
+        let dest = blocker.join("Movie (2021).mkv");
+
+        let out = import_extras(&src, &dest, &policy()).await;
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], ExtraOutcome::Failed { .. }), "{out:?}");
+    }
+}

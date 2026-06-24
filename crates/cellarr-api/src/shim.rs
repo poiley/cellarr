@@ -156,6 +156,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/downloadClient/schema", get(download_client_schema))
         .route("/remotepathmapping", get(list_remote_path_mappings))
         .route("/remotePathMapping", get(list_remote_path_mappings))
+        .route("/config/naming", get(get_naming_config))
+        .route("/config/naming/tokens", get(get_naming_tokens))
+        .route("/config/mediamanagement", get(get_media_management))
+        .route("/config/mediaManagement", get(get_media_management))
         .route("/notification", get(list_notifications))
         .route("/notification/schema", get(notification_schema))
         .route("/notification/{id}", get(get_notification))
@@ -250,6 +254,10 @@ pub fn router(state: AppState, face: Face) -> Router {
             "/remotePathMapping/{id}",
             delete(delete_remote_path_mapping),
         )
+        .route("/config/naming", put(update_naming_config))
+        .route("/config/naming/preview", post(preview_naming))
+        .route("/config/mediamanagement", put(update_media_management))
+        .route("/config/mediaManagement", put(update_media_management))
         .route("/notification", post(create_notification))
         .route("/notification/{id}", put(update_notification))
         .route("/notification/{id}", delete(delete_notification))
@@ -2372,6 +2380,238 @@ async fn delete_remote_path_mapping(
             .await?;
     }
     Ok(Json(json!({})))
+}
+
+// --- naming config ---------------------------------------------------------
+
+/// Render the persisted naming formats into the v3 naming-config payload: the four
+/// configurable formats keyed by target, plus whether season folders are used.
+fn v3_naming_config(naming: &cellarr_core::NamingFormats) -> Value {
+    json!({
+        "movieFileFormat": naming.movie_file_format,
+        "seriesFolderFormat": naming.series_folder_format,
+        "seasonFolderFormat": naming.season_folder_format,
+        "episodeFileFormat": naming.episode_file_format,
+        "renameEpisodes": true,
+        "renameMovies": true,
+        "seasonFolders": !naming.season_folder_format.trim().is_empty(),
+    })
+}
+
+/// `GET /config/naming` — the persisted per-media-type naming formats.
+async fn get_naming_config(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
+    let mm = fs.state.db.config().get_media_management().await?;
+    Ok(Json(v3_naming_config(&mm.naming)))
+}
+
+/// v3 naming-config write body. Every field is optional so a partial PUT leaves the
+/// other formats untouched (the *arr config endpoints merge rather than replace).
+#[derive(Debug, Deserialize)]
+struct NamingConfigBody {
+    #[serde(rename = "movieFileFormat", default)]
+    movie_file_format: Option<String>,
+    #[serde(rename = "seriesFolderFormat", default)]
+    series_folder_format: Option<String>,
+    #[serde(rename = "seasonFolderFormat", default)]
+    season_folder_format: Option<String>,
+    #[serde(rename = "episodeFileFormat", default)]
+    episode_file_format: Option<String>,
+}
+
+/// `PUT /config/naming` — update one or more naming formats. A submitted format is
+/// validated against its target's sample context before it is persisted, so an
+/// invalid format (an unterminated token, a missing *required* token) is rejected
+/// with `400` rather than silently saved and only failing at import time.
+async fn update_naming_config(
+    State(fs): State<FaceState>,
+    Json(body): Json<NamingConfigBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::NameTarget;
+
+    let mut mm = fs.state.db.config().get_media_management().await?;
+    let validated = [
+        (NameTarget::MovieFile, &body.movie_file_format),
+        (NameTarget::SeriesFolder, &body.series_folder_format),
+        (NameTarget::SeasonFolder, &body.season_folder_format),
+        (NameTarget::EpisodeFile, &body.episode_file_format),
+    ];
+    for (target, submitted) in validated {
+        let Some(fmt) = submitted else { continue };
+        // A folder format may legitimately be empty (flat layout); a file format
+        // may not. Validate non-empty formats render against the sample context so
+        // a malformed/under-specified format is refused before it is persisted.
+        if !fmt.trim().is_empty() {
+            cellarr_fs::render_preview(fmt, target, None).map_err(|e| {
+                ApiError::BadRequest(format!("invalid {} format: {e}", target.key()))
+            })?;
+        }
+        match target {
+            NameTarget::MovieFile => mm.naming.movie_file_format = fmt.clone(),
+            NameTarget::SeriesFolder => mm.naming.series_folder_format = fmt.clone(),
+            NameTarget::SeasonFolder => mm.naming.season_folder_format = fmt.clone(),
+            NameTarget::EpisodeFile => mm.naming.episode_file_format = fmt.clone(),
+        }
+    }
+    fs.state.db.config().set_media_management(&mm).await?;
+    Ok(Json(v3_naming_config(&mm.naming)))
+}
+
+/// `GET /config/naming/tokens` — the available naming-token vocabulary per name
+/// target, so the UI can offer an insertable token palette with required/optional
+/// markers and example values.
+async fn get_naming_tokens() -> Json<Value> {
+    use cellarr_core::NameTarget;
+    let render_target = |target: NameTarget| {
+        let tokens: Vec<Value> = cellarr_fs::token_vocabulary(target)
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "token": format!("{{{}}}", t.token),
+                    "name": t.token,
+                    "label": t.label,
+                    "required": t.required,
+                    "example": t.example,
+                })
+            })
+            .collect();
+        json!({ "target": target.key(), "tokens": tokens })
+    };
+    Json(json!({
+        "targets": NameTarget::all().into_iter().map(render_target).collect::<Vec<_>>(),
+    }))
+}
+
+/// v3 naming-preview body: a candidate `format`, the `mediaType`/target it applies
+/// to, and an optional `sampleContext` overriding the built-in token examples.
+#[derive(Debug, Deserialize)]
+struct NamingPreviewBody {
+    format: String,
+    #[serde(rename = "mediaType", default)]
+    media_type: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(rename = "sampleContext", default)]
+    sample_context: Option<std::collections::HashMap<String, String>>,
+}
+
+/// `POST /config/naming/preview` — render a candidate format against a sample
+/// context and return the example string, so the UI shows a live preview as the
+/// user edits a naming format. Required-token strictness and graceful optional-token
+/// behavior are exactly those of the import-time rename engine.
+async fn preview_naming(Json(body): Json<NamingPreviewBody>) -> ApiResult<Json<Value>> {
+    use cellarr_core::{MediaType, NameTarget};
+
+    // Resolve the name target from an explicit `target`, else the `mediaType`.
+    let target = match body.target.as_deref() {
+        Some("movieFile") => NameTarget::MovieFile,
+        Some("seriesFolder") => NameTarget::SeriesFolder,
+        Some("seasonFolder") => NameTarget::SeasonFolder,
+        Some("episodeFile") => NameTarget::EpisodeFile,
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown naming target {other:?}"
+            )));
+        }
+        None => match body
+            .media_type
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("movie") => NameTarget::MovieFile,
+            Some("tv") | Some("series") | Some("episode") => NameTarget::EpisodeFile,
+            Some(other) => {
+                return Err(ApiError::BadRequest(format!("unknown mediaType {other:?}")));
+            }
+            // Default to the movie file target when neither is supplied.
+            None => cellarr_fs::primary_target(MediaType::Movie),
+        },
+    };
+
+    let sample = body.sample_context.map(|m| cellarr_core::NamingTokens {
+        tokens: m.into_iter().collect(),
+    });
+    let rendered = cellarr_fs::render_preview(&body.format, target, sample.as_ref())
+        .map_err(|e| ApiError::BadRequest(format!("preview render failed: {e}")))?;
+    Ok(Json(json!({
+        "format": body.format,
+        "target": target.key(),
+        "rendered": rendered,
+    })))
+}
+
+/// `GET /config/mediamanagement` — the full media-management settings blob (recycle
+/// bin, naming formats, the post-commit permission policy, and the extra-file import
+/// policy). Serialized exactly as [`MediaManagement`](cellarr_core::MediaManagement)
+/// so it round-trips through the matching PUT.
+async fn get_media_management(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
+    let mm = fs.state.db.config().get_media_management().await?;
+    Ok(Json(serde_json::to_value(&mm).map_err(|e| {
+        ApiError::Internal(format!("serializing media-management settings: {e}"))
+    })?))
+}
+
+/// The `PUT /config/mediamanagement` body. Every field is optional so a partial PUT
+/// merges into the persisted settings (the *arr config endpoints merge rather than
+/// replace): the Naming card saves `naming`, the Permissions card saves
+/// `permissions`, and the Extra Files card saves `extraFiles`, each independently
+/// without clobbering the others.
+#[derive(Debug, Deserialize)]
+struct MediaManagementBody {
+    #[serde(rename = "recycleBinPath", default)]
+    recycle_bin_path: Option<Option<String>>,
+    #[serde(default)]
+    naming: Option<cellarr_core::NamingFormats>,
+    #[serde(default)]
+    permissions: Option<cellarr_core::ImportPermissions>,
+    #[serde(rename = "extraFiles", default)]
+    extra_files: Option<cellarr_core::ExtraFileImport>,
+}
+
+/// `PUT /config/mediamanagement` — partial-merge update of the media-management
+/// settings blob. Naming formats are validated (the same strictness as
+/// `PUT /config/naming`) before persisting so an invalid format is rejected with
+/// `400` rather than silently saved. The permission and extra-file policies are
+/// applied **after** a media commit and never roll the imported media back on
+/// failure (that contract lives in the import path) — persisting them here is pure
+/// config.
+async fn update_media_management(
+    State(fs): State<FaceState>,
+    Json(body): Json<MediaManagementBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::NameTarget;
+
+    let mut mm = fs.state.db.config().get_media_management().await?;
+    if let Some(recycle) = body.recycle_bin_path {
+        mm.recycle_bin_path = recycle.filter(|s| !s.trim().is_empty());
+    }
+    if let Some(naming) = body.naming {
+        // Validate each non-empty format renders against its sample context before
+        // persisting, mirroring the dedicated naming PUT.
+        for (target, fmt) in [
+            (NameTarget::MovieFile, &naming.movie_file_format),
+            (NameTarget::SeriesFolder, &naming.series_folder_format),
+            (NameTarget::SeasonFolder, &naming.season_folder_format),
+            (NameTarget::EpisodeFile, &naming.episode_file_format),
+        ] {
+            if !fmt.trim().is_empty() {
+                cellarr_fs::render_preview(fmt, target, None).map_err(|e| {
+                    ApiError::BadRequest(format!("invalid {} format: {e}", target.key()))
+                })?;
+            }
+        }
+        mm.naming = naming;
+    }
+    if let Some(permissions) = body.permissions {
+        mm.permissions = permissions;
+    }
+    if let Some(extra_files) = body.extra_files {
+        mm.extra_files = extra_files;
+    }
+    fs.state.db.config().set_media_management(&mm).await?;
+    Ok(Json(serde_json::to_value(&mm).map_err(|e| {
+        ApiError::Internal(format!("serializing media-management settings: {e}"))
+    })?))
 }
 
 // --- notification (Connect webhook) ----------------------------------------

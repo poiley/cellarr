@@ -25,15 +25,18 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod extras;
 mod fsops;
 mod health;
 mod import;
 mod nfo;
+mod permissions;
 mod recycle;
 mod rename;
 mod scan;
 
 pub use error::{FsError, Result};
+pub use extras::{import_extras, ExtraOutcome};
 pub use fsops::{
     create_dir_all, file_size, hardlink_or_copy, remove_durable, same_filesystem, LinkOutcome,
 };
@@ -43,9 +46,10 @@ pub use import::{
     NoHooks, PlacedAs,
 };
 pub use nfo::{render_nfo, sidecar_path, write_sidecar, NfoKind, NfoMetadata};
+pub use permissions::{apply_to_file, apply_to_folder, PermissionOutcome};
 pub use recycle::{recycle_or_delete, RecycleDisposition, RecycleResult};
 pub use rename::{
-    render_name, render_name_with, ColonReplacement, MultiEpisodeStyle, RenderOptions,
-    TargetPlatform,
+    primary_target, render_name, render_name_with, render_preview, sample_tokens, token_vocabulary,
+    ColonReplacement, MultiEpisodeStyle, NamingToken, RenderOptions, TargetPlatform,
 };
 pub use scan::{scan, Inventory, InventoryEntry};

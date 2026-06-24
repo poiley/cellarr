@@ -9,8 +9,8 @@
 //! round-trips losslessly (including the open-ended `settings`).
 
 use cellarr_core::{
-    DownloadClientConfig, IndexerConfig, Library, LibraryId, MediaType, NotificationConfig,
-    QualityProfileId, RemotePathMapping, RootFolder,
+    DownloadClientConfig, IndexerConfig, Library, LibraryId, MediaManagement, MediaType,
+    NotificationConfig, QualityProfileId, RemotePathMapping, RootFolder,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -592,6 +592,46 @@ impl ConfigRepo {
             })
             .await?;
         Ok(removed.load(Ordering::SeqCst))
+    }
+
+    /// The library-wide media-management settings (recycle bin, naming formats,
+    /// permission policy, extra-file import). Returns [`MediaManagement::default`]
+    /// when no row has been written yet, so a zero-config library behaves exactly
+    /// as it did before these settings were persistable.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn get_media_management(&self) -> Result<MediaManagement> {
+        let row = sqlx::query("SELECT body FROM media_management WHERE id = 1")
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(row) => row_to_json_body(row),
+            None => Ok(MediaManagement::default()),
+        }
+    }
+
+    /// Persist the library-wide media-management settings, replacing the single
+    /// settings document in place.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on serialization or write failure.
+    pub async fn set_media_management(&self, settings: &MediaManagement) -> Result<()> {
+        let body = serde_json::to_string(settings)?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO media_management (id, body) VALUES (1, ?1)
+                         ON CONFLICT(id) DO UPDATE SET body = excluded.body",
+                    )
+                    .bind(body)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
     }
 }
 

@@ -226,6 +226,8 @@ fn runner_config(root: PathBuf) -> RunnerConfig {
         write_nfo: false,
         delay_profiles: Vec::new(),
         content_tags: Vec::new(),
+        permissions: Default::default(),
+        extra_files: Default::default(),
     }
 }
 
@@ -401,6 +403,133 @@ async fn commit_imports_a_chosen_file_through_the_crash_safe_path() {
         1,
         "no duplicate media_file on a re-commit"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commit_imports_extra_files_and_applies_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    let loose = tmp.path().join("downloads");
+    std::fs::create_dir_all(&loose).unwrap();
+    let source = loose.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&source, b"movie-bytes").unwrap();
+    // A sibling subtitle (with a language tag) and an unrelated file.
+    let sib_srt = loose.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.en.srt");
+    std::fs::write(&sib_srt, b"subtitle-bytes").unwrap();
+    std::fs::write(loose.join("readme.txt"), b"ignore me").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let mut config = runner_config(lib_root.clone());
+    config.extra_files = cellarr_core::ExtraFileImport {
+        enabled: true,
+        ..Default::default()
+    };
+    config.permissions = cellarr_core::ImportPermissions {
+        chmod_file: Some("640".into()),
+        chmod_folder: Some("750".into()),
+        ..Default::default()
+    };
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    let request = ManualImportRequest {
+        path: source.to_string_lossy().into_owned(),
+        content_id: node.id,
+    };
+    let (imported, errors) = runner
+        .import_manual(std::slice::from_ref(&request))
+        .await
+        .unwrap();
+    assert!(errors.is_empty(), "no per-file errors: {errors:?}");
+    let dest = PathBuf::from(&imported[0].destination_path);
+    assert!(dest.exists(), "media imported at {dest:?}");
+
+    // The subtitle was imported next to the renamed media, carrying the media's
+    // new basename and the language suffix (derived from the actual dest stem so
+    // the test does not hardcode the naming-format output).
+    let dest_stem = dest.file_stem().unwrap().to_string_lossy().into_owned();
+    let placed_srt = dest.with_file_name(format!("{dest_stem}.en.srt"));
+    assert!(
+        placed_srt.exists(),
+        "extra subtitle imported as {placed_srt:?}"
+    );
+    assert_eq!(std::fs::read(&placed_srt).unwrap(), b"subtitle-bytes");
+
+    // The chmod policy was applied to the media file and its enclosing folder.
+    let file_mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+    assert_eq!(file_mode & 0o777, 0o640, "media file chmod 640");
+    let folder_mode = std::fs::metadata(dest.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(folder_mode & 0o777, 0o750, "movie folder chmod 750");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failing_chmod_does_not_roll_back_the_media_import() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    let loose = tmp.path().join("downloads");
+    std::fs::create_dir_all(&loose).unwrap();
+    let source = loose.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&source, b"movie-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let mut config = runner_config(lib_root.clone());
+    // An invalid octal mode makes the chmod step fail; the import must still land.
+    config.permissions = cellarr_core::ImportPermissions {
+        chmod_file: Some("not-octal".into()),
+        ..Default::default()
+    };
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    let request = ManualImportRequest {
+        path: source.to_string_lossy().into_owned(),
+        content_id: node.id,
+    };
+    let (imported, errors) = runner
+        .import_manual(std::slice::from_ref(&request))
+        .await
+        .unwrap();
+    assert!(
+        errors.is_empty(),
+        "chmod failure must not surface as an import error"
+    );
+    assert_eq!(
+        imported.len(),
+        1,
+        "the media imported despite the chmod failure"
+    );
+    let dest = PathBuf::from(&imported[0].destination_path);
+    assert!(dest.exists(), "the media file is durable at {dest:?}");
+    // The media_file row was persisted: the import was fully committed.
+    let files = MediaFileRepository::list_for_content(&db.media_files(), node.id)
+        .await
+        .unwrap();
+    assert_eq!(files.len(), 1, "the import committed the media_file row");
 }
 
 // ---------------------------------------------------------------------------

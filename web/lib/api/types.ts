@@ -596,6 +596,105 @@ export interface QualityDefinition {
 }
 
 // ===========================================================================
+// Media management / naming config (Radarr/Sonarr-compatible /api/v3/config)
+// ===========================================================================
+
+/**
+ * The naming config exactly as the v3 shim serializes it
+ * (`GET /api/v3/config/naming`). Drives how imported movie / episode files and
+ * their containing folders are renamed and laid out on disk.
+ */
+export interface NamingConfig {
+  movieFileFormat: string;
+  seriesFolderFormat: string;
+  /** Empty string = flat layout (no per-season subfolder). */
+  seasonFolderFormat: string;
+  episodeFileFormat: string;
+  renameEpisodes: boolean;
+  renameMovies: boolean;
+  seasonFolders: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * The partial write body for `PUT /api/v3/config/naming`. Every field is
+ * optional; the daemon merges what is sent and re-validates each supplied
+ * format (a malformed/missing-required-token format → 400, nothing persisted).
+ */
+export interface NamingConfigBody {
+  movieFileFormat?: string;
+  seriesFolderFormat?: string;
+  seasonFolderFormat?: string;
+  episodeFileFormat?: string;
+}
+
+/** Which naming target a token belongs to / a preview renders against. */
+export type NamingTarget = 'movieFile' | 'seriesFolder' | 'seasonFolder' | 'episodeFile';
+
+/** One renderable token (`{Movie Title}`) advertised by the tokens endpoint. */
+export interface NamingToken {
+  token: string;
+  name: string;
+  label: string;
+  required: boolean;
+  example: string;
+}
+
+/** The token vocabulary for one target (`GET /api/v3/config/naming/tokens`). */
+export interface NamingTokenTarget {
+  target: NamingTarget;
+  tokens: NamingToken[];
+}
+
+/** The `GET /api/v3/config/naming/tokens` envelope. */
+export interface NamingTokens {
+  targets: NamingTokenTarget[];
+}
+
+/** The body of `POST /api/v3/config/naming/preview`. */
+export interface NamingPreviewBody {
+  format: string;
+  mediaType?: 'movie' | 'tv' | 'series' | 'episode';
+  target?: NamingTarget;
+  sampleContext?: Record<string, string>;
+}
+
+/** The `POST /api/v3/config/naming/preview` response. */
+export interface NamingPreview {
+  format: string;
+  target: NamingTarget;
+  rendered: string;
+}
+
+/** Unix permissions applied AFTER a media commit (`MediaManagement.permissions`). */
+export interface MediaPermissions {
+  /** Octal folder mode, e.g. "755". */
+  chmodFolder?: string;
+  /** Octal file mode, e.g. "644". */
+  chmodFile?: string;
+  /** Ownership as "user:group". */
+  chown?: string;
+}
+
+/** Extra non-media sidecar files to import alongside the media. */
+export interface ExtraFilesConfig {
+  enabled: boolean;
+  extensions: string[];
+}
+
+/**
+ * The persisted media-management settings blob (settings JSON). Naming lives
+ * under `naming`; permissions + extra-files apply AFTER the media commit and
+ * never roll the imported media back on failure.
+ */
+export interface MediaManagement {
+  recycleBinPath?: string;
+  naming?: NamingConfigBody;
+  permissions?: MediaPermissions;
+  extraFiles?: ExtraFilesConfig;
+}
+
+// ===========================================================================
 // Live stream (SSE) — GET /api/v1/stream
 // ===========================================================================
 

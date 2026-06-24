@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{DownloadClientId, IndexerId};
 use crate::release::Protocol;
+use crate::MediaType;
 
 /// Media-management settings: the cross-library file-handling policy.
 ///
@@ -40,6 +41,250 @@ pub struct MediaManagement {
     /// path relative to the library root so a restore is unambiguous.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recycle_bin_path: Option<String>,
+    /// The per-media-type on-disk naming formats the rename engine renders against
+    /// each module's [`NamingTokens`](crate::NamingTokens). Defaults reproduce the
+    /// daemon's built-in *arr-conventional layout, so a zero-config library keeps
+    /// renaming exactly as before; a user customizing these changes the rendered
+    /// paths without touching code.
+    #[serde(default)]
+    pub naming: NamingFormats,
+    /// The Unix file/folder permission policy applied to imported media *after* the
+    /// crash-safe commit. Best-effort and Unix-only: a failure to chmod/chown is
+    /// logged and never rolls back or corrupts the imported media.
+    #[serde(default)]
+    pub permissions: ImportPermissions,
+    /// Whether (and which) sibling "extra" files (subtitles, `.nfo`, …) are
+    /// imported alongside a media file, renamed to match it.
+    #[serde(default)]
+    pub extra_files: ExtraFileImport,
+}
+
+/// The user-configurable on-disk naming formats, one per nameable surface.
+///
+/// A library lays media out as `<series folder>/<season folder>/<episode file>`
+/// for TV and `<movie folder>/<movie file>` for movies. Each piece is its own
+/// template so the UI can present them independently (matching the *arr "Media
+/// Management → Naming" tabs), and the rename engine composes the full relative
+/// path from them via [`episode_format`](Self::episode_format) /
+/// [`movie_format`](Self::movie_format).
+///
+/// Every field carries the daemon's prior built-in default, so an absent or
+/// partial config renders identically to the hardcoded behavior it replaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamingFormats {
+    /// The TV series *folder* name, e.g. `{Series Title}`.
+    #[serde(default = "default_series_folder_format")]
+    pub series_folder_format: String,
+    /// The TV *season* folder name nested under the series folder, e.g.
+    /// `Season {Season}`.
+    #[serde(default = "default_season_folder_format")]
+    pub season_folder_format: String,
+    /// The TV *episode* file name (extension included), e.g.
+    /// `{Series Title} - S{Season}E{Episode}.{Extension}`.
+    #[serde(default = "default_episode_file_format")]
+    pub episode_file_format: String,
+    /// The movie *file* name (extension included), rendered inside the movie
+    /// folder, e.g. `{Movie Title} ({Release Year})/{Movie Title}.{Extension}`.
+    #[serde(default = "default_movie_file_format")]
+    pub movie_file_format: String,
+}
+
+fn default_series_folder_format() -> String {
+    "{Series Title}".to_string()
+}
+fn default_season_folder_format() -> String {
+    "Season {Season}".to_string()
+}
+fn default_episode_file_format() -> String {
+    "{Series Title} - S{Season}E{Episode}.{Extension}".to_string()
+}
+fn default_movie_file_format() -> String {
+    "{Movie Title} ({Release Year})/{Movie Title}.{Extension}".to_string()
+}
+
+impl Default for NamingFormats {
+    fn default() -> Self {
+        Self {
+            series_folder_format: default_series_folder_format(),
+            season_folder_format: default_season_folder_format(),
+            episode_file_format: default_episode_file_format(),
+            movie_file_format: default_movie_file_format(),
+        }
+    }
+}
+
+/// A nameable on-disk surface a [`NamingFormats`] template configures. Used to
+/// select which template to render and to advertise the matching token vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NameTarget {
+    /// The movie file (and its enclosing folder).
+    MovieFile,
+    /// The TV series folder.
+    SeriesFolder,
+    /// The TV season folder.
+    SeasonFolder,
+    /// The TV episode file.
+    EpisodeFile,
+}
+
+impl NameTarget {
+    /// Every name target, in UI display order.
+    #[must_use]
+    pub fn all() -> [NameTarget; 4] {
+        [
+            NameTarget::MovieFile,
+            NameTarget::SeriesFolder,
+            NameTarget::SeasonFolder,
+            NameTarget::EpisodeFile,
+        ]
+    }
+
+    /// A stable lowercase key for this target (used in API payloads).
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            NameTarget::MovieFile => "movieFile",
+            NameTarget::SeriesFolder => "seriesFolder",
+            NameTarget::SeasonFolder => "seasonFolder",
+            NameTarget::EpisodeFile => "episodeFile",
+        }
+    }
+
+    /// The media type this target belongs to.
+    #[must_use]
+    pub fn media_type(self) -> MediaType {
+        match self {
+            NameTarget::MovieFile => MediaType::Movie,
+            NameTarget::SeriesFolder | NameTarget::SeasonFolder | NameTarget::EpisodeFile => {
+                MediaType::Tv
+            }
+        }
+    }
+}
+
+impl NamingFormats {
+    /// The configured template for a single [`NameTarget`].
+    #[must_use]
+    pub fn template(&self, target: NameTarget) -> &str {
+        match target {
+            NameTarget::MovieFile => &self.movie_file_format,
+            NameTarget::SeriesFolder => &self.series_folder_format,
+            NameTarget::SeasonFolder => &self.season_folder_format,
+            NameTarget::EpisodeFile => &self.episode_file_format,
+        }
+    }
+
+    /// The composed full relative path format for a TV episode:
+    /// `<series folder>/<season folder>/<episode file>`. Empty pieces are
+    /// dropped so a flat layout (no season folder) renders without a `//`.
+    #[must_use]
+    pub fn episode_format(&self) -> String {
+        [
+            self.series_folder_format.trim_matches('/'),
+            self.season_folder_format.trim_matches('/'),
+            self.episode_file_format.trim_matches('/'),
+        ]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("/")
+    }
+
+    /// The composed full relative path format for a movie. The movie file format
+    /// already carries its enclosing folder (`{Movie Title} (…)/{Movie Title}.…`),
+    /// so it is returned as-is.
+    #[must_use]
+    pub fn movie_format(&self) -> String {
+        self.movie_file_format.clone()
+    }
+
+    /// The full relative-path naming format to render for a given media type —
+    /// the single string the rename engine consumes.
+    #[must_use]
+    pub fn format_for(&self, media_type: MediaType) -> String {
+        match media_type {
+            MediaType::Movie => self.movie_format(),
+            MediaType::Tv => self.episode_format(),
+            // Music/books are not v1 naming surfaces; fall back to a bare title.
+            MediaType::Music | MediaType::Book => "{Title}.{Extension}".to_string(),
+        }
+    }
+}
+
+/// The Unix permission policy applied to imported media after commit.
+///
+/// All fields are optional; an empty policy (the default) applies nothing and the
+/// imported file keeps the mode/ownership the copy produced. Mirrors the *arr
+/// "chmod Folder", "chmod File", and "chown" media-management settings. **Unix
+/// only and strictly best-effort** — applied *after* the media is durably
+/// committed, so any chmod/chown failure is logged and never corrupts or rolls
+/// back the import.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPermissions {
+    /// The octal mode applied to created folders, as a string (e.g. `"755"`).
+    /// `None`/empty leaves folder modes untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chmod_folder: Option<String>,
+    /// The octal mode applied to imported files, as a string (e.g. `"644"`).
+    /// `None`/empty leaves file modes untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chmod_file: Option<String>,
+    /// The owner to chown imported media to: `"user"`, `":group"`, or
+    /// `"user:group"`. Either side may be a numeric id or a name. `None`/empty
+    /// leaves ownership untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chown: Option<String>,
+}
+
+/// Whether and which sibling extra files are imported alongside a media file.
+///
+/// When importing `Show.S01E01.mkv`, sibling files sharing its basename and
+/// carrying one of [`extensions`](Self::extensions) (e.g. `Show.S01E01.en.srt`)
+/// are imported next to the renamed media with the media's new basename
+/// (`… - S01E01.en.srt`). Best-effort: an extra-file failure never breaks the
+/// media import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtraFileImport {
+    /// Whether sibling extra files are imported at all. Default `false` (the *arr
+    /// default of not importing extras unless asked).
+    #[serde(default)]
+    pub enabled: bool,
+    /// The lowercase extensions (without the dot) treated as importable extras.
+    #[serde(default = "default_extra_extensions")]
+    pub extensions: Vec<String>,
+}
+
+fn default_extra_extensions() -> Vec<String> {
+    ["srt", "sub", "idx", "ass", "ssa", "vtt", "nfo"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+impl Default for ExtraFileImport {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            extensions: default_extra_extensions(),
+        }
+    }
+}
+
+impl ExtraFileImport {
+    /// Whether a given extension (with or without a leading dot, any case) is a
+    /// configured importable extra.
+    #[must_use]
+    pub fn matches_extension(&self, ext: &str) -> bool {
+        let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+        self.extensions
+            .iter()
+            .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext))
+    }
 }
 
 /// A configured root folder a library imports into.
@@ -300,5 +545,82 @@ mod tests {
         assert!(m.matches_host("qbit.local"));
         assert!(m.matches_host("QBIT.LOCAL"));
         assert!(!m.matches_host("other.host"));
+    }
+
+    #[test]
+    fn naming_defaults_compose_arr_conventional_layout() {
+        let n = NamingFormats::default();
+        assert_eq!(
+            n.format_for(MediaType::Tv),
+            "{Series Title}/Season {Season}/{Series Title} - S{Season}E{Episode}.{Extension}"
+        );
+        assert_eq!(
+            n.format_for(MediaType::Movie),
+            "{Movie Title} ({Release Year})/{Movie Title}.{Extension}"
+        );
+    }
+
+    #[test]
+    fn naming_episode_format_drops_empty_season_folder() {
+        let n = NamingFormats {
+            season_folder_format: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(
+            n.episode_format(),
+            "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}"
+        );
+    }
+
+    #[test]
+    fn naming_custom_template_is_honored_per_target() {
+        let n = NamingFormats {
+            season_folder_format: "S{Season}".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(n.template(NameTarget::SeasonFolder), "S{Season}");
+        assert_eq!(
+            n.format_for(MediaType::Tv),
+            "{Series Title}/S{Season}/{Series Title} - S{Season}E{Episode}.{Extension}"
+        );
+    }
+
+    #[test]
+    fn media_management_partial_json_keeps_naming_defaults() {
+        // A config that only sets the recycle bin must deserialize with the full
+        // default naming/permissions/extra-files, so existing rows upgrade cleanly.
+        let mm: MediaManagement = serde_json::from_str(r#"{"recycleBinPath":"/recycle"}"#).unwrap();
+        assert_eq!(mm.recycle_bin_path.as_deref(), Some("/recycle"));
+        assert_eq!(mm.naming, NamingFormats::default());
+        assert!(!mm.extra_files.enabled);
+        assert!(mm.permissions.chmod_file.is_none());
+    }
+
+    #[test]
+    fn media_management_round_trips_through_json() {
+        let mut mm = MediaManagement::default();
+        mm.naming.movie_file_format = "{Movie Title}/movie.{Extension}".to_string();
+        mm.permissions.chmod_file = Some("644".to_string());
+        mm.permissions.chown = Some("media:media".to_string());
+        mm.extra_files.enabled = true;
+        let json = serde_json::to_string(&mm).unwrap();
+        let back: MediaManagement = serde_json::from_str(&json).unwrap();
+        assert_eq!(mm, back);
+    }
+
+    #[test]
+    fn extra_file_extension_match_is_case_and_dot_insensitive() {
+        let x = ExtraFileImport::default();
+        assert!(x.matches_extension("srt"));
+        assert!(x.matches_extension(".SRT"));
+        assert!(x.matches_extension("Nfo"));
+        assert!(!x.matches_extension("mkv"));
+    }
+
+    #[test]
+    fn name_target_media_type_mapping() {
+        assert_eq!(NameTarget::MovieFile.media_type(), MediaType::Movie);
+        assert_eq!(NameTarget::SeriesFolder.media_type(), MediaType::Tv);
+        assert_eq!(NameTarget::EpisodeFile.media_type(), MediaType::Tv);
     }
 }
