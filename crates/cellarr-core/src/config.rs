@@ -303,7 +303,11 @@ pub struct RootFolder {
 }
 
 /// A configured indexer (Torznab, Newznab, Cardigann).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` is intentionally not derived: [`IndexerCriteria`] carries floating-point
+/// seed targets, so equality is `PartialEq` only (sufficient for `assert_eq!` and
+/// round-trip checks; the config is never used as a set/map key).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexerConfig {
     /// Indexer identifier.
     pub id: IndexerId,
@@ -318,12 +322,97 @@ pub struct IndexerConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Priority for ordering/tie-breaking (lower is preferred, matching the
-    /// *arr convention).
+    /// *arr convention). When two otherwise-equal releases are found, the one from
+    /// the lower-priority-number indexer wins (see the decision engine).
     #[serde(default)]
     pub priority: i32,
+    /// The torrent release-acceptance criteria this indexer imposes, mirroring the
+    /// Sonarr/Radarr per-indexer `minimumSeeders` + `seedCriteria` + flag-required
+    /// settings. Default (all-`None`/empty) gates nothing. Usenet indexers ignore
+    /// these (seeders/seed-time/freeleech are torrent concepts).
+    #[serde(default)]
+    pub criteria: IndexerCriteria,
     /// Adapter-specific settings (base URL, API key, categories, …).
     #[serde(default)]
     pub settings: serde_json::Value,
+}
+
+/// Per-indexer release-acceptance criteria and seed policy.
+///
+/// These mirror the torrent fields the *arr indexer schema exposes
+/// (`minimumSeeders`, `seedCriteria.seedRatio`, `seedCriteria.seedTime`) plus a
+/// freeleech/required-flag gate. The decision engine honours them: a release below
+/// the seeder floor or missing a required flag is rejected, and the seed
+/// ratio/time become the [`RemovePolicy`](crate) the tracker uses to ratio/time-gate
+/// the torrent's removal once it has been grabbed from this indexer.
+///
+/// Every field is optional so an indexer with no criteria configured gates
+/// nothing — preserving the prior behaviour of accepting any matched release.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexerCriteria {
+    /// The minimum number of seeders a torrent release must advertise to be
+    /// grabbed. A release below this (or with no reported seeders when this is set)
+    /// is rejected. `None` accepts any seeder count. Mirrors `minimumSeeders`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_seeders: Option<u32>,
+    /// The seed ratio target applied to a torrent grabbed from this indexer: the
+    /// tracker keeps the torrent seeding until this ratio is met (or the seed time
+    /// below, whichever comes first). `None` leaves removal to the global policy.
+    /// Mirrors `seedCriteria.seedRatio`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_ratio: Option<f64>,
+    /// The seed-time target **in minutes** applied to a torrent grabbed from this
+    /// indexer (the tracker keeps it seeding until this elapses, or the ratio
+    /// above). `None` leaves removal to the global policy. Mirrors
+    /// `seedCriteria.seedTime`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_time_minutes: Option<u64>,
+    /// Indexer flags a release **must** carry to be grabbed, normalized to
+    /// lowercase (e.g. `["freeleech"]`). A release missing any required flag is
+    /// rejected. Empty (the default) requires nothing — the common "freeleech only"
+    /// policy is `["freeleech"]`. Matched case-insensitively against the release's
+    /// [`indexer_flags`](crate::Release::indexer_flags).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_flags: Vec<String>,
+}
+
+impl IndexerCriteria {
+    /// Whether a torrent `release` satisfies the seeder floor.
+    ///
+    /// With no floor configured every release passes. With a floor set, a release
+    /// that reports fewer seeders — or reports none at all — fails (an unreported
+    /// seeder count cannot be proven to meet a floor).
+    #[must_use]
+    pub fn meets_seeder_floor(&self, seeders: Option<u32>) -> bool {
+        match self.minimum_seeders {
+            None => true,
+            Some(floor) => seeders.is_some_and(|s| s >= floor),
+        }
+    }
+
+    /// Whether `flags` carries every required flag (case-insensitively). With no
+    /// required flags every release passes; the freeleech-only policy is a single
+    /// required `"freeleech"` flag.
+    #[must_use]
+    pub fn has_required_flags(&self, flags: &[String]) -> bool {
+        self.required_flags.iter().all(|required| {
+            flags
+                .iter()
+                .any(|present| present.eq_ignore_ascii_case(required))
+        })
+    }
+
+    /// The seed ratio/time targets expressed as `(min_ratio, min_seeding_time_secs)`
+    /// for the download client's removal policy, converting the configured minutes
+    /// to seconds. Either may be `None`.
+    #[must_use]
+    pub fn seed_targets_secs(&self) -> (Option<f64>, Option<u64>) {
+        (
+            self.seed_ratio,
+            self.seed_time_minutes.map(|m| m.saturating_mul(60)),
+        )
+    }
 }
 
 /// A configured download client (qBittorrent, Deluge, Transmission, SABnzbd,

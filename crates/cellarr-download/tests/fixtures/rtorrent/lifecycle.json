@@ -1,0 +1,94 @@
+{
+  "scenario": "rTorrent XML-RPC: load.start (magnet) -> d.custom1.set (label) -> d.directory.set -> d.multicall2 downloading -> d.multicall2 complete ratio 1500 (1.5, below 2.0 gate) -> d.multicall2 complete ratio 2500 (2.5, gate met) -> d.erase.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>load.start</methodName>",
+        "body_contains_2": "magnet:?xt=urn:btih:deadbeefcafef00d"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.custom1.set</methodName>",
+        "body_contains_2": "deadbeefcafef00d",
+        "body_contains_3": "cellarr-tv"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.directory.set</methodName>",
+        "body_contains_2": "/downloads/cellarr-tv"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data><value><array><data><value><string>deadbeefcafef00d</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><string></string></value><value><string>Show.S01E01</string></value><value><string>cellarr-tv</string></value><value><string></string></value><value><i8>2</i8></value><value><i8>3</i8></value><value><i8>1</i8></value></data></array></value></data></array></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data><value><array><data><value><string>deadbeefcafef00d</string></value><value><i8>1</i8></value><value><i8>1500</i8></value><value><string>/downloads/cellarr-tv/Show.S01E01</string></value><value><string>Show.S01E01</string></value><value><string>cellarr-tv</string></value><value><string></string></value><value><i8>1</i8></value><value><i8>4</i8></value><value><i8>1</i8></value></data></array></value></data></array></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data><value><array><data><value><string>deadbeefcafef00d</string></value><value><i8>1</i8></value><value><i8>2500</i8></value><value><string>/downloads/cellarr-tv/Show.S01E01</string></value><value><string>Show.S01E01</string></value><value><string>cellarr-tv</string></value><value><string></string></value><value><i8>1</i8></value><value><i8>4</i8></value><value><i8>1</i8></value></data></array></value></data></array></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.erase</methodName>",
+        "body_contains_2": "deadbeefcafef00d"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    }
+  ]
+}

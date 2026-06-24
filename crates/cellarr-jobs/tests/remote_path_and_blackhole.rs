@@ -249,6 +249,7 @@ fn runner_config(
         content_tags: Vec::new(),
         permissions: Default::default(),
         extra_files: Default::default(),
+        indexer_criteria: Default::default(),
     }
 }
 

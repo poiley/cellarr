@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 // Settings — Indexers / Download Clients. Both are integration configs with the
 // same shape (host/port/api-key/ssl/enabled, a Test button that surfaces an
@@ -17,32 +17,36 @@
 // (mirroring app/first-run WizardModal). Verified against the seeded daemon:
 // test returns {isValid:true}, create returns the persisted resource (200).
 
-import * as React from 'react';
+import * as React from "react";
 
-import Card from '@components/Card';
-import Input from '@components/Input';
-import Select from '@components/Select';
-import Checkbox from '@components/Checkbox';
-import Button from '@components/Button';
-import ButtonGroup from '@components/ButtonGroup';
-import Badge from '@components/Badge';
-import Divider from '@components/Divider';
-import Text from '@components/Text';
+import Card from "@components/Card";
+import Input from "@components/Input";
+import Select from "@components/Select";
+import Checkbox from "@components/Checkbox";
+import Button from "@components/Button";
+import ButtonGroup from "@components/ButtonGroup";
+import Badge from "@components/Badge";
+import Divider from "@components/Divider";
+import Text from "@components/Text";
 
-import { ApiError, CellarrClient, api as defaultApi } from '@lib/api/client';
+import { ApiError, CellarrClient, api as defaultApi } from "@lib/api/client";
 import type {
   IndexerConfig,
   DownloadClientConfig,
   IndexerConfigV3,
   DownloadClientConfigV3,
-} from '@lib/api/types';
+} from "@lib/api/types";
 
-import { useToast } from '@app/_lib/ToastProvider';
-import { useAsync, toApiError } from '@app/settings/_components/useAsync';
-import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
-import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import { useToast } from "@app/_lib/ToastProvider";
+import { useAsync, toApiError } from "@app/settings/_components/useAsync";
+import {
+  Loading,
+  ErrorBanner,
+  EmptyState,
+} from "@app/settings/_components/StatusBanners";
+import ConfirmDialog from "@app/settings/_components/ConfirmDialog";
 
-type IntegrationKind = 'indexers' | 'downloadclients';
+type IntegrationKind = "indexers" | "downloadclients";
 type RawConfig = IndexerConfig | DownloadClientConfig;
 
 interface IntegrationForm {
@@ -54,6 +58,63 @@ interface IntegrationForm {
   apiKey: string;
   ssl: boolean;
   enabled: boolean;
+  // Download-client extras (Transmission / Deluge / rTorrent take credential +
+  // path fields beyond host/port; the *arr apps hard-deref `category`).
+  username: string;
+  password: string;
+  urlBase: string;
+  category: string;
+  // Indexer release-selection criteria (mirrors the v3 shim's typed
+  // minimumSeeders / seedCriteria.* / requiredFlags fields).
+  priority: string;
+  minimumSeeders: string;
+  seedRatio: string;
+  seedTime: string;
+  /** The freeleech-only policy is `requiredFlags: ["freeleech"]`. */
+  requireFreeleech: boolean;
+}
+
+// Which download-client implementations take credential / urlBase fields. A
+// blackhole client is just a watch dir (host = path), so it shows none of these.
+const CLIENT_FIELDS: Record<
+  string,
+  {
+    host?: boolean;
+    port?: boolean;
+    username?: boolean;
+    password?: boolean;
+    urlBase?: boolean;
+  }
+> = {
+  transmission: {
+    host: true,
+    port: true,
+    username: true,
+    password: true,
+    urlBase: true,
+  },
+  deluge: { host: true, port: true, password: true, urlBase: true },
+  rtorrent: {
+    host: true,
+    port: true,
+    username: true,
+    password: true,
+    urlBase: true,
+  },
+  qbittorrent: { host: true, port: true, username: true, password: true },
+  sabnzbd: { host: true, port: true, urlBase: true },
+  nzbget: { host: true, port: true, username: true, password: true },
+};
+
+function clientFields(impl: string) {
+  return (
+    CLIENT_FIELDS[impl.toLowerCase()] ?? {
+      host: true,
+      port: true,
+      username: true,
+      password: true,
+    }
+  );
 }
 
 interface TestResult {
@@ -63,28 +124,62 @@ interface TestResult {
 
 function toForm(raw: RawConfig, implementations: string[]): IntegrationForm {
   const rec = raw as Record<string, unknown>;
+  // Native list configs carry the typed extras either at the top level
+  // (`category`, `priority`) or inside the `settings` / `criteria` blobs.
+  const settings = (rec.settings as Record<string, unknown> | undefined) ?? {};
+  const criteria = (rec.criteria as Record<string, unknown> | undefined) ?? {};
+  const seedCriteria =
+    (criteria.seedCriteria as Record<string, unknown> | undefined) ?? {};
+  const flags = criteria.requiredFlags;
+  const flagList = Array.isArray(flags)
+    ? flags.map((f) => String(f).toLowerCase())
+    : typeof flags === "string"
+      ? flags.split(",").map((f) => f.trim().toLowerCase())
+      : [];
+  const str = (...vals: unknown[]) => {
+    const v = vals.find((x) => x != null && x !== "");
+    return v != null ? String(v) : "";
+  };
   return {
-    id: String(rec.id ?? rec.name ?? ''),
-    name: String(rec.name ?? ''),
-    implementation: String(rec.implementation ?? implementations[0] ?? ''),
-    host: String(rec.host ?? ''),
-    port: rec.port != null ? String(rec.port) : '',
-    apiKey: String(rec.api_key ?? rec.apiKey ?? ''),
+    id: String(rec.id ?? rec.name ?? ""),
+    name: String(rec.name ?? ""),
+    implementation: String(rec.implementation ?? implementations[0] ?? ""),
+    host: str(rec.host, settings.host, settings.base_url),
+    port: str(rec.port, settings.port),
+    apiKey: str(rec.api_key, rec.apiKey, settings.apiKey),
     ssl: rec.ssl === true || rec.use_ssl === true,
     enabled: rec.enabled !== false,
+    username: str(rec.username, settings.username),
+    password: str(rec.password, settings.password),
+    urlBase: str(rec.urlBase, settings.urlBase),
+    category: str(rec.category),
+    priority: str(rec.priority, criteria.priority),
+    minimumSeeders: str(criteria.minimumSeeders),
+    seedRatio: str(seedCriteria.seedRatio),
+    seedTime: str(seedCriteria.seedTime),
+    requireFreeleech: flagList.includes("freeleech"),
   };
 }
 
 function blankForm(implementations: string[]): IntegrationForm {
   return {
-    id: '',
-    name: '',
-    implementation: implementations[0] ?? '',
-    host: '',
-    port: '',
-    apiKey: '',
+    id: "",
+    name: "",
+    implementation: implementations[0] ?? "",
+    host: "",
+    port: "",
+    apiKey: "",
     ssl: false,
     enabled: true,
+    username: "",
+    password: "",
+    urlBase: "",
+    category: "",
+    priority: "",
+    minimumSeeders: "",
+    seedRatio: "",
+    seedTime: "",
+    requireFreeleech: false,
   };
 }
 
@@ -103,20 +198,29 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
 }) => {
   const load = React.useCallback(
     (signal: AbortSignal) =>
-      kind === 'indexers' ? client.listIndexers(signal) : client.listDownloadClients(signal),
-    [client, kind]
+      kind === "indexers"
+        ? client.listIndexers(signal)
+        : client.listDownloadClients(signal),
+    [client, kind],
   );
   const { data, loading, error, reload } = useAsync<RawConfig[]>(load);
   const { success, error: toastError, info } = useToast();
 
-  const singular = title.replace(/s$/, '');
+  const singular = title.replace(/s$/, "");
 
-  const [form, setForm] = React.useState<IntegrationForm>(() => blankForm(implementations));
+  const [form, setForm] = React.useState<IntegrationForm>(() =>
+    blankForm(implementations),
+  );
   const [testing, setTesting] = React.useState(false);
-  const [testResult, setTestResult] = React.useState<TestResult | undefined>(undefined);
+  const [testResult, setTestResult] = React.useState<TestResult | undefined>(
+    undefined,
+  );
   const [saving, setSaving] = React.useState(false);
-  const [saveError, setSaveError] = React.useState<ApiError | undefined>(undefined);
-  const [pendingDelete, setPendingDelete] = React.useState<IntegrationForm | null>(null);
+  const [saveError, setSaveError] = React.useState<ApiError | undefined>(
+    undefined,
+  );
+  const [pendingDelete, setPendingDelete] =
+    React.useState<IntegrationForm | null>(null);
   const [deleting, setDeleting] = React.useState(false);
 
   const configs = data ?? [];
@@ -135,31 +239,75 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
 
   // Torrent vs usenet drives the protocol/configContract the v3 shim validates
   // against (mirrors app/first-run WizardModal's mapping).
-  const protocolFor = (impl: string): 'usenet' | 'torrent' =>
-    /newznab|usenet|sab|nzb/i.test(impl) ? 'usenet' : 'torrent';
+  const protocolFor = (impl: string): "usenet" | "torrent" =>
+    /newznab|usenet|sab|nzb/i.test(impl) ? "usenet" : "torrent";
 
   // Map the flat form to the Radarr/Sonarr-shaped body the /api/v3 test + create
   // handlers expect: configContract + protocol + a fields[] array. An indexer's
   // endpoint lives under `baseUrl`; a download client's under `host`/`port`.
-  const toV3Body = (): Partial<IndexerConfigV3> & Partial<DownloadClientConfigV3> => {
+  const toV3Body = (): Partial<IndexerConfigV3> &
+    Partial<DownloadClientConfigV3> => {
     const port = form.port ? Number.parseInt(form.port, 10) : undefined;
+    const num = (v: string) => {
+      const trimmed = v.trim();
+      if (!trimmed) return undefined;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const priority = num(form.priority);
+    const minSeeders = num(form.minimumSeeders);
+    const seedRatio = num(form.seedRatio);
+    const seedTime = num(form.seedTime);
+
     const fields =
-      kind === 'indexers'
+      kind === "indexers"
         ? [
-            { name: 'baseUrl', value: form.host },
-            ...(form.apiKey ? [{ name: 'apiKey', value: form.apiKey }] : []),
+            { name: "baseUrl", value: form.host },
+            ...(form.apiKey ? [{ name: "apiKey", value: form.apiKey }] : []),
+            // Typed release-selection criteria the v3 shim lifts into
+            // IndexerConfig.criteria. Only emit a field when the user set it.
+            ...(minSeeders !== undefined
+              ? [{ name: "minimumSeeders", value: minSeeders }]
+              : []),
+            ...(seedRatio !== undefined
+              ? [{ name: "seedCriteria.seedRatio", value: seedRatio }]
+              : []),
+            ...(seedTime !== undefined
+              ? [{ name: "seedCriteria.seedTime", value: seedTime }]
+              : []),
+            ...(form.requireFreeleech
+              ? [{ name: "requiredFlags", value: ["freeleech"] }]
+              : []),
           ]
-        : [
-            { name: 'host', value: form.host },
-            ...(port !== undefined ? [{ name: 'port', value: port }] : []),
-            { name: 'useSsl', value: form.ssl },
-          ];
+        : (() => {
+            const spec = clientFields(form.implementation);
+            return [
+              ...(spec.host ? [{ name: "host", value: form.host }] : []),
+              ...(spec.port && port !== undefined
+                ? [{ name: "port", value: port }]
+                : []),
+              ...(spec.urlBase && form.urlBase
+                ? [{ name: "urlBase", value: form.urlBase }]
+                : []),
+              ...(spec.username && form.username
+                ? [{ name: "username", value: form.username }]
+                : []),
+              ...(spec.password && form.password
+                ? [{ name: "password", value: form.password }]
+                : []),
+              { name: "useSsl", value: form.ssl },
+              // The category the *arr ecosystem hard-derefs; always present so a
+              // downstream consumer never null-derefs it.
+              { name: "category", value: form.category },
+            ];
+          })();
     return {
       name: form.name,
       implementation: form.implementation,
       configContract: `${form.implementation}Settings`,
       protocol: protocolFor(form.implementation),
-      ...(kind === 'indexers'
+      ...(priority !== undefined ? { priority } : {}),
+      ...(kind === "indexers"
         ? {
             enableRss: form.enabled,
             enableAutomaticSearch: form.enabled,
@@ -173,18 +321,18 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
 
   const test = async () => {
     if (!form.name.trim()) {
-      toastError('Give it a name before testing.');
+      toastError("Give it a name before testing.");
       return;
     }
     setTesting(true);
     setTestResult(undefined);
-    info('Testing connection…', { durationMs: 2000 });
+    info("Testing connection…", { durationMs: 2000 });
     try {
       const body = toV3Body();
-      if (kind === 'indexers') await client.testIndexer(body);
+      if (kind === "indexers") await client.testIndexer(body);
       else await client.testDownloadClient(body);
-      setTestResult({ ok: true, message: 'Connection successful.' });
-      success('Connection successful.');
+      setTestResult({ ok: true, message: "Connection successful." });
+      success("Connection successful.");
     } catch (err) {
       const e = toApiError(err);
       setTestResult({ ok: false, message: `${e.code}: ${e.message}` });
@@ -196,14 +344,14 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
 
   const save = async () => {
     if (!form.name.trim()) {
-      toastError('Give it a name before saving.');
+      toastError("Give it a name before saving.");
       return;
     }
     setSaving(true);
     setSaveError(undefined);
     try {
       const body = toV3Body();
-      if (kind === 'indexers') await client.createIndexer(body);
+      if (kind === "indexers") await client.createIndexer(body);
       else await client.createDownloadClient(body);
       success(`${singular} saved.`);
       reset();
@@ -224,13 +372,13 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
       // The native list keys configs by an opaque id; the v3 delete route is
       // addressed by a numeric id. Surface this rather than firing a request
       // that cannot resolve.
-      toastError('This entry cannot be deleted from here (no numeric id).');
+      toastError("This entry cannot be deleted from here (no numeric id).");
       setPendingDelete(null);
       return;
     }
     setDeleting(true);
     try {
-      if (kind === 'indexers') await client.deleteIndexer(numericId);
+      if (kind === "indexers") await client.deleteIndexer(numericId);
       else await client.deleteDownloadClient(numericId);
       success(`${singular} removed.`);
       if (form.id === pendingDelete.id) reset();
@@ -253,26 +401,31 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
       ) : (
         <>
           {configs.length ? (
-            <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1ch 0' }}>
+            <ul style={{ listStyle: "none", padding: 0, margin: "0 0 1ch 0" }}>
               {configs.map((raw) => {
                 const f = toForm(raw, implementations);
                 return (
                   <li
                     key={f.id || f.name}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '1ch',
-                      padding: '0.5ch 0',
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "1ch",
+                      padding: "0.5ch 0",
                     }}
                   >
                     <span>
-                      <Badge>{f.enabled ? 'enabled' : 'disabled'}</Badge> {f.name || '(unnamed)'}{' '}
+                      <Badge>{f.enabled ? "enabled" : "disabled"}</Badge>{" "}
+                      {f.name || "(unnamed)"}{" "}
                       <span style={{ opacity: 0.5 }}>{f.implementation}</span>
                     </span>
-                    <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                      <Button theme="SECONDARY" aria-label={`Edit ${f.name || singular}`} onClick={() => edit(raw)}>
+                    <span style={{ display: "inline-flex", gap: "0.5ch" }}>
+                      <Button
+                        theme="SECONDARY"
+                        aria-label={`Edit ${f.name || singular}`}
+                        onClick={() => edit(raw)}
+                      >
                         Edit
                       </Button>
                       <Button
@@ -293,11 +446,13 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
 
           <Divider type="GRADIENT" />
 
-          <Text style={{ opacity: 0.6, margin: '1ch 0 0.5ch' }}>
-            {form.id ? `Editing ${form.name || form.id}` : `New ${singular.toLowerCase()}`}
+          <Text style={{ opacity: 0.6, margin: "1ch 0 0.5ch" }}>
+            {form.id
+              ? `Editing ${form.name || form.id}`
+              : `New ${singular.toLowerCase()}`}
           </Text>
 
-          <div style={{ margin: '0.5ch 0' }}>
+          <div style={{ margin: "0.5ch 0" }}>
             <Text style={{ opacity: 0.6 }}>Name</Text>
             <Input
               name={`${kind}-name`}
@@ -307,7 +462,7 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
             />
           </div>
 
-          <div style={{ margin: '0.5ch 0' }}>
+          <div style={{ margin: "0.5ch 0" }}>
             <Text style={{ opacity: 0.6 }}>Implementation</Text>
             <Select
               name={`${kind}-impl`}
@@ -317,42 +472,198 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
             />
           </div>
 
-          <div style={{ display: 'flex', gap: '1ch' }}>
-            <div style={{ flex: 2, margin: '0.5ch 0' }}>
-              <Text style={{ opacity: 0.6 }}>Host</Text>
+          {(() => {
+            const spec =
+              kind === "downloadclients"
+                ? clientFields(form.implementation)
+                : undefined;
+            const showHost = kind === "indexers" || !spec || spec.host;
+            const showPort = kind === "downloadclients" && (!spec || spec.port);
+            return (
+              <>
+                {showHost ? (
+                  <div style={{ display: "flex", gap: "1ch" }}>
+                    <div style={{ flex: 2, margin: "0.5ch 0" }}>
+                      <Text style={{ opacity: 0.6 }}>
+                        {kind === "indexers" ? "Base URL" : "Host"}
+                      </Text>
+                      <Input
+                        name={`${kind}-host`}
+                        aria-label={kind === "indexers" ? "Base URL" : "Host"}
+                        placeholder={
+                          kind === "indexers"
+                            ? "http://localhost:9117"
+                            : "localhost"
+                        }
+                        value={form.host}
+                        onChange={(e) =>
+                          setForm({ ...form, host: e.target.value })
+                        }
+                      />
+                    </div>
+                    {showPort ? (
+                      <div style={{ flex: 1, margin: "0.5ch 0" }}>
+                        <Text style={{ opacity: 0.6 }}>Port</Text>
+                        <Input
+                          name={`${kind}-port`}
+                          aria-label="Port"
+                          type="number"
+                          placeholder="9117"
+                          value={form.port}
+                          onChange={(e) =>
+                            setForm({ ...form, port: e.target.value })
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            );
+          })()}
+
+          {kind === "indexers" ? (
+            <div style={{ margin: "0.5ch 0" }}>
+              <Text style={{ opacity: 0.6 }}>API key</Text>
               <Input
-                name={`${kind}-host`}
-                aria-label="Host"
-                placeholder="localhost"
-                value={form.host}
-                onChange={(e) => setForm({ ...form, host: e.target.value })}
+                name={`${kind}-apikey`}
+                aria-label="API key"
+                type="password"
+                value={form.apiKey}
+                onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
               />
             </div>
-            <div style={{ flex: 1, margin: '0.5ch 0' }}>
-              <Text style={{ opacity: 0.6 }}>Port</Text>
-              <Input
-                name={`${kind}-port`}
-                aria-label="Port"
-                type="number"
-                placeholder="9117"
-                value={form.port}
-                onChange={(e) => setForm({ ...form, port: e.target.value })}
-              />
-            </div>
-          </div>
+          ) : null}
 
-          <div style={{ margin: '0.5ch 0' }}>
-            <Text style={{ opacity: 0.6 }}>API key</Text>
-            <Input
-              name={`${kind}-apikey`}
-              aria-label="API key"
-              type="password"
-              value={form.apiKey}
-              onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-            />
-          </div>
+          {/* Download-client credential / path / category fields. Which appear is
+              driven by the implementation (a Deluge WebUI takes only a password;
+              rTorrent / Transmission take Basic creds + a urlBase mount path). */}
+          {kind === "downloadclients"
+            ? (() => {
+                const spec = clientFields(form.implementation);
+                return (
+                  <>
+                    {spec.urlBase ? (
+                      <div style={{ margin: "0.5ch 0" }}>
+                        <Text style={{ opacity: 0.6 }}>URL base</Text>
+                        <Input
+                          name={`${kind}-urlbase`}
+                          aria-label="URL base"
+                          placeholder="/transmission"
+                          value={form.urlBase}
+                          onChange={(e) =>
+                            setForm({ ...form, urlBase: e.target.value })
+                          }
+                        />
+                      </div>
+                    ) : null}
+                    {spec.username ? (
+                      <div style={{ margin: "0.5ch 0" }}>
+                        <Text style={{ opacity: 0.6 }}>Username</Text>
+                        <Input
+                          name={`${kind}-username`}
+                          aria-label="Username"
+                          value={form.username}
+                          onChange={(e) =>
+                            setForm({ ...form, username: e.target.value })
+                          }
+                        />
+                      </div>
+                    ) : null}
+                    {spec.password ? (
+                      <div style={{ margin: "0.5ch 0" }}>
+                        <Text style={{ opacity: 0.6 }}>Password</Text>
+                        <Input
+                          name={`${kind}-password`}
+                          aria-label="Password"
+                          type="password"
+                          value={form.password}
+                          onChange={(e) =>
+                            setForm({ ...form, password: e.target.value })
+                          }
+                        />
+                      </div>
+                    ) : null}
+                    <div style={{ margin: "0.5ch 0" }}>
+                      <Text style={{ opacity: 0.6 }}>Category</Text>
+                      <Input
+                        name={`${kind}-category`}
+                        aria-label="Category"
+                        placeholder="cellarr"
+                        value={form.category}
+                        onChange={(e) =>
+                          setForm({ ...form, category: e.target.value })
+                        }
+                      />
+                    </div>
+                  </>
+                );
+              })()
+            : null}
 
-          <div style={{ display: 'flex', gap: '2ch', margin: '0.5ch 0' }}>
+          {/* Indexer release-selection criteria. */}
+          {kind === "indexers" ? (
+            <>
+              <div style={{ display: "flex", gap: "1ch" }}>
+                <div style={{ flex: 1, margin: "0.5ch 0" }}>
+                  <Text style={{ opacity: 0.6 }}>Priority</Text>
+                  <Input
+                    name={`${kind}-priority`}
+                    aria-label="Priority"
+                    type="number"
+                    placeholder="25"
+                    value={form.priority}
+                    onChange={(e) =>
+                      setForm({ ...form, priority: e.target.value })
+                    }
+                  />
+                </div>
+                <div style={{ flex: 1, margin: "0.5ch 0" }}>
+                  <Text style={{ opacity: 0.6 }}>Minimum seeders</Text>
+                  <Input
+                    name={`${kind}-minseeders`}
+                    aria-label="Minimum seeders"
+                    type="number"
+                    placeholder="1"
+                    value={form.minimumSeeders}
+                    onChange={(e) =>
+                      setForm({ ...form, minimumSeeders: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "1ch" }}>
+                <div style={{ flex: 1, margin: "0.5ch 0" }}>
+                  <Text style={{ opacity: 0.6 }}>Seed ratio</Text>
+                  <Input
+                    name={`${kind}-seedratio`}
+                    aria-label="Seed ratio"
+                    type="number"
+                    placeholder="1.0"
+                    value={form.seedRatio}
+                    onChange={(e) =>
+                      setForm({ ...form, seedRatio: e.target.value })
+                    }
+                  />
+                </div>
+                <div style={{ flex: 1, margin: "0.5ch 0" }}>
+                  <Text style={{ opacity: 0.6 }}>Seed time (minutes)</Text>
+                  <Input
+                    name={`${kind}-seedtime`}
+                    aria-label="Seed time"
+                    type="number"
+                    placeholder="60"
+                    value={form.seedTime}
+                    onChange={(e) =>
+                      setForm({ ...form, seedTime: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+            </>
+          ) : null}
+
+          <div style={{ display: "flex", gap: "2ch", margin: "0.5ch 0" }}>
             <Checkbox
               name={`${kind}-ssl`}
               defaultChecked={form.ssl}
@@ -367,23 +678,41 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
             >
               Enabled
             </Checkbox>
+            {kind === "indexers" ? (
+              <Checkbox
+                name={`${kind}-freeleech`}
+                defaultChecked={form.requireFreeleech}
+                onChange={(e) =>
+                  setForm({ ...form, requireFreeleech: e.target.checked })
+                }
+              >
+                Require freeleech
+              </Checkbox>
+            ) : null}
           </div>
 
           {/* Inline test result stays near the form as a persistent indicator;
               the same outcome is also announced via toast. */}
           {testResult ? (
-            <div role="status" style={{ margin: '0.5ch 0' }}>
-              <Badge>{testResult.ok ? '✓ ok' : '✗ failed'}</Badge> {testResult.message}
+            <div role="status" style={{ margin: "0.5ch 0" }}>
+              <Badge>{testResult.ok ? "✓ ok" : "✗ failed"}</Badge>{" "}
+              {testResult.message}
             </div>
           ) : null}
           {saveError ? <ErrorBanner error={saveError} /> : null}
 
-          <div style={{ marginTop: '1ch' }}>
+          <div style={{ marginTop: "1ch" }}>
             <ButtonGroup
               items={[
-                { body: testing ? 'Testing…' : 'Test', onClick: testing ? undefined : test },
-                { body: saving ? 'Saving…' : 'Save', onClick: saving ? undefined : save },
-                ...(form.id ? [{ body: 'New', onClick: reset }] : []),
+                {
+                  body: testing ? "Testing…" : "Test",
+                  onClick: testing ? undefined : test,
+                },
+                {
+                  body: saving ? "Saving…" : "Save",
+                  onClick: saving ? undefined : save,
+                },
+                ...(form.id ? [{ body: "New", onClick: reset }] : []),
               ]}
             />
           </div>
@@ -398,8 +727,9 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
               onCancel={() => (deleting ? undefined : setPendingDelete(null))}
             >
               <Text>
-                Remove <strong>{pendingDelete.name || singular.toLowerCase()}</strong>? cellarr will
-                stop using this {singular.toLowerCase()}.
+                Remove{" "}
+                <strong>{pendingDelete.name || singular.toLowerCase()}</strong>?
+                cellarr will stop using this {singular.toLowerCase()}.
               </Text>
             </ConfirmDialog>
           ) : null}

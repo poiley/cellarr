@@ -1,0 +1,54 @@
+{
+  "scenario": "Deluge add with an http(s) download_url (Prowlarr proxy): cellarr fetches the .torrent itself, then core.add_torrent_file passes the base64 metainfo (NOT a url). The returned hash is the v1 infohash of the fetched metainfo's info dict.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"auth.login\""
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "_session_id=sess-xyz; Path=/" },
+        "body": "{\"result\":true,\"error\":null,\"id\":1}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.add_torrent_file\"",
+        "body_contains_2": "ZDg6YW5ub3VuY2UxMzpodHRwOi8vdHIvYW5uNDppbmZvZDY6bGVuZ3RoaTEyZTQ6bmFtZTk6U29tZS5GaWxlMTI6cGllY2UgbGVuZ3RoaTE2Mzg0ZTY6cGllY2VzMjA6YWFhYWFhYWFhYWFhYWFhYWFhYWFlZQ=="
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"157493ee02747f71737019e994e47f44e5f89b97\",\"error\":null,\"id\":2}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"label.set_torrent\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":null,\"error\":null,\"id\":3}"
+      }
+    }
+  ]
+}

@@ -472,7 +472,10 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
 
 /// Standard base64 encoder (for the Basic auth header), avoiding a base64 crate
 /// dependency for this single call site.
-fn base64_encode(input: &[u8]) -> String {
+///
+/// `pub(crate)` so sibling adapters (Deluge's `add_torrent_file` base64 metainfo)
+/// reuse the one encoder rather than re-implementing it.
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {

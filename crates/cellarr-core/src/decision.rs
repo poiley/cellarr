@@ -63,6 +63,12 @@ pub enum RejectReason {
     SizeOutOfRange,
     /// A required language is missing.
     LanguageRequirementUnmet,
+    /// The torrent release advertises fewer seeders than the indexer's configured
+    /// minimum (or reports no seeders when a minimum is set).
+    InsufficientSeeders,
+    /// The release is missing an indexer flag the indexer requires (e.g. a
+    /// freeleech-only indexer rejecting a non-freeleech release).
+    RequiredFlagMissing,
     /// A file at or above both cutoffs already exists; nothing to do.
     CutoffAlreadyMet,
     /// An existing file is equal or better; no upgrade.

@@ -1,0 +1,17 @@
+{
+  "scenario": "Deluge auth.login with a bad password answers result:false -> DownloadError::Auth.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"auth.login\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":false,\"error\":null,\"id\":1}"
+      }
+    }
+  ]
+}

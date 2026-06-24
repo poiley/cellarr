@@ -1,0 +1,18 @@
+{
+  "scenario": "rTorrent behind an HTTP Basic front-end: a wrong credential answers 401 -> DownloadError::Auth. The request carries the Authorization: Basic header.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "header_equals": { "authorization": "Basic dXNlcjpwdw==" },
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 401,
+        "headers": {},
+        "body": "<html><body>401 Unauthorized</body></html>"
+      }
+    }
+  ]
+}

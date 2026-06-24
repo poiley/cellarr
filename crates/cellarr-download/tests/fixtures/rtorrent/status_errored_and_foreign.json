@@ -1,0 +1,29 @@
+{
+  "scenario": "rTorrent status edges: an errored torrent (d.message names a failure) is Failed; a completed torrent under a foreign d.custom1 label surfaces that label (scoping) with base_path content_path. One multicall returns both rows; the adapter selects by hash each call.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data><value><array><data><value><string>erroredhash</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><string></string></value><value><string>Bad.Release</string></value><value><string>cellarr-tv</string></value><value><string>Download error: file too large</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><i8>1</i8></value></data></array></value><value><array><data><value><string>foreignhash</string></value><value><i8>1</i8></value><value><i8>3000</i8></value><value><string>/other/thing</string></value><value><string>thing</string></value><value><string>manual-stuff</string></value><value><string></string></value><value><i8>1</i8></value><value><i8>0</i8></value><value><i8>1</i8></value></data></array></value></data></array></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data><value><array><data><value><string>erroredhash</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><string></string></value><value><string>Bad.Release</string></value><value><string>cellarr-tv</string></value><value><string>Download error: file too large</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><i8>1</i8></value></data></array></value><value><array><data><value><string>foreignhash</string></value><value><i8>1</i8></value><value><i8>3000</i8></value><value><string>/other/thing</string></value><value><string>thing</string></value><value><string>manual-stuff</string></value><value><string></string></value><value><i8>1</i8></value><value><i8>0</i8></value><value><i8>1</i8></value></data></array></value></data></array></value></param></params></methodResponse>"
+      }
+    }
+  ]
+}

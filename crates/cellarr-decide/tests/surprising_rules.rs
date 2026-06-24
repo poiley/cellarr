@@ -89,6 +89,8 @@ fn ctx<'a>(
         ranking,
         blocklisted: false,
         proper_repack_policy: ProperRepackPolicy::Prefer,
+        indexer_criteria: Default::default(),
+        indexer_priority: 0,
     }
 }
 
@@ -137,6 +139,8 @@ fn a_blocklisted_release_is_excluded_before_ranking_even_when_it_would_otherwise
         ranking: &ranking,
         blocklisted: true,
         proper_repack_policy: ProperRepackPolicy::Prefer,
+        indexer_criteria: Default::default(),
+        indexer_priority: 0,
     };
     let decision = decide(content_ref(), &rel, &p, None, &blocklisted_ctx).unwrap();
     assert!(
@@ -326,6 +330,8 @@ fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
             ranking: &ranking,
             blocklisted: false,
             proper_repack_policy: ProperRepackPolicy::Prefer,
+            indexer_criteria: Default::default(),
+            indexer_priority: 0,
         },
     )
     .unwrap();
@@ -346,6 +352,8 @@ fn proper_at_equal_quality_and_cf_is_preferred_only_under_the_prefer_policy() {
             ranking: &ranking,
             blocklisted: false,
             proper_repack_policy: ProperRepackPolicy::DoNotPrefer,
+            indexer_criteria: Default::default(),
+            indexer_priority: 0,
         },
     )
     .unwrap();

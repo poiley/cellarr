@@ -536,6 +536,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         content_tags: Vec::new(),
         permissions: Default::default(),
         extra_files: Default::default(),
+        indexer_criteria: Default::default(),
     }
 }
 

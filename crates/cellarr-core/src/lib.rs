@@ -45,7 +45,7 @@ pub use blocklist::{release_key, BlocklistEntry, BlocklistRepository};
 
 pub use config::{
     apply_remote_path_mappings, DownloadClientConfig, ExtraFileImport, ImportPermissions,
-    IndexerConfig, MediaManagement, NameTarget, NamingFormats, NotificationConfig,
+    IndexerConfig, IndexerCriteria, MediaManagement, NameTarget, NamingFormats, NotificationConfig,
     RemotePathMapping, RootFolder,
 };
 pub use decision::{

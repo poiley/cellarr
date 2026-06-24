@@ -170,6 +170,15 @@ fn movie_release(title: &str, guid: &str) -> Release {
     }
 }
 
+/// A movie release attributed to a specific indexer id (for the priority
+/// tie-break test).
+fn movie_release_from(title: &str, guid: &str, indexer_id: cellarr_core::IndexerId) -> Release {
+    Release {
+        indexer_id,
+        ..movie_release(title, guid)
+    }
+}
+
 async fn seed_movie_node(db: &Database) -> ContentRef {
     let library_id = LibraryId::new();
     let library = cellarr_core::Library {
@@ -237,6 +246,7 @@ fn runner_config(profile: QualityProfile) -> RunnerConfig {
         content_tags: Vec::new(),
         permissions: Default::default(),
         extra_files: Default::default(),
+        indexer_criteria: Default::default(),
     }
 }
 
@@ -342,4 +352,60 @@ async fn preview_returns_ranked_candidates_and_never_grabs() {
         .await
         .unwrap();
     assert!(missing.is_none());
+}
+
+#[tokio::test]
+async fn indexer_priority_breaks_ties_between_equal_releases() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+
+    let node = seed_movie_node(&db).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    // Two BYTE-FOR-BYTE equal-standing releases (same title => same quality + CF
+    // score), differing only in which indexer returned them.
+    let hi_priority = cellarr_core::IndexerId::new(); // lower number = preferred
+    let lo_priority = cellarr_core::IndexerId::new();
+    let indexer = FakeIndexer {
+        releases: vec![
+            // Deliberately list the LOWER-priority indexer's release FIRST, so a
+            // pass-through (no tie-break) would rank it ahead. The priority
+            // tie-break must reorder the higher-priority indexer's release to the
+            // top despite the input order.
+            movie_release_from(
+                "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+                "guid-lo",
+                lo_priority,
+            ),
+            movie_release_from(
+                "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+                "guid-hi",
+                hi_priority,
+            ),
+        ],
+    };
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+
+    let mut config = runner_config(web_and_bluray_profile());
+    // hi_priority indexer has the lower (preferred) priority number.
+    config.indexer_criteria = std::collections::HashMap::from([
+        (hi_priority, (cellarr_core::IndexerCriteria::default(), 1)),
+        (lo_priority, (cellarr_core::IndexerCriteria::default(), 50)),
+    ]);
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let candidates = runner.preview_releases(&node).await.unwrap();
+
+    // Both are grabbable and equal on quality+score; the higher-priority indexer's
+    // release (guid-hi) must come first purely on the indexer-priority tie-break.
+    assert!(candidates.len() >= 2, "got {candidates:?}");
+    assert!(!candidates[0].rejected && !candidates[1].rejected);
+    assert_eq!(candidates[0].quality.rank, candidates[1].quality.rank);
+    assert_eq!(
+        candidates[0].release.guid.as_deref(),
+        Some("guid-hi"),
+        "the lower-priority-number indexer's release should win the tie, got {candidates:?}"
+    );
 }

@@ -275,6 +275,8 @@ fn decision_vectors() {
             ranking: &ranking,
             blocklisted: case.blocklisted,
             proper_repack_policy: Default::default(),
+            indexer_criteria: Default::default(),
+            indexer_priority: 0,
         };
 
         let decision =

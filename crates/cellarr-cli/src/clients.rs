@@ -5,7 +5,8 @@
 //! A deployment persists [`DownloadClientConfig`] rows (kind + open-ended
 //! `settings` JSON: host, credentials, paths) via the db `ConfigRepo`. This module
 //! reads the *enabled* client of highest priority at run time and constructs the
-//! matching native adapter (qBittorrent / SABnzbd / NZBGet / Blackhole), wrapping
+//! matching native adapter (qBittorrent / Transmission / Deluge / rTorrent /
+//! SABnzbd / NZBGet / Blackhole), wrapping
 //! it in [`ConfiguredDownloadClient`] so the runner is driven over one concrete
 //! `DownloadClient` whose error type is unified (mirroring the indexer set's
 //! `NabAdapter`).
@@ -18,9 +19,9 @@
 use async_trait::async_trait;
 use cellarr_core::{DownloadClient, DownloadClientConfig, DownloadStatus, GrabRequest};
 use cellarr_download::{
-    BlackholeClient, BlackholeSettings, DownloadError, NzbgetClient, NzbgetSettings,
-    QbittorrentClient, QbittorrentSettings, SabnzbdClient, SabnzbdSettings, TransmissionClient,
-    TransmissionSettings,
+    BlackholeClient, BlackholeSettings, DelugeClient, DelugeSettings, DownloadError, NzbgetClient,
+    NzbgetSettings, QbittorrentClient, QbittorrentSettings, RtorrentClient, RtorrentSettings,
+    SabnzbdClient, SabnzbdSettings, TransmissionClient, TransmissionSettings,
 };
 
 /// A failure building a download client from its persisted configuration.
@@ -55,6 +56,10 @@ pub enum ConfiguredDownloadClient {
     Qbittorrent(QbittorrentClient),
     /// Transmission (torrent, RPC).
     Transmission(TransmissionClient),
+    /// Deluge (torrent, JSON-RPC WebUI).
+    Deluge(DelugeClient),
+    /// rTorrent (torrent, XML-RPC).
+    Rtorrent(RtorrentClient),
     /// SABnzbd (Usenet).
     Sabnzbd(SabnzbdClient),
     /// NZBGet (Usenet, JSON-RPC).
@@ -92,6 +97,16 @@ impl ConfiguredDownloadClient {
                 let settings: TransmissionSettings =
                     parse_settings(config).map_err(&misconfigured)?;
                 Ok(Self::Transmission(TransmissionClient::new(
+                    name, settings, category,
+                )))
+            }
+            "deluge" => {
+                let settings: DelugeSettings = parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Deluge(DelugeClient::new(name, settings, category)))
+            }
+            "rtorrent" => {
+                let settings: RtorrentSettings = parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Rtorrent(RtorrentClient::new(
                     name, settings, category,
                 )))
             }
@@ -139,6 +154,8 @@ impl DownloadClient for ConfiguredDownloadClient {
         match self {
             Self::Qbittorrent(c) => <QbittorrentClient as DownloadClient>::name(c),
             Self::Transmission(c) => <TransmissionClient as DownloadClient>::name(c),
+            Self::Deluge(c) => <DelugeClient as DownloadClient>::name(c),
+            Self::Rtorrent(c) => <RtorrentClient as DownloadClient>::name(c),
             Self::Sabnzbd(c) => <SabnzbdClient as DownloadClient>::name(c),
             Self::Nzbget(c) => <NzbgetClient as DownloadClient>::name(c),
             Self::Blackhole(c) => <BlackholeClient as DownloadClient>::name(c),
@@ -153,6 +170,8 @@ impl DownloadClient for ConfiguredDownloadClient {
         match self {
             Self::Qbittorrent(c) => DownloadClient::add(c, grab).await,
             Self::Transmission(c) => DownloadClient::add(c, grab).await,
+            Self::Deluge(c) => DownloadClient::add(c, grab).await,
+            Self::Rtorrent(c) => DownloadClient::add(c, grab).await,
             Self::Sabnzbd(c) => DownloadClient::add(c, grab).await,
             Self::Nzbget(c) => DownloadClient::add(c, grab).await,
             Self::Blackhole(c) => DownloadClient::add(c, grab).await,
@@ -163,6 +182,8 @@ impl DownloadClient for ConfiguredDownloadClient {
         match self {
             Self::Qbittorrent(c) => DownloadClient::status(c, download_id).await,
             Self::Transmission(c) => DownloadClient::status(c, download_id).await,
+            Self::Deluge(c) => DownloadClient::status(c, download_id).await,
+            Self::Rtorrent(c) => DownloadClient::status(c, download_id).await,
             Self::Sabnzbd(c) => DownloadClient::status(c, download_id).await,
             Self::Nzbget(c) => DownloadClient::status(c, download_id).await,
             Self::Blackhole(c) => DownloadClient::status(c, download_id).await,
@@ -173,6 +194,8 @@ impl DownloadClient for ConfiguredDownloadClient {
         match self {
             Self::Qbittorrent(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Transmission(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Deluge(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Rtorrent(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Sabnzbd(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Nzbget(c) => DownloadClient::remove(c, download_id, delete_data).await,
             Self::Blackhole(c) => DownloadClient::remove(c, download_id, delete_data).await,
@@ -282,8 +305,30 @@ mod tests {
     }
 
     #[test]
+    fn builds_deluge_from_settings() {
+        let c = config(
+            "deluge",
+            json!({"host": "localhost", "port": 8112, "password": "secret"}),
+        );
+        let built = ConfiguredDownloadClient::from_config(&c).expect("deluge builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Deluge(_)));
+        assert_eq!(DownloadClient::name(&built), "test-deluge");
+    }
+
+    #[test]
+    fn builds_rtorrent_from_settings() {
+        let c = config(
+            "rtorrent",
+            json!({"host": "localhost", "port": 8080, "urlBase": "/RPC2"}),
+        );
+        let built = ConfiguredDownloadClient::from_config(&c).expect("rtorrent builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Rtorrent(_)));
+        assert_eq!(DownloadClient::name(&built), "test-rtorrent");
+    }
+
+    #[test]
     fn unsupported_kind_is_rejected() {
-        let c = config("deluge", json!({}));
+        let c = config("aria2", json!({}));
         // `ConfiguredDownloadClient` is not `Debug` (it holds live transports), so
         // match the result directly rather than `expect_err`.
         assert!(matches!(

@@ -208,6 +208,7 @@ pub async fn seed_indexer(state: &AppState, name: &str) -> IndexerConfig {
         protocol: Protocol::Torrent,
         enabled: true,
         priority: 25,
+        criteria: Default::default(),
         settings: serde_json::json!({ "baseUrl": "http://example.invalid" }),
     };
     state

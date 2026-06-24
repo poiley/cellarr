@@ -546,7 +546,10 @@ fn multipart_add_body(metainfo: &[u8], category: &str) -> (Vec<u8>, String) {
 
 /// Compute the BitTorrent v1 infohash (lowercase hex SHA-1 of the bencoded `info`
 /// dictionary) from `.torrent` metainfo bytes, or `None` if it has no `info` dict.
-fn infohash_from_metainfo(metainfo: &[u8]) -> Option<String> {
+///
+/// `pub(crate)` so sibling torrent adapters (Deluge, rTorrent) reuse the one
+/// protocol-level derivation rather than re-implementing bencode + SHA-1.
+pub(crate) fn infohash_from_metainfo(metainfo: &[u8]) -> Option<String> {
     let info = bencode_info_slice(metainfo)?;
     Some(hex(&sha1(info)))
 }

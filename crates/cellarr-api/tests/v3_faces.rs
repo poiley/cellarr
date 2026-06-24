@@ -420,6 +420,98 @@ async fn indexer_push_round_trips_and_force_save_honored() {
 }
 
 #[tokio::test]
+async fn indexer_push_round_trips_seed_criteria_and_required_flags() {
+    let server = start_authed().await;
+    // Push the torrent acceptance criteria the broadened indexer config models:
+    // minimumSeeders + seedCriteria.* + the freeleech-only requiredFlags.
+    let ind = serde_json::json!({
+        "name": "Strict Tracker",
+        "implementation": "Torznab",
+        "protocol": "torrent",
+        "priority": 10,
+        "enableRss": true,
+        "fields": [
+            { "name": "baseUrl", "value": "http://prowlarr.invalid" },
+            { "name": "apiKey", "value": "abc" },
+            { "name": "minimumSeeders", "value": 5 },
+            { "name": "seedCriteria.seedRatio", "value": 2.0 },
+            { "name": "seedCriteria.seedTime", "value": 1440 },
+            { "name": "requiredFlags", "value": ["freeleech"] }
+        ]
+    });
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/indexer?forceSave=true"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&ind)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+
+    // The criteria are surfaced back as the v3 torrent fields, separate from the
+    // settings-blob fields (baseUrl/apiKey).
+    let field = |name: &str| -> Option<Value> {
+        created["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .map(|f| f["value"].clone())
+    };
+    assert_eq!(field("minimumSeeders"), Some(serde_json::json!(5)));
+    assert_eq!(
+        field("seedCriteria.seedRatio"),
+        Some(serde_json::json!(2.0))
+    );
+    assert_eq!(
+        field("seedCriteria.seedTime"),
+        Some(serde_json::json!(1440))
+    );
+    assert_eq!(
+        field("requiredFlags"),
+        Some(serde_json::json!(["freeleech"]))
+    );
+    // The criteria did NOT leak into the settings blob: baseUrl is still a field
+    // but minimumSeeders is not duplicated inside settings (it has its own field).
+    assert_eq!(
+        field("baseUrl"),
+        Some(serde_json::json!("http://prowlarr.invalid"))
+    );
+}
+
+#[tokio::test]
+async fn indexer_schema_torznab_advertises_seed_criteria_fields() {
+    let server = start_authed().await;
+    let schema: Value = server
+        .client()
+        .get(server.url("/api/v3/indexer/schema"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    let torznab = schema
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["implementation"] == "Torznab")
+        .expect("torznab template");
+    let names: BTreeSet<String> = torznab["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains("minimumSeeders"));
+    assert!(names.contains("seedCriteria.seedRatio"));
+    assert!(names.contains("seedCriteria.seedTime"));
+}
+
+#[tokio::test]
 async fn indexer_test_validates_body() {
     let server = start_authed().await;
     // Valid body → isValid true.
@@ -491,6 +583,98 @@ async fn downloadclient_schema_has_blackhole_implementations() {
         .collect();
     assert!(field_names.contains("watchFolder"));
     assert!(field_names.contains("completedFolder"));
+}
+
+#[tokio::test]
+async fn downloadclient_schema_advertises_deluge_and_rtorrent() {
+    let server = start_open().await;
+    let body: Value = server
+        .client()
+        .get(server.url("/api/v3/downloadclient/schema"))
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    let entries = body.as_array().unwrap();
+    let impls: BTreeSet<String> = entries
+        .iter()
+        .map(|s| s["implementation"].as_str().unwrap().to_string())
+        .collect();
+    assert!(impls.contains("Deluge"), "missing Deluge template");
+    assert!(impls.contains("RTorrent"), "missing rTorrent template");
+
+    // Deluge carries host/port/password + category.
+    let deluge = entries
+        .iter()
+        .find(|s| s["implementation"] == "Deluge")
+        .unwrap();
+    let deluge_fields: BTreeSet<String> = deluge["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    for f in ["host", "port", "password", "category"] {
+        assert!(deluge_fields.contains(f), "Deluge missing field {f}");
+    }
+
+    // rTorrent carries host/port/urlBase + username/password + category.
+    let rtorrent = entries
+        .iter()
+        .find(|s| s["implementation"] == "RTorrent")
+        .unwrap();
+    let rt_fields: BTreeSet<String> = rtorrent["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    for f in [
+        "host", "port", "urlBase", "username", "password", "category",
+    ] {
+        assert!(rt_fields.contains(f), "rTorrent missing field {f}");
+    }
+}
+
+#[tokio::test]
+async fn downloadclient_push_round_trips_deluge() {
+    let server = start_authed().await;
+    let dc = serde_json::json!({
+        "name": "My Deluge",
+        "implementation": "Deluge",
+        "protocol": "torrent",
+        "priority": 1,
+        "enable": true,
+        "fields": [
+            { "name": "host", "value": "localhost" },
+            { "name": "port", "value": 8112 },
+            { "name": "password", "value": "secret" },
+            { "name": "category", "value": "cellarr-tv" }
+        ]
+    });
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/downloadclient?forceSave=true"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&dc)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(created["implementation"], "Deluge");
+    assert_eq!(created["name"], "My Deluge");
+    // The category is surfaced as its own field.
+    let cat = created["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "category")
+        .map(|f| f["value"].clone());
+    assert_eq!(cat, Some(serde_json::json!("cellarr-tv")));
 }
 
 #[tokio::test]

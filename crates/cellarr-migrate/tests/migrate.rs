@@ -279,6 +279,8 @@ async fn imported_profile_reproduces_quality_gating() {
         ranking: &ranking,
         blocklisted: false,
         proper_repack_policy: ProperRepackPolicy::default(),
+        indexer_criteria: Default::default(),
+        indexer_priority: 0,
     };
 
     // A node to decide for.

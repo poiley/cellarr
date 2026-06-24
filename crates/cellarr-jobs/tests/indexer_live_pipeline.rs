@@ -303,6 +303,7 @@ async fn configure_indexer(db: &Database, base_url: &str) -> IndexerConfig {
         protocol: Protocol::Torrent,
         enabled: true,
         priority: 25,
+        criteria: Default::default(),
         settings: json!({
             "baseUrl": base_url,
             "apiKey": "test-key",
@@ -385,6 +386,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         content_tags: Vec::new(),
         permissions: Default::default(),
         extra_files: Default::default(),
+        indexer_criteria: Default::default(),
     }
 }
 

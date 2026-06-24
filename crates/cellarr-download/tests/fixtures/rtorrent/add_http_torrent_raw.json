@@ -1,0 +1,43 @@
+{
+  "scenario": "rTorrent add with an http(s) download_url (Prowlarr proxy): cellarr fetches the .torrent itself, then load.raw_start passes the base64 metainfo. The returned id is the v1 infohash of the fetched metainfo's info dict; the label is stamped via d.custom1.set.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "GET",
+        "url_contains": "/1/download",
+        "url_contains_2": "apikey=KEY"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/x-bittorrent" },
+        "body": "d8:announce13:http://tr/ann4:infod6:lengthi12e4:name9:Some.File12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>load.raw_start</methodName>",
+        "body_contains_2": "<base64>ZDg6YW5ub3VuY2UxMzpodHRwOi8vdHIvYW5uNDppbmZvZDY6bGVuZ3RoaTEyZTQ6bmFtZTk6U29tZS5GaWxlMTI6cGllY2UgbGVuZ3RoaTE2Mzg0ZTY6cGllY2VzMjA6YWFhYWFhYWFhYWFhYWFhYWFhYWFlZQ==</base64>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.custom1.set</methodName>",
+        "body_contains_2": "157493ee02747f71737019e994e47f44e5f89b97"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><i8>0</i8></value></param></params></methodResponse>"
+      }
+    }
+  ]
+}

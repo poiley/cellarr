@@ -5,6 +5,9 @@
 //! and `docs/06-integrations.md`). v1 ships:
 //!
 //! - [`QbittorrentClient`] — torrent, WebUI API v2, version-aware `SID` login.
+//! - [`TransmissionClient`] — torrent, RPC + CSRF session handshake.
+//! - [`DelugeClient`] — torrent, JSON-RPC WebUI + `_session_id` cookie + Label plugin.
+//! - [`RtorrentClient`] — torrent, XML-RPC over HTTP (`/RPC2`/httprpc) + `d.custom1` label.
 //! - [`SabnzbdClient`] — Usenet, `mode=` HTTP API + `apikey=` + `output=json`.
 //! - [`NzbgetClient`] — Usenet, JSON-RPC positional params + HTTP Basic.
 //! - [`BlackholeClient`] — the *universal* client: a watch/completed folder pair
@@ -36,21 +39,25 @@
 #![warn(missing_docs)]
 
 pub mod blackhole;
+pub mod deluge;
 pub mod error;
 pub mod http;
 pub mod lifecycle;
 pub mod nzbget;
 pub mod qbittorrent;
+pub mod rtorrent;
 pub mod sabnzbd;
 pub mod source;
 pub mod transmission;
 
 pub use blackhole::{BlackholeClient, BlackholeSettings};
+pub use deluge::{DelugeClient, DelugeSettings};
 pub use error::DownloadError;
 pub use http::{HttpRequest, HttpResponse, HttpTransport, RawHttpResponse, ReqwestTransport};
 pub use lifecycle::{DownloadProgress, RemovePolicy};
 pub use nzbget::{NzbgetClient, NzbgetSettings};
 pub use qbittorrent::{QbittorrentClient, QbittorrentSettings};
+pub use rtorrent::{RtorrentClient, RtorrentSettings};
 pub use sabnzbd::{SabnzbdClient, SabnzbdSettings};
 pub use source::TorrentSource;
 pub use transmission::{TransmissionClient, TransmissionSettings};
@@ -112,6 +119,58 @@ impl DownloadClient for TransmissionClient {
         // The core trait's `remove` is unconditional; ratio/time-gated removal is
         // the richer `TransmissionClient::remove(_, RemovePolicy)`.
         TransmissionClient::remove(self, download_id, RemovePolicy::immediate(delete_data)).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DownloadClient for DelugeClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        DelugeClient::name(self)
+    }
+
+    async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error> {
+        DelugeClient::add(self, grab).await
+    }
+
+    async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        Ok(DelugeClient::progress(self, download_id)
+            .await?
+            .to_core_status())
+    }
+
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        // The core trait's `remove` is unconditional; ratio/time-gated removal is
+        // the richer `DelugeClient::remove(_, RemovePolicy)`.
+        DelugeClient::remove(self, download_id, RemovePolicy::immediate(delete_data)).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DownloadClient for RtorrentClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        RtorrentClient::name(self)
+    }
+
+    async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error> {
+        RtorrentClient::add(self, grab).await
+    }
+
+    async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        Ok(RtorrentClient::progress(self, download_id)
+            .await?
+            .to_core_status())
+    }
+
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        // The core trait's `remove` is unconditional; ratio/time-gated removal is
+        // the richer `RtorrentClient::remove(_, RemovePolicy)`.
+        RtorrentClient::remove(self, download_id, RemovePolicy::immediate(delete_data)).await?;
         Ok(())
     }
 }

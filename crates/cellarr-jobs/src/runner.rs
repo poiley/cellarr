@@ -339,6 +339,15 @@ pub struct RunnerConfig {
     /// The default ([`ExtraFileImport::default`](cellarr_core::ExtraFileImport)) is
     /// disabled, preserving prior behavior.
     pub extra_files: cellarr_core::ExtraFileImport,
+    /// Per-indexer acceptance criteria + priority, keyed by the indexer id a
+    /// [`Release`] carries. The decision consults the entry for the indexer that
+    /// returned a candidate to gate minimum-seeders / required-flag (freeleech) and
+    /// to break ties between equal releases by indexer priority. An indexer absent
+    /// from the map (e.g. a synthetic test id) defaults to no criteria and priority
+    /// `0`, preserving prior behaviour. The default (empty map) gates nothing.
+    #[allow(clippy::type_complexity)]
+    pub indexer_criteria:
+        std::collections::HashMap<cellarr_core::IndexerId, (cellarr_core::IndexerCriteria, i32)>,
 }
 
 /// Drives candidates through the pipeline state machine.
@@ -659,12 +668,22 @@ where
         }
 
         // Rank best-first: grabbable before rejected, then by quality rank and
-        // custom-format score (both descending) — the interactive-search order.
+        // custom-format score (both descending), and finally — for two otherwise
+        // equal releases — by indexer priority (lower number preferred, the *arr
+        // convention), so a tie resolves to the more-trusted indexer's release.
+        let indexer_priority = |c: &ReleaseCandidate| -> i32 {
+            self.config
+                .indexer_criteria
+                .get(&c.release.indexer_id)
+                .map(|(_, p)| *p)
+                .unwrap_or(0)
+        };
         out.sort_by(|a, b| {
             a.rejected
                 .cmp(&b.rejected)
                 .then(b.quality.rank.cmp(&a.quality.rank))
                 .then(b.custom_format_score.cmp(&a.custom_format_score))
+                .then(indexer_priority(a).cmp(&indexer_priority(b)))
         });
         Ok(out)
     }
@@ -1126,12 +1145,23 @@ where
         parsed: &ParsedRelease,
         on_disk: Option<OnDiskFile>,
     ) -> Result<Decision> {
+        // The per-indexer criteria/priority for the indexer that returned this
+        // candidate. A release from an indexer not in the map (a synthetic test id)
+        // falls back to no criteria and priority 0 — the prior behaviour.
+        let (criteria, priority) = self
+            .config
+            .indexer_criteria
+            .get(&release.indexer_id)
+            .cloned()
+            .unwrap_or_default();
         let ctx = DecisionContext {
             profile: &self.config.profile,
             custom_formats: &self.config.custom_formats,
             ranking: &self.config.ranking,
             blocklisted: false,
             proper_repack_policy: self.config.proper_repack_policy,
+            indexer_criteria: criteria,
+            indexer_priority: priority,
         };
         decide(content_ref.clone(), release, parsed, on_disk, &ctx)
             .map_err(|e| JobError::stage(Stage::Decide, e))
@@ -2379,6 +2409,8 @@ fn reason_text(reason: &cellarr_core::RejectReason) -> String {
         R::Blocklisted => "release is blocklisted".into(),
         R::SizeOutOfRange => "size out of configured range".into(),
         R::LanguageRequirementUnmet => "required language missing".into(),
+        R::InsufficientSeeders => "below indexer minimum seeders".into(),
+        R::RequiredFlagMissing => "missing required indexer flag (e.g. freeleech)".into(),
         R::CutoffAlreadyMet => "cutoff already met".into(),
         R::NotAnUpgrade => "not an upgrade over existing file".into(),
         R::Other { detail } => detail.clone(),
@@ -2636,6 +2668,8 @@ mod tests {
             reason_text(&R::Blocklisted),
             reason_text(&R::SizeOutOfRange),
             reason_text(&R::LanguageRequirementUnmet),
+            reason_text(&R::InsufficientSeeders),
+            reason_text(&R::RequiredFlagMissing),
             reason_text(&R::CutoffAlreadyMet),
             reason_text(&R::NotAnUpgrade),
         ];

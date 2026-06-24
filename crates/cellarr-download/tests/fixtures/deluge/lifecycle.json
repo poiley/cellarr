@@ -1,0 +1,97 @@
+{
+  "scenario": "Deluge: auth.login (cookie) -> core.add_torrent_magnet (returns hash) -> label.set_torrent -> get_torrent_status downloading -> get_torrent_status seeding (content_path) -> ratio-gated core.remove_torrent. The session cookie is resent on every post-login call.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"auth.login\""
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "_session_id=sess-deadbeef; Path=/; HttpOnly" },
+        "body": "{\"result\":true,\"error\":null,\"id\":1}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "header_equals": { "cookie": "_session_id=sess-deadbeef" },
+        "body_contains": "\"method\":\"core.add_torrent_magnet\"",
+        "body_contains_2": "magnet:?xt=urn:btih:deadbeefcafef00d",
+        "body_contains_3": "\"download_location\":\"/downloads\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":\"deadbeefcafef00d\",\"error\":null,\"id\":2}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "header_equals": { "cookie": "_session_id=sess-deadbeef" },
+        "body_contains": "\"method\":\"label.set_torrent\"",
+        "body_contains_2": "\"cellarr-tv\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":null,\"error\":null,\"id\":3}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.get_torrent_status\"",
+        "body_contains_2": "deadbeefcafef00d"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{\"state\":\"Downloading\",\"progress\":40.0,\"download_location\":\"/downloads\",\"name\":\"Show.S01E01\",\"ratio\":0.0,\"seeding_time\":0,\"num_peers\":8,\"label\":\"cellarr-tv\",\"message\":\"\"},\"error\":null,\"id\":4}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.get_torrent_status\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{\"state\":\"Seeding\",\"progress\":100.0,\"download_location\":\"/downloads\",\"name\":\"Show.S01E01\",\"ratio\":1.5,\"seeding_time\":7200,\"num_peers\":3,\"label\":\"cellarr-tv\",\"message\":\"\"},\"error\":null,\"id\":5}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.get_torrent_status\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{\"state\":\"Seeding\",\"progress\":100.0,\"download_location\":\"/downloads\",\"name\":\"Show.S01E01\",\"ratio\":2.5,\"seeding_time\":90000,\"num_peers\":2,\"label\":\"cellarr-tv\",\"message\":\"\"},\"error\":null,\"id\":6}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.remove_torrent\"",
+        "body_contains_2": "deadbeefcafef00d",
+        "body_contains_3": "true"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":true,\"error\":null,\"id\":7}"
+      }
+    }
+  ]
+}

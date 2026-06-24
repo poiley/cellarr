@@ -523,6 +523,17 @@ impl LivePipelineEnv {
             .await
             .map_err(|e| format!("loading remote-path mappings failed: {e}"))?;
 
+        // Build the per-indexer criteria/priority lookup the decision engine
+        // consults: minimum-seeders + required-flag (freeleech) gating and the
+        // priority tie-break, keyed by the indexer id each release carries.
+        let indexer_criteria = config_repo
+            .list_indexers()
+            .await
+            .map_err(|e| format!("loading indexers failed: {e}"))?
+            .into_iter()
+            .map(|ix| (ix.id, (ix.criteria, ix.priority)))
+            .collect();
+
         // Delay profiles hold a grabbable release for its protocol's window so a
         // better one can arrive first. Loaded so the runner resolves the governing
         // profile; an empty set (the default) imposes no delay.
@@ -573,6 +584,7 @@ impl LivePipelineEnv {
             // Post-commit, best-effort policies from media-management settings.
             permissions: media_management.permissions.clone(),
             extra_files: media_management.extra_files.clone(),
+            indexer_criteria,
         }))
     }
 }

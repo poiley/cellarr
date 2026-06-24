@@ -68,6 +68,12 @@ pub(crate) async fn read_indexers(
                 protocol: protocol_of(row),
                 enabled,
                 priority: priority as i32,
+                // The legacy Sonarr/Radarr minimumSeeders/seedCriteria live in the
+                // indexer's Settings JSON; carrying them across is long-tail and
+                // the criteria default (gate nothing) preserves prior behaviour.
+                // TODO(deferred): lift minimumSeeders/seedCriteria/required flags
+                // out of the legacy Settings JSON into IndexerCriteria.
+                criteria: cellarr_core::IndexerCriteria::default(),
                 settings,
             }
         })

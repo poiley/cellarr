@@ -1753,7 +1753,7 @@ async fn find_delay_profile_by_numeric(
 /// Render a cellarr [`IndexerConfig`] into the v3 indexer shape Prowlarr reads
 /// back after a push: identity + flags + a `fields[]` projection of `settings`.
 fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
-    let fields: Vec<Value> = ix
+    let mut fields: Vec<Value> = ix
         .settings
         .as_object()
         .map(|o| {
@@ -1763,6 +1763,23 @@ fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
                 .collect()
         })
         .unwrap_or_default();
+    // Surface the typed acceptance criteria as the v3 torrent fields the ecosystem
+    // (Prowlarr/Recyclarr) reads back: minimumSeeders, the seedCriteria.* pair, and
+    // a requiredFlags list (the freeleech-only policy is requiredFlags:["freeleech"]).
+    // These live on their own typed column, not in settings, so they are appended.
+    let c = &ix.criteria;
+    if let Some(min) = c.minimum_seeders {
+        fields.push(json!({ "order": 100, "name": "minimumSeeders", "value": min }));
+    }
+    if let Some(r) = c.seed_ratio {
+        fields.push(json!({ "order": 101, "name": "seedCriteria.seedRatio", "value": r }));
+    }
+    if let Some(t) = c.seed_time_minutes {
+        fields.push(json!({ "order": 102, "name": "seedCriteria.seedTime", "value": t }));
+    }
+    if !c.required_flags.is_empty() {
+        fields.push(json!({ "order": 103, "name": "requiredFlags", "value": c.required_flags }));
+    }
     let implementation = if ix.kind.eq_ignore_ascii_case("newznab") {
         "Newznab"
     } else {
@@ -1908,10 +1925,30 @@ fn indexer_from_body(
     body: &IndexerBody,
     id: cellarr_core::IndexerId,
 ) -> cellarr_core::IndexerConfig {
+    // Lift the typed acceptance-criteria fields out of the pushed `fields[]` into
+    // the typed `criteria` column; everything else stays in the open-ended
+    // `settings` JSON. This keeps minimumSeeders/seedCriteria/requiredFlags
+    // queryable rather than buried in the settings blob.
     let mut settings = serde_json::Map::new();
+    let mut criteria = cellarr_core::IndexerCriteria::default();
     for f in &body.fields {
-        if let Some(name) = &f.name {
-            settings.insert(name.clone(), f.value.clone());
+        let Some(name) = &f.name else { continue };
+        match name.as_str() {
+            "minimumSeeders" => {
+                criteria.minimum_seeders = field_u32(&f.value);
+            }
+            "seedCriteria.seedRatio" => {
+                criteria.seed_ratio = field_f64(&f.value);
+            }
+            "seedCriteria.seedTime" => {
+                criteria.seed_time_minutes = field_u64(&f.value);
+            }
+            "requiredFlags" => {
+                criteria.required_flags = field_flag_list(&f.value);
+            }
+            _ => {
+                settings.insert(name.clone(), f.value.clone());
+            }
         }
     }
     let kind = match body.implementation.as_deref() {
@@ -1930,7 +1967,47 @@ fn indexer_from_body(
         protocol,
         enabled: body.enable_rss,
         priority: body.priority.unwrap_or(25),
+        criteria,
         settings: Value::Object(settings),
+    }
+}
+
+/// Read a numeric v3 field `value` that may arrive as a JSON number or a stringy
+/// number (Prowlarr/Recyclarr serialize some fields as strings), as a `u32`.
+fn field_u32(v: &Value) -> Option<u32> {
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .map(|n| n.min(u64::from(u32::MAX)) as u32)
+}
+
+/// Read a numeric v3 field `value` (number or stringy number) as a `u64`.
+fn field_u64(v: &Value) -> Option<u64> {
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// Read a numeric v3 field `value` (number or stringy number) as an `f64`.
+fn field_f64(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// Read a `requiredFlags` field `value` into a lowercase flag list. Accepts a
+/// JSON array of strings or a comma-separated string; empty/blank entries dropped.
+fn field_flag_list(v: &Value) -> Vec<String> {
+    match v {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Value::String(s) => s
+            .split(',')
+            .map(|p| p.trim().to_ascii_lowercase())
+            .filter(|p| !p.is_empty())
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -2054,6 +2131,8 @@ fn dc_implementation(kind: &str, protocol: cellarr_core::Protocol) -> &'static s
         },
         "qbittorrent" => "QBittorrent",
         "transmission" => "Transmission",
+        "deluge" => "Deluge",
+        "rtorrent" => "RTorrent",
         "sabnzbd" => "Sabnzbd",
         "nzbget" => "Nzbget",
         _ => "Blackhole",
@@ -2068,9 +2147,10 @@ async fn list_download_clients(State(fs): State<FaceState>) -> ApiResult<Json<Ve
 /// v3 `downloadclient/schema` — the implementation templates the ecosystem
 /// round-trips a pushed client through. cellarr advertises the *universal*
 /// blackhole pair (`TorrentBlackhole` / `UsenetBlackhole`) since it works with any
-/// client a user runs, plus the natively-driven `Transmission` template (host /
-/// port / urlBase / username / password / category). Each template carries the
-/// `category` field the apps hard-deref.
+/// client a user runs, plus the natively-driven torrent templates (`Transmission`,
+/// `Deluge`, `RTorrent`) carrying the host / port / urlBase / credential / category
+/// fields each client takes. Each template carries the `category` field the apps
+/// hard-deref.
 async fn download_client_schema() -> Json<Vec<Value>> {
     let blackhole = |impl_name: &str, protocol: &str| {
         json!({
@@ -2115,10 +2195,60 @@ async fn download_client_schema() -> Json<Vec<Value>> {
         "presets": [],
         "tags": [],
     });
+    // The Deluge template: the JSON-RPC WebUI (host/port/urlBase + the single
+    // WebUI password) plus the optional download dir and the category cellarr
+    // files torrents under (modelled as a Deluge Label-plugin label).
+    let deluge = json!({
+        "name": "",
+        "implementation": "Deluge",
+        "implementationName": "Deluge",
+        "configContract": "DelugeSettings",
+        "infoLink": "",
+        "protocol": "torrent",
+        "priority": 1,
+        "enable": true,
+        "fields": [
+            json!({ "order": 0, "name": "host", "label": "Host", "type": "textbox", "advanced": false, "value": "localhost" }),
+            json!({ "order": 1, "name": "port", "label": "Port", "type": "number", "advanced": false, "value": 8112 }),
+            json!({ "order": 2, "name": "urlBase", "label": "URL Base", "helpText": "Adds a prefix to the Deluge JSON-RPC path for a reverse-proxy mount", "type": "textbox", "advanced": true }),
+            json!({ "order": 3, "name": "password", "label": "Password", "helpText": "The Deluge WebUI password (the only credential the JSON-RPC login takes)", "type": "password", "advanced": false, "privacy": "password" }),
+            json!({ "order": 4, "name": "downloadDir", "label": "Directory", "helpText": "Optional absolute download location; leave blank to use Deluge's own default", "type": "textbox", "advanced": true }),
+            json!({ "order": 5, "name": "category", "label": "Category", "helpText": "Filed as a Deluge Label-plugin label", "type": "textbox", "advanced": false }),
+        ],
+        "presets": [],
+        "tags": [],
+    });
+    // The rTorrent template: the XML-RPC mount (host/port + the urlBase path, e.g.
+    // /RPC2 or a ruTorrent httprpc action.php) plus optional HTTP Basic creds the
+    // web front-end enforces, the download dir, and the category (an rTorrent
+    // d.custom1 label).
+    let rtorrent = json!({
+        "name": "",
+        "implementation": "RTorrent",
+        "implementationName": "rTorrent",
+        "configContract": "RTorrentSettings",
+        "infoLink": "",
+        "protocol": "torrent",
+        "priority": 1,
+        "enable": true,
+        "fields": [
+            json!({ "order": 0, "name": "host", "label": "Host", "type": "textbox", "advanced": false, "value": "localhost" }),
+            json!({ "order": 1, "name": "port", "label": "Port", "type": "number", "advanced": false, "value": 8080 }),
+            json!({ "order": 2, "name": "urlBase", "label": "URL Path", "helpText": "The XML-RPC mount path, e.g. /RPC2 or /rutorrent/plugins/httprpc/action.php", "type": "textbox", "advanced": false, "value": "/RPC2" }),
+            json!({ "order": 3, "name": "username", "label": "Username", "helpText": "HTTP Basic username the web front-end enforces (rTorrent's XML-RPC has no native auth)", "type": "textbox", "advanced": false }),
+            json!({ "order": 4, "name": "password", "label": "Password", "type": "password", "advanced": false, "privacy": "password" }),
+            json!({ "order": 5, "name": "downloadDir", "label": "Directory", "helpText": "Optional absolute download root; cellarr files torrents under <root>/<category>", "type": "textbox", "advanced": true }),
+            json!({ "order": 6, "name": "category", "label": "Category", "helpText": "Filed into rTorrent's d.custom1 label", "type": "textbox", "advanced": false }),
+        ],
+        "presets": [],
+        "tags": [],
+    });
     Json(vec![
         blackhole("TorrentBlackhole", "torrent"),
         blackhole("UsenetBlackhole", "usenet"),
         transmission,
+        deluge,
+        rtorrent,
     ])
 }
 
@@ -2169,6 +2299,8 @@ fn download_client_from_body(
         Some(i) if i.eq_ignore_ascii_case("usenetblackhole") => "blackhole".to_string(),
         Some(i) if i.eq_ignore_ascii_case("qbittorrent") => "qbittorrent".to_string(),
         Some(i) if i.eq_ignore_ascii_case("transmission") => "transmission".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("deluge") => "deluge".to_string(),
+        Some(i) if i.eq_ignore_ascii_case("rtorrent") => "rtorrent".to_string(),
         Some(i) if i.eq_ignore_ascii_case("sabnzbd") => "sabnzbd".to_string(),
         Some(i) if i.eq_ignore_ascii_case("nzbget") => "nzbget".to_string(),
         Some(i) => i.to_ascii_lowercase(),

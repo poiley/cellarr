@@ -1,0 +1,17 @@
+{
+  "scenario": "rTorrent d.multicall2 returns no row matching the requested hash -> DownloadError::NotFound.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/RPC2",
+        "body_contains": "<methodName>d.multicall2</methodName>"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data></data></array></value></param></params></methodResponse>"
+      }
+    }
+  ]
+}

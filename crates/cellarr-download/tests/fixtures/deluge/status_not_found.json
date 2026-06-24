@@ -1,0 +1,29 @@
+{
+  "scenario": "Deluge get_torrent_status for an unknown hash returns an empty object -> DownloadError::NotFound.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"auth.login\""
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "_session_id=s; Path=/" },
+        "body": "{\"result\":true,\"error\":null,\"id\":1}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"core.get_torrent_status\""
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{},\"error\":null,\"id\":2}"
+      }
+    }
+  ]
+}

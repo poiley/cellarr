@@ -528,6 +528,14 @@ async fn config_aggregates_round_trip() {
         protocol: Protocol::Torrent,
         enabled: true,
         priority: 5,
+        // Exercise the typed acceptance criteria through the JSON body column so a
+        // round-trip proves minimumSeeders/seedCriteria/requiredFlags persist.
+        criteria: cellarr_core::IndexerCriteria {
+            minimum_seeders: Some(3),
+            seed_ratio: Some(1.5),
+            seed_time_minutes: Some(1440),
+            required_flags: vec!["freeleech".to_string()],
+        },
         settings: serde_json::json!({"base_url": "https://t/api", "api_key": "REDACTED"}),
     };
     config.upsert_indexer(&indexer).await.expect("upsert idx");
@@ -653,6 +661,7 @@ async fn indexer_delete_and_enabled_filter() {
         protocol: Protocol::Torrent,
         enabled: true,
         priority: 5,
+        criteria: cellarr_core::IndexerCriteria::default(),
         settings: serde_json::json!({"baseUrl": "https://a/api"}),
     };
     let enabled_hi = IndexerConfig {
@@ -662,6 +671,7 @@ async fn indexer_delete_and_enabled_filter() {
         protocol: Protocol::Usenet,
         enabled: true,
         priority: 1,
+        criteria: cellarr_core::IndexerCriteria::default(),
         settings: serde_json::json!({"baseUrl": "https://b/api"}),
     };
     let disabled = IndexerConfig {
@@ -671,6 +681,7 @@ async fn indexer_delete_and_enabled_filter() {
         protocol: Protocol::Torrent,
         enabled: false,
         priority: 2,
+        criteria: cellarr_core::IndexerCriteria::default(),
         settings: serde_json::json!({"baseUrl": "https://c/api"}),
     };
     for ix in [&enabled_lo, &enabled_hi, &disabled] {

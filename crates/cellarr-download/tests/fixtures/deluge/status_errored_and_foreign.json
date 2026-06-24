@@ -1,0 +1,41 @@
+{
+  "scenario": "Deluge status edges: an Error-state torrent is Failed and carries its message; a completed torrent under a foreign label surfaces that label (category scoping) with content_path.",
+  "exchanges": [
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "\"method\":\"auth.login\""
+      },
+      "response": {
+        "status": 200,
+        "headers": { "set-cookie": "_session_id=s; Path=/" },
+        "body": "{\"result\":true,\"error\":null,\"id\":1}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "erroredhash"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{\"state\":\"Error\",\"progress\":12.0,\"download_location\":\"/downloads\",\"name\":\"Bad.Release\",\"ratio\":0.0,\"seeding_time\":0,\"num_peers\":0,\"label\":\"cellarr-tv\",\"message\":\"Tracker gave error 410\"},\"error\":null,\"id\":2}"
+      }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "url_contains": "/json",
+        "body_contains": "foreignhash"
+      },
+      "response": {
+        "status": 200,
+        "headers": {},
+        "body": "{\"result\":{\"state\":\"Seeding\",\"progress\":100.0,\"download_location\":\"/other\",\"name\":\"thing\",\"ratio\":3.0,\"seeding_time\":100000,\"num_peers\":1,\"label\":\"manual-stuff\",\"message\":\"\"},\"error\":null,\"id\":3}"
+      }
+    }
+  ]
+}

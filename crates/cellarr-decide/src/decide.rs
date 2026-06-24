@@ -12,8 +12,9 @@
 //! 5. Proper/repack per policy.
 
 use cellarr_core::{
-    ContentRef, CustomFormat, Decision, MediaFileId, ParsedRelease, ProperRepack, Quality,
-    QualityProfile, QualityRanking, RejectReason, Release, ReleaseType, Score, Verdict,
+    ContentRef, CustomFormat, Decision, IndexerCriteria, MediaFileId, ParsedRelease, ProperRepack,
+    Protocol, Quality, QualityProfile, QualityRanking, RejectReason, Release, ReleaseType, Score,
+    Verdict,
 };
 
 use crate::error::DecideError;
@@ -72,6 +73,15 @@ pub struct DecisionContext<'a> {
     pub blocklisted: bool,
     /// Proper/repack handling.
     pub proper_repack_policy: ProperRepackPolicy,
+    /// The acceptance criteria the indexer that returned this candidate imposes:
+    /// minimum seeders and required flags (freeleech). Torrent-only; consulted as a
+    /// hard reject before scoring. Default (empty) gates nothing.
+    pub indexer_criteria: IndexerCriteria,
+    /// The priority of the indexer that returned this candidate (lower is
+    /// preferred, the *arr convention). Carried so the caller can break ties
+    /// between otherwise-equal releases by indexer priority; it does **not** affect
+    /// the grab/reject verdict itself.
+    pub indexer_priority: i32,
 }
 
 /// The candidate's computed standing: quality + CF score, ready to compare.
@@ -116,6 +126,22 @@ fn decide_verdict(
     // 1. Hard rejects.
     if ctx.blocklisted {
         return reject(RejectReason::Blocklisted);
+    }
+
+    // Indexer acceptance criteria (torrent-only): a release below the indexer's
+    // minimum-seeders floor, or missing a required flag (freeleech), is rejected
+    // before any scoring. Usenet releases have no seeders/freeleech, so the gate is
+    // skipped for them.
+    if candidate.protocol == Protocol::Torrent {
+        if !ctx.indexer_criteria.meets_seeder_floor(candidate.seeders) {
+            return reject(RejectReason::InsufficientSeeders);
+        }
+        if !ctx
+            .indexer_criteria
+            .has_required_flags(&candidate.indexer_flags)
+        {
+            return reject(RejectReason::RequiredFlagMissing);
+        }
     }
 
     let Some(quality) = resolve_candidate_quality(parsed, ctx.ranking) else {

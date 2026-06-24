@@ -72,6 +72,8 @@ fn ctx<'a>(
         ranking,
         blocklisted: false,
         proper_repack_policy: ProperRepackPolicy::Prefer,
+        indexer_criteria: Default::default(),
+        indexer_priority: 0,
     }
 }
 
