@@ -85,6 +85,60 @@ async fn wait_for(received: &Arc<Mutex<Vec<Received>>>, n: usize) {
     panic!("timed out waiting for {n} webhook deliveries");
 }
 
+/// A mock HTTP server that records each request's start-line (method + path) and
+/// always replies `200 OK`. Used to assert the media-server providers hit the
+/// expected GET path. Returns the base `http://127.0.0.1:<port>` URL.
+async fn spawn_plain_http_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recv = Arc::clone(&received);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let recv = Arc::clone(&recv);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf);
+                    if let Some(line) = text.lines().next() {
+                        if text.contains("\r\n") {
+                            // Record the request target (the path+query).
+                            if let Some(target) = line.split_whitespace().nth(1) {
+                                recv.lock().unwrap().push(target.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), received)
+}
+
+async fn wait_for_paths(received: &Arc<Mutex<Vec<String>>>, n: usize) {
+    for _ in 0..200 {
+        if received.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {n} requests");
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn release(title: &str, guid: &str) -> Release {
@@ -192,15 +246,160 @@ async fn notification_create_list_update_delete_roundtrip() {
     assert_eq!(updated["name"], "renamed-hook");
     assert_eq!(updated["onRename"], true);
 
-    // DELETE disables it (it stops appearing as an active webhook target).
+    // DELETE removes the row entirely (a real delete now).
     let del = client
         .delete(server.url(&format!("/api/v3/notification/{id}")))
         .send()
         .await
         .unwrap();
     assert_eq!(del.status(), 200);
-    let disabled = server.state.db.config().list_notifications().await.unwrap();
-    assert!(disabled.iter().all(|n| !n.enabled));
+    let remaining = server.state.db.config().list_notifications().await.unwrap();
+    assert!(
+        remaining.is_empty(),
+        "delete should remove the notification"
+    );
+
+    // A re-issued delete on the now-missing id is still an idempotent 200.
+    let del_again = client
+        .delete(server.url(&format!("/api/v3/notification/{id}")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_again.status(), 200);
+}
+
+#[tokio::test]
+async fn notification_schema_advertises_every_provider() {
+    let server = common::start_open().await;
+    let body: Value = server
+        .client()
+        .get(server.url("/api/v3/notification/schema"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let impls: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["implementation"].as_str())
+        .collect();
+    for expected in [
+        "Webhook",
+        "Discord",
+        "Telegram",
+        "Email",
+        "CustomScript",
+        "PlexServer",
+        "Jellyfin",
+        "MediaBrowser",
+    ] {
+        assert!(
+            impls.contains(&expected),
+            "schema missing {expected}: {impls:?}"
+        );
+    }
+    // Every template carries the upgrade + health-restored toggles cellarr now
+    // models.
+    let discord = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["implementation"] == "Discord")
+        .unwrap();
+    assert_eq!(discord["supportsOnUpgrade"], true);
+    assert_eq!(discord["supportsOnHealthRestored"], true);
+}
+
+#[tokio::test]
+async fn discord_notification_roundtrips_with_kind_and_toggles() {
+    let server = common::start_open().await;
+    let client = server.client();
+    // CREATE a Discord notification subscribed to grab + upgrade only.
+    let created: Value = client
+        .post(server.url("/api/v3/notification"))
+        .json(&json!({
+            "name": "disc",
+            "implementation": "Discord",
+            "onGrab": true,
+            "onDownload": false,
+            "onUpgrade": true,
+            "onRename": false,
+            "onHealthIssue": false,
+            "fields": [ { "name": "url", "value": "https://discord.test/webhook/x" } ],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["implementation"], "Discord");
+    assert_eq!(created["onGrab"], true);
+    assert_eq!(created["onUpgrade"], true);
+    assert_eq!(created["onDownload"], false);
+
+    // The stored config carries the discord kind + the on_events subset.
+    let stored = server.state.db.config().list_notifications().await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].kind, "discord");
+    assert!(stored[0].on_events.contains(&"grab".to_string()));
+    assert!(stored[0].on_events.contains(&"upgrade".to_string()));
+    assert!(!stored[0].on_events.contains(&"download".to_string()));
+    assert_eq!(stored[0].settings["url"], "https://discord.test/webhook/x");
+}
+
+#[tokio::test]
+async fn plex_notification_test_pings_the_mock_identity_endpoint() {
+    let (base, received) = spawn_plain_http_server().await;
+    let server = common::start_open().await;
+    let resp = server
+        .client()
+        .post(server.url("/api/v3/notification/test"))
+        .json(&json!({
+            "name": "plex",
+            "implementation": "PlexServer",
+            "fields": [
+                { "name": "url", "value": base },
+                { "name": "token", "value": "tok123" },
+            ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["isValid"], true, "plex ping should succeed: {body}");
+    wait_for_paths(&received, 1).await;
+    let paths = received.lock().unwrap();
+    assert!(
+        paths[0].contains("/identity") && paths[0].contains("X-Plex-Token=tok123"),
+        "got {}",
+        paths[0]
+    );
+}
+
+#[tokio::test]
+async fn discord_notification_test_reports_failure_for_unreachable_url() {
+    let server = common::start_open().await;
+    // A well-formed Discord config whose URL nothing listens on: delivery fails
+    // -> a 200 with isValid:false (not a 500, not a 400).
+    let resp = server
+        .client()
+        .post(server.url("/api/v3/notification/test"))
+        .json(&json!({
+            "name": "disc",
+            "implementation": "Discord",
+            "fields": [ { "name": "url", "value": "http://127.0.0.1:1/webhook" } ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["isValid"], false);
 }
 
 #[tokio::test]

@@ -456,6 +456,54 @@ impl ConfigRepo {
         rows.into_iter().map(row_to_json_body).collect()
     }
 
+    /// The *enabled* notification configurations of a given `kind`, by name. The
+    /// per-kind index ([`idx_notification_kind`]) backs this so the dispatcher's
+    /// per-provider fan-out never scans every configured notification.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn list_enabled_notifications_by_kind(
+        &self,
+        kind: &str,
+    ) -> Result<Vec<NotificationConfig>> {
+        let rows = sqlx::query(
+            "SELECT body FROM notification
+             WHERE enabled = 1 AND kind = ?1 ORDER BY name ASC",
+        )
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_json_body).collect()
+    }
+
+    /// Delete a notification configuration by id. Idempotent: returns `true` if a
+    /// row was removed, `false` if no such notification existed (so the `/api/v3`
+    /// shim can report the idempotent-success the *arr clients expect).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_notification(&self, id: &str) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM notification WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     // --- Remote-path mappings ----------------------------------------------
 
     /// Insert or replace a remote-path mapping.

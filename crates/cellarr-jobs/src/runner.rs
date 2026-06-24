@@ -59,7 +59,10 @@ use time::OffsetDateTime;
 
 use crate::clock::Clock;
 use crate::error::{BoxError, JobError, Result};
-use crate::notify::WebhookNotifier;
+use crate::notify::{ProviderNotifier, WebhookNotifier};
+use cellarr_core::{
+    NotificationEvent, NotificationMessage, NotificationRelease, NotificationSubject,
+};
 
 /// How many consecutive poll cycles a download may sit with **stagnant progress
 /// and zero connected peers** before the runner treats it as a dead torrent and
@@ -268,6 +271,12 @@ where
     /// transitions. `None` (the default) sends nothing — the offline/test path —
     /// so the pipeline never depends on webhook wiring.
     notifier: Option<WebhookNotifier>,
+    /// The broadened notification-provider dispatcher (Discord/Telegram/Email/
+    /// Custom Script/media-server rescans/provider webhook), fired at the same
+    /// Grab/Import/Upgrade transitions as the Connect webhook. `None` (the
+    /// default) sends nothing, so the offline/test path depends on no provider
+    /// wiring; live wiring opts in via [`with_provider_notifier`](Self::with_provider_notifier).
+    provider_notifier: Option<ProviderNotifier>,
     /// The anime scene-mapping provider, used at Identify to remap an absolute
     /// episode number to its season/episode (TheXEM, behind the seam). `None`
     /// (the default) means no remap is attempted — a release that still carries an
@@ -305,6 +314,7 @@ where
             clock,
             config,
             notifier: None,
+            provider_notifier: None,
             scene_provider: None,
             metadata_resolver: None,
         }
@@ -344,6 +354,18 @@ where
     #[must_use]
     pub fn with_notifier(mut self, notifier: WebhookNotifier) -> Self {
         self.notifier = Some(notifier);
+        self
+    }
+
+    /// Attach the broadened notification-provider dispatcher so Grab/Import/
+    /// Upgrade transitions also fire Discord/Telegram/Email/Custom-Script and the
+    /// media-server rescan providers. Builder form so the base
+    /// [`PipelineRunner::new`] stays offline (no providers) and live wiring opts
+    /// in. Best-effort, exactly like the Connect webhook: a provider failure is
+    /// logged inside the dispatcher and never affects the run.
+    #[must_use]
+    pub fn with_provider_notifier(mut self, notifier: ProviderNotifier) -> Self {
+        self.provider_notifier = Some(notifier);
         self
     }
 
@@ -1110,6 +1132,14 @@ where
         // persist it on the grab. Everything downstream (media_file, history,
         // reconcile) reads this back instead of re-parsing the title.
         let release_type = cellarr_core::ReleaseType::from_parsed(parsed);
+        // Whether this grab replaces an existing file (an upgrade) decides which
+        // notification event the eventual import fires (`Upgrade` vs `Import`).
+        // Captured before `decision` is moved into the Grab transition below.
+        let is_upgrade = matches!(decision.verdict, Verdict::Upgrade { .. });
+        // The quality name the grab was graded on, surfaced to text notifications.
+        let grab_quality = cellarr_core::resolve_quality(parsed, &self.config.ranking)
+            .name
+            .clone();
         let request = GrabRequest {
             content_ref: matched_ref.clone(),
             release: release.clone(),
@@ -1160,8 +1190,11 @@ where
         .await?;
 
         // Fire the Connect `Grab` webhook (eventType: Grab) carrying the subject
-        // + the grabbed release object Bazarr-push/Notifiarr read.
+        // + the grabbed release object Bazarr-push/Notifiarr read, then the same
+        // event to the broadened notification providers.
         self.fire_grab_webhook(matched_ref, release).await;
+        self.fire_provider_grab(matched_ref, release, &grab_quality)
+            .await;
 
         *stage = self.advance(run_id, *stage, None).await?; // -> Track
 
@@ -1240,6 +1273,22 @@ where
                 // name the import event `Download`, kept for compatibility.)
                 self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
                     .await;
+                // The provider notification: an `Upgrade` when this grab replaced
+                // a lower-quality file, else an `Import`. This is also what a
+                // media-server rescan provider keys on (`changes_library`).
+                let import_event = if is_upgrade {
+                    NotificationEvent::Upgrade
+                } else {
+                    NotificationEvent::Import
+                };
+                self.fire_provider_files(
+                    import_event,
+                    matched_ref,
+                    release,
+                    &grab_quality,
+                    &destinations,
+                )
+                .await;
                 *stage = self.advance(run_id, *stage, None).await?; // -> Rename
                 self.fire_files_webhook(WebhookEventType::Rename, matched_ref, &destinations)
                     .await;
@@ -1729,6 +1778,66 @@ where
         notifier.dispatch(payload).await;
     }
 
+    /// Fire the `Grab` provider notification (Discord/Telegram/Email/Custom
+    /// Script/etc.) carrying the subject + grabbed release. Best-effort; no
+    /// provider notifier configured (the offline path) sends nothing.
+    async fn fire_provider_grab(&self, content_ref: &ContentRef, release: &Release, quality: &str) {
+        let Some(notifier) = self.provider_notifier.as_ref() else {
+            return;
+        };
+        let subject = self.notification_subject_for(content_ref).await;
+        let message = NotificationMessage::new(NotificationEvent::Grab, String::new())
+            .with_subject(subject)
+            .with_release(NotificationRelease::from_release(
+                release,
+                quality_opt(quality),
+            ));
+        notifier.dispatch(message).await;
+    }
+
+    /// Fire the `Import`/`Upgrade` provider notification carrying the destination
+    /// files (also what a media-server rescan provider acts on). Best-effort.
+    async fn fire_provider_files(
+        &self,
+        event: NotificationEvent,
+        content_ref: &ContentRef,
+        release: &Release,
+        quality: &str,
+        destinations: &[String],
+    ) {
+        let Some(notifier) = self.provider_notifier.as_ref() else {
+            return;
+        };
+        let subject = self.notification_subject_for(content_ref).await;
+        let message = NotificationMessage::new(event, String::new())
+            .with_subject(subject)
+            .with_release(NotificationRelease::from_release(
+                release,
+                quality_opt(quality),
+            ))
+            .with_files(destinations.to_vec());
+        notifier.dispatch(message).await;
+    }
+
+    /// Build the provider-notification subject for a content node — its id +
+    /// best-known title + media type (so a provider can label TV vs movie).
+    async fn notification_subject_for(&self, content_ref: &ContentRef) -> NotificationSubject {
+        let title = self
+            .db
+            .content()
+            .title_for(content_ref.id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| content_ref.id.to_string());
+        NotificationSubject {
+            id: content_ref.id.to_string(),
+            title,
+            year: None,
+            media_type: Some(content_ref.media_type),
+        }
+    }
+
     /// Build the webhook subject for a content node — its id + best-known title.
     async fn subject_for(&self, content_ref: &ContentRef) -> WebhookSubject {
         let title = self
@@ -1769,6 +1878,17 @@ where
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(self.clock.now_secs() as i64)
             .unwrap_or_else(|_| OffsetDateTime::now_utc())
+    }
+}
+
+/// Map a resolved quality name to the `Option<String>` a notification carries:
+/// the Unknown-sentinel/empty name becomes `None` (the parser could not bucket
+/// the release), so a notification never claims a quality it does not have.
+fn quality_opt(name: &str) -> Option<String> {
+    if name.is_empty() || name.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(name.to_string())
     }
 }
 

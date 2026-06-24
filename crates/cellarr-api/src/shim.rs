@@ -1913,7 +1913,8 @@ fn v3_notification(n: &NotificationConfig) -> Value {
         })
         .unwrap_or_default();
     let implementation = notification_implementation(&n.kind);
-    // The event toggles cellarr models (the subset Phase F fires).
+    // The event toggles cellarr models. `upgrade` is its own key now (distinct
+    // from the import `download` key); `health` covers both issue + restored.
     let on = |event: &str| on_event(n, event);
     json!({
         "id": notif_numeric_id(&n.id),
@@ -1923,14 +1924,16 @@ fn v3_notification(n: &NotificationConfig) -> Value {
         "configContract": format!("{implementation}Settings"),
         "onGrab": on("grab"),
         "onDownload": on("download"),
-        "onUpgrade": on("download"),
+        "onUpgrade": on("upgrade"),
         "onRename": on("rename"),
         "onHealthIssue": on("health"),
+        "onHealthRestored": on("health"),
         "supportsOnGrab": true,
         "supportsOnDownload": true,
         "supportsOnUpgrade": true,
         "supportsOnRename": true,
         "supportsOnHealthIssue": true,
+        "supportsOnHealthRestored": true,
         "includeHealthWarnings": on("health"),
         "fields": fields,
         "tags": [],
@@ -1943,13 +1946,38 @@ fn on_event(n: &NotificationConfig, event: &str) -> bool {
 }
 
 /// The v3 `implementation` string for a cellarr notification kind. cellarr ships
-/// the Webhook connector; other kinds map by their capitalized name.
+/// the broadened provider set; each kind maps to the implementation name the
+/// ecosystem round-trips (and which `notification/schema` advertises).
 fn notification_implementation(kind: &str) -> &'static str {
+    use cellarr_core::notification::kind as k;
     match kind.to_ascii_lowercase().as_str() {
-        "webhook" => "Webhook",
-        "discord" => "Discord",
+        k::DISCORD => "Discord",
+        k::TELEGRAM => "Telegram",
+        k::EMAIL => "Email",
+        k::CUSTOM_SCRIPT => "CustomScript",
+        k::PLEX => "PlexServer",
+        k::JELLYFIN => "Jellyfin",
+        k::EMBY => "MediaBrowser",
         _ => "Webhook",
     }
+}
+
+/// The cellarr notification `kind` for a v3 `implementation` string — the inverse
+/// of [`notification_implementation`], used when a write body names an
+/// implementation. An unknown implementation falls back to the generic webhook.
+fn notification_kind_for_implementation(implementation: &str) -> String {
+    use cellarr_core::notification::kind as k;
+    match implementation.to_ascii_lowercase().as_str() {
+        "discord" => k::DISCORD,
+        "telegram" => k::TELEGRAM,
+        "email" => k::EMAIL,
+        "customscript" => k::CUSTOM_SCRIPT,
+        "plexserver" | "plex" => k::PLEX,
+        "jellyfin" => k::JELLYFIN,
+        "mediabrowser" | "emby" => k::EMBY,
+        _ => k::WEBHOOK,
+    }
+    .to_string()
 }
 
 async fn list_notifications(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
@@ -1974,34 +2002,100 @@ async fn get_notification(
 }
 
 /// v3 `notification/schema` — the connector templates a notification is built
-/// from. cellarr advertises the **Webhook** connector (the Connect push), with
-/// the `url`/`method` fields plus the `on*` event toggles the ecosystem reads.
+/// from. cellarr advertises the broadened provider set: the generic **Webhook**
+/// (Connect push), **Discord**, **Telegram**, **Email**, **Custom Script**, and
+/// the media-server rescan providers **Plex**, **Jellyfin**, **Emby**. Each
+/// template carries the `on*` event toggles plus its provider-specific fields the
+/// UI renders, so a notification of any kind round-trips through create/update.
 async fn notification_schema() -> Json<Vec<Value>> {
-    Json(vec![json!({
-        "name": "",
-        "implementation": "Webhook",
-        "implementationName": "Webhook",
-        "configContract": "WebhookSettings",
-        "infoLink": "",
-        "onGrab": true,
-        "onDownload": true,
-        "onUpgrade": true,
-        "onRename": true,
-        "onHealthIssue": true,
-        "supportsOnGrab": true,
-        "supportsOnDownload": true,
-        "supportsOnUpgrade": true,
-        "supportsOnRename": true,
-        "supportsOnHealthIssue": true,
-        "fields": [
-            { "order": 0, "name": "url", "label": "URL", "type": "url", "advanced": false },
-            { "order": 1, "name": "method", "label": "Method", "type": "select", "value": 1, "advanced": false },
-            { "order": 2, "name": "username", "label": "Username", "type": "textbox", "advanced": true },
-            { "order": 3, "name": "password", "label": "Password", "type": "password", "advanced": true, "privacy": "password" },
-        ],
-        "presets": [],
-        "tags": [],
-    })])
+    // A template carrying the standard event toggles + a provider's fields.
+    let template = |implementation: &str, fields: Vec<Value>| {
+        json!({
+            "name": "",
+            "implementation": implementation,
+            "implementationName": implementation,
+            "configContract": format!("{implementation}Settings"),
+            "infoLink": "",
+            "onGrab": true,
+            "onDownload": true,
+            "onUpgrade": true,
+            "onRename": true,
+            "onHealthIssue": true,
+            "onHealthRestored": true,
+            "supportsOnGrab": true,
+            "supportsOnDownload": true,
+            "supportsOnUpgrade": true,
+            "supportsOnRename": true,
+            "supportsOnHealthIssue": true,
+            "supportsOnHealthRestored": true,
+            "fields": fields,
+            "presets": [],
+            "tags": [],
+        })
+    };
+    Json(vec![
+        template(
+            "Webhook",
+            vec![
+                json!({ "order": 0, "name": "url", "label": "URL", "type": "url", "advanced": false }),
+                json!({ "order": 1, "name": "method", "label": "Method", "type": "select", "value": 1, "advanced": false }),
+                json!({ "order": 2, "name": "username", "label": "Username", "type": "textbox", "advanced": true }),
+                json!({ "order": 3, "name": "password", "label": "Password", "type": "password", "advanced": true, "privacy": "password" }),
+            ],
+        ),
+        template(
+            "Discord",
+            vec![
+                json!({ "order": 0, "name": "url", "label": "Webhook URL", "helpText": "The Discord channel webhook URL", "type": "url", "advanced": false }),
+            ],
+        ),
+        template(
+            "Telegram",
+            vec![
+                json!({ "order": 0, "name": "botToken", "label": "Bot Token", "type": "textbox", "advanced": false, "privacy": "apiKey" }),
+                json!({ "order": 1, "name": "chatId", "label": "Chat ID", "type": "textbox", "advanced": false }),
+            ],
+        ),
+        template(
+            "Email",
+            vec![
+                json!({ "order": 0, "name": "host", "label": "Server", "type": "textbox", "advanced": false }),
+                json!({ "order": 1, "name": "port", "label": "Port", "type": "number", "value": 587, "advanced": false }),
+                json!({ "order": 2, "name": "tls", "label": "Use TLS", "type": "checkbox", "value": false, "advanced": false }),
+                json!({ "order": 3, "name": "from", "label": "From Address", "type": "textbox", "advanced": false }),
+                json!({ "order": 4, "name": "to", "label": "Recipient Address(es)", "helpText": "Comma-separated", "type": "textbox", "advanced": false }),
+                json!({ "order": 5, "name": "username", "label": "Username", "type": "textbox", "advanced": true }),
+                json!({ "order": 6, "name": "password", "label": "Password", "type": "password", "advanced": true, "privacy": "password" }),
+            ],
+        ),
+        template(
+            "CustomScript",
+            vec![
+                json!({ "order": 0, "name": "path", "label": "Path", "helpText": "Absolute path to the executable cellarr runs on each event", "type": "filepath", "advanced": false }),
+            ],
+        ),
+        template(
+            "PlexServer",
+            vec![
+                json!({ "order": 0, "name": "url", "label": "Server URL", "helpText": "e.g. http://localhost:32400", "type": "url", "advanced": false }),
+                json!({ "order": 1, "name": "token", "label": "X-Plex-Token", "type": "textbox", "advanced": false, "privacy": "apiKey" }),
+            ],
+        ),
+        template(
+            "Jellyfin",
+            vec![
+                json!({ "order": 0, "name": "url", "label": "Server URL", "helpText": "e.g. http://localhost:8096", "type": "url", "advanced": false }),
+                json!({ "order": 1, "name": "apiKey", "label": "API Key", "type": "textbox", "advanced": false, "privacy": "apiKey" }),
+            ],
+        ),
+        template(
+            "MediaBrowser",
+            vec![
+                json!({ "order": 0, "name": "url", "label": "Server URL", "helpText": "Emby server, e.g. http://localhost:8096", "type": "url", "advanced": false }),
+                json!({ "order": 1, "name": "apiKey", "label": "API Key", "type": "textbox", "advanced": false, "privacy": "apiKey" }),
+            ],
+        ),
+    ])
 }
 
 /// v3 notification write body. The `fields[]` map into `settings` (the webhook
@@ -2019,6 +2113,9 @@ struct NotificationBody {
     #[serde(rename = "onDownload")]
     on_download: bool,
     #[serde(default = "default_true")]
+    #[serde(rename = "onUpgrade")]
+    on_upgrade: bool,
+    #[serde(default = "default_true")]
     #[serde(rename = "onRename")]
     on_rename: bool,
     #[serde(default = "default_true")]
@@ -2035,10 +2132,12 @@ fn notification_from_body(body: &NotificationBody, id: String) -> NotificationCo
             settings.insert(name.clone(), f.value.clone());
         }
     }
+    // Map the v3 `implementation` to cellarr's provider kind. An implementation
+    // we model (Discord/Telegram/Email/CustomScript/Plex/Jellyfin/Emby) maps to
+    // its kind; an unknown one falls back to the generic webhook.
     let kind = match body.implementation.as_deref() {
-        Some(i) if i.eq_ignore_ascii_case("webhook") => "webhook".to_string(),
-        Some(i) => i.to_ascii_lowercase(),
-        None => "webhook".to_string(),
+        Some(i) => notification_kind_for_implementation(i),
+        None => cellarr_core::notification::kind::WEBHOOK.to_string(),
     };
     let mut on_events = Vec::new();
     if body.on_grab {
@@ -2046,6 +2145,9 @@ fn notification_from_body(body: &NotificationBody, id: String) -> NotificationCo
     }
     if body.on_download {
         on_events.push("download".to_string());
+    }
+    if body.on_upgrade {
+        on_events.push("upgrade".to_string());
     }
     if body.on_rename {
         on_events.push("rename".to_string());
@@ -2106,43 +2208,56 @@ async fn delete_notification(
         .into_iter()
         .find(|n| notif_numeric_id(&n.id) == numeric)
     {
-        // The config repo has no notification delete; disable + clear the row's
-        // events so it never fires, which is the observable contract the
-        // ecosystem needs from a delete. (A true delete is a follow-up; deletes
-        // are idempotent 200s either way.)
-        let disabled = NotificationConfig {
-            enabled: false,
-            ..n
-        };
-        fs.state.db.config().upsert_notification(&disabled).await?;
+        // A real delete (the config repo now supports it). Idempotent: a missing
+        // id still returns 200, matching the *arr clients' delete expectation.
+        fs.state.db.config().delete_notification(&n.id).await?;
     }
     Ok(Json(json!({})))
 }
 
-/// v3 `notification/test` — sends a **Test** Connect webhook to the URL in the
-/// posted body and reports whether the receiver accepted it. This is the
-/// `eventType: Test` probe Bazarr/Notifiarr fire to confirm wiring.
+/// v3 `notification/test` — probes the configured provider's connectivity and
+/// reports whether it accepted the test. For the generic Connect **webhook** this
+/// posts an `eventType: Test` payload (what Bazarr/Notifiarr fire); for every
+/// other provider it runs that provider's [`test`](cellarr_core::NotificationSender::test)
+/// (a Discord/Telegram message, an SMTP send, a script run, or a media-server
+/// liveness ping). A malformed/missing setting is reported as a validation
+/// failure, never a 500.
 async fn test_notification(
     State(fs): State<FaceState>,
     Json(body): Json<NotificationBody>,
 ) -> ApiResult<Json<Value>> {
-    let n = notification_from_body(&body, "test".to_string());
-    let url = n
-        .settings
-        .get("url")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::BadRequest("webhook url is required".into()))?
-        .to_string();
-
-    // The instance identity for this face (Sonarr/Radarr). A Test carries no
-    // subject; the receiver only checks eventType == "Test".
     let surface = surface_for(&fs, None).await?;
     let instance = fs.face.app_name(surface);
-    let payload = WebhookPayload::test(instance);
+    let mut n = notification_from_body(&body, "test".to_string());
+    if n.name.is_empty() {
+        n.name = instance.to_string();
+    }
 
-    let sender = ReqwestWebhookSender::new();
-    match sender.send(&url, &payload).await {
+    // The generic Connect webhook keeps its dedicated path (the v3 eventType
+    // shape the ecosystem's receivers parse). A missing url is a 400 (a malformed
+    // request), matching the long-standing contract — distinct from a well-formed
+    // config that simply fails to deliver (reported as isValid:false below).
+    let result = if n.kind == cellarr_core::notification::kind::WEBHOOK {
+        let url = n
+            .settings
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ApiError::BadRequest("webhook url is required".into()))?;
+        let payload = WebhookPayload::test(instance);
+        ReqwestWebhookSender::new().send(url, &payload).await
+    } else {
+        // Route to the matching provider sender and run its connection test.
+        match crate::notifications::default_senders()
+            .into_iter()
+            .find(|s| s.kind() == n.kind)
+        {
+            Some(sender) => sender.test(&n).await,
+            None => Err(format!("no provider for kind `{}`", n.kind)),
+        }
+    };
+
+    match result {
         Ok(()) => Ok(Json(json!({ "isValid": true, "validationFailures": [] }))),
         Err(detail) => Ok(Json(json!({
             "isValid": false,
@@ -3550,6 +3665,15 @@ fn dc_numeric_id(id: cellarr_core::DownloadClientId) -> i64 {
 /// Project a remote-path-mapping id (a uuid string) onto a stable positive
 /// integer the v3 `id` field requires. A non-uuid id (should not occur for
 /// cellarr-created rows) hashes its bytes so the projection stays stable.
+/// The largest integer a JS `Number` represents exactly (`2^53 - 1`,
+/// `Number.MAX_SAFE_INTEGER`). v3 numeric ids are projected from uuids and read by
+/// the web client via `JSON.parse` into a JS `number`; masking to this width keeps
+/// every projected id exact in the browser (a wider `i64::MAX` mask silently
+/// truncated large ids, so UI delete/update against the mangled id no-op'd). The
+/// id is a stateless projection re-derived on every request (lookups re-project and
+/// match), so narrowing the mask is consistent and stores nothing.
+const JS_SAFE_INT_MAX: i64 = (1 << 53) - 1;
+
 fn rpm_numeric_id(id: &str) -> i64 {
     match uuid::Uuid::parse_str(id) {
         Ok(u) => uuid_to_i64(u),
@@ -3558,7 +3682,7 @@ fn rpm_numeric_id(id: &str) -> i64 {
             for b in id.as_bytes().iter().take(8) {
                 n = (n << 8) | i64::from(*b);
             }
-            n & i64::MAX
+            n & JS_SAFE_INT_MAX
         }
     }
 }
@@ -3587,7 +3711,7 @@ fn uuid_to_i64(id: uuid::Uuid) -> i64 {
     for b in &bytes[..8] {
         n = (n << 8) | i64::from(*b);
     }
-    n & i64::MAX
+    n & JS_SAFE_INT_MAX
 }
 
 fn protocol_str(p: cellarr_core::Protocol) -> &'static str {
@@ -3642,4 +3766,30 @@ fn slug(title: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string()
+}
+
+#[cfg(test)]
+mod numeric_id_js_safety {
+    use super::{rpm_numeric_id, uuid_to_i64, JS_SAFE_INT_MAX};
+
+    // Regression: v3 numeric ids are read by the web client as a JS `number`, which
+    // only represents integers exactly up to 2^53-1. A uuid whose first 8 bytes have
+    // the high bits set used to project (mask i64::MAX) to a value > 2^53, which the
+    // browser truncated -> UI delete/update hit a mangled id and silently no-op'd.
+    #[test]
+    fn projected_ids_fit_in_a_js_number() {
+        // A uuid with all-high first bytes would exceed 2^53 under the old i64::MAX mask.
+        let worst = uuid::Uuid::from_bytes([0xFF; 16]);
+        let n = uuid_to_i64(worst);
+        assert!(n >= 0, "id must be non-negative");
+        assert!(
+            n <= JS_SAFE_INT_MAX,
+            "projected id {n} exceeds Number.MAX_SAFE_INTEGER ({JS_SAFE_INT_MAX})"
+        );
+        // The shared projection (notifications/import-lists/blocklist/rootfolders) too.
+        assert!(rpm_numeric_id(&worst.to_string()) <= JS_SAFE_INT_MAX);
+        // Stable + deterministic (lookups re-project and match).
+        assert_eq!(uuid_to_i64(worst), uuid_to_i64(worst));
+        assert_eq!(JS_SAFE_INT_MAX, 9_007_199_254_740_991);
+    }
 }

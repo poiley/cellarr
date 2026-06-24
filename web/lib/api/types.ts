@@ -301,6 +301,46 @@ export interface RemotePathMapping {
   [key: string]: unknown;
 }
 
+/** A v3 notification provider field (`fields[]` entry / schema field). */
+export interface NotificationField {
+  name: string;
+  value?: unknown;
+  label?: string;
+  helpText?: string;
+  /** SRCL renders password/apiKey privacy fields with a masked input. */
+  type?: string;
+  privacy?: string;
+  advanced?: boolean;
+  order?: number;
+}
+
+/** A v3 notification (`GET /api/v3/notification`). */
+export interface NotificationConfigV3 {
+  id: number;
+  name: string;
+  implementation: string;
+  implementationName: string;
+  configContract: string;
+  onGrab: boolean;
+  onDownload: boolean;
+  onUpgrade: boolean;
+  onRename: boolean;
+  onHealthIssue: boolean;
+  onHealthRestored: boolean;
+  fields: NotificationField[];
+  tags: number[];
+  [key: string]: unknown;
+}
+
+/** A v3 notification connector template (`GET /api/v3/notification/schema`). */
+export interface NotificationSchema {
+  implementation: string;
+  implementationName: string;
+  configContract: string;
+  fields: NotificationField[];
+  [key: string]: unknown;
+}
+
 /** A movie file embedded in a v3 movie resource. */
 export interface MovieFile {
   path?: string;

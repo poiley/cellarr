@@ -47,10 +47,17 @@ use cellarr_decide::ProperRepackPolicy;
 use cellarr_indexers::HostRateLimiter;
 use cellarr_jobs::clock::SystemClock;
 use cellarr_jobs::runner::{PipelineRunner, RunOutcome, RunnerConfig};
-use cellarr_jobs::{DbIndexerSet, JobHandler, JobKind, JobResult};
+use cellarr_jobs::{
+    DbIndexerSet, JobHandler, JobKind, JobResult, ProviderNotifier, WebhookNotifier,
+};
 use cellarr_media::MediaRegistry;
 
 use crate::clients::{ConfiguredDownloadClient, NoopDownloadClient};
+
+/// The app identity stamped onto the notifications the daemon fires (the Connect
+/// webhook `instanceName` and the provider message instance name). cellarr has no
+/// user-configurable instance name yet; this is the stable default.
+const NOTIFICATION_INSTANCE_NAME: &str = "cellarr";
 
 /// The maximum number of monitored-missing nodes one `MissingItemSearch` /
 /// `RssSync` tick drives through the pipeline, so a large backlog never makes a
@@ -211,6 +218,22 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         if let Some(resolver) = self.resolver.as_ref() {
             runner = runner.with_metadata_resolver(resolver.clone());
         }
+        // Attach the live notification dispatchers so Grab/Import/Upgrade
+        // transitions fire the configured Connect webhook *and* the broadened
+        // providers (Discord/Telegram/Email/Custom Script/media-server rescans).
+        // Both are best-effort: a dead receiver is logged inside the dispatcher
+        // and never affects the run, so wiring them in is always safe.
+        runner = runner
+            .with_notifier(WebhookNotifier::new(
+                self.db.clone(),
+                Arc::new(cellarr_api::ReqwestWebhookSender::new()),
+                NOTIFICATION_INSTANCE_NAME,
+            ))
+            .with_provider_notifier(ProviderNotifier::new(
+                self.db.clone(),
+                cellarr_api::default_senders(),
+                NOTIFICATION_INSTANCE_NAME,
+            ));
         let outcome = runner
             .run(content)
             .await

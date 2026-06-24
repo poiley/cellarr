@@ -30,6 +30,7 @@ pub mod history;
 pub mod ids;
 pub mod importlist;
 pub mod media;
+pub mod notification;
 pub mod parsed;
 pub mod pipeline;
 pub mod profile;
@@ -60,6 +61,10 @@ pub use importlist::{
 pub use media::{
     ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, Library, MediaFile,
     MediaType,
+};
+pub use notification::{
+    config_accepts, NotificationEvent, NotificationHealth, NotificationMessage,
+    NotificationRelease, NotificationSender, NotificationSubject,
 };
 pub use parsed::{
     Confidence, HdrFormat, ParsedField, ParsedRelease, ProperRepack, Resolution, Source, VideoCodec,

@@ -528,6 +528,65 @@ async fn config_aggregates_round_trip() {
 }
 
 #[tokio::test]
+async fn notification_delete_and_enabled_by_kind_filter() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+
+    let discord = NotificationConfig {
+        id: "n-disc".into(),
+        name: "Disc".into(),
+        kind: "discord".into(),
+        enabled: true,
+        on_events: vec![],
+        settings: serde_json::json!({ "url": "https://d/x" }),
+    };
+    let telegram = NotificationConfig {
+        id: "n-tele".into(),
+        name: "Tele".into(),
+        kind: "telegram".into(),
+        enabled: true,
+        on_events: vec![],
+        settings: serde_json::json!({ "botToken": "t", "chatId": "1" }),
+    };
+    let disabled_discord = NotificationConfig {
+        id: "n-off".into(),
+        name: "Off".into(),
+        kind: "discord".into(),
+        enabled: false,
+        on_events: vec![],
+        settings: serde_json::json!({ "url": "https://d/off" }),
+    };
+    for n in [&discord, &telegram, &disabled_discord] {
+        config.upsert_notification(n).await.expect("upsert");
+    }
+
+    // Enabled-by-kind returns only the enabled Discord (not the disabled one,
+    // not the Telegram).
+    let discs = config
+        .list_enabled_notifications_by_kind("discord")
+        .await
+        .expect("by kind");
+    assert_eq!(discs, vec![discord.clone()]);
+    let teles = config
+        .list_enabled_notifications_by_kind("telegram")
+        .await
+        .expect("by kind");
+    assert_eq!(teles, vec![telegram]);
+
+    // Delete is real + idempotent.
+    assert!(config.delete_notification("n-disc").await.expect("delete"));
+    assert!(!config
+        .delete_notification("n-disc")
+        .await
+        .expect("delete again"));
+    let after = config
+        .list_enabled_notifications_by_kind("discord")
+        .await
+        .expect("by kind after");
+    assert!(after.is_empty());
+}
+
+#[tokio::test]
 async fn indexer_delete_and_enabled_filter() {
     let (_dir, db) = temp_db().await;
     let config = db.config();

@@ -25,6 +25,7 @@ pub mod fs_health;
 pub mod mediacover;
 pub mod metadata;
 pub mod native;
+pub mod notifications;
 pub mod openapi;
 pub mod release_search;
 pub mod shim;
@@ -40,6 +41,7 @@ pub use auth::AuthConfig;
 pub use error::{ApiError, ApiResult};
 pub use events::{DomainEvent, EventBus};
 pub use metadata::{LookupCandidate, LookupOutcome, MetadataLookup, MetadataLookupError};
+pub use notifications::default_senders;
 pub use state::AppState;
 pub use webhook::ReqwestWebhookSender;
 

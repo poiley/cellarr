@@ -2,10 +2,10 @@
 
 // Settings hub. SRCL-only: AppShell + ButtonGroup section switcher + the
 // settings sections (quality profiles, custom formats, indexers, download
-// clients, root folders, remote path mappings), each composed entirely from
-// vendored SRCL primitives and wired to the API client. Naming + Notifications
-// have no backend yet, so they render an honest "coming soon" placeholder rather
-// than a form that saves nowhere.
+// clients, root folders, remote path mappings, notifications), each composed
+// entirely from vendored SRCL primitives and wired to the API client. Naming has
+// no backend yet, so it renders an honest "coming soon" placeholder rather than a
+// form that saves nowhere.
 
 import * as React from 'react';
 
@@ -18,6 +18,7 @@ import CustomFormats from '@app/settings/_components/CustomFormats';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
 import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
+import Notifications from '@app/settings/_components/Notifications';
 import ComingSoon from '@app/settings/_components/ComingSoon';
 
 type Section =
@@ -82,12 +83,7 @@ export default function Page() {
             summary="Configure how downloaded movie and episode files are renamed and organised on disk."
           />
         ) : null}
-        {section === 'notifications' ? (
-          <ComingSoon
-            title="Notifications"
-            summary="Send alerts to Discord, email, webhooks and more when grabs, imports or health events occur."
-          />
-        ) : null}
+        {section === 'notifications' ? <Notifications /> : null}
       </div>
     </AppShell>
   );

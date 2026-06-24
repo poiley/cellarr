@@ -41,6 +41,8 @@ import type {
   LookupCandidate,
   MediaFile,
   Movie,
+  NotificationConfigV3,
+  NotificationSchema,
   Page,
   QualityDefinition,
   QualityProfile,
@@ -442,6 +444,44 @@ export class CellarrClient {
       body,
       signal,
     });
+  }
+
+  // =========================================================================
+  // Notifications (Radarr/Sonarr-compatible /api/v3)
+  // =========================================================================
+
+  /** Configured notifications (`GET /api/v3/notification`). */
+  listNotifications(signal?: AbortSignal) {
+    return this.requestV3<NotificationConfigV3[]>('/notification', { signal });
+  }
+
+  /** The connector templates a notification is built from (`GET /api/v3/notification/schema`). */
+  getNotificationSchema(signal?: AbortSignal) {
+    return this.requestV3<NotificationSchema[]>('/notification/schema', { signal });
+  }
+
+  createNotification(body: Partial<NotificationConfigV3>, signal?: AbortSignal) {
+    return this.requestV3<NotificationConfigV3>('/notification', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  updateNotification(id: number, body: Partial<NotificationConfigV3>, signal?: AbortSignal) {
+    return this.requestV3<NotificationConfigV3>(`/notification/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  deleteNotification(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/notification/${id}`, { method: 'DELETE', signal });
+  }
+
+  testNotification(body: Partial<NotificationConfigV3>, signal?: AbortSignal) {
+    return this.requestV3<unknown>('/notification/test', { method: 'POST', body, signal });
   }
 
   // =========================================================================

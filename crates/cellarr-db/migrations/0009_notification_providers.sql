@@ -1,0 +1,19 @@
+-- Notification (Connect) providers: typed columns for the generalized provider set.
+--
+-- The `notification` table (migration 0003) stored only the generic Connect
+-- *webhook*: its full `NotificationConfig` lives in the JSON `body` column, with
+-- `id`/`name`/`kind`/`enabled` mirrored into typed columns. The provider set is
+-- now broadened — Discord, Telegram, Email/SMTP, Custom Script, the generic
+-- Webhook, plus the media-server rescan providers (Plex, Jellyfin, Emby). The
+-- JSON `body` already round-trips every provider's settings and per-event
+-- toggles losslessly (the open-ended `settings` plus `on_events`), so no per-
+-- provider column is needed.
+--
+-- Two query paths the broadened set adds want an index rather than a full scan:
+--   * the dispatcher fans an event out to every *enabled* notification of a
+--     given `kind` (route a Discord message only to the Discord sender), and
+--   * the rescan-on-import path lists only the media-server providers.
+-- `kind` is the discriminator both filter on, so index it. The JSON `body`
+-- remains the authoritative copy; this index is purely to keep the per-kind
+-- fan-out from scanning every configured notification.
+CREATE INDEX IF NOT EXISTS idx_notification_kind ON notification(kind);
