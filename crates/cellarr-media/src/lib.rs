@@ -34,6 +34,7 @@ pub mod identify;
 pub mod meta;
 pub mod module;
 pub mod registry;
+pub mod resolve;
 
 pub use content::{ContentCandidate, ContentLookup};
 pub use error::MediaError;
@@ -44,3 +45,6 @@ pub use identify::{
 pub use meta::{MetadataLookup, MovieMeta, SeriesMeta};
 pub use module::{ModuleError, MovieModule, TvModule, AMBIGUOUS_CONFIDENCE};
 pub use registry::{BoxError, DynMediaModule, MediaRegistry};
+pub use resolve::{
+    ArtworkKind, DynMetadataResolver, MetadataResolver, ResolveBoxError, ResolvedMetadata,
+};

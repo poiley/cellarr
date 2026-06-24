@@ -136,6 +136,14 @@ impl Daemon {
         ));
         let state = state.with_release_grab(release_grab);
 
+        // The artwork cache dir (`<data_dir>/MediaCover`) the identify/refresh path
+        // caches poster/fanart into and the v3 `mediacover/{id}/{kind}` route serves
+        // from. Created up front so the route's reads never race a missing dir.
+        let artwork_dir = config.data_dir.join("MediaCover");
+        std::fs::create_dir_all(&artwork_dir)
+            .with_context(|| format!("creating artwork dir {}", artwork_dir.display()))?;
+        let state = state.with_artwork_dir(artwork_dir);
+
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;
 

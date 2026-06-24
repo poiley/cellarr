@@ -48,6 +48,23 @@ pub trait ContentRepository: Send + Sync {
 
     /// The direct children of `parent` in the tree, in stable order.
     async fn children(&self, parent: ContentId) -> Result<Vec<ContentNode>, Self::Error>;
+
+    /// Persist the content-scoped metadata for a node (year/overview/runtime and
+    /// the dated facts), written at Identify/Refresh. Replaces any prior row for
+    /// the node (upsert), so a re-identify overwrites stale facts.
+    async fn set_metadata(
+        &self,
+        id: ContentId,
+        meta: &crate::media::ContentMetadata,
+    ) -> Result<(), Self::Error>;
+
+    /// Read the persisted content-scoped metadata for a node, or `None` when the
+    /// node has never been identified/refreshed. The detail endpoints and the
+    /// calendar read through this.
+    async fn metadata(
+        &self,
+        id: ContentId,
+    ) -> Result<Option<crate::media::ContentMetadata>, Self::Error>;
 }
 
 /// Reads and writes for `media_file` rows.

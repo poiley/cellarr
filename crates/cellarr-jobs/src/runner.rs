@@ -242,6 +242,11 @@ pub struct RunnerConfig {
     /// site the rewrite happens regardless of which download client produced the
     /// path; see [`cellarr_core::apply_remote_path_mappings`].
     pub remote_path_mappings: Vec<cellarr_core::RemotePathMapping>,
+    /// Whether to write Kodi/Jellyfin-compatible `.nfo` metadata sidecars next to
+    /// imported media (the media-management "write metadata" setting). Default on.
+    /// Sidecars are written best-effort *after* the media is durably committed, so
+    /// disabling this never changes the crash-safe import guarantee.
+    pub write_nfo: bool,
 }
 
 /// Drives candidates through the pipeline state machine.
@@ -269,6 +274,12 @@ where
     /// absolute coordinate is then surfaced for manual resolution rather than
     /// guessed, so the absence of a provider is safe.
     scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
+    /// The content-metadata resolver, called once a release confidently identifies
+    /// to a node so the resolved facts (year/overview/runtime/air-date) and artwork
+    /// are persisted on that node. `None` (the default) means no metadata is
+    /// persisted at Identify — the offline/test path — and acquisition proceeds
+    /// unaffected (metadata persistence is best-effort, never a pipeline gate).
+    metadata_resolver: Option<Arc<dyn cellarr_media::DynMetadataResolver>>,
 }
 
 impl<'a, I, D, C> PipelineRunner<'a, I, D, C>
@@ -295,7 +306,22 @@ where
             config,
             notifier: None,
             scene_provider: None,
+            metadata_resolver: None,
         }
+    }
+
+    /// Attach a content-metadata resolver so a confidently-identified node has its
+    /// resolved facts (year/overview/runtime/air-date) and artwork persisted at
+    /// Identify. Builder form so the base [`PipelineRunner::new`] stays offline (no
+    /// metadata persistence) and live wiring opts in. Persistence is best-effort:
+    /// a resolver failure is logged and the run proceeds.
+    #[must_use]
+    pub fn with_metadata_resolver(
+        mut self,
+        resolver: Arc<dyn cellarr_media::DynMetadataResolver>,
+    ) -> Self {
+        self.metadata_resolver = Some(resolver);
+        self
     }
 
     /// Attach an anime scene-mapping provider so the Identify path remaps an
@@ -752,6 +778,9 @@ where
                 *last_reject = Some("no confident content match".into());
                 continue;
             };
+            // A confident identify is where the node's rich metadata becomes
+            // resolvable: persist it (and cache artwork) before deciding. Best-effort.
+            self.persist_metadata(&matched.content_ref).await;
             if *stage == Stage::Identify {
                 *stage = self.advance(run_id, *stage, None).await?; // -> Decide
             }
@@ -933,6 +962,38 @@ where
                     .partial_cmp(&b.confidence.value())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+    }
+
+    /// Persist the resolved content metadata (year/overview/runtime/air-date) and
+    /// artwork for a node that just confidently identified, via the configured
+    /// resolver. Best-effort: with no resolver configured this is a no-op, and a
+    /// resolver or persistence failure is logged and swallowed — metadata
+    /// persistence must never block or fail acquisition (the library-safety rule
+    /// scopes to *files*, not to enrichment).
+    async fn persist_metadata(&self, matched: &ContentRef) {
+        let Some(resolver) = self.metadata_resolver.as_ref() else {
+            return;
+        };
+        let resolved = match resolver.resolve(matched).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(content = %matched.id, error = %e, "metadata resolve failed; skipping persist");
+                return;
+            }
+        };
+        if resolved.meta.is_empty() {
+            return;
+        }
+        use cellarr_core::repo::ContentRepository;
+        if let Err(e) = self
+            .db
+            .content()
+            .set_metadata(matched.id, &resolved.meta)
+            .await
+        {
+            tracing::warn!(content = %matched.id, error = %e, "persisting content metadata failed");
+        }
     }
 
     fn decide(
@@ -1359,11 +1420,74 @@ where
         let result = cellarr_fs::execute_import(&plan)
             .await
             .map_err(|e| format!("execute import: {e}"))?;
-        Ok(result
+        let destinations: Vec<String> = result
             .moves
             .into_iter()
             .map(|m| m.destination_path.to_string_lossy().into_owned())
-            .collect())
+            .collect();
+
+        // Best-effort, post-commit metadata sidecars (Kodi/Jellyfin `.nfo`). The
+        // media is already durable; a sidecar failure is logged and never fails
+        // the import (so the crash-safe stage->verify->commit guarantee stands).
+        if self.config.write_nfo {
+            self.write_nfo_sidecars(matched_ref, &destinations).await;
+        }
+
+        Ok(destinations)
+    }
+
+    /// Write the `.nfo` metadata sidecars next to the imported destinations, using
+    /// the node's persisted content metadata. For a movie, one `movie.nfo`; for a
+    /// TV episode, one `<file>.nfo` per episode file plus a `tvshow.nfo` in the
+    /// series root. Entirely best-effort: any error is logged and swallowed.
+    async fn write_nfo_sidecars(&self, matched_ref: &ContentRef, destinations: &[String]) {
+        use cellarr_core::repo::ContentRepository;
+        use cellarr_core::Coordinates;
+        let meta = self
+            .db
+            .content()
+            .metadata(matched_ref.id)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_default();
+        let (season, episode) = match &matched_ref.coords {
+            Coordinates::Episode {
+                season, episode, ..
+            } => (Some(*season), Some(*episode)),
+            _ => (None, None),
+        };
+        let nfo = cellarr_fs::NfoMetadata {
+            title: meta.title.clone(),
+            year: meta.year,
+            overview: meta.overview.clone(),
+            runtime: meta.runtime,
+            air_date: meta.air_date.clone(),
+            season,
+            episode,
+        };
+        let (file_kind, write_show) = match matched_ref.media_type {
+            cellarr_core::MediaType::Tv => (cellarr_fs::NfoKind::Episode, true),
+            _ => (cellarr_fs::NfoKind::Movie, false),
+        };
+        let mut wrote_show = false;
+        for dest in destinations {
+            let path = std::path::Path::new(dest);
+            if let Err(e) = cellarr_fs::write_sidecar(file_kind, path, &nfo).await {
+                tracing::warn!(dest = %dest, error = %e, "writing .nfo sidecar failed");
+            }
+            // The series-level tvshow.nfo lives in the series root. The episode
+            // file path is `<root>/.../Season NN/Episode.ext`; placing tvshow.nfo
+            // beside the episode keeps it discoverable without needing the root
+            // path here, and is what Kodi finds when scanning the show folder.
+            if write_show && !wrote_show {
+                if let Err(e) =
+                    cellarr_fs::write_sidecar(cellarr_fs::NfoKind::Series, path, &nfo).await
+                {
+                    tracing::warn!(dest = %dest, error = %e, "writing tvshow.nfo failed");
+                }
+                wrote_show = true;
+            }
+        }
     }
 
     // --- Failure / transition / log helpers ------------------------------

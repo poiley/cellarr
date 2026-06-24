@@ -306,16 +306,32 @@ pub async fn collect_calendar_events(
 }
 
 /// Build a [`CalendarEvent`] for a node, or `None` when it carries no date.
+///
+/// The date is resolved in priority order: the node's self-contained `Daily`
+/// coordinate (a date-addressed broadcast), then the persisted content metadata
+/// the identify pipeline wrote — an episode's `air_date`, or a movie's release
+/// date (theatrical/physical first, falling back to the digital release). A node
+/// with none of these is undated and skipped (an undated item is not a calendar
+/// entry).
 async fn event_for_node(
     state: &AppState,
     node: &cellarr_core::ContentNode,
 ) -> Result<Option<CalendarEvent>, cellarr_db::DbError> {
     let date = match &node.coords {
         Coordinates::Daily { date } => date.clone(),
-        // Other coordinate variants do not carry a self-contained date in the
-        // current model; once the identify pipeline persists per-episode air dates
-        // / movie release dates, this match gains those arms. Undated -> skip.
-        _ => return Ok(None),
+        _ => {
+            // Fall back to the persisted air/release date written at Identify.
+            let Some(date) = state
+                .db
+                .content()
+                .metadata(node.id)
+                .await?
+                .and_then(|m| m.air_date.or(m.digital_date))
+            else {
+                return Ok(None);
+            };
+            date
+        }
     };
     let title = state
         .db

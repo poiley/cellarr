@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use cellarr_core::repo::ContentRepository;
 use cellarr_core::{
-    ContentId, ContentKind, ContentNode, ContentRef, Coordinates, LibraryId, MediaType, TitleId,
+    ContentId, ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, LibraryId,
+    MediaType, TitleId,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -320,4 +321,71 @@ impl ContentRepository for ContentRepo {
         .await?;
         rows.into_iter().map(row_to_node).collect()
     }
+
+    async fn set_metadata(&self, id: ContentId, meta: &ContentMetadata) -> Result<()> {
+        let id = id.to_string();
+        let title = meta.title.clone();
+        let year = meta.year.map(i64::from);
+        let overview = meta.overview.clone();
+        let runtime = meta.runtime.map(i64::from);
+        let air_date = meta.air_date.clone();
+        let digital_date = meta.digital_date.clone();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO content_meta
+                            (content_id, title, year, overview, runtime, air_date, digital_date)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(content_id) DO UPDATE SET
+                            title        = excluded.title,
+                            year         = excluded.year,
+                            overview     = excluded.overview,
+                            runtime      = excluded.runtime,
+                            air_date     = excluded.air_date,
+                            digital_date = excluded.digital_date",
+                    )
+                    .bind(id)
+                    .bind(title)
+                    .bind(year)
+                    .bind(overview)
+                    .bind(runtime)
+                    .bind(air_date)
+                    .bind(digital_date)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    async fn metadata(&self, id: ContentId) -> Result<Option<ContentMetadata>> {
+        let row = sqlx::query(
+            "SELECT title, year, overview, runtime, air_date, digital_date
+             FROM content_meta WHERE content_id = ?1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(row_to_content_metadata).transpose()
+    }
+}
+
+/// Decode a `content_meta` row into a [`ContentMetadata`]. The integer columns are
+/// stored as SQLite `INTEGER` (i64) and narrowed back to the domain widths; a
+/// value out of range is treated as absent rather than panicking (the metadata
+/// source never emits a negative year/runtime, but the read path must stay
+/// total).
+fn row_to_content_metadata(row: sqlx::sqlite::SqliteRow) -> Result<ContentMetadata> {
+    let year: Option<i64> = row.try_get("year")?;
+    let runtime: Option<i64> = row.try_get("runtime")?;
+    Ok(ContentMetadata {
+        title: row.try_get("title")?,
+        year: year.and_then(|y| u16::try_from(y).ok()),
+        overview: row.try_get("overview")?,
+        runtime: runtime.and_then(|r| u32::try_from(r).ok()),
+        air_date: row.try_get("air_date")?,
+        digital_date: row.try_get("digital_date")?,
+    })
 }

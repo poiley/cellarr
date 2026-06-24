@@ -5,6 +5,7 @@
 //! configuration. `AppState` is cheap to clone (everything inside is an `Arc` or
 //! a cloneable handle) and is the axum extractor state for all routers.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cellarr_db::Database;
@@ -49,6 +50,12 @@ pub struct AppState {
     /// drives the real [`PipelineRunner`](cellarr_jobs::PipelineRunner) Grab→Import
     /// path.
     pub release_grab: Option<Arc<dyn ReleaseGrab>>,
+    /// The on-disk artwork cache directory (`<data_dir>/MediaCover`), where the
+    /// identify/refresh path caches poster/fanart bytes keyed by content id. The
+    /// `GET /api/v3/mediacover/{id}/{kind}` route serves files from here. `None`
+    /// (the default) disables artwork serving (the route then always 404s) — the
+    /// offline/test path; the daemon injects the real dir.
+    pub artwork_dir: Option<PathBuf>,
 }
 
 impl AppState {
@@ -98,6 +105,7 @@ impl AppState {
             metadata: None,
             release_search: None,
             release_grab: None,
+            artwork_dir: None,
         }
     }
 
@@ -128,6 +136,16 @@ impl AppState {
     #[must_use]
     pub fn with_release_grab(mut self, release_grab: Arc<dyn ReleaseGrab>) -> Self {
         self.release_grab = Some(release_grab);
+        self
+    }
+
+    /// Set the artwork cache directory (`<data_dir>/MediaCover`) the `MediaCover`
+    /// route serves poster/fanart bytes from. Builder form so the base
+    /// [`AppState::new`] stays artwork-less (the route 404s) and the daemon opts
+    /// the real dir in.
+    #[must_use]
+    pub fn with_artwork_dir(mut self, dir: PathBuf) -> Self {
+        self.artwork_dir = Some(dir);
         self
     }
 }

@@ -408,6 +408,21 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        // TheTVDB series-level `averageRuntime` is the typical episode length in
+        // minutes; surfaced as the series runtime when present and non-zero.
+        runtime: data
+            .get("averageRuntime")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&n| n > 0)
+            .and_then(|n| u32::try_from(n).ok()),
+        // The series' first-air date is its "release" date for our schema.
+        release_date: data
+            .get("firstAired")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        // No separate digital release for a series.
+        digital_release: None,
         external_ids,
         children,
         images,

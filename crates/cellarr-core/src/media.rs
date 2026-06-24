@@ -275,6 +275,57 @@ impl ContentNode {
     }
 }
 
+/// The content-scoped metadata facts persisted at Identify/Refresh and read back
+/// by the detail endpoints and the calendar.
+///
+/// This is the resolved, type-agnostic projection a node carries once a metadata
+/// source has identified it: the display facts (`title`/`year`/`overview`/
+/// `runtime`) and the dated facts the calendar windows on. For a movie, `air_date`
+/// is the theatrical/physical release date and `digital_date` is the digital
+/// (home/streaming) release; for an episode, `air_date` is the broadcast date and
+/// `digital_date` is unused. Every field but the link is optional so a partial
+/// identify (e.g. a title-only match) still persists a usable row.
+///
+/// Dates are ISO `yyyy-mm-dd` strings, kept string-comparable so the calendar's
+/// `[start, end]` windowing is a plain lexical compare.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentMetadata {
+    /// Display title resolved by the metadata source, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Release/first-air year, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u16>,
+    /// Overview/synopsis, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<String>,
+    /// Runtime in minutes (movie running time, or episode length), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<u32>,
+    /// A movie's theatrical/physical release date, or an episode's air date, in
+    /// ISO `yyyy-mm-dd` form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air_date: Option<String>,
+    /// A movie's digital (home/streaming) release date, when distinct from the
+    /// theatrical release. Unused for episodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digital_date: Option<String>,
+}
+
+impl ContentMetadata {
+    /// Whether this record carries no facts at all (every field empty). Used to
+    /// avoid persisting an empty row for a node that did not resolve anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.year.is_none()
+            && self.overview.is_none()
+            && self.runtime.is_none()
+            && self.air_date.is_none()
+            && self.digital_date.is_none()
+    }
+}
+
 /// A persisted `media_file` row: a physical file on disk and its assessed
 /// quality.
 ///

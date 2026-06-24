@@ -232,6 +232,7 @@ fn runner_config(profile: QualityProfile) -> RunnerConfig {
         track_poll_interval: std::time::Duration::ZERO,
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
+        write_nfo: false,
     }
 }
 

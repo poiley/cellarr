@@ -90,6 +90,10 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     events: EventBus,
     env: E,
     clock: SystemClock,
+    /// The content-metadata resolver, attached to each run so a confident identify
+    /// persists the node's facts + artwork, and driving `RefreshMetadata`. `None`
+    /// (the default) means no metadata persistence (the offline path).
+    resolver: Option<Arc<dyn cellarr_media::DynMetadataResolver>>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -102,7 +106,66 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             events,
             env,
             clock: SystemClock,
+            resolver: None,
         }
+    }
+
+    /// Attach a content-metadata resolver so identify persists metadata/artwork and
+    /// `RefreshMetadata` does real work. Builder form so the offline path stays
+    /// resolver-less.
+    #[must_use]
+    pub fn with_resolver(mut self, resolver: Arc<dyn cellarr_media::DynMetadataResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// `RefreshMetadata`: re-resolve and persist the content-scoped metadata (and
+    /// re-cache artwork) for every content node, via the resolver. With no resolver
+    /// configured this is a no-op success (the offline path). A per-node failure is
+    /// logged and the sweep continues — a refresh is best-effort enrichment.
+    async fn refresh_metadata(&self) -> JobResult {
+        let Some(resolver) = self.resolver.as_ref() else {
+            return JobResult::Success;
+        };
+        let libraries = match self.db.config().list_libraries().await {
+            Ok(l) => l,
+            Err(detail) => {
+                return JobResult::Retryable {
+                    detail: format!("loading libraries failed: {detail}"),
+                }
+            }
+        };
+        let content = self.db.content();
+        for lib in libraries {
+            let mut stack = match content.roots(lib.id).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(library = %lib.id, error = %e, "refresh: loading roots failed");
+                    continue;
+                }
+            };
+            while let Some(node) = stack.pop() {
+                let node_ref = node.as_ref();
+                match resolver.resolve(&node_ref).await {
+                    Ok(Some(resolved)) if !resolved.meta.is_empty() => {
+                        if let Err(e) = content.set_metadata(node.id, &resolved.meta).await {
+                            tracing::warn!(content = %node.id, error = %e, "refresh: persisting metadata failed");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(content = %node.id, error = %e, "refresh: resolve failed");
+                    }
+                }
+                match content.children(node.id).await {
+                    Ok(children) => stack.extend(children),
+                    Err(e) => {
+                        tracing::warn!(content = %node.id, error = %e, "refresh: loading children failed");
+                    }
+                }
+            }
+        }
+        JobResult::Success
     }
 
     /// Load the bounded set of monitored-missing leaf nodes to acquire.
@@ -137,7 +200,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         let Some((indexer, client, config)) = self.env.resolve(content).await? else {
             return Ok(false);
         };
-        let runner = PipelineRunner::new(
+        let mut runner = PipelineRunner::new(
             &indexer,
             &client,
             &self.registry,
@@ -145,6 +208,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             &self.clock,
             &config,
         );
+        if let Some(resolver) = self.resolver.as_ref() {
+            runner = runner.with_metadata_resolver(resolver.clone());
+        }
         let outcome = runner
             .run(content)
             .await
@@ -253,8 +319,10 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
                 },
                 Err(detail) => JobResult::Permanent { detail },
             },
+            // Re-resolve and persist content metadata + artwork for the library.
+            JobKind::MetadataRefresh => self.refresh_metadata().await,
             // Not pipeline work: a benign success so the scheduler keeps its cadence.
-            JobKind::MetadataRefresh | JobKind::DiskSpaceCheck => JobResult::Success,
+            JobKind::DiskSpaceCheck => JobResult::Success,
         }
     }
 }
@@ -452,6 +520,9 @@ impl LivePipelineEnv {
             // names a host — which, when present, the runner applies.
             client_host: String::new(),
             remote_path_mappings,
+            // Write Kodi/Jellyfin `.nfo` sidecars on import (media-management
+            // default). Best-effort, post-commit, so it never affects crash safety.
+            write_nfo: true,
         }))
     }
 }

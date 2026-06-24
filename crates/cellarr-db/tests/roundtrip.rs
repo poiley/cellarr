@@ -101,6 +101,57 @@ async fn library_and_content_round_trip_via_writer() {
 }
 
 #[tokio::test]
+async fn content_metadata_round_trips_and_upserts() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let node = movie_node(library.id, ContentId::new());
+    content.upsert(&node).await.unwrap();
+
+    // A node with no metadata row reads back None.
+    assert_eq!(content.metadata(node.id).await.unwrap(), None);
+
+    // Persist the resolved facts and read them back exactly.
+    let meta = cellarr_core::ContentMetadata {
+        title: Some("Blade Runner".to_string()),
+        year: Some(1982),
+        overview: Some("A blade runner must pursue replicants.".to_string()),
+        runtime: Some(117),
+        air_date: Some("1982-06-25".to_string()),
+        digital_date: Some("2007-12-18".to_string()),
+    };
+    content.set_metadata(node.id, &meta).await.unwrap();
+    assert_eq!(content.metadata(node.id).await.unwrap(), Some(meta));
+
+    // A re-identify overwrites the prior row (upsert), never duplicates it.
+    let revised = cellarr_core::ContentMetadata {
+        title: Some("Blade Runner: Final Cut".to_string()),
+        year: Some(1982),
+        overview: None,
+        runtime: Some(118),
+        air_date: Some("1982-06-25".to_string()),
+        digital_date: None,
+    };
+    content.set_metadata(node.id, &revised).await.unwrap();
+    assert_eq!(content.metadata(node.id).await.unwrap(), Some(revised));
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_meta WHERE content_id = ?1")
+        .bind(node.id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "set_metadata must upsert, not duplicate");
+}
+
+#[tokio::test]
 async fn monitored_missing_excludes_nodes_with_files_and_containers() {
     let (_dir, db) = temp_db().await;
     let config = db.config();

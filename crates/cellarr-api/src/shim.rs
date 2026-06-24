@@ -171,6 +171,7 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/series/lookup", get(series_lookup))
         .route("/release", get(release_search))
         .route("/calendar", get(calendar))
+        .route("/mediacover/{contentId}/{kind}", get(media_cover))
         .route("/queue", get(queue))
         .route("/history", get(history))
         .route("/wanted/missing", get(wanted_missing))
@@ -2869,10 +2870,10 @@ async fn get_series_detail(
 /// **`qualityProfileId`** (cellarr scopes the quality profile per library, so a
 /// node's effective profile is its library's default) and an `overview` field.
 ///
-/// `overview`/`year` come from the metadata identity tables, which have no clean
-/// content-scoped read seam yet, so they are surfaced as empty/zero with a TODO —
-/// the deferred part. Title, monitored, file-state, size, and the quality profile
-/// are real, which is what the detail screen and the monitor toggle need.
+/// `overview`/`year`/`runtime` are read from the content-scoped metadata seam
+/// (`content_meta`, written at Identify/Refresh): a node that has been identified
+/// surfaces its real facts; one that has not yet falls back to empty/zero. Title,
+/// monitored, file-state, size, and the quality profile are always real.
 async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiResult<Value> {
     let content_id = cellarr_core::ContentId::from_uuid(
         id.parse::<uuid::Uuid>()
@@ -2896,17 +2897,55 @@ async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiR
         .get_library(node.library_id)
         .await?
         .map(|l| l.default_quality_profile.to_string());
+    // The persisted content-scoped metadata (year/overview/runtime), written at
+    // Identify/Refresh. Absent for a node not yet identified — then the v3 fields
+    // keep their empty/zero defaults so the resource shape never changes.
+    let meta = content.metadata(node.id).await?.unwrap_or_default();
     let mut detail = v3_resource_item(state, &node, &title).await?;
-    merge_into(
-        &mut detail,
-        json!({
-            "qualityProfileId": profile_id,
-            // TODO: join the metadata identity tables (series_meta/movie_meta) to
-            // surface the real overview + year; no content-scoped read seam yet.
-            "overview": "",
-        }),
-    );
+    let mut patch = json!({
+        "qualityProfileId": profile_id,
+        "overview": meta.overview.clone().unwrap_or_default(),
+        "year": meta.year.unwrap_or(0),
+        // v3 runtime is in minutes (Sonarr/Radarr both expose it this way).
+        "runtime": meta.runtime.unwrap_or(0),
+    });
+    // The dated facts the detail screen / clients read: a movie's release date
+    // (theatrical/physical) and digital release; an episode's air date.
+    match node.media_type {
+        MediaType::Tv => {
+            if let Some(air) = &meta.air_date {
+                merge_into(
+                    &mut patch,
+                    json!({ "airDate": air, "airDateUtc": iso_to_utc(air) }),
+                );
+            }
+        }
+        _ => {
+            if let Some(physical) = &meta.air_date {
+                merge_into(
+                    &mut patch,
+                    json!({ "inCinemas": iso_to_utc(physical), "physicalRelease": iso_to_utc(physical) }),
+                );
+            }
+            if let Some(digital) = &meta.digital_date {
+                merge_into(&mut patch, json!({ "digitalRelease": iso_to_utc(digital) }));
+            }
+        }
+    }
+    merge_into(&mut detail, patch);
     Ok(detail)
+}
+
+/// Render an ISO `yyyy-mm-dd` date as the midnight-UTC RFC 3339 timestamp the v3
+/// date fields use (`airDateUtc`/`inCinemas`/`digitalRelease`). A malformed date
+/// is passed through unchanged rather than dropped, so a partial parse never
+/// blanks the field.
+fn iso_to_utc(date: &str) -> String {
+    if date.len() == 10 && date.as_bytes()[4] == b'-' {
+        format!("{date}T00:00:00Z")
+    } else {
+        date.to_string()
+    }
 }
 
 // --- content monitor toggle (PUT /movie/{id}, PUT /series/{id}) ------------
@@ -3338,11 +3377,12 @@ struct CalendarQuery {
 /// calendar shape (`id`, `title`, `airDate`/`airDateUtc`, `monitored`, `hasFile`)
 /// plus the cellarr-native `date`/`summary` aliases.
 ///
-/// Today only TV daily-coded episodes carry a self-contained date in the data
-/// model, so a movie/standard-episode library yields an empty calendar until the
-/// identify pipeline persists per-item air/release dates — the dashboard then
-/// shows "Recently added" instead. This is real (not faked): it returns exactly
-/// the dated items that exist.
+/// Returns the real dated items: a TV daily-coded episode's self-contained date,
+/// an episode's persisted air date, or a movie's persisted release date (the
+/// identify pipeline writes these to the content-metadata seam). A library whose
+/// items are not yet identified yields an empty calendar — the dashboard then
+/// shows "Recently added" instead. Bounded by the optional `?start`/`?end` ISO
+/// date window.
 async fn calendar(
     State(fs): State<FaceState>,
     Query(q): Query<CalendarQuery>,
@@ -3373,6 +3413,18 @@ async fn calendar(
         })
         .collect();
     Ok(Json(rows))
+}
+
+/// v3 `mediacover/{contentId}/{kind}` — serve cached poster/fanart bytes.
+///
+/// A thin face-state wrapper over [`crate::mediacover::media_cover`] so the
+/// artwork route shares the shim's [`FaceState`] router (it needs only the inner
+/// [`AppState`]).
+async fn media_cover(
+    State(fs): State<FaceState>,
+    path: Path<(String, String)>,
+) -> axum::response::Response {
+    crate::mediacover::media_cover(State(fs.state), path).await
 }
 
 /// The full v3 paging envelope: `page, pageSize, sortKey, sortDirection,

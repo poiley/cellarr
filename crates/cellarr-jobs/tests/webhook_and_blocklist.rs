@@ -531,6 +531,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         track_poll_interval: std::time::Duration::ZERO,
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
+        write_nfo: false,
     }
 }
 

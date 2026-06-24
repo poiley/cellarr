@@ -94,6 +94,17 @@ pub struct Metadata {
     /// Overview/synopsis, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
+    /// Runtime in minutes (a movie's running time), when the source provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<u32>,
+    /// Theatrical/physical release date in ISO `yyyy-mm-dd` form, when known
+    /// (movies). For a series this is the first-air date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    /// Digital (home/streaming) release date in ISO `yyyy-mm-dd` form, when the
+    /// source distinguishes it from the theatrical release (movies only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digital_release: Option<String>,
     /// Cross-referenced external ids, as `(scheme, value)`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_ids: Vec<(String, String)>,

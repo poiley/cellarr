@@ -26,6 +26,7 @@ mod error;
 mod fsops;
 mod health;
 mod import;
+mod nfo;
 mod rename;
 mod scan;
 
@@ -38,6 +39,7 @@ pub use import::{
     execute_import, execute_import_with, plan_import, CommitHooks, ImportResult, MoveResult,
     NoHooks, PlacedAs,
 };
+pub use nfo::{render_nfo, sidecar_path, write_sidecar, NfoKind, NfoMetadata};
 pub use rename::{
     render_name, render_name_with, ColonReplacement, MultiEpisodeStyle, RenderOptions,
     TargetPlatform,

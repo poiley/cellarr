@@ -244,6 +244,7 @@ fn runner_config(
         track_poll_interval: std::time::Duration::ZERO,
         client_host,
         remote_path_mappings: mappings,
+        write_nfo: false,
     }
 }
 

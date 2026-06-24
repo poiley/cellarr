@@ -294,10 +294,30 @@ fn normalize_movie(value: &serde_json::Value) -> Option<Metadata> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        // TMDb `runtime` is in whole minutes; 0 means unknown (drop it).
+        runtime: value
+            .get("runtime")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&n| n > 0)
+            .and_then(|n| u32::try_from(n).ok()),
+        release_date: iso_date(value.get("release_date")),
+        // The digital release is in `release_dates` (type 4) when present; the
+        // base movie payload does not carry it, so it stays absent here until the
+        // append_to_response gathers it. Modeled so a future fetch can populate it.
+        digital_release: None,
         external_ids,
         children: Vec::new(),
         images,
     })
+}
+
+/// Return an ISO `yyyy-mm-dd` date value as an owned string when it is a
+/// non-empty string, else `None`.
+fn iso_date(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn collect_images(images: &serde_json::Value) -> Vec<Image> {

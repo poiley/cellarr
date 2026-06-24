@@ -57,7 +57,10 @@ pub use importlist::{
     sync_import_list, CleanAction, FetchResult, ImportListConfig, ImportListExclusion,
     ImportListItem, ImportListRepository, ListSource, SyncOutcome,
 };
-pub use media::{ContentKind, ContentNode, ContentRef, Coordinates, Library, MediaFile, MediaType};
+pub use media::{
+    ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, Library, MediaFile,
+    MediaType,
+};
 pub use parsed::{
     Confidence, HdrFormat, ParsedField, ParsedRelease, ProperRepack, Resolution, Source, VideoCodec,
 };
