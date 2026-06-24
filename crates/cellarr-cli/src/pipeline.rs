@@ -279,6 +279,9 @@ pub struct LivePipelineEnv {
     rate_limiter: Arc<HostRateLimiter>,
     /// How many times Track polls the download client before giving up.
     max_track_polls: u32,
+    /// How long to wait between Track polls so the poll budget spans a real,
+    /// multi-minute download.
+    track_poll_interval: std::time::Duration,
 }
 
 impl LivePipelineEnv {
@@ -288,7 +291,10 @@ impl LivePipelineEnv {
         Self {
             db,
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
-            max_track_polls: 30,
+            // A real download takes minutes; poll every few seconds for a budget
+            // that spans it rather than burning instant polls.
+            max_track_polls: 240,
+            track_poll_interval: std::time::Duration::from_secs(5),
         }
     }
 
@@ -374,6 +380,7 @@ impl LivePipelineEnv {
             client_id: cellarr_core::DownloadClientId::new(),
             category: client_category,
             max_track_polls: self.max_track_polls,
+            track_poll_interval: self.track_poll_interval,
             // The client host scopes which remote-path mappings apply; cellarr runs
             // alongside the client in the default deployment (no rewrite needed),
             // so it is left empty and the mappings list is a no-op unless a mapping

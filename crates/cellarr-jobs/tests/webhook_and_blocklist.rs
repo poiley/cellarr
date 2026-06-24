@@ -339,6 +339,57 @@ impl cellarr_core::traits::DownloadClient for StallingClient {
     }
 }
 
+/// A fake whose download sits at end-game (≈99.9% progress, zero peers — the
+/// final-piece verify state) for several polls, then flips to `Completed`. Without
+/// the near-complete stall exemption this looks like a stall ("no progress, no
+/// peers") and gets killed moments before import — the live bug this guards.
+struct EndgameClient {
+    completed_path: String,
+    polls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for EndgameClient {
+    type Error = FakeClientError;
+    fn name(&self) -> &str {
+        "endgame-client"
+    }
+    async fn add(&self, _grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        Ok("dl-endgame".to_string())
+    }
+    async fn status(
+        &self,
+        _download_id: &str,
+    ) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        let n = self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // End-game: 99.9% done, no peers — looks exactly like a stall for several
+        // polls (more than STALL_MAX_STAGNANT_POLLS) before it completes.
+        if n < 5 {
+            return Ok(cellarr_core::DownloadStatus {
+                state: cellarr_core::DownloadState::Downloading,
+                progress: 0.999,
+                content_path: None,
+                ratio: Some(0.0),
+                seeding_time_secs: Some(0),
+                peers: Some(0),
+                error_string: None,
+            });
+        }
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Completed,
+            progress: 1.0,
+            content_path: Some(self.completed_path.clone()),
+            ratio: Some(1.0),
+            seeding_time_secs: Some(1),
+            peers: Some(0),
+            error_string: None,
+        })
+    }
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct MockContentLookup {
     candidate: ContentCandidate,
 }
@@ -477,6 +528,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),
         max_track_polls: 5,
+        track_poll_interval: std::time::Duration::ZERO,
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
     }
@@ -899,4 +951,60 @@ fn find_one_file(root: &std::path::Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// A near-complete download (≈99.9%, zero peers — a torrent's end-game where the
+/// final piece is verifying and seeders have dropped off) must NOT be killed by
+/// the stall detector. It finishes and imports. Regression for the live bug where
+/// a fully-downloaded torrent was failed as a "stall" moments before import.
+#[tokio::test]
+async fn a_near_complete_download_is_not_killed_by_the_stall_detector() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    // Give the poll budget headroom past the end-game window.
+    let mut config = runner_config(library_root.clone());
+    config.max_track_polls = 10;
+
+    let release = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![release.clone()],
+    };
+    let client = EndgameClient {
+        completed_path: file.to_string_lossy().into_owned(),
+        polls: std::sync::atomic::AtomicU32::new(0),
+    };
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    let grab_id = match outcome {
+        RunOutcome::Imported { grab_id, .. } => grab_id,
+        other => panic!("a near-complete download must import, not stall-fail: {other:?}"),
+    };
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grab.status, GrabStatus::Imported);
+    assert!(
+        find_one_file(&library_root).is_some(),
+        "the imported file must exist in the library"
+    );
+    // A successful download is never blocklisted (no self-heal needed).
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &release)
+            .await
+            .unwrap(),
+        "a successful near-complete download must not be blocklisted"
+    );
 }

@@ -70,8 +70,20 @@ use crate::notify::WebhookNotifier;
 ///
 /// The signal is conservative: a stall requires the client to *report* zero peers
 /// (`Some(0)`); an unknown peer count (`None`, e.g. Usenet) never trips it, and
-/// any forward progress resets the counter. Default 3 cycles.
+/// any forward progress resets the counter. A **near-complete** download
+/// ([`NEAR_COMPLETE_PROGRESS`]) is also exempt — see that constant. Default 3 cycles.
 const STALL_MAX_STAGNANT_POLLS: u32 = 3;
+
+/// A download at or above this fraction is treated as **near-complete** and is
+/// exempt from the stall detector. At a torrent's end-game the client commonly
+/// reports `progress ≈ 0.999` (the final piece is still verifying) while its peer
+/// count naturally drops to zero — which looks exactly like a stall ("no progress,
+/// no peers") even though the content is essentially done and about to flip to
+/// `Completed`. Killing it there would discard a finished download moments before
+/// import. So once a download crosses this line we stop counting stalls and let it
+/// finish (it will reach `Completed`, or eventually exhaust `max_track_polls` if it
+/// genuinely hangs on a last unavailable piece). Observed live against Transmission.
+const NEAR_COMPLETE_PROGRESS: f32 = 0.99;
 
 /// The maximum number of grab-next iterations the runner performs for one content
 /// node in a single run before giving up. After a download fails (or stalls) the
@@ -181,6 +193,11 @@ pub struct RunnerConfig {
     pub category: String,
     /// How many times to poll the download client before giving up tracking.
     pub max_track_polls: u32,
+    /// How long to wait between Track polls. Real deployments set a few seconds
+    /// so the poll budget spans a multi-minute download; tests set
+    /// [`Duration::ZERO`](std::time::Duration::ZERO) so they never sleep (the
+    /// logical clock still advances per poll for retry/stall accounting).
+    pub track_poll_interval: std::time::Duration,
     /// The download client's host, used to scope which [remote-path
     /// mappings](RunnerConfig::remote_path_mappings) apply (the Sonarr/Radarr
     /// convention: a mapping names the client host it rewrites paths for). Empty
@@ -954,7 +971,8 @@ where
                     // client *reports* zero peers AND progress did not advance.
                     let advanced = status.progress > last_progress;
                     let no_peers = status.peers == Some(0);
-                    if !advanced && no_peers {
+                    let near_complete = status.progress >= NEAR_COMPLETE_PROGRESS;
+                    if !advanced && no_peers && !near_complete {
                         stagnant_no_peer_polls += 1;
                         if stagnant_no_peer_polls >= STALL_MAX_STAGNANT_POLLS {
                             return TrackOutcome::Failed(format!(
@@ -970,7 +988,14 @@ where
                     // Event-driven progress is preferred (docs/03-pipeline.md);
                     // absent a webhook, poll with the (logical) clock advancing.
                     let _ = self.clock.now_secs();
-                    tokio::task::yield_now().await;
+                    // Wait between polls so the poll budget spans a real,
+                    // multi-minute download. Zero in tests (no real sleep); a
+                    // few seconds in the live daemon.
+                    if self.config.track_poll_interval.is_zero() {
+                        tokio::task::yield_now().await;
+                    } else {
+                        tokio::time::sleep(self.config.track_poll_interval).await;
+                    }
                 }
             }
         }

@@ -241,6 +241,7 @@ fn runner_config(
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),
         max_track_polls: 5,
+        track_poll_interval: std::time::Duration::ZERO,
         client_host,
         remote_path_mappings: mappings,
     }
