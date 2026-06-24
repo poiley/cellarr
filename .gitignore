@@ -34,3 +34,7 @@ web/out/
 .idea/
 .vscode/
 .shots/
+
+# python bytecode (tests/e2e mock)
+__pycache__/
+*.pyc

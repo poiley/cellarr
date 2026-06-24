@@ -1,0 +1,229 @@
+//! The live download-client factory: build a [`DownloadClient`] from a persisted
+//! [`DownloadClientConfig`].
+//!
+//! The pipeline's Grab/Track stages take a single [`cellarr_core::DownloadClient`].
+//! A deployment persists [`DownloadClientConfig`] rows (kind + open-ended
+//! `settings` JSON: host, credentials, paths) via the db `ConfigRepo`. This module
+//! reads the *enabled* client of highest priority at run time and constructs the
+//! matching native adapter (qBittorrent / SABnzbd / NZBGet / Blackhole), wrapping
+//! it in [`ConfiguredDownloadClient`] so the runner is driven over one concrete
+//! `DownloadClient` whose error type is unified (mirroring the indexer set's
+//! `NabAdapter`).
+//!
+//! Reading the config when the handler is built (rather than caching a live
+//! socket) keeps the chosen client in step with CRUD writes: a client added or
+//! reconfigured through the API is visible to the next pipeline run with no code
+//! change here. Each adapter routes its I/O through the real `reqwest` transport.
+
+use async_trait::async_trait;
+use cellarr_core::{DownloadClient, DownloadClientConfig, DownloadStatus, GrabRequest};
+use cellarr_download::{
+    BlackholeClient, BlackholeSettings, DownloadError, NzbgetClient, NzbgetSettings,
+    QbittorrentClient, QbittorrentSettings, SabnzbdClient, SabnzbdSettings,
+};
+
+/// A failure building a download client from its persisted configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum DownloadClientFactoryError {
+    /// The configured client's `kind` is not one this build supports.
+    #[error("unsupported download client kind '{kind}'")]
+    UnsupportedKind {
+        /// The unrecognized kind string.
+        kind: String,
+    },
+
+    /// The client's `settings` JSON was missing or malformed for its kind (e.g.
+    /// no `baseUrl`/`apiKey`), so no adapter could be built from it.
+    #[error("download client '{name}' is misconfigured: {reason}")]
+    Misconfigured {
+        /// The configured client's name.
+        name: String,
+        /// Why the adapter could not be built.
+        reason: String,
+    },
+}
+
+/// One built native download-client adapter, dispatched dynamically by kind.
+///
+/// Implements [`DownloadClient`] with a single unified [`DownloadError`], so the
+/// [`PipelineRunner`](cellarr_jobs::PipelineRunner) (generic over `D:
+/// DownloadClient`) is driven over this one type regardless of which client was
+/// configured.
+pub enum ConfiguredDownloadClient {
+    /// qBittorrent (torrent, WebUI v2).
+    Qbittorrent(QbittorrentClient),
+    /// SABnzbd (Usenet).
+    Sabnzbd(SabnzbdClient),
+    /// NZBGet (Usenet, JSON-RPC).
+    Nzbget(NzbgetClient),
+    /// Blackhole / watch-folder (universal).
+    Blackhole(BlackholeClient),
+}
+
+impl ConfiguredDownloadClient {
+    /// Build the adapter for one [`DownloadClientConfig`], reading its open-ended
+    /// `settings` JSON (the shape the API shim persists) into the kind's typed
+    /// settings struct.
+    ///
+    /// # Errors
+    /// [`DownloadClientFactoryError::UnsupportedKind`] for a kind this build does
+    /// not ship; [`DownloadClientFactoryError::Misconfigured`] when the settings
+    /// JSON does not deserialize for the chosen kind.
+    pub fn from_config(config: &DownloadClientConfig) -> Result<Self, DownloadClientFactoryError> {
+        let kind = config.kind.to_ascii_lowercase();
+        let name = config.name.clone();
+        let category = config.category.clone();
+        let misconfigured = |reason: String| DownloadClientFactoryError::Misconfigured {
+            name: name.clone(),
+            reason,
+        };
+        match kind.as_str() {
+            "qbittorrent" | "qbit" => {
+                let settings: QbittorrentSettings =
+                    parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Qbittorrent(QbittorrentClient::new(
+                    name, settings, category,
+                )))
+            }
+            "sabnzbd" | "sab" => {
+                let settings: SabnzbdSettings = parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Sabnzbd(SabnzbdClient::new(name, settings, category)))
+            }
+            "nzbget" => {
+                let settings: NzbgetSettings = parse_settings(config).map_err(&misconfigured)?;
+                Ok(Self::Nzbget(NzbgetClient::new(name, settings, category)))
+            }
+            "blackhole" => {
+                let settings: BlackholeSettings = parse_settings(config).map_err(&misconfigured)?;
+                // The blackhole writes either `.torrent`/`.nzb`/`.magnet` jobs; the
+                // protocol it stamps onto a job comes from the client config (a
+                // torrent blackhole vs a usenet one).
+                Ok(Self::Blackhole(BlackholeClient::new(
+                    name,
+                    settings,
+                    category,
+                    config.protocol,
+                )))
+            }
+            other => Err(DownloadClientFactoryError::UnsupportedKind {
+                kind: other.to_string(),
+            }),
+        }
+    }
+}
+
+/// Deserialize a client's open-ended `settings` JSON into its typed struct,
+/// rendering a readable reason on failure.
+fn parse_settings<T: serde::de::DeserializeOwned>(
+    config: &DownloadClientConfig,
+) -> Result<T, String> {
+    serde_json::from_value(config.settings.clone())
+        .map_err(|e| format!("settings JSON does not match {} schema: {e}", config.kind))
+}
+
+#[async_trait]
+impl DownloadClient for ConfiguredDownloadClient {
+    type Error = DownloadError;
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Qbittorrent(c) => <QbittorrentClient as DownloadClient>::name(c),
+            Self::Sabnzbd(c) => <SabnzbdClient as DownloadClient>::name(c),
+            Self::Nzbget(c) => <NzbgetClient as DownloadClient>::name(c),
+            Self::Blackhole(c) => <BlackholeClient as DownloadClient>::name(c),
+        }
+    }
+
+    async fn add(&self, grab: &GrabRequest) -> Result<String, Self::Error> {
+        // Fully-qualified trait calls: each concrete client has inherent methods
+        // of the same name (`status`/`remove` with a richer signature), so we must
+        // dispatch through the `DownloadClient` trait impl in `cellarr-download`
+        // (which projects the rich progress onto the core `DownloadStatus`).
+        match self {
+            Self::Qbittorrent(c) => DownloadClient::add(c, grab).await,
+            Self::Sabnzbd(c) => DownloadClient::add(c, grab).await,
+            Self::Nzbget(c) => DownloadClient::add(c, grab).await,
+            Self::Blackhole(c) => DownloadClient::add(c, grab).await,
+        }
+    }
+
+    async fn status(&self, download_id: &str) -> Result<DownloadStatus, Self::Error> {
+        match self {
+            Self::Qbittorrent(c) => DownloadClient::status(c, download_id).await,
+            Self::Sabnzbd(c) => DownloadClient::status(c, download_id).await,
+            Self::Nzbget(c) => DownloadClient::status(c, download_id).await,
+            Self::Blackhole(c) => DownloadClient::status(c, download_id).await,
+        }
+    }
+
+    async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), Self::Error> {
+        match self {
+            Self::Qbittorrent(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Sabnzbd(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Nzbget(c) => DownloadClient::remove(c, download_id, delete_data).await,
+            Self::Blackhole(c) => DownloadClient::remove(c, download_id, delete_data).await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::{DownloadClientId, Protocol};
+    use serde_json::json;
+
+    fn config(kind: &str, settings: serde_json::Value) -> DownloadClientConfig {
+        DownloadClientConfig {
+            id: DownloadClientId::new(),
+            name: format!("test-{kind}"),
+            kind: kind.to_string(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 0,
+            category: "cellarr".to_string(),
+            settings,
+        }
+    }
+
+    #[test]
+    fn builds_qbittorrent_from_settings() {
+        let c = config(
+            "qbittorrent",
+            json!({"base_url": "http://localhost:8080", "username": "u", "password": "p"}),
+        );
+        let built = ConfiguredDownloadClient::from_config(&c).expect("qbit builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Qbittorrent(_)));
+        assert_eq!(DownloadClient::name(&built), "test-qbittorrent");
+    }
+
+    #[test]
+    fn builds_blackhole_carrying_protocol() {
+        let c = config(
+            "blackhole",
+            json!({"watch_folder": "/w", "completed_folder": "/c"}),
+        );
+        let built = ConfiguredDownloadClient::from_config(&c).expect("blackhole builds");
+        assert!(matches!(built, ConfiguredDownloadClient::Blackhole(_)));
+    }
+
+    #[test]
+    fn unsupported_kind_is_rejected() {
+        let c = config("deluge", json!({}));
+        // `ConfiguredDownloadClient` is not `Debug` (it holds live transports), so
+        // match the result directly rather than `expect_err`.
+        assert!(matches!(
+            ConfiguredDownloadClient::from_config(&c),
+            Err(DownloadClientFactoryError::UnsupportedKind { .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_settings_are_misconfigured() {
+        // qbittorrent settings require base_url/username/password.
+        let c = config("qbittorrent", json!({"base_url": "http://x"}));
+        assert!(matches!(
+            ConfiguredDownloadClient::from_config(&c),
+            Err(DownloadClientFactoryError::Misconfigured { .. })
+        ));
+    }
+}

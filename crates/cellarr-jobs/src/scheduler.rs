@@ -53,6 +53,21 @@ pub trait JobHandler: Send + Sync {
     async fn handle(&self, kind: &JobKind) -> JobResult;
 }
 
+/// A handler injected as a trait object is itself a [`JobHandler`], so the
+/// generic [`Scheduler`] can be instantiated with `H = Arc<dyn JobHandler>`.
+///
+/// This is the seam the daemon uses to swap a concrete pipeline handler in
+/// behind the same scheduler type the API constructs by default: callers hold a
+/// `Scheduler<C, S, Arc<dyn JobHandler>>` and inject whichever handler they
+/// built (the event-only default, or the live pipeline handler) without the
+/// scheduler's type changing.
+#[async_trait]
+impl JobHandler for Arc<dyn JobHandler> {
+    async fn handle(&self, kind: &JobKind) -> JobResult {
+        (**self).handle(kind).await
+    }
+}
+
 /// Tracks per-resource in-flight counts to enforce concurrency caps and which
 /// dedup keys are currently leased (running) to enforce deduplication.
 #[derive(Debug, Default)]

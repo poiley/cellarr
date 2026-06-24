@@ -32,11 +32,11 @@ pub fn build_media_registry(db: &Database) -> MediaRegistry {
     let mut registry = MediaRegistry::new();
     registry.register(MovieModule::new(
         DbContentLookup::new(db.clone()),
-        DbMetadataLookup,
+        DbMetadataLookup::new(db.clone()),
     ));
     registry.register(TvModule::new(
         DbContentLookup::new(db.clone()),
-        DbMetadataLookup,
+        DbMetadataLookup::new(db.clone()),
     ));
     registry
 }
@@ -73,9 +73,16 @@ impl ContentLookup for DbContentLookup {
             if node.media_type != media_type {
                 continue;
             }
+            // The candidate's title is the indexed title the FTS hit matched on,
+            // read back so `match_release`'s title-confidence check compares the
+            // parsed release title against a real title rather than a node id.
+            let title = content
+                .title_for(id)
+                .await?
+                .unwrap_or_else(|| node_title(&node));
             out.push(ContentCandidate {
                 content_ref: node.as_ref(),
-                title: node_title(&node),
+                title,
                 aliases: Vec::new(),
             });
         }
@@ -83,11 +90,23 @@ impl ContentLookup for DbContentLookup {
     }
 }
 
-/// A [`MetadataLookup`] placeholder until `cellarr-db` exposes a public
-/// identity-link query. Reports identity as unresolved so modules degrade
-/// gracefully (the pipeline routes such nodes to identification) instead of the
-/// wiring crate issuing raw SQL against another crate's tables.
-struct DbMetadataLookup;
+/// A [`MetadataLookup`] backed by the DB's indexed content title (the FTS
+/// `title_for` query). This resolves a node's identity — the title used to build
+/// search terms and to render naming tokens — directly from the title cellarr
+/// already indexes on ingest, so the pipeline's Discover/Identify/Rename stages
+/// have a real title to work with rather than reporting every node unresolved.
+/// External ids / year are not yet modeled on the content row, so they are left
+/// empty; a node with no indexed title still reports unresolved (graceful
+/// degrade) rather than fabricating one.
+struct DbMetadataLookup {
+    db: Database,
+}
+
+impl DbMetadataLookup {
+    fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
 
 #[async_trait]
 impl MetadataLookup for DbMetadataLookup {
@@ -95,18 +114,34 @@ impl MetadataLookup for DbMetadataLookup {
 
     async fn movie_meta(
         &self,
-        _content: ContentId,
+        content: ContentId,
         _title_id: Option<TitleId>,
     ) -> Result<Option<MovieMeta>, Self::Error> {
-        Ok(None)
+        let Some(title) = self.db.content().title_for(content).await? else {
+            return Ok(None);
+        };
+        Ok(Some(MovieMeta {
+            title,
+            aliases: Vec::new(),
+            year: None,
+            external_ids: Vec::new(),
+        }))
     }
 
     async fn series_meta(
         &self,
-        _content: ContentId,
+        content: ContentId,
         _title_id: Option<TitleId>,
     ) -> Result<Option<SeriesMeta>, Self::Error> {
-        Ok(None)
+        let Some(title) = self.db.content().title_for(content).await? else {
+            return Ok(None);
+        };
+        Ok(Some(SeriesMeta {
+            title,
+            aliases: Vec::new(),
+            year: None,
+            external_ids: Vec::new(),
+        }))
     }
 }
 

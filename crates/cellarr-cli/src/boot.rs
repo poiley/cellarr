@@ -85,11 +85,33 @@ impl Daemon {
         // 3. State (which builds the command scheduler over a shared event bus).
         //    The live metadata seam is attached so `series/lookup`/`movie/lookup`
         //    resolve real identities.
+        //
+        //    Crucially, the daemon injects the **live pipeline handler** as the
+        //    scheduler's `JobHandler`, so a fired job (a cron RssSync/MissingItem
+        //    search, or a manual `/api/v3/command` search) drives the *real*
+        //    pipeline — search → grab → import — rather than only emitting an
+        //    event. The handler owns the shared media registry and reads the
+        //    configured indexers + download client from the DB per run, and
+        //    publishes the matching domain events onto the same bus the API's
+        //    state.new() handler used (so the UI/WS still observe progress). The
+        //    API crate keeps its event-only default handler for its own tests.
         let auth = match &config.api.api_key {
             Some(key) => AuthConfig::with_key(key.clone()),
             None => AuthConfig::disabled(),
         };
-        let state = AppState::new(db, auth).with_metadata(metadata);
+        let registry = std::sync::Arc::new(media);
+        let handler_db = db.clone();
+        let handler_registry = std::sync::Arc::clone(&registry);
+        let state = AppState::new_with_handler(db, auth, move |events| {
+            let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
+            std::sync::Arc::new(crate::pipeline::LivePipelineHandler::new(
+                handler_db,
+                handler_registry,
+                events,
+                env,
+            ))
+        })
+        .with_metadata(metadata);
 
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;

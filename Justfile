@@ -206,6 +206,21 @@ oracle-trash-cf *ARGS:
     echo "oracle-trash-cf {{run_id}}: sonarr=${sport} radarr=${rport}"
     cargo test -p cellarr-decide --test oracle_trash_cf -- --ignored --nocapture {{ARGS}}
 
+# --- live end-to-end (Docker-gated; NOT part of `just ci`) ----------------------------------
+
+# Full live e2e: a real Torznab mock + a real qBittorrent (Docker) + the real
+# `cellarr run` daemon, proving the whole chain search->grab->track->import.
+# DETERMINISTIC (the payload is pre-staged so the torrent rechecks to Completed
+# in seconds) and HARD-BOUNDED (every wait is capped; an 8-min watchdog kills it).
+# Tears down all qbittorrent-cellarr-* containers + the daemon on any exit.
+# Requires Docker; gated out of `just ci`.
+e2e: (_build-cli)
+    tests/e2e/run.sh
+
+# Build just the daemon binary the e2e drives (debug).
+_build-cli:
+    cargo build -p cellarr-cli
+
 # --- web ------------------------------------------------------------------------------------
 
 # Typecheck + component tests + the SRCL-only lint.

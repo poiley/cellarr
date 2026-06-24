@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 use cellarr_db::Database;
 
+use cellarr_jobs::JobHandler;
+
 use crate::auth::AuthConfig;
-use crate::commands::{build_scheduler, ApiScheduler};
+use crate::commands::{build_scheduler, build_scheduler_with, ApiScheduler};
 use crate::events::EventBus;
 use crate::metadata::MetadataLookup;
 use crate::tags::TagStore;
@@ -38,12 +40,43 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Build the state from its parts. The scheduler is constructed here so it
-    /// shares the one [`EventBus`] every other component publishes to.
+    /// Build the state from its parts, using the default event-only command
+    /// handler. The scheduler is constructed here so it shares the one
+    /// [`EventBus`] every other component publishes to.
+    ///
+    /// This is the API's own (offline/test) assembly: a submitted command runs a
+    /// real job that publishes its domain event, but does no search/grab/import.
+    /// The daemon injects a live pipeline handler via [`AppState::new_with_handler`].
     #[must_use]
     pub fn new(db: Database, auth: AuthConfig) -> Self {
         let events = EventBus::default();
         let scheduler = Arc::new(build_scheduler(events.clone()));
+        Self::from_parts(db, auth, events, scheduler)
+    }
+
+    /// Build the state with an **injected** [`JobHandler`], so the daemon's live
+    /// pipeline handler drives both the cron jobs (RssSync/MissingItemSearch) and
+    /// a manual `/api/v3/command` search through the real pipeline.
+    ///
+    /// `make_handler` is given the shared [`EventBus`] so the handler publishes
+    /// the same [`DomainEvent`](crate::events::DomainEvent)s the UI/WS observe,
+    /// onto the one bus every other component uses.
+    #[must_use]
+    pub fn new_with_handler<F>(db: Database, auth: AuthConfig, make_handler: F) -> Self
+    where
+        F: FnOnce(EventBus) -> Arc<dyn JobHandler>,
+    {
+        let events = EventBus::default();
+        let scheduler = Arc::new(build_scheduler_with(make_handler(events.clone())));
+        Self::from_parts(db, auth, events, scheduler)
+    }
+
+    fn from_parts(
+        db: Database,
+        auth: AuthConfig,
+        events: EventBus,
+        scheduler: Arc<ApiScheduler>,
+    ) -> Self {
         Self {
             db,
             events,

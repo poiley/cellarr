@@ -44,19 +44,38 @@ impl JobHandler for CommandHandler {
     }
 }
 
-/// The concrete scheduler the API holds: system clock, in-memory store, the
-/// event-bridging handler. The store is in-memory because the API process is the
-/// long-lived daemon; a `cellarr-db`-backed store can be swapped behind the same
-/// `JobStore` seam without touching handlers.
-pub type ApiScheduler = Scheduler<SystemClock, MemoryJobStore, CommandHandler>;
+/// The scheduler the API holds: system clock, in-memory store, and an
+/// **injected** [`JobHandler`] held as a trait object.
+///
+/// The handler is type-erased (`Arc<dyn JobHandler>`) so the *daemon* can inject
+/// the live pipeline handler (search→grab→import) while keeping the same
+/// scheduler type the API constructs by default. The store is in-memory because
+/// the API process is the long-lived daemon; a `cellarr-db`-backed store can be
+/// swapped behind the same `JobStore` seam without touching handlers.
+pub type ApiScheduler = Scheduler<SystemClock, MemoryJobStore, Arc<dyn JobHandler>>;
 
-/// Build the scheduler used by the command endpoints.
+/// Build the scheduler with the default event-only [`CommandHandler`].
+///
+/// This keeps the API crate self-contained (its own tests get a real scheduler
+/// whose jobs actually fire and publish events) without depending on the whole
+/// pipeline assembly. The daemon overrides the handler via
+/// [`build_scheduler_with`].
 #[must_use]
 pub fn build_scheduler(events: EventBus) -> ApiScheduler {
+    build_scheduler_with(Arc::new(CommandHandler::new(events)))
+}
+
+/// Build the scheduler over an injected [`JobHandler`].
+///
+/// The daemon passes its `LivePipelineHandler` here so both the cron jobs
+/// (RssSync/MissingItemSearch) and a manual `/api/v3/command` search drive the
+/// real pipeline; the API's own tests pass the event-only [`CommandHandler`].
+#[must_use]
+pub fn build_scheduler_with(handler: Arc<dyn JobHandler>) -> ApiScheduler {
     Scheduler::new(
         Arc::new(SystemClock),
         Arc::new(MemoryJobStore::new()),
-        Arc::new(CommandHandler::new(events)),
+        Arc::new(handler),
         ConcurrencyCaps::default(),
     )
 }

@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 
 pub mod boot;
+pub mod clients;
 pub mod config;
 pub mod metadata;
+pub mod pipeline;
 pub mod registry;
