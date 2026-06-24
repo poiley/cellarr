@@ -179,6 +179,12 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/tag", post(create_tag))
         .route("/tag/{id}", put(update_tag))
         .route("/tag/{id}", delete(delete_tag))
+        .route("/qualityprofile", post(create_quality_profile))
+        .route("/qualityProfile", post(create_quality_profile))
+        .route("/qualityprofile/{id}", put(update_quality_profile))
+        .route("/qualityProfile/{id}", put(update_quality_profile))
+        .route("/qualityprofile/{id}", delete(delete_quality_profile))
+        .route("/qualityProfile/{id}", delete(delete_quality_profile))
         .route("/customformat", post(create_custom_format))
         .route("/customFormat", post(create_custom_format))
         .route("/customformat/{id}", put(update_custom_format))
@@ -544,25 +550,16 @@ async fn delete_tag(State(fs): State<FaceState>, Path(id): Path<String>) -> ApiR
 /// ecosystem reads, now including `formatItems[]` (CF id→score) and
 /// `minUpgradeFormatScore` so Recyclarr/Configarr can sync custom-format scores.
 async fn quality_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
-    let libs = fs.state.db.config().list_libraries().await?;
     let repo = fs.state.db.profiles();
     let formats = repo.custom_formats().await?;
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
-    for lib in libs {
-        if let Some(media) = fs.face.fixed_media() {
-            if lib.media_type != media {
-                continue;
-            }
-        }
-        let pid = lib.default_quality_profile;
-        if !seen.insert(pid.as_uuid()) {
-            continue;
-        }
-        if let Some(profile) = repo.get_profile(pid).await? {
-            out.push(v3_quality_profile(&profile, &formats, fs.face));
-        }
-    }
+    // List every stored profile (not just the libraries' defaults) so a profile
+    // created via the shim/UI shows up here without first being attached to a
+    // library — the round-trip the management UI relies on.
+    let profiles = repo.list_profiles().await?;
+    let out = profiles
+        .iter()
+        .map(|profile| v3_quality_profile(profile, &formats, fs.face))
+        .collect();
     Ok(Json(out))
 }
 
@@ -649,6 +646,151 @@ async fn quality_profile_schema(State(fs): State<FaceState>) -> Json<Value> {
         );
     }
     Json(schema)
+}
+
+/// v3 quality-profile write body (the Recyclarr/Configarr/UI-pushed shape). The
+/// `items[]` carry the allowed qualities (each `quality.id` is a cellarr rank,
+/// `allowed` gates inclusion); `cutoff` is the rank upgrades stop at; the
+/// `*FormatScore` fields carry the custom-format score thresholds. Unknown extra
+/// fields (`language`, `formatItems`, …) are ignored — cellarr scores custom
+/// formats on the [`CustomFormat`] itself, which Recyclarr reads back separately.
+#[derive(Debug, Deserialize)]
+struct QualityProfileBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(rename = "upgradeAllowed", default = "default_true")]
+    upgrade_allowed: bool,
+    #[serde(default)]
+    cutoff: Option<u32>,
+    #[serde(rename = "minFormatScore", default)]
+    min_format_score: i32,
+    #[serde(rename = "cutoffFormatScore", default)]
+    cutoff_format_score: i32,
+    #[serde(default)]
+    items: Vec<ProfileItemBody>,
+}
+
+/// One `items[]` entry: an allowed-quality flag against a `quality` (whose `id`
+/// is the cellarr rank). Grouped items (the originals' nested `items[]`) are
+/// flattened — only leaf `quality.id`s that are `allowed` contribute a rank.
+#[derive(Debug, Deserialize)]
+struct ProfileItemBody {
+    #[serde(default)]
+    quality: Option<ProfileQualityBody>,
+    #[serde(default)]
+    allowed: bool,
+    #[serde(default)]
+    items: Vec<ProfileItemBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileQualityBody {
+    #[serde(default)]
+    id: Option<u32>,
+}
+
+/// Collect the allowed quality ranks from a (possibly nested) `items[]` tree.
+fn collect_allowed_ranks(items: &[ProfileItemBody], out: &mut Vec<u32>) {
+    for item in items {
+        if item.allowed {
+            if let Some(rank) = item.quality.as_ref().and_then(|q| q.id) {
+                if !out.contains(&rank) {
+                    out.push(rank);
+                }
+            }
+        }
+        collect_allowed_ranks(&item.items, out);
+    }
+}
+
+/// Build a cellarr [`QualityProfile`] from a v3 write body, preserving `id` and
+/// (on update) the prior `required_languages` cellarr models but v3 does not
+/// carry in this shape.
+fn profile_from_body(
+    body: &QualityProfileBody,
+    id: cellarr_core::QualityProfileId,
+    required_languages: Vec<String>,
+) -> cellarr_core::QualityProfile {
+    let mut allowed_qualities = Vec::new();
+    collect_allowed_ranks(&body.items, &mut allowed_qualities);
+    // If the body carries no items at all, fall back to the default ranking so a
+    // bare create still yields a usable profile rather than one allowing nothing.
+    if allowed_qualities.is_empty() {
+        allowed_qualities = cellarr_core::QualityRanking::default()
+            .qualities
+            .iter()
+            .map(|q| q.rank)
+            .collect();
+    }
+    let cutoff_quality = body
+        .cutoff
+        .or_else(|| allowed_qualities.iter().copied().max())
+        .unwrap_or(0);
+    cellarr_core::QualityProfile {
+        id,
+        name: body.name.clone().unwrap_or_default(),
+        allowed_qualities,
+        upgrades_allowed: body.upgrade_allowed,
+        cutoff_quality,
+        min_custom_format_score: body.min_format_score,
+        upgrade_until_custom_format_score: body.cutoff_format_score,
+        required_languages,
+    }
+}
+
+async fn create_quality_profile(
+    State(fs): State<FaceState>,
+    Json(body): Json<QualityProfileBody>,
+) -> ApiResult<Json<Value>> {
+    let name = body.name.clone().unwrap_or_default();
+    if name.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "quality profile name is required".into(),
+        ));
+    }
+    let repo = fs.state.db.profiles();
+    let profile = profile_from_body(&body, cellarr_core::QualityProfileId::new(), Vec::new());
+    repo.upsert_profile(&profile).await?;
+    let formats = repo.custom_formats().await?;
+    Ok(Json(v3_quality_profile(&profile, &formats, fs.face)))
+}
+
+async fn update_quality_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<QualityProfileBody>,
+) -> ApiResult<Json<Value>> {
+    // The v3 profile `id` is the cellarr QualityProfileId rendered as its uuid
+    // string (see `v3_quality_profile`), so it parses straight back.
+    let pid = parse_profile_id(&id)?;
+    let repo = fs.state.db.profiles();
+    let existing = repo
+        .get_profile(pid)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("quality profile {id} not found")))?;
+    let profile = profile_from_body(&body, existing.id, existing.required_languages);
+    repo.upsert_profile(&profile).await?;
+    let formats = repo.custom_formats().await?;
+    Ok(Json(v3_quality_profile(&profile, &formats, fs.face)))
+}
+
+async fn delete_quality_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let pid = parse_profile_id(&id)?;
+    // Idempotent: a missing profile still returns 200 (the *arr clients expect
+    // delete to succeed even on a re-issued delete).
+    fs.state.db.profiles().delete_profile(pid).await?;
+    Ok(Json(json!({})))
+}
+
+/// Parse a v3 quality-profile path id (the profile's uuid string) into a typed
+/// [`QualityProfileId`], mapping a malformed id to a structured 400.
+fn parse_profile_id(raw: &str) -> ApiResult<cellarr_core::QualityProfileId> {
+    raw.parse::<uuid::Uuid>()
+        .map(cellarr_core::QualityProfileId::from_uuid)
+        .map_err(|_| ApiError::BadRequest(format!("invalid qualityprofile id: {raw}")))
 }
 
 // --- qualitydefinition -----------------------------------------------------

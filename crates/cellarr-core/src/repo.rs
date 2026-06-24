@@ -129,6 +129,10 @@ pub trait ProfileRepository: Send + Sync {
         id: QualityProfileId,
     ) -> Result<Option<QualityProfile>, Self::Error>;
 
+    /// All quality profiles, ordered by name. Backs the profiles list the UI and
+    /// `/api/v3` shim present without first knowing every id.
+    async fn list_profiles(&self) -> Result<Vec<QualityProfile>, Self::Error>;
+
     /// All custom formats, used by the decision engine to score releases.
     async fn custom_formats(&self) -> Result<Vec<CustomFormat>, Self::Error>;
 }

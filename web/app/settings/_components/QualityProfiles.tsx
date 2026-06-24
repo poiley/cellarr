@@ -1,11 +1,16 @@
 'use client';
 
-// Settings — Quality Profiles. Composed only from SRCL primitives:
-//   Select (pick a profile), Input (rename), Checkbox (upgrades allowed),
-//   a controlled RadioButton group (cutoff quality), NumberRangeSlider
-//   (minimum custom-format score), and a ListItem list whose order is edited
-//   with SRCL Buttons (move up/down) — "reorder via ListItems".
-// Reads GET /api/v1/qualityprofiles; writes POST /api/v1/qualityprofiles/:id.
+// Settings — Quality Profiles (full CRUD). Composed only from SRCL primitives:
+//   Select (pick a profile), Input (rename), Checkbox (upgrades allowed +
+//   per-quality allow), a controlled RadioButton group (cutoff quality),
+//   NumberRangeSlider (minimum custom-format score), a ListItem list whose
+//   order is edited with SRCL Buttons (move up/down), and a ButtonGroup with
+//   New / Save / Delete actions.
+// Reads GET /api/v3/qualityprofile (where the seeded profiles actually live —
+// the native /api/v1/qualityprofiles route returns []); creates via POST,
+// edits via PUT (updateQualityProfile), and removes via DELETE
+// (deleteQualityProfile). New-profile defaults are seeded from the quality
+// ladder reported by GET /api/v3/qualitydefinition.
 
 import * as React from 'react';
 
@@ -23,7 +28,7 @@ import Text from '@components/Text';
 import ListItem from '@components/ListItem';
 
 import { ApiError, CellarrClient, api as defaultApi } from '@lib/api/client';
-import type { QualityProfile } from '@lib/api/types';
+import type { QualityProfile, QualityDefinition } from '@lib/api/types';
 
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import {
@@ -39,7 +44,8 @@ interface QualityItem {
   allowed: boolean;
 }
 
-// View-model derived from the open QualityProfile shape.
+// View-model derived from the open QualityProfile shape. `id === ''` marks a
+// not-yet-persisted (new) profile.
 interface ProfileForm {
   id: string;
   name: string;
@@ -49,71 +55,122 @@ interface ProfileForm {
   qualities: QualityItem[];
 }
 
-function asQualities(raw: unknown): QualityItem[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((q, i) => {
-    const obj = (q ?? {}) as Record<string, unknown>;
-    return {
-      id: String(obj.id ?? obj.name ?? i),
-      name: String(obj.name ?? obj.id ?? `Quality ${i + 1}`),
-      allowed: obj.allowed !== false,
-    };
+// Flatten the v3 `items[]` ladder (each row carries a `quality` or is a group)
+// into the simple {id,name,allowed} list the form edits.
+function asQualities(items: QualityProfile['items']): QualityItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item, i) => {
+    const q = item.quality;
+    const id = q ? String(q.id) : String(item.id ?? item.name ?? i);
+    const name = q?.name ?? item.name ?? `Quality ${i + 1}`;
+    return { id, name, allowed: item.allowed !== false };
   });
 }
 
 function toForm(p: QualityProfile): ProfileForm {
-  const rec = p as Record<string, unknown>;
   return {
     id: p.id,
     name: typeof p.name === 'string' ? p.name : p.id,
-    upgradesAllowed: rec.upgrades_allowed !== false,
-    cutoff: typeof rec.cutoff === 'string' ? rec.cutoff : '',
-    minScore: typeof rec.min_format_score === 'number' ? rec.min_format_score : 0,
-    qualities: asQualities(rec.qualities ?? rec.items),
+    upgradesAllowed: p.upgradeAllowed !== false,
+    cutoff: p.cutoff !== undefined && p.cutoff !== null ? String(p.cutoff) : '',
+    minScore: typeof p.minFormatScore === 'number' ? p.minFormatScore : 0,
+    qualities: asQualities(p.items),
+  };
+}
+
+// Build a blank form for a brand-new profile. When the quality definitions are
+// available, seed the ladder from them (all allowed) so the user can immediately
+// pick a cutoff; otherwise start empty.
+function blankForm(defs: QualityDefinition[] | undefined): ProfileForm {
+  const qualities: QualityItem[] = Array.isArray(defs)
+    ? defs
+        .filter((d) => d && d.quality)
+        .map((d) => ({ id: String(d.quality.id), name: d.quality.name, allowed: true }))
+    : [];
+  return {
+    id: '',
+    name: '',
+    upgradesAllowed: true,
+    cutoff: qualities.length ? qualities[qualities.length - 1].id : '',
+    minScore: 0,
+    qualities,
   };
 }
 
 const MAX_SCORE = 1000;
+const NEW_OPTION = '+ New profile';
 
 const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) => {
   const load = React.useCallback(
-    (signal: AbortSignal) => client.getQualityProfiles(undefined, signal),
+    (signal: AbortSignal) => client.getQualityProfiles(signal),
     [client]
   );
   const { data, loading, error, reload } = useAsync<QualityProfile[]>(load);
 
+  // Quality definitions seed the ladder for new profiles. Best-effort: a failure
+  // here just means an empty starting ladder, so it never blocks the screen.
+  const loadDefs = React.useCallback(
+    (signal: AbortSignal) => client.getQualityDefinitions(signal),
+    [client]
+  );
+  const { data: defsData } = useAsync<QualityDefinition[]>(loadDefs);
+
   const [selectedId, setSelectedId] = React.useState<string>('');
+  const [creating, setCreating] = React.useState(false);
   const [form, setForm] = React.useState<ProfileForm | undefined>(undefined);
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [saveError, setSaveError] = React.useState<ApiError | undefined>(undefined);
+  const [deleting, setDeleting] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
 
   const profiles = data ?? [];
 
-  // When data arrives, default the selection to the first profile.
+  // When data arrives, default the selection to the first profile (unless the
+  // user is mid-create).
   React.useEffect(() => {
-    if (profiles.length && !selectedId) {
+    if (!creating && profiles.length && !selectedId) {
       setSelectedId(profiles[0].id);
     }
-  }, [profiles, selectedId]);
+  }, [profiles, selectedId, creating]);
 
-  // Load the selected profile into an editable form.
+  // Load the selected profile (or a blank one when creating) into the form.
   React.useEffect(() => {
+    if (creating) {
+      setForm(blankForm(defsData));
+      setSaved(false);
+      setSaveError(undefined);
+      setConfirmDelete(false);
+      return;
+    }
     const found = profiles.find((p) => p.id === selectedId);
     setForm(found ? toForm(found) : undefined);
     setSaved(false);
     setSaveError(undefined);
-  }, [selectedId, data]);
+    setConfirmDelete(false);
+  }, [selectedId, data, creating, defsData]);
 
   if (loading) return <Loading label="Loading quality profiles" />;
   if (error) return <ErrorBanner error={error} />;
-  if (!profiles.length) {
-    return <EmptyState>No quality profiles yet. Create one to get started.</EmptyState>;
-  }
 
   const update = (patch: Partial<ProfileForm>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
     setSaved(false);
+  };
+
+  const startNew = () => {
+    setCreating(true);
+    setSelectedId('');
+    setSaved(false);
+    setSaveError(undefined);
+    setConfirmDelete(false);
+  };
+
+  const cancelNew = () => {
+    setCreating(false);
+    setSelectedId(profiles.length ? profiles[0].id : '');
+    setSaved(false);
+    setSaveError(undefined);
   };
 
   const move = (index: number, dir: -1 | 1) => {
@@ -146,16 +203,29 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
     setSaved(false);
     setSaveError(undefined);
     try {
-      await client.request<QualityProfile>(`/qualityprofiles/${form.id}`, {
-        method: 'POST',
-        body: {
-          name: form.name,
-          upgrades_allowed: form.upgradesAllowed,
-          cutoff: form.cutoff || undefined,
-          min_format_score: form.minScore,
-          qualities: form.qualities.map((q) => ({ id: q.id, name: q.name, allowed: q.allowed })),
-        },
-      });
+      const original = form.id ? profiles.find((p) => p.id === form.id) : undefined;
+      const cutoffNum = Number.parseInt(form.cutoff, 10);
+      const body: Partial<QualityProfile> = {
+        ...original,
+        name: form.name,
+        upgradeAllowed: form.upgradesAllowed,
+        cutoff: Number.isNaN(cutoffNum) ? (original?.cutoff ?? 0) : cutoffNum,
+        minFormatScore: form.minScore,
+        items: form.qualities.map((q) => ({
+          quality: { id: Number.parseInt(q.id, 10) || 0, name: q.name },
+          allowed: q.allowed,
+          items: [],
+        })),
+      };
+      if (form.id) {
+        body.id = form.id;
+        await client.updateQualityProfile(form.id, body);
+      } else {
+        delete body.id;
+        const created = await client.createQualityProfile(body);
+        setCreating(false);
+        if (created && typeof created.id === 'string') setSelectedId(created.id);
+      }
       setSaved(true);
       reload();
     } catch (err) {
@@ -165,22 +235,71 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
     }
   };
 
+  const remove = async () => {
+    if (!form || !form.id) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setDeleting(true);
+    setSaveError(undefined);
+    try {
+      await client.deleteQualityProfile(form.id);
+      setConfirmDelete(false);
+      setSelectedId('');
+      reload();
+    } catch (err) {
+      setSaveError(toApiError(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const profileName = (p: QualityProfile) => (typeof p.name === 'string' ? p.name : p.id);
+
+  // Empty + not creating: offer a way to create the first profile.
+  if (!profiles.length && !creating) {
+    return (
+      <Card title="Quality Profiles">
+        <EmptyState>No quality profiles yet. Create one to get started.</EmptyState>
+        <div style={{ marginTop: '1ch' }}>
+          <ButtonGroup items={[{ body: 'New profile', onClick: startNew }]} />
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card title="Quality Profiles">
-      <div style={{ marginBottom: '1ch' }}>
-        <Text style={{ opacity: 0.6 }}>Profile</Text>
-        <Select
-          name="quality-profile"
-          options={profiles.map((p) => (typeof p.name === 'string' ? p.name : p.id))}
-          defaultValue={form ? form.name : ''}
-          onChange={(value) => {
-            const match = profiles.find(
-              (p) => (typeof p.name === 'string' ? p.name : p.id) === value
-            );
-            if (match) setSelectedId(match.id);
-          }}
-        />
-      </div>
+      {!creating ? (
+        <div style={{ marginBottom: '1ch' }}>
+          <Text style={{ opacity: 0.6 }}>Profile</Text>
+          <div style={{ display: 'flex', gap: '1ch', alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <Select
+                name="quality-profile"
+                options={[...profiles.map(profileName), NEW_OPTION]}
+                defaultValue={form ? form.name : ''}
+                onChange={(value) => {
+                  if (value === NEW_OPTION) {
+                    startNew();
+                    return;
+                  }
+                  const match = profiles.find((p) => profileName(p) === value);
+                  if (match) setSelectedId(match.id);
+                }}
+              />
+            </div>
+            <Button theme="SECONDARY" onClick={startNew}>
+              New profile
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: '1ch' }}>
+          <Badge>new profile</Badge>
+        </div>
+      )}
 
       {form ? (
         <>
@@ -191,6 +310,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
             <Input
               name="profile-name"
               aria-label="Profile name"
+              placeholder="My profile"
               value={form.name}
               onChange={(e) => update({ name: e.target.value })}
             />
@@ -198,6 +318,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
 
           <div style={{ margin: '1ch 0' }}>
             <Checkbox
+              key={`${form.id || 'new'}-upgrades`}
               name="upgrades-allowed"
               defaultChecked={form.upgradesAllowed}
               onChange={(e) => update({ upgradesAllowed: e.target.checked })}
@@ -223,6 +344,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                       }}
                     >
                       <Checkbox
+                        key={`${form.id || 'new'}-quality-${q.id}`}
                         name={`quality-${q.id}`}
                         defaultChecked={q.allowed}
                         onChange={(e) => toggleAllowed(q.id, e.target.checked)}
@@ -286,7 +408,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
               Minimum custom-format score <Badge>{form.minScore}</Badge>
             </Text>
             <NumberRangeSlider
-              key={`${form.id}-${form.minScore}`}
+              key={`${form.id || 'new'}-${form.minScore}`}
               defaultValue={form.minScore}
               min={0}
               max={MAX_SCORE}
@@ -308,14 +430,31 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
 
           {saveError ? <ErrorBanner error={saveError} /> : null}
           {saved ? <SuccessBanner>Profile saved.</SuccessBanner> : null}
+          {confirmDelete ? (
+            <SuccessBanner>
+              Delete this profile? Click Delete again to confirm.
+            </SuccessBanner>
+          ) : null}
 
           <div style={{ marginTop: '1ch' }}>
             <ButtonGroup
               items={[
                 {
-                  body: saving ? 'Saving…' : 'Save profile',
+                  body: saving ? 'Saving…' : creating ? 'Create profile' : 'Save profile',
                   onClick: saving ? undefined : save,
                 },
+                ...(creating
+                  ? [{ body: 'Cancel', onClick: cancelNew }]
+                  : [
+                      {
+                        body: deleting
+                          ? 'Deleting…'
+                          : confirmDelete
+                            ? 'Confirm delete'
+                            : 'Delete profile',
+                        onClick: deleting ? undefined : remove,
+                      },
+                    ]),
               ]}
             />
           </div>

@@ -8,6 +8,7 @@
 
 mod common;
 
+use cellarr_core::repo::ProfileRepository;
 use common::{
     seed_library, start_authed, start_open, start_with_metadata, MockMetadata, TEST_API_KEY,
 };
@@ -95,6 +96,146 @@ async fn qualityprofile_has_v3_shape_for_tv() {
         .await
         .expect("json");
     assert_eq!(body.as_array().expect("array").len(), 1);
+}
+
+#[tokio::test]
+async fn qualityprofile_create_list_update_delete_roundtrip() {
+    use serde_json::json;
+    let server = start_open().await;
+    let client = server.client();
+
+    // CREATE a profile allowing two ranks, cutoff at the higher one.
+    let created: Value = client
+        .post(server.url("/api/v3/qualityprofile"))
+        .json(&json!({
+            "name": "My HD",
+            "upgradeAllowed": true,
+            "cutoff": 21,
+            "minFormatScore": 0,
+            "cutoffFormatScore": 100,
+            "items": [
+                { "quality": { "id": 20, "name": "WEBDL-1080p" }, "allowed": true },
+                { "quality": { "id": 21, "name": "Bluray-1080p" }, "allowed": true },
+                { "quality": { "id": 5, "name": "DVDSCR" }, "allowed": false },
+            ],
+        }))
+        .send()
+        .await
+        .expect("create request")
+        .json()
+        .await
+        .expect("create json");
+    assert_eq!(created["name"], "My HD");
+    assert_eq!(created["cutoff"], 21);
+    assert_eq!(created["minFormatScore"], 0);
+    assert_eq!(created["cutoffFormatScore"], 100);
+    let id = created["id"]
+        .as_str()
+        .expect("id is a uuid string")
+        .to_string();
+
+    // LIST shows it (and only it — a fresh server has no other profiles).
+    let list: Value = client
+        .get(server.url("/api/v3/qualityprofile"))
+        .send()
+        .await
+        .expect("list request")
+        .json()
+        .await
+        .expect("list json");
+    let arr = list.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], id);
+    assert_eq!(arr[0]["name"], "My HD");
+
+    // The created profile persisted exactly the allowed ranks (DVDSCR excluded).
+    let pid = cellarr_core::QualityProfileId::from_uuid(id.parse().expect("uuid"));
+    let stored = server
+        .state
+        .db
+        .profiles()
+        .get_profile(pid)
+        .await
+        .expect("get_profile")
+        .expect("present");
+    assert_eq!(stored.allowed_qualities, vec![20, 21]);
+    assert_eq!(stored.cutoff_quality, 21);
+    assert!(stored.upgrades_allowed);
+
+    // UPDATE: rename, narrow to one rank, turn upgrades off.
+    let updated: Value = client
+        .put(server.url(&format!("/api/v3/qualityprofile/{id}")))
+        .json(&json!({
+            "name": "My UHD",
+            "upgradeAllowed": false,
+            "cutoff": 25,
+            "minFormatScore": 10,
+            "cutoffFormatScore": 200,
+            "items": [
+                { "quality": { "id": 25, "name": "Bluray-2160p" }, "allowed": true },
+            ],
+        }))
+        .send()
+        .await
+        .expect("update request")
+        .json()
+        .await
+        .expect("update json");
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["name"], "My UHD");
+    assert_eq!(updated["upgradeAllowed"], false);
+    assert_eq!(updated["minFormatScore"], 10);
+
+    let stored = server
+        .state
+        .db
+        .profiles()
+        .get_profile(pid)
+        .await
+        .expect("get_profile")
+        .expect("present");
+    assert_eq!(stored.allowed_qualities, vec![25]);
+    assert!(!stored.upgrades_allowed);
+    assert_eq!(stored.min_custom_format_score, 10);
+    assert_eq!(stored.upgrade_until_custom_format_score, 200);
+
+    // DELETE removes it.
+    let del = client
+        .delete(server.url(&format!("/api/v3/qualityprofile/{id}")))
+        .send()
+        .await
+        .expect("delete request");
+    assert_eq!(del.status(), 200);
+    assert!(server
+        .state
+        .db
+        .profiles()
+        .get_profile(pid)
+        .await
+        .expect("get_profile")
+        .is_none());
+
+    // A re-issued delete is idempotent (still 200).
+    let del2 = client
+        .delete(server.url(&format!("/api/v3/qualityprofile/{id}")))
+        .send()
+        .await
+        .expect("delete request 2");
+    assert_eq!(del2.status(), 200);
+}
+
+#[tokio::test]
+async fn qualityprofile_create_requires_name() {
+    use serde_json::json;
+    let server = start_open().await;
+    let resp = server
+        .client()
+        .post(server.url("/api/v3/qualityprofile"))
+        .json(&json!({ "name": "", "items": [] }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), 400);
 }
 
 // --- lookup ----------------------------------------------------------------

@@ -2,7 +2,7 @@
 // glue over the loosely-typed `/api/v1` content shapes (docs/09-api.md) — no UI
 // primitives here, so this stays SRCL-only-rule compliant.
 
-import type { ContentNode, ContentRef, Library, MediaFile } from '@lib/api/types';
+import type { ContentNode, ContentRef, Library, MediaFile, Movie, Series } from '@lib/api/types';
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length ? v : undefined;
@@ -131,4 +131,115 @@ export function basename(path: unknown): string {
   return parts[parts.length - 1] || p;
 }
 
-export type { ContentNode, ContentRef, Library, MediaFile };
+// ---------------------------------------------------------------------------
+// Library content view-model.
+//
+// The Library browse screen shows the *actual* items in a library — the movies
+// and series the user is tracking — not the sparse `/api/v1` content refs (which
+// carry no title/year/quality and don't enumerate every title). The rich data
+// lives on the v3 catalogues (`GET /api/v3/movie`, `GET /api/v3/series`), so we
+// normalize a Movie/Series into a single row shape the screen can render and
+// drill into. Drill-in works because the v3 ids resolve through `/api/v1/content/{id}`.
+// ---------------------------------------------------------------------------
+
+/** A normalized, render-ready row for the Library content view. */
+export interface LibraryItem {
+  id: string;
+  title: string;
+  year?: number;
+  /** `movie` | `series` — what kind of catalogue entry this row came from. */
+  kind: 'movie' | 'series';
+  monitored: boolean;
+  hasFile: boolean;
+  /** Best-effort quality label (from the movie's imported file, when present). */
+  quality?: string;
+  /** Bytes on disk, when reported. */
+  sizeOnDisk?: number;
+  /** Root folder the entry lives under — used to scope it to a library. */
+  rootFolderPath?: string;
+  /** Poster/art URL, when the API surfaces one (fixtures currently don't). */
+  poster?: string;
+}
+
+/** Pull a poster/cover URL out of whatever image shape the API might carry. */
+export function posterOf(item: unknown): string | undefined {
+  const r = rec(item);
+  // Direct fields some Radarr-shaped payloads use.
+  const direct = str(r.poster) ?? str(r.remotePoster);
+  if (direct) return direct;
+  // Radarr `images: [{ coverType, url, remoteUrl }]`.
+  const images = r.images;
+  if (Array.isArray(images)) {
+    const cover =
+      images.find((i) => str(rec(i).coverType) === 'poster') ?? images[0];
+    return str(rec(cover).remoteUrl) ?? str(rec(cover).url);
+  }
+  return undefined;
+}
+
+/** Best-effort quality name off a v3 movie (its imported `movieFile.quality`). */
+export function movieQuality(movie: unknown): string | undefined {
+  const file = rec(movie).movieFile;
+  const name = str(rec(rec(file).quality).name) ?? str(rec(rec(rec(file).quality).quality).name);
+  return name;
+}
+
+/** Normalize a v3 Movie into a {@link LibraryItem}. */
+export function movieToItem(movie: Movie): LibraryItem {
+  const r = rec(movie);
+  return {
+    id: movie.id,
+    title: titleOf(movie),
+    year: num(r.year),
+    kind: 'movie',
+    monitored: r.monitored === true,
+    hasFile: r.hasFile === true,
+    quality: movieQuality(movie),
+    sizeOnDisk: num(r.sizeOnDisk),
+    rootFolderPath: str(r.rootFolderPath),
+    poster: posterOf(movie),
+  };
+}
+
+/** Normalize a v3 Series into a {@link LibraryItem}. */
+export function seriesToItem(series: Series): LibraryItem {
+  const r = rec(series);
+  return {
+    id: series.id,
+    title: titleOf(series),
+    year: num(r.year),
+    kind: 'series',
+    monitored: r.monitored === true,
+    hasFile: r.hasFile === true,
+    quality: undefined,
+    sizeOnDisk: num(r.sizeOnDisk),
+    rootFolderPath: str(r.rootFolderPath),
+    poster: posterOf(series),
+  };
+}
+
+/**
+ * Does a catalogue entry belong to this library? Movies/series are tied to a
+ * library by the root folder they live under; we treat a missing root folder on
+ * either side as a match so a single-library install still shows everything.
+ */
+export function itemInLibrary(item: LibraryItem, lib: Library): boolean {
+  const roots = Array.isArray(lib.root_folders) ? lib.root_folders : [];
+  if (roots.length === 0 || !item.rootFolderPath) return true;
+  return roots.some((root) => {
+    const a = normRoot(root);
+    const b = normRoot(item.rootFolderPath!);
+    return b === a || b.startsWith(`${a}/`);
+  });
+}
+
+function normRoot(p: string): string {
+  return p.replace(/[\\/]+$/, '');
+}
+
+/** Monitored/file/quality state tokens for the row's status badges. */
+export function fileLabel(item: LibraryItem): 'DOWNLOADED' | 'MISSING' {
+  return item.hasFile ? 'DOWNLOADED' : 'MISSING';
+}
+
+export type { ContentNode, ContentRef, Library, MediaFile, Movie, Series };

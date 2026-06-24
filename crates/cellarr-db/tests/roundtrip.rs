@@ -625,6 +625,66 @@ async fn profile_and_custom_format_round_trip() {
 }
 
 #[tokio::test]
+async fn profile_list_update_delete_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let profiles = db.profiles();
+
+    // A fresh DB has no profiles.
+    assert!(profiles.list_profiles().await.expect("list").is_empty());
+
+    let a = QualityProfile {
+        id: QualityProfileId::new(),
+        name: "Bravo".to_string(),
+        allowed_qualities: vec![20, 21],
+        upgrades_allowed: true,
+        cutoff_quality: 21,
+        min_custom_format_score: 0,
+        upgrade_until_custom_format_score: 100,
+        required_languages: vec![],
+    };
+    let b = QualityProfile {
+        id: QualityProfileId::new(),
+        name: "Alpha".to_string(),
+        allowed_qualities: vec![25],
+        upgrades_allowed: false,
+        cutoff_quality: 25,
+        min_custom_format_score: 10,
+        upgrade_until_custom_format_score: 200,
+        required_languages: vec!["en".to_string()],
+    };
+    profiles.upsert_profile(&a).await.expect("upsert a");
+    profiles.upsert_profile(&b).await.expect("upsert b");
+
+    // list_profiles returns both, ordered by name (Alpha before Bravo).
+    let listed = profiles.list_profiles().await.expect("list");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0], b);
+    assert_eq!(listed[1], a);
+
+    // upsert with the same id updates in place.
+    let a_updated = QualityProfile {
+        name: "Bravo Updated".to_string(),
+        allowed_qualities: vec![21],
+        ..a.clone()
+    };
+    profiles.upsert_profile(&a_updated).await.expect("update a");
+    let got = profiles
+        .get_profile(a.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(got, a_updated);
+    assert_eq!(profiles.list_profiles().await.expect("list").len(), 2);
+
+    // delete is idempotent and removes the row.
+    assert!(profiles.delete_profile(a.id).await.expect("delete"));
+    assert!(!profiles.delete_profile(a.id).await.expect("delete again"));
+    assert!(profiles.get_profile(a.id).await.expect("get").is_none());
+    let remaining = profiles.list_profiles().await.expect("list");
+    assert_eq!(remaining, vec![b]);
+}
+
+#[tokio::test]
 async fn fts_search_finds_indexed_titles() {
     let (_dir, db) = temp_db().await;
     let config = db.config();

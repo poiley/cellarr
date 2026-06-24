@@ -47,6 +47,35 @@ impl ProfileRepo {
             .await
     }
 
+    /// Delete a quality profile by id.
+    ///
+    /// Idempotent: returns `true` if a row was removed, `false` if no such
+    /// profile existed.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_profile(&self, id: QualityProfileId) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM quality_profile WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     /// Insert or replace a custom format.
     ///
     /// # Errors
@@ -91,6 +120,18 @@ impl ProfileRepository for ProfileRepo {
         };
         let body: String = row.try_get("body")?;
         Ok(Some(serde_json::from_str(&body)?))
+    }
+
+    async fn list_profiles(&self) -> Result<Vec<QualityProfile>> {
+        let rows = sqlx::query("SELECT body FROM quality_profile ORDER BY name ASC")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let body: String = row.try_get("body")?;
+                serde_json::from_str(&body).map_err(DbError::from)
+            })
+            .collect()
     }
 
     async fn custom_formats(&self) -> Result<Vec<CustomFormat>> {

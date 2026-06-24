@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react';
 
 // --- mocks ------------------------------------------------------------------
 // The Library screen reads the singleton API client and Next's navigation
-// hooks; we mock both so the component can be exercised in jsdom.
+// hooks; we mock both so the component can be exercised in jsdom. Content is
+// driven from the v3 catalogues (listMovies/listSeries), scoped to a library by
+// its media type + root folders — not the sparse /api/v1 content refs.
 
 const listLibraries = vi.fn();
-const listContent = vi.fn();
+const listMovies = vi.fn();
+const listSeries = vi.fn();
 const push = vi.fn();
 let searchParams = new URLSearchParams();
 
@@ -16,7 +19,8 @@ vi.mock('@lib/api/client', async () => {
     ...actual,
     api: {
       listLibraries: (...a: unknown[]) => listLibraries(...a),
-      listContent: (...a: unknown[]) => listContent(...a),
+      listMovies: (...a: unknown[]) => listMovies(...a),
+      listSeries: (...a: unknown[]) => listSeries(...a),
     },
   };
 });
@@ -55,9 +59,38 @@ const LIBS = [
   { id: 'lib-tv', media_type: 'tv', name: 'TV', root_folders: ['/tv'], default_quality_profile: 'p2' },
 ];
 
-const CONTENT = [
-  { id: 'c1', library_id: 'lib-tv', media_type: 'tv', kind: 'series', monitored: true, coords: { type: 'movie' }, title: 'Breaking Bad' },
-  { id: 'c2', library_id: 'lib-tv', media_type: 'tv', kind: 'episode', monitored: false, coords: { type: 'episode', season: 2, episode: 5 }, title: 'Episode Five' },
+const MOVIES = [
+  {
+    id: 'm1',
+    title: 'Synthetic Movie One',
+    year: 1999,
+    monitored: true,
+    hasFile: true,
+    rootFolderPath: '/movies',
+    sizeOnDisk: 8_000_000_000,
+    movieFile: { quality: { quality: { name: 'Bluray-1080p' } } },
+  },
+  {
+    id: 'm2',
+    title: 'Synthetic Movie Two',
+    year: 2005,
+    monitored: false,
+    hasFile: false,
+    rootFolderPath: '/movies',
+    sizeOnDisk: 0,
+  },
+];
+
+const SERIES = [
+  {
+    id: 's1',
+    title: 'Synthetic Series',
+    monitored: true,
+    hasFile: false,
+    seriesType: 'standard',
+    rootFolderPath: '/tv',
+    sizeOnDisk: 0,
+  },
 ];
 
 describe('Library browse screen', () => {
@@ -66,7 +99,8 @@ describe('Library browse screen', () => {
     window.localStorage.clear();
     searchParams = new URLSearchParams();
     listLibraries.mockReset();
-    listContent.mockReset();
+    listMovies.mockReset();
+    listSeries.mockReset();
     push.mockReset();
   });
   afterEach(() => cleanup());
@@ -88,44 +122,75 @@ describe('Library browse screen', () => {
     });
   });
 
-  it('loads and renders the selected library content in a table', async () => {
+  it('renders the movies that belong to a movie library', async () => {
     listLibraries.mockResolvedValue(LIBS);
-    listContent.mockResolvedValue(CONTENT);
-    searchParams = new URLSearchParams('lib=lib-tv');
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
     renderPage();
 
     await waitFor(() => {
-      expect(listContent).toHaveBeenCalledWith('lib-tv', expect.anything());
+      expect(listMovies).toHaveBeenCalled();
     });
     await waitFor(() => {
-      expect(screen.getByText('Breaking Bad')).toBeTruthy();
-      // status badge text from monitoredLabel
+      // Titles + year + quality + download/monitor state are all surfaced.
+      expect(screen.getByText('Synthetic Movie One')).toBeTruthy();
+      expect(screen.getByText('Synthetic Movie Two')).toBeTruthy();
+      expect(screen.getByText('1999')).toBeTruthy();
+      expect(screen.getByText('Bluray-1080p')).toBeTruthy();
       expect(screen.getAllByText('MONITORED').length).toBeGreaterThan(0);
       expect(screen.getAllByText('UNMONITORED').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('DOWNLOADED').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('MISSING').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('renders the series for a tv library', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listSeries.mockResolvedValue(SERIES);
+    searchParams = new URLSearchParams('lib=lib-tv');
+    renderPage();
+
+    await waitFor(() => expect(listSeries).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByText('Synthetic Series')).toBeTruthy();
+    });
+  });
+
+  it('drills into the item-detail screen when a row is clicked', async () => {
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
+    fireEvent.click(screen.getByText('Synthetic Movie One'));
+
+    await waitFor(() => {
+      expect(push).toHaveBeenCalledWith('/content/?id=m1');
     });
   });
 
   it('filters content by the filter input', async () => {
     listLibraries.mockResolvedValue(LIBS);
-    listContent.mockResolvedValue(CONTENT);
-    searchParams = new URLSearchParams('lib=lib-tv');
+    listMovies.mockResolvedValue(MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
     const { container } = renderPage();
 
-    await waitFor(() => expect(screen.getByText('Breaking Bad')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
 
     const input = container.querySelector('input[name="content-filter"]') as HTMLInputElement;
     expect(input).toBeTruthy();
-    fireEvent.change(input, { target: { value: 'Five' } });
+    fireEvent.change(input, { target: { value: 'Two' } });
 
     await waitFor(() => {
-      expect(screen.queryByText('Breaking Bad')).toBeNull();
-      expect(screen.getByText('Episode Five')).toBeTruthy();
+      expect(screen.queryByText('Synthetic Movie One')).toBeNull();
+      expect(screen.getByText('Synthetic Movie Two')).toBeTruthy();
     });
   });
 
   it('shows an empty state when the selected library has no content', async () => {
     listLibraries.mockResolvedValue(LIBS);
-    listContent.mockResolvedValue([]);
+    listMovies.mockResolvedValue([]);
     searchParams = new URLSearchParams('lib=lib-movies');
     renderPage();
     await waitFor(() => {
@@ -136,8 +201,8 @@ describe('Library browse screen', () => {
   it('surfaces an error when content fails to load', async () => {
     const { ApiError } = await import('@lib/api/client');
     listLibraries.mockResolvedValue(LIBS);
-    listContent.mockRejectedValue(new ApiError('internal_error', 'boom', 500));
-    searchParams = new URLSearchParams('lib=lib-tv');
+    listMovies.mockRejectedValue(new ApiError('internal_error', 'boom', 500));
+    searchParams = new URLSearchParams('lib=lib-movies');
     renderPage();
     await waitFor(() => {
       expect(screen.getByText(/Could not load content/i)).toBeTruthy();

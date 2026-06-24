@@ -71,12 +71,28 @@ describe('CellarrClient', () => {
     expect(init.method).toBe('POST');
   });
 
-  it('builds query strings for quality profiles and history', async () => {
+  it('reads quality profiles from the v3 shim (where the data lives)', async () => {
+    // The seeded profiles live at /api/v3/qualityprofile; the native
+    // /api/v1/qualityprofiles route returns [] — this is the profiles read bug.
     const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
     const client = new CellarrClient({ fetchImpl });
-    await client.getQualityProfiles(['a', 'b']);
-    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v1/qualityprofiles?ids=a%2Cb');
+    await client.getQualityProfiles();
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v3/qualityprofile');
+  });
+
+  it('builds query strings for history', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    const client = new CellarrClient({ fetchImpl });
     await client.getHistory('cid');
-    expect(fetchImpl.mock.calls[1][0]).toBe('/api/v1/history?content=cid');
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v1/history?content=cid');
+  });
+
+  it('targets the v3 shim via requestV3 and the typed v3 helpers', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    const client = new CellarrClient({ fetchImpl });
+    await client.listMovies();
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v3/movie');
+    await client.listEpisodes('s1');
+    expect(fetchImpl.mock.calls[1][0]).toBe('/api/v3/episode?seriesId=s1');
   });
 });

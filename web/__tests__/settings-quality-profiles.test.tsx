@@ -12,22 +12,70 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function findSaveCall(fetchImpl: ReturnType<typeof vi.fn>) {
+  // Edits route to PUT /api/v3/qualityprofile/:id.
   return fetchImpl.mock.calls.find(
-    ([url, opts]) => String(url).includes('/qualityprofiles/hd') && opts?.method === 'POST'
+    ([url, opts]) => String(url).includes('/qualityprofile/hd') && opts?.method === 'PUT'
   );
 }
 
+function findCreateCall(fetchImpl: ReturnType<typeof vi.fn>) {
+  // Creates route to POST /api/v3/qualityprofile (no id segment).
+  return fetchImpl.mock.calls.find(
+    ([url, opts]) =>
+      /\/qualityprofile($|\?)/.test(String(url)) && opts?.method === 'POST'
+  );
+}
+
+function findDeleteCall(fetchImpl: ReturnType<typeof vi.fn>) {
+  return fetchImpl.mock.calls.find(
+    ([url, opts]) => String(url).includes('/qualityprofile/hd') && opts?.method === 'DELETE'
+  );
+}
+
+// The real Radarr-compatible shape served by GET /api/v3/qualityprofile.
 const PROFILE = {
   id: 'hd',
   name: 'HD-1080p',
-  upgrades_allowed: true,
-  cutoff: 'bluray',
-  min_format_score: 50,
-  qualities: [
-    { id: 'web', name: 'WEB-1080p', allowed: true },
-    { id: 'bluray', name: 'Bluray-1080p', allowed: true },
+  upgradeAllowed: true,
+  cutoff: 21,
+  cutoffFormatScore: 100,
+  minFormatScore: 50,
+  minUpgradeFormatScore: 1,
+  language: { id: -2, name: 'Original' },
+  formatItems: [],
+  items: [
+    { allowed: true, items: [], quality: { id: 20, name: 'WEB-1080p', resolution: 0, source: 'unknown' } },
+    { allowed: true, items: [], quality: { id: 21, name: 'Bluray-1080p', resolution: 0, source: 'unknown' } },
   ],
 };
+
+const DEFINITIONS = [
+  { id: 1, title: 'WEB-1080p', weight: 1, minSize: 0, maxSize: null, preferredSize: null, quality: { id: 20, name: 'WEB-1080p', resolution: 0, source: 'unknown' } },
+  { id: 2, title: 'Bluray-1080p', weight: 2, minSize: 0, maxSize: null, preferredSize: null, quality: { id: 21, name: 'Bluray-1080p', resolution: 0, source: 'unknown' } },
+];
+
+// Route a request to the right canned response by URL/method, so the order in
+// which the profiles + definitions loaders fire doesn't matter.
+function makeRouter(profiles: unknown = [PROFILE]) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.includes('/qualitydefinition')) return Promise.resolve(jsonResponse(DEFINITIONS));
+    if (url.includes('/qualityprofile') && method === 'GET') {
+      return Promise.resolve(jsonResponse(profiles));
+    }
+    if (url.includes('/qualityprofile') && method === 'PUT') {
+      return Promise.resolve(jsonResponse(PROFILE));
+    }
+    if (url.includes('/qualityprofile') && method === 'POST') {
+      return Promise.resolve(jsonResponse({ ...PROFILE, id: 'new1', name: 'Created' }));
+    }
+    if (url.includes('/qualityprofile') && method === 'DELETE') {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(jsonResponse([]));
+  });
+}
 
 describe('QualityProfiles (settings)', () => {
   beforeEach(() => {
@@ -43,7 +91,7 @@ describe('QualityProfiles (settings)', () => {
   });
 
   it('shows a loading state then renders the loaded profile', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([PROFILE]));
+    const fetchImpl = makeRouter();
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
     expect(screen.getByRole('status').textContent).toMatch(/loading/i);
@@ -53,29 +101,28 @@ describe('QualityProfiles (settings)', () => {
   });
 
   it('renders an error banner when the load fails', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ code: 'unauthorized', message: 'no api key' }, 401));
+    const fetchImpl = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/qualitydefinition')) return Promise.resolve(jsonResponse(DEFINITIONS));
+      return Promise.resolve(jsonResponse({ code: 'unauthorized', message: 'no api key' }, 401));
+    });
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/no api key/));
   });
 
-  it('renders an empty state when there are no profiles', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+  it('renders an empty state with a create affordance when there are no profiles', async () => {
+    const fetchImpl = makeRouter([]);
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
     await waitFor(() =>
       expect(screen.getByRole('status').textContent).toMatch(/no quality profiles/i)
     );
+    expect(screen.getByText('New profile')).toBeTruthy();
   });
 
-  it('POSTs the edited profile on save', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([PROFILE]))
-      .mockResolvedValueOnce(jsonResponse(PROFILE))
-      .mockResolvedValueOnce(jsonResponse([PROFILE]));
+  it('PUTs the edited profile on save', async () => {
+    const fetchImpl = makeRouter();
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
     await waitFor(() => expect(screen.getByLabelText('Profile name')).toBeTruthy());
@@ -86,15 +133,11 @@ describe('QualityProfiles (settings)', () => {
     await waitFor(() => expect(findSaveCall(fetchImpl)).toBeTruthy());
     const body = JSON.parse((findSaveCall(fetchImpl)![1] as RequestInit).body as string);
     expect(body.name).toBe('My HD');
-    expect(body.qualities).toHaveLength(2);
+    expect(body.items).toHaveLength(2);
   });
 
   it('reorders qualities with the move controls', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([PROFILE]))
-      .mockResolvedValueOnce(jsonResponse(PROFILE))
-      .mockResolvedValueOnce(jsonResponse([PROFILE]));
+    const fetchImpl = makeRouter();
     const client = new CellarrClient({ fetchImpl });
     render(<QualityProfiles client={client} />);
     await waitFor(() => expect(screen.getByLabelText('Move WEB-1080p down')).toBeTruthy());
@@ -104,7 +147,47 @@ describe('QualityProfiles (settings)', () => {
 
     await waitFor(() => expect(findSaveCall(fetchImpl)).toBeTruthy());
     const body = JSON.parse((findSaveCall(fetchImpl)![1] as RequestInit).body as string);
-    expect(body.qualities[0].id).toBe('bluray');
-    expect(body.qualities[1].id).toBe('web');
+    expect(body.items[0].quality.id).toBe(21); // Bluray-1080p moved up
+    expect(body.items[1].quality.id).toBe(20); // WEB-1080p moved down
+  });
+
+  it('creates a new profile via POST, seeding qualities from definitions', async () => {
+    const fetchImpl = makeRouter();
+    const client = new CellarrClient({ fetchImpl });
+    render(<QualityProfiles client={client} />);
+    await waitFor(() => expect(screen.getByLabelText('Profile name')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('New profile'));
+    // Now in create mode: name is blank, the ladder is seeded from definitions.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Profile name') as HTMLInputElement).value).toBe('')
+    );
+    expect(screen.getByText('Create profile')).toBeTruthy();
+    // The ladder is seeded from the quality definitions.
+    await waitFor(() => expect(screen.getByLabelText('Move WEB-1080p down')).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Fresh' } });
+    fireEvent.click(screen.getByText('Create profile'));
+
+    await waitFor(() => expect(findCreateCall(fetchImpl)).toBeTruthy());
+    const body = JSON.parse((findCreateCall(fetchImpl)![1] as RequestInit).body as string);
+    expect(body.name).toBe('Fresh');
+    expect(body.id).toBeUndefined();
+    expect(body.items.length).toBe(2);
+  });
+
+  it('deletes a profile after a confirm click', async () => {
+    const fetchImpl = makeRouter();
+    const client = new CellarrClient({ fetchImpl });
+    render(<QualityProfiles client={client} />);
+    await waitFor(() => expect(screen.getByText('Delete profile')).toBeTruthy());
+
+    // First click only arms the confirm — no DELETE yet.
+    fireEvent.click(screen.getByText('Delete profile'));
+    expect(findDeleteCall(fetchImpl)).toBeFalsy();
+    await waitFor(() => expect(screen.getByText('Confirm delete')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Confirm delete'));
+    await waitFor(() => expect(findDeleteCall(fetchImpl)).toBeTruthy());
   });
 });

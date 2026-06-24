@@ -1,9 +1,12 @@
 'use client';
 
 // Library browse screen (docs/10-ui.md §screen-mapping). Lists the daemon's
-// libraries, and for the selected library shows its monitored content in a
-// SRCL DataTable with a filter Input and a status Select. Selecting an item in
-// the "Open item" Select navigates to the item-detail screen (/content?id=…).
+// libraries, and for the selected library shows the ACTUAL items it tracks —
+// the movies and series, with year, monitored + downloaded state, quality and
+// size — not the sparse `/api/v1` content refs. The rich data comes from the v3
+// catalogues (`listMovies()` / `listSeries()`), scoped to the library by its
+// root folders. Selecting a row drills into the item-detail screen
+// (/content?id=…); the v3 ids resolve there through `/api/v1/content/{id}`.
 //
 // Composed exclusively from vendored SRCL primitives + the API client + the
 // theme/app glue, per the SRCL-only rule.
@@ -13,7 +16,9 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import Card from '@components/Card';
-import DataTable from '@components/DataTable';
+import Table from '@components/Table';
+import TableRow from '@components/TableRow';
+import TableColumn from '@components/TableColumn';
 import Input from '@components/Input';
 import Select from '@components/Select';
 import Badge from '@components/Badge';
@@ -25,13 +30,15 @@ import ActionListItem from '@components/ActionListItem';
 
 import AppShell from '@app/_components/AppShell';
 import { api, ApiError } from '@lib/api/client';
-import type { ContentRef, Library } from '@lib/api/types';
+import type { Library } from '@lib/api/types';
 import {
-  coordsLabel,
-  kindOf,
+  fileLabel,
+  formatSize,
+  itemInLibrary,
   mediaTypeOf,
-  monitoredLabel,
-  titleOf,
+  movieToItem,
+  seriesToItem,
+  type LibraryItem,
 } from '@app/library/format';
 
 const STATUS_OPTIONS = ['All', 'Monitored', 'Unmonitored'];
@@ -47,13 +54,23 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+/** Load the items that belong to a library, by its media type, from v3. */
+async function loadLibraryItems(lib: Library, signal: AbortSignal): Promise<LibraryItem[]> {
+  if (lib.media_type === 'tv') {
+    const series = await api.listSeries(signal);
+    return series.map(seriesToItem).filter((item) => itemInLibrary(item, lib));
+  }
+  const movies = await api.listMovies(signal);
+  return movies.map(movieToItem).filter((item) => itemInLibrary(item, lib));
+}
+
 function LibraryBrowser() {
   const router = useRouter();
   const params = useSearchParams();
   const activeLib = params.get('lib') ?? undefined;
 
   const [libs, setLibs] = React.useState<LoadState<Library[]>>({ phase: 'loading' });
-  const [content, setContent] = React.useState<LoadState<ContentRef[]>>({ phase: 'idle' });
+  const [content, setContent] = React.useState<LoadState<LibraryItem[]>>({ phase: 'idle' });
   const [filter, setFilter] = React.useState('');
   const [status, setStatus] = React.useState<string>('All');
 
@@ -74,16 +91,19 @@ function LibraryBrowser() {
     return () => controller.abort();
   }, []);
 
-  // Load content whenever the active library changes.
+  const libraries = libs.phase === 'ready' ? libs.data : [];
+  const selectedLibrary = libraries.find((l) => l.id === activeLib);
+
+  // Load the selected library's items whenever it changes (and once the library
+  // list is available, so we know its media type + root folders).
   React.useEffect(() => {
-    if (!activeLib) {
+    if (!activeLib || !selectedLibrary) {
       setContent({ phase: 'idle' });
       return;
     }
     const controller = new AbortController();
     setContent({ phase: 'loading' });
-    api
-      .listContent(activeLib, controller.signal)
+    loadLibraryItems(selectedLibrary, controller.signal)
       .then((data) => setContent({ phase: 'ready', data }))
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.code === 'network_error') {
@@ -93,51 +113,30 @@ function LibraryBrowser() {
         setContent({ phase: 'error', message: errorMessage(err, 'failed to load content') });
       });
     return () => controller.abort();
-  }, [activeLib]);
-
-  const libraries = libs.phase === 'ready' ? libs.data : [];
-  const selectedLibrary = libraries.find((l) => l.id === activeLib);
+  }, [activeLib, selectedLibrary]);
 
   const items = content.phase === 'ready' ? content.data : [];
 
   const filtered = React.useMemo(() => {
     const q = filter.trim().toLowerCase();
     return items.filter((item) => {
-      const node = item as Record<string, unknown>;
-      if (status === 'Monitored' && monitoredLabel(node) !== 'MONITORED') return false;
-      if (status === 'Unmonitored' && monitoredLabel(node) !== 'UNMONITORED') return false;
+      if (status === 'Monitored' && !item.monitored) return false;
+      if (status === 'Unmonitored' && item.monitored) return false;
       if (!q) return true;
-      const hay = `${titleOf(node)} ${coordsLabel(node.coords) ?? ''} ${kindOf(node) ?? ''}`.toLowerCase();
+      const hay = `${item.title} ${item.year ?? ''} ${item.kind}`.toLowerCase();
       return hay.includes(q);
     });
   }, [items, filter, status]);
 
-  const tableData = React.useMemo<string[][]>(() => {
-    const header = ['Title', 'Type', 'Detail', 'Status'];
-    const rows = filtered.map((item) => {
-      const node = item as Record<string, unknown>;
-      return [
-        titleOf(node),
-        kindOf(node) ?? mediaTypeOf(node),
-        coordsLabel(node.coords) ?? '—',
-        monitoredLabel(node),
-      ];
-    });
-    return [header, ...rows];
-  }, [filtered]);
-
-  const openOptions = React.useMemo(() => filtered.map((item) => titleOf(item as Record<string, unknown>)), [filtered]);
-
-  const onOpen = (chosenTitle: string) => {
-    const match = filtered.find((item) => titleOf(item as Record<string, unknown>) === chosenTitle);
-    if (match) router.push(`/content/?id=${encodeURIComponent(match.id)}`);
+  const onOpen = (id: string) => {
+    router.push(`/content/?id=${encodeURIComponent(id)}`);
   };
 
   return (
     <AppShell>
       <Card title="Library">
         <RowSpaceBetween>
-          <Text>Browse monitored items across your libraries.</Text>
+          <Text>Browse the movies and series across your libraries.</Text>
           <Badge>{libraries.length} libraries</Badge>
         </RowSpaceBetween>
 
@@ -165,7 +164,7 @@ function LibraryBrowser() {
               <Input
                 name="content-filter"
                 label="Filter"
-                placeholder="Filter by title or detail…"
+                placeholder="Filter by title or year…"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
@@ -194,17 +193,46 @@ function LibraryBrowser() {
                 <Text>
                   {filtered.length} of {items.length} item{items.length === 1 ? '' : 's'}
                 </Text>
-                <div style={{ flex: '0 0 28ch', minWidth: '20ch' }}>
-                  <Select
-                    name="open-item"
-                    options={openOptions}
-                    placeholder="Open item…"
-                    onChange={onOpen}
-                  />
-                </div>
               </RowSpaceBetween>
+
               {filtered.length > 0 ? (
-                <DataTable data={tableData} />
+                <Table>
+                  <TableRow>
+                    <TableColumn>Title</TableColumn>
+                    <TableColumn>Year</TableColumn>
+                    <TableColumn>Type</TableColumn>
+                    <TableColumn>Quality</TableColumn>
+                    <TableColumn>Size</TableColumn>
+                    <TableColumn>Status</TableColumn>
+                  </TableRow>
+                  {filtered.map((item) => (
+                    <TableRow
+                      key={item.id}
+                      onClick={() => onOpen(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onOpen(item.id);
+                        }
+                      }}
+                      role="link"
+                      style={{ cursor: 'pointer' }}
+                      title={`Open ${item.title}`}
+                    >
+                      <TableColumn>{item.title}</TableColumn>
+                      <TableColumn>{item.year ? String(item.year) : '—'}</TableColumn>
+                      <TableColumn>{item.kind}</TableColumn>
+                      <TableColumn>{item.quality ?? '—'}</TableColumn>
+                      <TableColumn>{item.sizeOnDisk ? formatSize(item.sizeOnDisk) : '—'}</TableColumn>
+                      <TableColumn>
+                        <Row style={{ gap: '0.5ch', flexWrap: 'wrap' }}>
+                          <Badge>{item.monitored ? 'MONITORED' : 'UNMONITORED'}</Badge>
+                          <Badge>{fileLabel(item)}</Badge>
+                        </Row>
+                      </TableColumn>
+                    </TableRow>
+                  ))}
+                </Table>
               ) : (
                 <Text>No items match the current filter.</Text>
               )}
