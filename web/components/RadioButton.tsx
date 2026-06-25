@@ -9,10 +9,14 @@ interface RadioButtonProps {
   value: string;
   selected?: boolean;
   onSelect?: (value: string) => void;
+  // Accessible name for the control. The visible label lives in a sibling div,
+  // not in the radio's <label> (which only holds the decorative dot), so without
+  // this the option announces empty. Pass the option's visible text.
+  ['aria-label']?: string;
   children?: React.ReactNode;
 }
 
-const RadioButton: React.FC<RadioButtonProps> = ({ style, name, value, selected = false, onSelect, children }) => {
+const RadioButton: React.FC<RadioButtonProps> = ({ style, name, value, selected = false, onSelect, children, ['aria-label']: ariaLabel }) => {
   const radioId = `${name}-${value}-radio`;
   const [isFocused, setIsFocused] = React.useState(false);
 
@@ -53,9 +57,9 @@ const RadioButton: React.FC<RadioButtonProps> = ({ style, name, value, selected 
       })}
       style={style}
     >
-      <input className={styles.input} id={radioId} type="radio" name={name} value={value} checked={selected} onFocus={handleFocus} onBlur={handleBlur} onKeyDown={handleKeyDown} onChange={handleChange} />
+      <input className={styles.input} id={radioId} type="radio" name={name} value={value} checked={selected} onFocus={handleFocus} onBlur={handleBlur} onKeyDown={handleKeyDown} onChange={handleChange} aria-label={ariaLabel} />
       <div className={styles.relative}>
-        <label className={styles.figure} htmlFor={radioId}>
+        <label className={styles.figure} htmlFor={radioId} aria-hidden="true">
           {selected ? <span aria-hidden="true" className={styles.dot} /> : null}
         </label>
       </div>

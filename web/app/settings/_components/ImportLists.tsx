@@ -25,7 +25,6 @@ import Input from '@components/Input';
 import Select from '@components/Select';
 import Checkbox from '@components/Checkbox';
 import Button from '@components/Button';
-import ButtonGroup from '@components/ButtonGroup';
 import Badge from '@components/Badge';
 import Divider from '@components/Divider';
 import Text from '@components/Text';
@@ -199,6 +198,16 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
       alignedRef.current = true;
     }
   }, [implementations, form.id, form.implementation]);
+
+  // Default a NEW list's quality profile to the first available one, so the
+  // dropdown never renders blank while Target Library already shows a value (and
+  // a list can't silently save with no profile). Editing keeps the stored value.
+  React.useEffect(() => {
+    if (form.id !== null) return;
+    if (!form.qualityProfileId && profiles.length) {
+      setForm((f) => (f.id === null && !f.qualityProfileId ? { ...f, qualityProfileId: profiles[0].id } : f));
+    }
+  }, [profiles, form.id, form.qualityProfileId]);
 
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -414,7 +423,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
                     Edit
                   </Button>
                   <Button
-                    theme="SECONDARY"
+                    theme="DANGER"
                     aria-label={`Remove ${cfg.name || 'import list'}`}
                     onClick={() => setPendingDelete(cfg)}
                   >
@@ -436,10 +445,13 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
       </Text>
 
       <div style={{ margin: '0.5ch 0' }}>
-        <Text style={{ opacity: 0.6 }}>Name</Text>
+        <Text style={{ opacity: 0.6 }}>
+          Name<span aria-hidden="true"> *</span>
+        </Text>
         <Input
           name="importlist-name"
           aria-label="Import list name"
+          aria-required
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
         />
@@ -449,6 +461,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
         <Text style={{ opacity: 0.6 }}>Type</Text>
         <Select
           name="importlist-type"
+          aria-label="Import list type"
           options={implementations.length ? implementations : [defaultImpl]}
           defaultValue={form.implementation}
           onChange={(value) => setForm({ ...form, implementation: value, settings: {} })}
@@ -465,6 +478,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
             <div key={f.name} style={{ margin: '0.5ch 0' }}>
               <Checkbox
                 name={`importlist-${f.name}`}
+                aria-label={label}
                 defaultChecked={form.settings[f.name] === 'true'}
                 onChange={(e) => setSetting(f.name, e.target.checked ? 'true' : 'false')}
               >
@@ -479,6 +493,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
             {isSelect ? (
               <Select
                 name={`importlist-${f.name}`}
+                aria-label={label}
                 options={(f.selectOptions ?? []).map((o) => o.value)}
                 defaultValue={form.settings[f.name] ?? String(f.value ?? '')}
                 onChange={(value) => setSetting(f.name, value)}
@@ -505,6 +520,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
           <Text style={{ opacity: 0.6 }}>Target library</Text>
           <Select
             name="importlist-library"
+            aria-label="Target library"
             options={libraries.map((l) => l.name)}
             defaultValue={libraries[0]?.name ?? ''}
           />
@@ -515,10 +531,11 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
         <Text style={{ opacity: 0.6 }}>Quality profile</Text>
         <Select
           name="importlist-quality"
-          options={['', ...profiles.map((p) => p.name)]}
-          defaultValue={
-            profiles.find((p) => p.id === form.qualityProfileId)?.name ?? ''
-          }
+          aria-label="Quality profile"
+          key={`qp-${form.id ?? 'new'}-${form.qualityProfileId}`}
+          options={profiles.map((p) => p.name)}
+          placeholder="Select a quality profile…"
+          defaultValue={profiles.find((p) => p.id === form.qualityProfileId)?.name ?? ''}
           onChange={(value) => {
             const match = profiles.find((p) => p.name === value);
             setForm({ ...form, qualityProfileId: match ? match.id : '' });
@@ -530,6 +547,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
         <Text style={{ opacity: 0.6 }}>Clean library</Text>
         <Select
           name="importlist-clean"
+          aria-label="Clean library level"
           options={CLEAN_OPTIONS.map((o) => o)}
           defaultValue={form.cleanLibraryLevel}
           onChange={(value) => setForm({ ...form, cleanLibraryLevel: value })}
@@ -542,6 +560,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
       <div style={{ display: 'flex', gap: '2ch', margin: '0.5ch 0' }}>
         <Checkbox
           name="importlist-monitor"
+          aria-label="Monitor added items"
           defaultChecked={form.shouldMonitor}
           onChange={(e) => setForm({ ...form, shouldMonitor: e.target.checked })}
         >
@@ -549,6 +568,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
         </Checkbox>
         <Checkbox
           name="importlist-enabled"
+          aria-label="Enabled"
           defaultChecked={form.enabled}
           onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
         >
@@ -558,28 +578,33 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
 
       {saveError ? <ErrorBanner error={saveError} /> : null}
 
-      <div style={{ marginTop: '1ch' }}>
-        <ButtonGroup
-          items={[
-            { body: testing ? 'Testing…' : 'Test', onClick: testing ? undefined : test },
-            {
-              body: saving ? 'Saving…' : form.id !== null ? 'Save list' : 'Save',
-              onClick: saving ? undefined : save,
-            },
-            ...(form.id !== null
-              ? [
-                  {
-                    body: 'Sync now',
-                    onClick: () => {
-                      const cfg = lists.find((l) => l.id === form.id);
-                      if (cfg) void syncNow(cfg);
-                    },
-                  },
-                  { body: 'New', onClick: reset },
-                ]
-              : []),
-          ]}
-        />
+      <div style={{ marginTop: '1ch', display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button
+          theme="PRIMARY"
+          isDisabled={saving}
+          onClick={saving ? undefined : save}
+        >
+          {saving ? 'Saving…' : form.id !== null ? 'Save list' : 'Save'}
+        </Button>
+        <Button theme="SECONDARY" isDisabled={testing} onClick={testing ? undefined : test}>
+          {testing ? 'Testing…' : 'Test'}
+        </Button>
+        {form.id !== null ? (
+          <>
+            <Button
+              theme="SECONDARY"
+              onClick={() => {
+                const cfg = lists.find((l) => l.id === form.id);
+                if (cfg) void syncNow(cfg);
+              }}
+            >
+              Sync now
+            </Button>
+            <Button theme="SECONDARY" onClick={reset}>
+              New
+            </Button>
+          </>
+        ) : null}
       </div>
 
       {pendingDelete ? (
@@ -623,7 +648,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
               </TableColumn>
               <TableColumn>
                 <Button
-                  theme="SECONDARY"
+                  theme="DANGER"
                   aria-label={`Remove exclusion ${ex.title || exclusionExternalId(ex)}`}
                   onClick={() => removeExclusion(ex)}
                 >
@@ -642,6 +667,7 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
           <Text style={{ opacity: 0.6 }}>Id type</Text>
           <Select
             name="exclusion-idtype"
+            aria-label="Exclusion id type"
             options={['tmdbId', 'tvdbId', 'imdbId']}
             defaultValue={exForm.idType}
             onChange={(value) => setExForm({ ...exForm, idType: value })}

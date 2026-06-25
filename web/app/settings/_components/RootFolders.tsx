@@ -126,7 +126,7 @@ const RootFolders: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
               <TableColumn>{humanSize(f.freeSpace)}</TableColumn>
               <TableColumn>
                 <Button
-                  theme="SECONDARY"
+                  theme="DANGER"
                   aria-label={`Remove root folder ${f.path}`}
                   onClick={() => setPendingDelete(f)}
                 >

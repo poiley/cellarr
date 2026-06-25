@@ -219,6 +219,17 @@ body {
   --ansi-bright-green: #55ff55;
 
   /* ------------------------------------------------------------------ */
+  /* Severity aliases used by Logs / System / Security warnings. The bare */
+  /* --ansi-3-yellow / --ansi-6-cyan / --ansi-8-bright-black names were   */
+  /* referenced before they existed, so those callers fell through to the */
+  /* inherited text color (white) — WARN read as plain text rather than   */
+  /* amber. These map them to readable mid-tones legible on both the white */
+  /* (theme-light) and black (theme-dark) page backgrounds.               */
+  --ansi-3-yellow: #d78700;
+  --ansi-6-cyan: #008787;
+  --ansi-8-bright-black: #808080;
+
+  /* ------------------------------------------------------------------ */
   /* 24-bit True Color (SGR 38;2;r;g;b) — outside the 256 palette       */
   /* ------------------------------------------------------------------ */
   --ansi-true-brand: #e4f221;
@@ -304,6 +315,12 @@ body.theme-light {
   --theme-background-modal-footer: var(--color-gray-66);
   --theme-background-input: var(--color-gray-89);
   --theme-border: var(--color-gray-89);
+  /*
+  Field borders on white were nearly invisible: --theme-border (gray-89) equals
+  the input fill, so an input read as a borderless gray block. A darker dedicated
+  input border gives a visible affordance on the light theme.
+  */
+  --theme-border-input: var(--color-gray-66);
   --theme-border-subdued: var(--color-gray-89-border-alpha);
   --theme-text: var(--color-black);
   --theme-button: var(--color-black);
@@ -330,6 +347,8 @@ body.theme-dark {
   --theme-background-modal-footer: var(--color-gray-35);
   --theme-background-input: var(--color-gray-23);
   --theme-border: var(--color-gray-23);
+  /* Dark theme already reads fine; keep the input border on the same token. */
+  --theme-border-input: var(--color-gray-35);
   --theme-border-subdued: var(--color-gray-23-border-alpha);
   --theme-text: var(--color-white);
   --theme-button: var(--color-white);

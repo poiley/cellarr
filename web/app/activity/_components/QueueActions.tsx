@@ -66,10 +66,6 @@ const Modal: React.FC<{
   );
 };
 
-const DANGER_STYLE: React.CSSProperties = {
-  background: 'var(--ansi-9-red)',
-  color: 'var(--ansi-15-white)',
-};
 
 export interface QueueActionsProps {
   record: QueueRecord;
@@ -194,7 +190,7 @@ const QueueActions: React.FC<QueueActionsProps> = ({ record, onChanged, client =
     <>
       <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
         <Button
-          theme="SECONDARY"
+          theme="DANGER"
           aria-label={`Remove ${record.title}`}
           onClick={() => {
             setRemoveFromClient(false);
@@ -231,6 +227,7 @@ const QueueActions: React.FC<QueueActionsProps> = ({ record, onChanged, client =
           <div style={{ margin: '1ch 0' }}>
             <Checkbox
               name="queue-remove-client"
+              aria-label="Also remove from download client (deletes the downloaded data)"
               defaultChecked={removeFromClient}
               onChange={(e) => setRemoveFromClient(e.target.checked)}
             >
@@ -240,6 +237,7 @@ const QueueActions: React.FC<QueueActionsProps> = ({ record, onChanged, client =
           <div style={{ margin: '1ch 0' }}>
             <Checkbox
               name="queue-remove-blocklist"
+              aria-label="Blocklist this release (never re-grab it)"
               defaultChecked={blocklist}
               onChange={(e) => setBlocklist(e.target.checked)}
             >
@@ -248,8 +246,8 @@ const QueueActions: React.FC<QueueActionsProps> = ({ record, onChanged, client =
           </div>
           <div style={{ display: 'flex', gap: '1ch', marginTop: '1ch' }}>
             <Button
+              theme="DANGER"
               aria-label="Confirm remove from queue"
-              style={DANGER_STYLE}
               isDisabled={busy}
               onClick={busy ? undefined : remove}
             >

@@ -169,7 +169,7 @@ const SystemBackup: React.FC<{ client?: CellarrClient }> = ({ client = defaultAp
                     Restore
                   </Button>
                   <Button
-                    theme="SECONDARY"
+                    theme="DANGER"
                     aria-label={`Delete backup ${b.name}`}
                     onClick={() => setPendingDelete(b)}
                   >

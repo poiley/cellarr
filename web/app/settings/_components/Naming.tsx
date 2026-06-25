@@ -120,11 +120,14 @@ const FormatRow: React.FC<{
         onChange={(e) => onChange(e.target.value)}
       />
 
+      {/* Token palette: compact inline chips (intrinsic width) that wrap, rather
+          than full-width stacked rows — each field's palette stays scannable. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5ch', margin: '0.5ch 0' }}>
         {tokens.map((t) => (
           <Button
             key={t.token}
             theme="SECONDARY"
+            style={{ width: 'auto' }}
             aria-label={`Insert ${t.name} token into ${label} format`}
             title={`${t.label} — e.g. ${t.example}${t.required ? ' (required)' : ''}`}
             onClick={() => onChange(`${value}${t.token}`)}
@@ -300,14 +303,9 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
         ))}
 
         <div style={{ marginTop: '1ch' }}>
-          <ButtonGroup
-            items={[
-              {
-                body: savingNaming ? 'Saving…' : 'Save naming',
-                onClick: savingNaming ? undefined : saveNaming,
-              },
-            ]}
-          />
+          <Button theme="PRIMARY" isDisabled={savingNaming} onClick={savingNaming ? undefined : saveNaming}>
+            {savingNaming ? 'Saving…' : 'Save naming'}
+          </Button>
         </div>
       </Card>
 
@@ -354,14 +352,9 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
           </div>
 
           <div style={{ marginTop: '1ch' }}>
-            <ButtonGroup
-              items={[
-                {
-                  body: savingPerms ? 'Saving…' : 'Save permissions',
-                  onClick: savingPerms ? undefined : savePermissions,
-                },
-              ]}
-            />
+            <Button theme="PRIMARY" isDisabled={savingPerms} onClick={savingPerms ? undefined : savePermissions}>
+              {savingPerms ? 'Saving…' : 'Save permissions'}
+            </Button>
           </div>
         </Card>
       </div>
@@ -395,6 +388,7 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
                 <Button
                   key={ext}
                   theme="SECONDARY"
+                  style={{ width: 'auto' }}
                   aria-label={`Remove extension ${ext}`}
                   onClick={() => removeExtension(ext)}
                 >
@@ -426,14 +420,9 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
           </div>
 
           <div style={{ marginTop: '1ch' }}>
-            <ButtonGroup
-              items={[
-                {
-                  body: savingExtra ? 'Saving…' : 'Save extra files',
-                  onClick: savingExtra ? undefined : saveExtraFiles,
-                },
-              ]}
-            />
+            <Button theme="PRIMARY" isDisabled={savingExtra} onClick={savingExtra ? undefined : saveExtraFiles}>
+              {savingExtra ? 'Saving…' : 'Save extra files'}
+            </Button>
           </div>
         </Card>
       </div>

@@ -287,6 +287,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
             <div style={{ flex: 1 }}>
               <Select
                 name="quality-profile"
+                aria-label="Quality profile"
                 options={[...profiles.map(profileName), NEW_OPTION]}
                 defaultValue={form ? form.name : ''}
                 onChange={(value) => {
@@ -329,6 +330,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
             <Checkbox
               key={`${form.id || 'new'}-upgrades`}
               name="upgrades-allowed"
+              aria-label="Allow upgrades to a higher quality"
               defaultChecked={form.upgradesAllowed}
               onChange={(e) => update({ upgradesAllowed: e.target.checked })}
             >
@@ -359,6 +361,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                       <Checkbox
                         key={`${form.id || 'new'}-quality-${q.id}`}
                         name={`quality-${q.id}`}
+                        aria-label={`Allow ${q.name}`}
                         defaultChecked={q.allowed}
                         onChange={(e) => toggleAllowed(q.id, e.target.checked)}
                       >
@@ -405,6 +408,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                     key={q.id}
                     name="cutoff-quality"
                     value={q.id}
+                    aria-label={q.name}
                     selected={form.cutoff === q.id}
                     onSelect={(value) => update({ cutoff: value })}
                   >
@@ -455,23 +459,23 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
               flexWrap: 'wrap',
             }}
           >
-            <ButtonGroup
-              items={[
-                {
-                  body: saving ? 'Saving…' : creating ? 'Create profile' : 'Save profile',
-                  onClick: saving ? undefined : save,
-                },
-                ...(creating ? [{ body: 'Cancel', onClick: cancelNew }] : []),
-              ]}
-            />
-            {/* Delete is visually separated from Save and tinted as a danger
-                action; it opens a confirm dialog rather than mutating inline. */}
+            {/* Primary Save is the inverse full-width affordance shared across
+                every settings tab; Cancel sits beside it as a SECONDARY. */}
+            <div style={{ display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button theme="PRIMARY" isDisabled={saving} onClick={saving ? undefined : save}>
+                {saving ? 'Saving…' : creating ? 'Create profile' : 'Save profile'}
+              </Button>
+              {creating ? (
+                <Button theme="SECONDARY" onClick={cancelNew}>
+                  Cancel
+                </Button>
+              ) : null}
+            </div>
+            {/* Delete is the shared DANGER affordance (red outline, solid red on
+                hover) — distinct from a benign action yet subordinate to Save. It
+                opens a confirm dialog rather than mutating inline. */}
             {!creating && form.id ? (
-              <Button
-                aria-label="Delete profile"
-                style={{ background: 'var(--ansi-9-red)', color: 'var(--ansi-15-white)' }}
-                onClick={() => setConfirmDelete(true)}
-              >
+              <Button theme="DANGER" aria-label="Delete profile" onClick={() => setConfirmDelete(true)}>
                 ✗ Delete profile
               </Button>
             ) : null}

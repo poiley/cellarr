@@ -22,7 +22,6 @@ import Input from '@components/Input';
 import Select from '@components/Select';
 import Checkbox from '@components/Checkbox';
 import Button from '@components/Button';
-import ButtonGroup from '@components/ButtonGroup';
 import Badge from '@components/Badge';
 import Divider from '@components/Divider';
 import Text from '@components/Text';
@@ -55,6 +54,16 @@ const IMPL_LABELS: Record<string, string> = {
 
 function implLabel(impl: string): string {
   return IMPL_LABELS[impl] ?? impl;
+}
+
+// Fields a connector genuinely cannot function without — marked with a "*" to
+// match how Naming flags required tokens. Kept honest: only the endpoint a
+// provider must have to deliver anything (a Webhook/Discord URL, a Custom Script
+// path) is forced; everything else stays optional.
+const REQUIRED_FIELD_NAMES = new Set(['url', 'path']);
+
+function isRequiredField(field: NotificationField): boolean {
+  return REQUIRED_FIELD_NAMES.has(field.name);
 }
 
 // The user-facing event toggles. `onHealthIssue` is the toggle; the backend also
@@ -130,6 +139,59 @@ function enabledEventLabels(raw: NotificationConfigV3): string[] {
     e.label.replace(/^On /, '')
   );
 }
+
+// A field label that appends a required "*" marker (matching Naming's token
+// marker) when the field cannot be left blank.
+const FieldLabel: React.FC<{ field: NotificationField }> = ({ field }) => (
+  <Text style={{ opacity: 0.6 }}>
+    {field.label ?? field.name}
+    {isRequiredField(field) ? <span aria-hidden="true"> *</span> : null}
+  </Text>
+);
+
+// A single text/number/password provider field. Password-privacy fields get an
+// SRCL-styled show/hide toggle (◉ shown / ○ hidden) and use a real type=password
+// with new-password autocomplete until revealed.
+const NotificationTextField: React.FC<{
+  field: NotificationField;
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ field, value, onChange }) => {
+  const isPassword = field.privacy === 'password' || field.type === 'password';
+  const [show, setShow] = React.useState(false);
+  const label = field.label ?? field.name;
+  const required = isRequiredField(field);
+  const inputType = isPassword ? (show ? 'text' : 'password') : field.type === 'number' ? 'number' : 'text';
+  return (
+    <div style={{ margin: '0.5ch 0' }}>
+      <FieldLabel field={field} />
+      <div style={{ display: 'flex', gap: '0.5ch', alignItems: 'stretch' }}>
+        <div style={{ flex: 1 }}>
+          <Input
+            name={`notification-${field.name}`}
+            aria-label={label}
+            aria-required={required || undefined}
+            type={inputType}
+            autoComplete={isPassword ? 'new-password' : undefined}
+            placeholder={field.helpText ?? ''}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        </div>
+        {isPassword ? (
+          <Button
+            theme="SECONDARY"
+            aria-label={show ? `Hide ${label}` : `Show ${label}`}
+            aria-pressed={show}
+            onClick={() => setShow((v) => !v)}
+          >
+            {show ? '◉ hide' : '○ show'}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+};
 
 export interface NotificationsProps {
   client?: CellarrClient;
@@ -329,7 +391,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                         Edit
                       </Button>
                       <Button
-                        theme="SECONDARY"
+                        theme="DANGER"
                         aria-label={`Remove ${raw.name || 'notification'}`}
                         onClick={() => setPendingDelete(raw)}
                       >
@@ -384,6 +446,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                   <div key={field.name} style={{ margin: '0.5ch 0' }}>
                     <Checkbox
                       name={`notification-${field.name}`}
+                      aria-label={field.label ?? field.name}
                       defaultChecked={form.values[field.name] === 'true'}
                       onChange={(e) =>
                         setForm({
@@ -396,28 +459,17 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                     </Checkbox>
                   </div>
                 ) : (
-                  <div key={field.name} style={{ margin: '0.5ch 0' }}>
-                    <Text style={{ opacity: 0.6 }}>{field.label ?? field.name}</Text>
-                    <Input
-                      name={`notification-${field.name}`}
-                      aria-label={field.label ?? field.name}
-                      type={
-                        field.privacy === 'password' || field.type === 'password'
-                          ? 'password'
-                          : field.type === 'number'
-                            ? 'number'
-                            : 'text'
-                      }
-                      placeholder={field.helpText ?? ''}
-                      value={form.values[field.name] ?? ''}
-                      onChange={(e) =>
-                        setForm({
-                          ...form,
-                          values: { ...form.values, [field.name]: e.target.value },
-                        })
-                      }
-                    />
-                  </div>
+                  <NotificationTextField
+                    key={field.name}
+                    field={field}
+                    value={form.values[field.name] ?? ''}
+                    onChange={(next) =>
+                      setForm({
+                        ...form,
+                        values: { ...form.values, [field.name]: next },
+                      })
+                    }
+                  />
                 )
               )}
 
@@ -427,6 +479,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                   <Checkbox
                     key={ev.key}
                     name={`notification-${ev.key}`}
+                    aria-label={ev.label}
                     defaultChecked={form.events[ev.key]}
                     onChange={(e) =>
                       setForm({
@@ -443,6 +496,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
               <div style={{ margin: '0.5ch 0' }}>
                 <Checkbox
                   name="notification-enabled"
+                  aria-label="Enabled"
                   defaultChecked={form.enabled}
                   onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
                 >
@@ -457,14 +511,18 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
               ) : null}
               {saveError ? <ErrorBanner error={saveError} /> : null}
 
-              <div style={{ marginTop: '1ch' }}>
-                <ButtonGroup
-                  items={[
-                    { body: testing ? 'Testing…' : 'Test', onClick: testing ? undefined : test },
-                    { body: saving ? 'Saving…' : 'Save', onClick: saving ? undefined : save },
-                    ...(form.id ? [{ body: 'New', onClick: reset }] : []),
-                  ]}
-                />
+              <div style={{ marginTop: '1ch', display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button theme="PRIMARY" isDisabled={saving} onClick={saving ? undefined : save}>
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+                <Button theme="SECONDARY" isDisabled={testing} onClick={testing ? undefined : test}>
+                  {testing ? 'Testing…' : 'Test'}
+                </Button>
+                {form.id ? (
+                  <Button theme="SECONDARY" onClick={reset}>
+                    New
+                  </Button>
+                ) : null}
               </div>
             </>
           ) : (

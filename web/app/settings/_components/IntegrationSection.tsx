@@ -429,7 +429,7 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
                         Edit
                       </Button>
                       <Button
-                        theme="SECONDARY"
+                        theme="DANGER"
                         aria-label={`Remove ${f.name || singular}`}
                         onClick={() => setPendingDelete(f)}
                       >

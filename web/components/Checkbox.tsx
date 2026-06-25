@@ -11,10 +11,15 @@ interface CheckboxProps {
   defaultChecked?: boolean;
   onChange?: (event: React.ChangeEvent<HTMLInputElement>) => void;
   tabIndex?: number;
+  // Accessible name for the control. Without it, screen readers announce the
+  // visible "╳" glyph (the figure label) instead of a meaningful name. Set this
+  // to the checkbox's visible label text wherever the children are decorative,
+  // rich, or visually hidden.
+  ['aria-label']?: string;
   children?: React.ReactNode;
 }
 
-const Checkbox: React.FC<CheckboxProps> = ({ style, name, defaultChecked = false, onChange, children }) => {
+const Checkbox: React.FC<CheckboxProps> = ({ style, name, defaultChecked = false, onChange, children, ['aria-label']: ariaLabel }) => {
   const checkboxId = `${name}-checkbox`;
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -66,8 +71,8 @@ const Checkbox: React.FC<CheckboxProps> = ({ style, name, defaultChecked = false
       style={style}
     >
       <div className={styles.relative}>
-        <input className={styles.input} id={checkboxId} type="checkbox" name={name} defaultChecked={defaultChecked} onChange={handleChange} onKeyDown={handleKeyDown} onFocus={handleFocus} onBlur={handleBlur} tabIndex={0} ref={inputRef} />
-        <label className={styles.figure} htmlFor={checkboxId}>
+        <input className={styles.input} id={checkboxId} type="checkbox" name={name} defaultChecked={defaultChecked} onChange={handleChange} onKeyDown={handleKeyDown} onFocus={handleFocus} onBlur={handleBlur} tabIndex={0} ref={inputRef} aria-label={ariaLabel} />
+        <label className={styles.figure} htmlFor={checkboxId} aria-hidden="true">
           {isChecked ? '╳' : '\u00A0'}
         </label>
       </div>

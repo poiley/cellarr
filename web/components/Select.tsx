@@ -11,9 +11,13 @@ interface SelectProps {
   placeholder?: string;
   defaultValue?: string;
   onChange?: (selectedValue: string) => void;
+  // Accessible name for the trigger button. The trigger only renders the current
+  // value (or placeholder), so without this a screen reader has no name for what
+  // the control selects. Pass a short description, e.g. "Quality profile".
+  ['aria-label']?: string;
 }
 
-const Select: React.FC<SelectProps> = ({ name, options, placeholder, defaultValue = '', onChange }) => {
+const Select: React.FC<SelectProps> = ({ name, options, placeholder, defaultValue = '', onChange, ['aria-label']: ariaLabel }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const [index, setIndex] = React.useState(-1);
   const [selectedValue, setSelectedValue] = React.useState(defaultValue);
@@ -137,6 +141,7 @@ const Select: React.FC<SelectProps> = ({ name, options, placeholder, defaultValu
           onKeyDown={handleButtonKeyDown}
           aria-haspopup="listbox"
           aria-expanded={isOpen}
+          aria-label={ariaLabel}
         >
           {selectedValue || placeholder}
         </button>

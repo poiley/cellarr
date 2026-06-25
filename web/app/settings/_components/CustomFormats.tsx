@@ -329,6 +329,7 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
           <Text style={{ opacity: 0.6 }}>{sel.label || 'Value'}</Text>
           <Select
             name={`spec-${index}-value`}
+            aria-label={`Specification ${index + 1} ${sel.label || 'value'}`}
             options={options}
             defaultValue={row.value || options[0]}
             onChange={(value) => updateRow(index, { value })}
@@ -409,7 +410,7 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
                   Edit
                 </Button>
                 <Button
-                  theme="SECONDARY"
+                  theme="DANGER"
                   aria-label={`Delete ${cf.name}`}
                   onClick={() => setPendingDelete(cf)}
                 >
@@ -510,6 +511,7 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
                     <Text style={{ opacity: 0.6 }}>Condition</Text>
                     <Select
                       name={`spec-${index}-impl`}
+                      aria-label={`Specification ${index + 1} condition`}
                       options={implOptions}
                       defaultValue={nameByImpl(row.implementation)}
                       onChange={(value) =>
@@ -533,6 +535,7 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
                   <Checkbox
                     key={`${index}-${row.implementation}-negate`}
                     name={`spec-${index}-negate`}
+                    aria-label={`Negate specification ${index + 1}`}
                     defaultChecked={row.negate}
                     onChange={(e) => updateRow(index, { negate: e.target.checked })}
                   >
@@ -541,6 +544,7 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
                   <Checkbox
                     key={`${index}-${row.implementation}-required`}
                     name={`spec-${index}-required`}
+                    aria-label={`Require specification ${index + 1}`}
                     defaultChecked={row.required}
                     onChange={(e) => updateRow(index, { required: e.target.checked })}
                   >
@@ -562,16 +566,13 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
 
           {saveError ? <ErrorBanner error={saveError} /> : null}
 
-          <div style={{ marginTop: '1ch' }}>
-            <ButtonGroup
-              items={[
-                {
-                  body: saving ? 'Saving…' : typeof form.id === 'number' ? 'Save format' : 'Create format',
-                  onClick: saving ? undefined : save,
-                },
-                { body: 'Cancel', onClick: saving ? undefined : closeForm },
-              ]}
-            />
+          <div style={{ marginTop: '1ch', display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button theme="PRIMARY" isDisabled={saving} onClick={saving ? undefined : save}>
+              {saving ? 'Saving…' : typeof form.id === 'number' ? 'Save format' : 'Create format'}
+            </Button>
+            <Button theme="SECONDARY" isDisabled={saving} onClick={saving ? undefined : closeForm}>
+              Cancel
+            </Button>
           </div>
         </>
       ) : null}

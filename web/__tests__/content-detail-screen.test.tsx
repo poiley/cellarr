@@ -161,9 +161,11 @@ describe('Item-detail screen', () => {
       // Kind badge.
       expect(screen.getByText('series')).toBeTruthy();
     });
-    // Status badge now prefers the v3 detail's status (#20).
+    // Status badge now prefers the v3 detail's status (#20). The header badge and
+    // the metadata "Status" row use the SAME uppercased label (casing alignment),
+    // so it appears in both places.
     await waitFor(() => {
-      expect(screen.getByText('CONTINUING')).toBeTruthy();
+      expect(screen.getAllByText('CONTINUING').length).toBeGreaterThan(0);
       // The Monitored toggle reflects the current state (#21).
       expect(screen.getByRole('button', { name: /Monitored/ })).toBeTruthy();
     });

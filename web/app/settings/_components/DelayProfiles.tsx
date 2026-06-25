@@ -214,7 +214,7 @@ const DelayProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
                   Edit
                 </Button>
                 <Button
-                  theme="SECONDARY"
+                  theme="DANGER"
                   aria-label={`Delete delay profile ${dp.order ?? 0}`}
                   onClick={() => setPendingDelete(dp)}
                 >

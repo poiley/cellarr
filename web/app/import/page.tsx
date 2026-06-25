@@ -339,6 +339,7 @@ const ImportTable: React.FC<{
           <TableColumn>
             <Checkbox
               name={`include-${r.path}`}
+              aria-label={`Include ${r.name}`}
               defaultChecked={st.include}
               onChange={(e) => onToggle(r.path, e.target.checked)}
             >
@@ -439,6 +440,7 @@ const TargetPicker: React.FC<{
       {options.length > 0 ? (
         <Select
           name="target-select"
+          aria-label="Choose a match"
           options={options}
           placeholder="Choose a match"
           onChange={(label) => {

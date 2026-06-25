@@ -161,11 +161,6 @@ const SortHeader: React.FC<{
  * the records, keep the files). Dismisses on Escape. It does not delete by
  * itself — it only surfaces the choice and calls back.
  */
-const DANGER_STYLE: React.CSSProperties = {
-  background: 'var(--ansi-9-red)',
-  color: 'var(--ansi-15-white)',
-};
-
 const BulkDeleteDialog: React.FC<{
   items: LibraryItem[];
   deleteFiles: boolean;
@@ -233,6 +228,7 @@ const BulkDeleteDialog: React.FC<{
           <div style={{ margin: '1ch 0' }}>
             <Checkbox
               name="bulk-delete-files"
+              aria-label="Also delete files from disk"
               defaultChecked={deleteFiles}
               onChange={(e) => onToggleDeleteFiles(e.target.checked)}
             >
@@ -240,6 +236,7 @@ const BulkDeleteDialog: React.FC<{
             </Checkbox>
             <Checkbox
               name="bulk-delete-exclusion"
+              aria-label="Add to import-exclusion list"
               defaultChecked={addExclusion}
               onChange={(e) => onToggleAddExclusion(e.target.checked)}
             >
@@ -255,8 +252,8 @@ const BulkDeleteDialog: React.FC<{
 
           <div style={{ display: 'flex', gap: '1ch', marginTop: '1ch' }}>
             <Button
+              theme="DANGER"
               aria-label={`Delete ${count} item${count === 1 ? '' : 's'}`}
-              style={DANGER_STYLE}
               isDisabled={pending}
               onClick={pending ? undefined : onConfirm}
             >
@@ -564,6 +561,7 @@ function LibraryBrowser() {
             <div style={{ flex: '0 0 22ch', minWidth: '18ch' }}>
               <Select
                 name="content-status"
+                aria-label="Filter by status"
                 options={STATUS_OPTIONS}
                 defaultValue={status}
                 placeholder="Status"
@@ -576,6 +574,7 @@ function LibraryBrowser() {
               <div style={{ flex: '0 0 18ch', minWidth: '16ch' }}>
                 <Select
                   name="content-type"
+                  aria-label="Filter by type"
                   options={['All', 'Movie', 'Series']}
                   defaultValue={typeFilter}
                   placeholder="Type"
@@ -620,7 +619,7 @@ function LibraryBrowser() {
                     ▸ Search missing
                   </Button>
                   <Button
-                    theme="SECONDARY"
+                    theme="DANGER"
                     onClick={openDeleteDialog}
                     isDisabled={busy}
                   >
@@ -638,6 +637,7 @@ function LibraryBrowser() {
                     <TableColumn role="columnheader">
                       <Checkbox
                         name="select-all-visible"
+                        aria-label="Select all rows"
                         defaultChecked={allVisibleSelected}
                         key={`all-${activeLib}-${allVisibleSelected}-${filtered.length}`}
                         onChange={toggleAllVisible}
@@ -662,6 +662,7 @@ function LibraryBrowser() {
                         >
                           <Checkbox
                             name={`select-${item.id}`}
+                            aria-label={`Select ${item.title}`}
                             defaultChecked={isSelected}
                             key={`row-${item.id}-${isSelected}`}
                             onChange={() => toggleRow(item.id)}

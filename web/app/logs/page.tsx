@@ -210,6 +210,7 @@ export default function LogsPage() {
                 <Text style={{ opacity: 0.6 }}>Level</Text>
                 <Select
                   name="log-level"
+                  aria-label="Filter by log level"
                   options={['All', ...LOG_LEVELS]}
                   defaultValue="All"
                   onChange={(v) => setLevel(v === 'All' ? null : (v as LogLevel))}
@@ -219,6 +220,7 @@ export default function LogsPage() {
                 <Text style={{ opacity: 0.6 }}>Lines</Text>
                 <Select
                   name="log-lines"
+                  aria-label="Lines to show"
                   options={LINE_COUNTS.map(String)}
                   defaultValue={String(DEFAULT_LINES)}
                   onChange={(v) => setLines(Number(v))}

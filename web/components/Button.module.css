@@ -57,8 +57,39 @@
   }
 }
 
+/*
+Destructive action. A red outline + red label keeps it unmistakably dangerous
+while staying SUBORDINATE to the inverse PRIMARY bar above it (a benign Edit is a
+neutral SECONDARY, so Delete never looks identical to it). It only fills solid
+red on hover/focus — the committed-intent state. Width is intrinsic (not the
+full-bleed .root width) so a row's Delete sits beside its siblings rather than
+dominating as a giant bar.
+*/
+.danger {
+  width: auto;
+  background: var(--theme-background);
+  color: var(--ansi-9-red);
+  box-shadow: inset 0 0 0 1px var(--ansi-9-red);
+  cursor: pointer;
+
+  &:hover,
+  &:focus,
+  &:active {
+    background: var(--ansi-9-red);
+    color: var(--ansi-15-white);
+    box-shadow: inset 0 0 0 1px var(--ansi-9-red);
+  }
+}
+
 .disabled {
   background: var(--theme-button-background);
-  color: var(--theme-button-foreground);
+  /*
+  Raise the disabled label contrast: the old --theme-button-foreground was nearly
+  the same tone as the background (gray-15 on gray-23 in dark mode), so a disabled
+  label like "SCAN" was almost invisible. A mid-gray reads as clearly-but-legibly
+  disabled on both the light and dark button backgrounds.
+  */
+  color: var(--color-gray-54);
+  box-shadow: inset 0 0 0 1px var(--theme-border);
   cursor: not-allowed;
 }

@@ -197,4 +197,23 @@ describe('Security (settings)', () => {
     );
     expect(post).toBeUndefined();
   });
+
+  it('toggles the admin password between hidden and shown', async () => {
+    const fetchImpl = routedFetch({ method: 'none', configured: false, enforced: false });
+    renderSecurity(fetchImpl);
+
+    await waitFor(() => expect(screen.getByLabelText('Admin password')).toBeTruthy());
+
+    const password = screen.getByLabelText('Admin password') as HTMLInputElement;
+    // Hidden by default.
+    expect(password.type).toBe('password');
+
+    // Reveal: the toggle (labelled "Show password") flips the input to text.
+    fireEvent.click(screen.getByLabelText('Show password'));
+    expect((screen.getByLabelText('Admin password') as HTMLInputElement).type).toBe('text');
+
+    // Hide again.
+    fireEvent.click(screen.getByLabelText('Hide password'));
+    expect((screen.getByLabelText('Admin password') as HTMLInputElement).type).toBe('password');
+  });
 });

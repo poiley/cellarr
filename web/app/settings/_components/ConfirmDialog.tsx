@@ -31,11 +31,6 @@ export interface ConfirmDialogProps {
   onCancel: () => void;
 }
 
-const DANGER_STYLE: React.CSSProperties = {
-  background: 'var(--ansi-9-red)',
-  color: 'var(--ansi-15-white)',
-};
-
 const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   title,
   children,
@@ -73,8 +68,8 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           <Text style={{ opacity: 0.5, margin: '1ch 0' }}>This cannot be undone.</Text>
           <div style={{ display: 'flex', gap: '1ch', marginTop: '1ch' }}>
             <Button
+              theme="DANGER"
               aria-label={confirmLabel}
-              style={DANGER_STYLE}
               isDisabled={pending}
               onClick={pending ? undefined : onConfirm}
             >

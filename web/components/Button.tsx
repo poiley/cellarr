@@ -6,7 +6,13 @@ import * as React from 'react';
 import * as Utilities from '@common/utilities';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  theme?: 'PRIMARY' | 'SECONDARY';
+  // PRIMARY  — the inverse (white/black) full-width affordance for the one main
+  //            action of a view (Save, Import).
+  // SECONDARY— a bordered, low-emphasis action (Cancel, Edit, row actions).
+  // DANGER   — a destructive action (Delete/Remove). Outlined in red with a red
+  //            label, going solid-red only on hover/focus, so it reads as
+  //            dangerous yet stays subordinate to the PRIMARY action above it.
+  theme?: 'PRIMARY' | 'SECONDARY' | 'DANGER';
   isDisabled?: boolean;
   children?: React.ReactNode;
 }
@@ -16,6 +22,10 @@ const Button: React.FC<ButtonProps> = ({ theme = 'PRIMARY', isDisabled, children
 
   if (theme === 'SECONDARY') {
     classNames = Utilities.classNames(styles.root, styles.secondary);
+  }
+
+  if (theme === 'DANGER') {
+    classNames = Utilities.classNames(styles.root, styles.danger);
   }
 
   if (isDisabled) {

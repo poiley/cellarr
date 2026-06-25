@@ -389,9 +389,11 @@ function MetadataBlock({
         label="Total size"
         value={sizeBytes !== undefined && sizeBytes > 0 ? formatSize(sizeBytes) : '—'}
       />
+      {/* Status casing matches the header badge (both uppercased) so a node
+          doesn't read "released" here but "RELEASED" above. */}
       <MetaRow
         label="Status"
-        value={detail?.status ?? (detail?.hasFile ? 'Downloaded' : 'Missing')}
+        value={(detail?.status ?? (detail?.hasFile ? 'Downloaded' : 'Missing')).toUpperCase()}
       />
       <RowSpaceBetween style={{ gap: '2ch', alignItems: 'center' }}>
         <Text style={{ opacity: 0.6 }}>Monitored</Text>
@@ -407,12 +409,16 @@ function MetadataBlock({
           {monitored ? '● Monitored' : '○ Not monitored'}
         </Button>
       </RowSpaceBetween>
-      {overview ? (
-        <div style={{ marginTop: '1ch' }}>
-          <Text style={{ opacity: 0.6 }}>Overview</Text>
+      <div style={{ marginTop: '1ch' }}>
+        <Text style={{ opacity: 0.6 }}>Overview</Text>
+        {overview ? (
           <Text>{overview}</Text>
-        </div>
-      ) : null}
+        ) : (
+          // A subtle placeholder rather than an empty gap, so an absent overview
+          // doesn't leave the card looking broken.
+          <Text style={{ opacity: 0.4, fontStyle: 'italic' }}>No overview available.</Text>
+        )}
+      </div>
     </div>
   );
 }
@@ -832,7 +838,11 @@ function ItemDetail() {
                 side otherwise; the metadata column flexes to fill the rest. */}
             <Row style={{ gap: '2ch', flexWrap: 'wrap', alignItems: 'flex-start' }}>
               <Poster id={id} title={title} />
-              <div style={{ flex: '1 1 32ch', minWidth: '28ch' }}>
+              {/* The info column grows to fill the row only when there's an
+                  overview to fill it; without one it sizes to its content so the
+                  metadata sits snug beside the poster instead of leaving a wide
+                  empty gap to the right. */}
+              <div style={{ flex: overview ? '1 1 32ch' : '0 1 auto', minWidth: '28ch', maxWidth: '60ch' }}>
                 <MetadataBlock
                   detail={detail}
                   year={year}

@@ -68,8 +68,16 @@
   }
 }
 
+/*
+Active/selected state. Beyond the focused-foreground fill, pin a high-contrast
+inset border and bold the label so the active item reads unmistakably in BOTH
+themes — in light mode the pale-green fill alone was a weak indicator next to
+dark mode's saturated magenta, so the border + weight carry the accent on white.
+*/
 .selected {
   .content {
     background: var(--theme-focused-foreground);
+    box-shadow: inset 0 0 0 2px var(--theme-text);
+    font-weight: 700;
   }
 }

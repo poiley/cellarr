@@ -95,6 +95,9 @@ const SecurityForm: React.FC<{
   const [confirm, setConfirm] = React.useState('');
   const [savingMethod, setSavingMethod] = React.useState(false);
   const [savingCred, setSavingCred] = React.useState(false);
+  // Show/hide for the credential fields (one toggle drives both so a typed
+  // password and its confirmation are revealed together for comparison).
+  const [showPassword, setShowPassword] = React.useState(false);
 
   const configured = initial.configured;
   const methodChanged = method !== initial.method;
@@ -160,6 +163,7 @@ const SecurityForm: React.FC<{
           <Text style={{ opacity: 0.6 }}>Method</Text>
           <Select
             name="auth-method"
+            aria-label="Authentication method"
             options={LABELS}
             defaultValue={labelFor(method)}
             onChange={(value) => setMethod(methodFor(value))}
@@ -194,10 +198,13 @@ const SecurityForm: React.FC<{
         <Divider type="GRADIENT" />
 
         <div style={{ margin: '1ch 0' }}>
-          <Text style={{ opacity: 0.6 }}>Username</Text>
+          <Text style={{ opacity: 0.6 }}>
+            Username<span aria-hidden="true"> *</span>
+          </Text>
           <Input
             name="auth-username"
             aria-label="Admin username"
+            aria-required
             autoComplete="username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -205,23 +212,41 @@ const SecurityForm: React.FC<{
         </div>
 
         <div style={{ margin: '1ch 0' }}>
-          <Text style={{ opacity: 0.6 }}>Password</Text>
-          <Input
-            name="auth-password"
-            type="password"
-            aria-label="Admin password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <Text style={{ opacity: 0.6 }}>
+            Password<span aria-hidden="true"> *</span>
+          </Text>
+          <div style={{ display: 'flex', gap: '0.5ch', alignItems: 'stretch' }}>
+            <div style={{ flex: 1 }}>
+              <Input
+                name="auth-password"
+                type={showPassword ? 'text' : 'password'}
+                aria-label="Admin password"
+                aria-required
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <Button
+              theme="SECONDARY"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              onClick={() => setShowPassword((v) => !v)}
+            >
+              {showPassword ? '◉ hide' : '○ show'}
+            </Button>
+          </div>
         </div>
 
         <div style={{ margin: '1ch 0' }}>
-          <Text style={{ opacity: 0.6 }}>Confirm password</Text>
+          <Text style={{ opacity: 0.6 }}>
+            Confirm password<span aria-hidden="true"> *</span>
+          </Text>
           <Input
             name="auth-password-confirm"
-            type="password"
+            type={showPassword ? 'text' : 'password'}
             aria-label="Confirm admin password"
+            aria-required
             autoComplete="new-password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}

@@ -140,7 +140,7 @@ const RemotePathMappings: React.FC<{ client?: CellarrClient }> = ({ client = def
                     Edit
                   </Button>
                   <Button
-                    theme="SECONDARY"
+                    theme="DANGER"
                     aria-label={`Remove mapping for ${m.host}`}
                     onClick={() => setPendingDelete(m)}
                   >
