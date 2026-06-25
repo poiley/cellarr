@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod auth;
 pub mod blocklist;
 pub mod config;
 pub mod decision;
@@ -41,6 +42,7 @@ pub mod repo;
 pub mod traits;
 pub mod webhook;
 
+pub use auth::{AuthConfig, AuthMethod};
 pub use blocklist::{release_key, BlocklistEntry, BlocklistRepository};
 
 pub use config::{

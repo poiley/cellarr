@@ -21,6 +21,43 @@
 - **Errors**: structured machine-readable error bodies (stable `code` + human `message`), not bare
   HTTP statuses, so clients can branch on `code`.
 
+## Web-UI authentication (single-admin)
+
+Two **independent** auth layers, mirroring Sonarr/Radarr (which exempt the apikey API from the UI
+login):
+
+- **`/api/v3` apikey** (`crate::auth`) — unchanged. The `X-Api-Key` header / `?apikey=` query gate
+  on mutating `/api/v3` routes (and the calendar feed) is what the *arr ecosystem speaks; it is
+  **never** governed by the web-UI gate below.
+- **Web-UI gate** (`crate::webauth`) — a single-admin login over the SPA + the UI's private
+  `/api/v1` surface. Mirrors Sonarr/Radarr's "Authentication" dropdown minus multi-user: there is
+  **one** admin (a username + a password *hash*) and a method of **`none | forms | basic`**
+  (`core::AuthMethod`). Persisted as a single-row `auth_config` JSON document (migration `0012`);
+  the plaintext password is never modelled or stored — only an **Argon2id PHC hash** (`argon2`),
+  never logged.
+
+The gate (an axum layer over the whole router) decides per request:
+
+- **Exempt** (always reachable): `/api/v3` + the `/sonarr|radarr/api/v3` faces + `/feed/*`,
+  `POST /login`, `POST /logout`, `GET /health`, and the static assets the login page needs
+  (`/_next/*`, `favicon.ico`, and any `.js/.css/.woff2/…` resource). HTML documents are **not**
+  exempt, so a gated navigation redirects to the login page.
+- **None** → pass through (the zero-config default; a fresh install is open on loopback).
+- **Basic** → require `Authorization: Basic base64(user:pass)` matching the admin (constant-time
+  username compare + Argon2 verify); else `401` + `WWW-Authenticate: Basic realm="cellarr"`.
+- **Forms** → require a valid session cookie; missing/invalid → `401` for an `/api/*`/XHR request, or
+  a `303 → /login` redirect for a browser navigation. `POST /login {username,password}` verifies the
+  hash and mints a **CSPRNG** session token (256-bit, in `auth_session`) in an **HttpOnly;
+  SameSite=Lax; Path=/** cookie (`+Secure` behind TLS is a documented follow-up); `POST /logout`
+  deletes the session. Sessions expire after 7 days; a method/credential change revokes all
+  sessions.
+
+**Lockout safety:** selecting `forms`/`basic` with **no credential yet** is allowed but **not
+effectively enforced** (`core::AuthConfig::is_effectively_enforced`) — the gate passes through so the
+operator can finish setup. Admin endpoints (under the gated `/api/v1`, but **not** behind the apikey
+middleware): `GET /api/v1/auth/config` (status: method/configured/enforced/username, never the
+hash), `PUT /api/v1/auth/config {method}`, `POST /api/v1/auth/credential {username,password}`.
+
 ## The `/api/v3` compatibility shim
 
 A router that maps the originals' request/response shapes onto cellarr's domain. Because a real

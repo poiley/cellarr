@@ -9,6 +9,7 @@
 //! or committed offline `.sqlx` metadata. Switching to compile-time-checked
 //! queries + a committed `.sqlx` directory is a planned follow-up.
 
+mod auth;
 mod blocklist;
 mod cache;
 mod config;
@@ -21,6 +22,7 @@ mod media_file;
 mod pending_release;
 mod profile;
 
+pub use auth::{AuthRepo, AuthSession};
 pub use blocklist::BlocklistRepo;
 pub use cache::CacheRepo;
 pub use config::ConfigRepo;

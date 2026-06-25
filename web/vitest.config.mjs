@@ -20,6 +20,13 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./__tests__/setup.ts'],
+    // Cap fork workers so the suite does not oversubscribe CPU on an 18-core box
+    // (and especially when other builds run alongside). Oversubscription starved
+    // async effects and caused rare false-timeout flakes in data-loading screens.
+    // Cap fork workers so the suite does not oversubscribe CPU on an 18-core box;
+    // oversubscription starved async effects and aggravated render-timing flakes.
+    pool: 'forks',
+    poolOptions: { forks: { maxForks: 6, minForks: 1 } },
     include: ['__tests__/**/*.test.{ts,tsx,mjs}', 'lib/**/*.test.{ts,tsx}'],
     exclude: ['node_modules/**', '.next/**', 'out/**', 'dist/**'],
   },

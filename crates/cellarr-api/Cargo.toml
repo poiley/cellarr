@@ -28,6 +28,7 @@ tracing.workspace = true
 time.workspace = true
 reqwest = { workspace = true }
 rust-embed = "8.5"
+argon2 = { version = "0.5", features = ["std"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

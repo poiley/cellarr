@@ -21,6 +21,7 @@ import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
 import Notifications from '@app/settings/_components/Notifications';
 import Naming from '@app/settings/_components/Naming';
 import SystemBackup from '@app/settings/_components/SystemBackup';
+import Security from '@app/settings/_components/Security';
 
 type Section =
   | 'profiles'
@@ -33,7 +34,8 @@ type Section =
   | 'remotepaths'
   | 'naming'
   | 'notifications'
-  | 'backups';
+  | 'backups'
+  | 'security';
 
 const TABS: { id: Section; label: string }[] = [
   { id: 'profiles', label: 'Quality Profiles' },
@@ -47,6 +49,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'naming', label: 'Naming' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'backups', label: 'Backups' },
+  { id: 'security', label: 'Security' },
 ];
 
 const INDEXER_IMPLS = ['Torznab', 'Newznab', 'Prowlarr', 'Jackett'];
@@ -89,6 +92,7 @@ export default function Page() {
         {section === 'naming' ? <Naming /> : null}
         {section === 'notifications' ? <Notifications /> : null}
         {section === 'backups' ? <SystemBackup /> : null}
+        {section === 'security' ? <Security /> : null}
       </div>
     </AppShell>
   );

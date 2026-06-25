@@ -33,7 +33,8 @@ mod writer;
 pub use db::Database;
 pub use error::{DbError, Result};
 pub use repos::{
-    BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo,
-    ImportListRepo, MediaFileRepo, PendingRelease, PendingReleaseRepo, ProfileRepo,
+    AuthRepo, AuthSession, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo,
+    GrabRepo, HistoryRepo, ImportListRepo, MediaFileRepo, PendingRelease, PendingReleaseRepo,
+    ProfileRepo,
 };
 pub use writer::WriterHandle;

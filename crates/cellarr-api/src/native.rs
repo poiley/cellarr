@@ -59,9 +59,17 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             require_api_key,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
-    reads.merge(writes)
+    // The web-UI auth-config admin endpoints (`/api/v1/auth/config`,
+    // `/api/v1/auth/credential`). These are governed by the web-UI gate (the outer
+    // `webauth::gate` layer), NOT the apikey middleware — they manage the UI's own
+    // login, so requiring the *arr apikey would be the wrong gate. Before a
+    // credential exists the install is open, so first-time setup is reachable; once
+    // a credential is set the gate makes them admin-only.
+    let auth = crate::webauth::config_routes(state);
+
+    reads.merge(writes).merge(auth)
 }
 
 // --- system/status ---------------------------------------------------------

@@ -3,6 +3,14 @@
 // throw "is not a function". Install a minimal, spec-shaped Storage backed by a
 // Map so the existing theme/persistence tests have a real localStorage to drive.
 import { beforeEach } from 'vitest';
+import { configure } from '@testing-library/dom';
+
+// Give async queries (waitFor / findBy*) generous headroom. Several screens load
+// their data through parallel async effects; the 1s default can be exceeded purely
+// from CPU contention when the full suite runs across many fork workers, which
+// surfaced as rare false-timeout flakes (not real bugs). A higher ceiling only
+// affects tests that are genuinely waiting — passing queries still resolve fast.
+configure({ asyncUtilTimeout: 8000 });
 
 class MemoryStorage implements Storage {
   private store = new Map<string, string>();

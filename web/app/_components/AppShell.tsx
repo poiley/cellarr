@@ -15,11 +15,13 @@ import Navigation from '@components/Navigation';
 import ActionButton from '@components/ActionButton';
 import ActionListItem from '@components/ActionListItem';
 import Badge from '@components/Badge';
+import Button from '@components/Button';
 import Divider from '@components/Divider';
 import Text from '@components/Text';
 
 import ThemeBarToggle from '@app/_components/ThemeBarToggle';
 import { useCommandPalette } from '@app/_components/CommandPaletteProvider';
+import { useAuthGate } from '@app/_lib/useAuthGate';
 
 interface NavEntry {
   href: string;
@@ -58,6 +60,32 @@ function isActiveRoute(current: string | null, href: string): boolean {
 const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const pathname = usePathname();
   const palette = useCommandPalette();
+  const auth = useAuthGate();
+
+  // Forms gate: when the daemon reports a session is required but missing, send
+  // the user to /login carrying the current path so they return where they were.
+  // A FULL navigation (window.location) is deliberate — it re-runs the daemon's
+  // server-side gate with the current cookie state rather than a client-only SPA
+  // push. (Plain HTML navigations already 303 to /login server-side; this covers
+  // the case where the session expired mid-session without a reload.)
+  React.useEffect(() => {
+    if (!auth.unauthenticated) return;
+    if (typeof window === 'undefined') return;
+    if (window.location.pathname === '/login') return;
+    const next = pathname && pathname !== '/login' ? pathname : '/';
+    window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+  }, [auth.unauthenticated, pathname]);
+
+  // A Log Out control is only feasible under Forms (a server session cookie we
+  // can clear). Under Basic the browser caches the credentials and re-sends them
+  // regardless of our /logout call, so we omit it there; under None there is no
+  // session at all.
+  const showLogout = auth.status?.method === 'forms' && auth.status.enforced;
+
+  const onLogout = React.useCallback(async () => {
+    await auth.logout();
+    if (typeof window !== 'undefined') window.location.assign('/login');
+  }, [auth]);
 
   const sidebar = (
     <div style={{ padding: '1ch 0' }}>
@@ -97,6 +125,11 @@ const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const topRight = (
     <div style={{ display: 'flex', alignItems: 'center', gap: '1ch' }}>
       <Badge aria-label={`Build ${BUILD_SHA}`}>{BUILD_SHA}</Badge>
+      {showLogout ? (
+        <Button theme="SECONDARY" aria-label="Log out" onClick={onLogout}>
+          Log Out
+        </Button>
+      ) : null}
       <ThemeBarToggle />
     </div>
   );

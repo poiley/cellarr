@@ -38,8 +38,10 @@ pub mod shim;
 pub mod state;
 pub mod stream;
 pub mod tags;
+pub mod webauth;
 pub mod webhook;
 
+use axum::routing::get;
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
@@ -91,11 +93,33 @@ pub fn build_router(state: AppState) -> Router {
                     "/feed/v3/calendar/{file}",
                     axum::routing::get(calendar::calendar_feed),
                 )
-                .with_state(state),
+                .with_state(state.clone()),
+        )
+        // The web-UI login/logout endpoints. Merged OUTSIDE the v1 apikey
+        // middleware (these are user/password auth, not apikey) and explicitly
+        // exempted by the gate so an unauthenticated operator can log in.
+        .merge(webauth::auth_routes(state.clone()))
+        // A top-level liveness probe (distinct from the v3 `/api/v3/health`
+        // diagnostic surface). Always reachable through the gate so a monitor can
+        // poll a protected install. Stateless and cheap.
+        .merge(
+            Router::new()
+                .route(
+                    "/health",
+                    get(|| async { axum::Json(serde_json::json!({ "status": "OK" })) }),
+                )
+                .with_state(state.clone()),
         )
         // Only non-API paths fall through to the embedded frontend; the v3
         // mounts return their own 404 JSON for unknown API paths.
         .fallback(assets::serve)
+        // The web-UI authentication gate sits over the whole router: it enforces
+        // the configured method (None/Forms/Basic) on the SPA + `/api/v1`, and
+        // exempts `/api/v3`, the feed, `/login`/`/logout`, `/health`, and the
+        // login page's static assets. `/api/v3` keeps its own apikey middleware
+        // (the gate never touches it). Added before TraceLayer so traces wrap the
+        // gate decision too.
+        .layer(axum::middleware::from_fn_with_state(state, webauth::gate))
         .layer(TraceLayer::new_for_http())
 }
 

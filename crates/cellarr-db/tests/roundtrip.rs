@@ -1593,3 +1593,90 @@ async fn pending_release_records_earliest_sighting_and_clears() {
         .is_empty());
     assert!(!pending.clear(content_id, &release).await.expect("clear2"));
 }
+
+#[tokio::test]
+async fn auth_config_round_trips_and_defaults_open() {
+    use cellarr_core::{AuthConfig, AuthMethod};
+
+    let (_dir, db) = temp_db().await;
+    let auth = db.auth();
+
+    // No row yet → the open default (no auth, no credential).
+    let cfg = auth.get_config().await.expect("get default");
+    assert_eq!(cfg, AuthConfig::open());
+    assert_eq!(cfg.method, AuthMethod::None);
+    assert!(!cfg.has_credential());
+
+    // Persist a Forms config with a credential (a HASH, never plaintext).
+    let stored = AuthConfig {
+        method: AuthMethod::Forms,
+        username: Some("admin".into()),
+        password_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$abc$def".into()),
+    };
+    auth.set_config(&stored).await.expect("set");
+    let back = auth.get_config().await.expect("get");
+    assert_eq!(back, stored);
+    assert!(back.is_effectively_enforced());
+
+    // Upsert in place (single-row): a method change overwrites, not appends.
+    let changed = AuthConfig {
+        method: AuthMethod::Basic,
+        ..stored.clone()
+    };
+    auth.set_config(&changed).await.expect("set2");
+    assert_eq!(
+        auth.get_config().await.expect("get2").method,
+        AuthMethod::Basic
+    );
+}
+
+#[tokio::test]
+async fn auth_sessions_lifecycle() {
+    let (_dir, db) = temp_db().await;
+    let auth = db.auth();
+
+    // Create a session valid until t=1000.
+    auth.create_session("tok-abc", "admin", 0, 1000)
+        .await
+        .expect("create");
+
+    // Looked up before expiry → present.
+    let live = auth.get_session("tok-abc", 500).await.expect("get");
+    assert!(live.is_some());
+    assert_eq!(live.unwrap().username, "admin");
+
+    // After expiry → absent (no validity oracle, same as unknown).
+    assert!(auth
+        .get_session("tok-abc", 1500)
+        .await
+        .expect("get expired")
+        .is_none());
+    assert!(auth
+        .get_session("nope", 100)
+        .await
+        .expect("get unknown")
+        .is_none());
+
+    // Delete (logout) is idempotent.
+    assert!(auth.delete_session("tok-abc").await.expect("del"));
+    assert!(!auth.delete_session("tok-abc").await.expect("del2"));
+    assert!(auth
+        .get_session("tok-abc", 100)
+        .await
+        .expect("gone")
+        .is_none());
+
+    // delete_all_sessions revokes everything; purge_expired sweeps stale rows.
+    auth.create_session("s1", "admin", 0, 10).await.expect("s1");
+    auth.create_session("s2", "admin", 0, 100)
+        .await
+        .expect("s2");
+    let purged = auth.purge_expired_sessions(50).await.expect("purge");
+    assert_eq!(purged, 1, "only the t<=50 expiry is swept");
+    auth.delete_all_sessions().await.expect("nuke");
+    assert!(auth
+        .get_session("s2", 5)
+        .await
+        .expect("after nuke")
+        .is_none());
+}

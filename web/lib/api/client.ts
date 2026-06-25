@@ -18,6 +18,8 @@
 
 import type {
   ApiErrorBody,
+  AuthCredentialBody,
+  AuthStatus,
   BackupRecord,
   BackupRestoreResult,
   BlocklistRecord,
@@ -182,6 +184,8 @@ export class CellarrClient {
       res = await this.fetchImpl(url, {
         method: options.method ?? 'GET',
         headers,
+        // Send/store the session cookie so the auth gate sees it on `/api/v1`.
+        credentials: 'same-origin',
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: options.signal,
       });
@@ -239,6 +243,102 @@ export class CellarrClient {
   /** Health check entries (`/api/v3/health`). */
   health(signal?: AbortSignal) {
     return this.requestV3<HealthCheck[]>('/health', { signal });
+  }
+
+  // =========================================================================
+  // Authentication (single admin user; gates the UI + `/api/v1`, never v3)
+  // =========================================================================
+
+  /**
+   * POST a bare (non-`/api/{version}`) JSON route — used by `/login` and
+   * `/logout`, which the daemon serves at the root, outside the v1/v3 prefix.
+   * Sends/stores cookies (`credentials: 'same-origin'`) so the server can set
+   * the `cellarr_session` cookie on login and clear it on logout.
+   */
+  private async requestBare<T>(
+    path: string,
+    options: { method?: string; body?: unknown; signal?: AbortSignal } = {}
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (this.apiKey) headers['X-Api-Key'] = this.apiKey;
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: options.method ?? 'GET',
+        headers,
+        credentials: 'same-origin',
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        signal: options.signal,
+      });
+    } catch (cause) {
+      throw new ApiError(
+        'network_error',
+        cause instanceof Error ? cause.message : 'network request failed',
+        0
+      );
+    }
+
+    if (!res.ok) throw await this.toApiError(res);
+    if (res.status === 204) return undefined as T;
+    const text = await res.text();
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
+  }
+
+  /**
+   * Authenticate the admin user (`POST /login`). On success the daemon sets the
+   * HttpOnly `cellarr_session` cookie and returns the new {@link AuthStatus};
+   * wrong credentials reject with a 401 `unauthorized` ApiError (no cookie).
+   * Only meaningful under the Forms method.
+   */
+  login(credential: AuthCredentialBody, signal?: AbortSignal) {
+    return this.requestBare<AuthStatus>('/login', {
+      method: 'POST',
+      body: credential,
+      signal,
+    });
+  }
+
+  /**
+   * End the current session (`POST /logout`). Idempotent — the daemon clears the
+   * session cookie and returns `{ ok: true }` whether or not one was present.
+   */
+  logout(signal?: AbortSignal) {
+    return this.requestBare<{ ok: boolean }>('/logout', { method: 'POST', signal });
+  }
+
+  /** The current auth-gate state (`GET /api/v1/auth/config`); never the hash. */
+  getAuthConfig(signal?: AbortSignal) {
+    return this.request<AuthStatus>('/auth/config', { signal });
+  }
+
+  /**
+   * Switch the authentication method (`PUT /api/v1/auth/config`). Revokes all
+   * sessions, so the caller (and every other client) will need to re-auth under
+   * the new method.
+   */
+  setAuthMethod(method: AuthStatus['method'], signal?: AbortSignal) {
+    return this.request<AuthStatus>('/auth/config', {
+      method: 'PUT',
+      body: { method },
+      signal,
+    });
+  }
+
+  /**
+   * Set the single admin credential (`POST /api/v1/auth/credential`). The
+   * password is Argon2id-hashed server-side and never echoed back. Empty
+   * username/password reject with a 400 `bad_request`; success revokes sessions.
+   */
+  setCredential(credential: AuthCredentialBody, signal?: AbortSignal) {
+    return this.request<AuthStatus>('/auth/credential', {
+      method: 'POST',
+      body: credential,
+      signal,
+    });
   }
 
   // =========================================================================

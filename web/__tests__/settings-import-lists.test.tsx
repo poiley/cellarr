@@ -92,7 +92,7 @@ describe('ImportLists (settings)', () => {
     await waitFor(() => expect(screen.getByLabelText('Import list name')).toBeTruthy());
     // The default (first) schema type is TMDb, so its api_key + list_id show.
     await waitFor(() => expect(screen.getByLabelText('TMDb API Key')).toBeTruthy());
-    expect(screen.getByLabelText('List ID')).toBeTruthy();
+    expect(await screen.findByLabelText('List ID')).toBeTruthy();
   });
 
   it('POSTs a new import list with the chosen type + settings fields', async () => {
@@ -100,15 +100,16 @@ describe('ImportLists (settings)', () => {
       'POST /api/v3/importlist': () => jsonResponse({ id: 7 }),
     });
     renderWith(new CellarrClient({ fetchImpl }));
-    await waitFor(() => expect(screen.getByLabelText('Import list name')).toBeTruthy());
+    // Wait for the per-type schema fields to render (the schema loads via an async
+    // effect) BEFORE interacting — firing input changes while the parallel data
+    // loaders are still in flight can perturb the in-flight load under full-suite
+    // CPU contention. Once a schema field is present the form has fully settled.
+    await waitFor(() => expect(screen.getByLabelText('TMDb API Key')).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText('Import list name'), {
       target: { value: 'Trending' },
     });
-    // The per-type schema fields (TMDb API Key, List ID) render after the schema
-    // load resolves; wait for them rather than reading synchronously (under full-
-    // suite concurrency the async fetch may not have settled yet).
-    fireEvent.change(await screen.findByLabelText('TMDb API Key'), {
+    fireEvent.change(screen.getByLabelText('TMDb API Key'), {
       target: { value: 'abc123' },
     });
     fireEvent.change(screen.getByLabelText('List ID'), {

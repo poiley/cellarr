@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::error::Result;
 use crate::repos::{
-    BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo, HistoryRepo,
-    ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
+    AuthRepo, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo,
+    HistoryRepo, ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -268,5 +268,11 @@ impl Database {
     #[must_use]
     pub fn import_lists(&self) -> ImportListRepo {
         ImportListRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The authentication repository (single-admin auth config + Forms sessions).
+    #[must_use]
+    pub fn auth(&self) -> AuthRepo {
+        AuthRepo::new(self.pool.clone(), self.writer.clone())
     }
 }

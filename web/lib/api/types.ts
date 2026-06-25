@@ -915,3 +915,44 @@ export interface QueueEntry {
 export type CustomFormat = NativeCustomFormat;
 export type IndexerConfig = NativeIndexerConfig;
 export type DownloadClientConfig = NativeDownloadClientConfig;
+
+// ===========================================================================
+// Authentication (single admin user; Sonarr/Radarr-style method dropdown)
+// ===========================================================================
+//
+// The daemon gates the WEB UI + its private `/api/v1` surface behind one of
+// three methods, never the apikey-authenticated `/api/v3` shim. Exactly one
+// admin user exists (username + Argon2id password hash); there is no users
+// table, no roles, no multi-user. See crates/cellarr-api auth wiring.
+
+/** The selectable authentication method (mirrors the Sonarr dropdown, minus
+ * multi-user options). `none` disables the gate entirely. */
+export type AuthMethod = 'none' | 'forms' | 'basic';
+
+/**
+ * The auth gate's current state, returned by `GET /api/v1/auth/config`,
+ * `POST /login`/`/logout`, and the two setters. Never carries the hash.
+ *
+ *   method     — the configured method (none | forms | basic).
+ *   configured — whether an admin credential (username+hash) has been set.
+ *   enforced   — whether the gate is actually active right now (method !== none
+ *                AND a credential is configured).
+ *   username   — the admin username, when configured.
+ */
+export interface AuthStatus {
+  method: AuthMethod;
+  configured: boolean;
+  enforced: boolean;
+  username?: string;
+}
+
+/** Body for `PUT /api/v1/auth/config` — switch the method (revokes sessions). */
+export interface SetAuthMethodBody {
+  method: AuthMethod;
+}
+
+/** Body for `POST /api/v1/auth/credential` and `POST /login`. */
+export interface AuthCredentialBody {
+  username: string;
+  password: string;
+}
