@@ -40,6 +40,7 @@ const NAV: NavEntry[] = [
   { href: '/history', label: 'History' },
   { href: '/settings', label: 'Settings' },
   { href: '/system', label: 'System' },
+  { href: '/logs', label: 'Logs' },
 ];
 
 // Short build identifier inlined at build time (see next.config.ts). Replaces

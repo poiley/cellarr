@@ -110,6 +110,87 @@ impl Database {
         self.pool.close().await;
     }
 
+    /// Write a **consistent on-disk snapshot** of the live database to `dest`.
+    ///
+    /// Uses SQLite's `VACUUM INTO`, which produces a transactionally-consistent,
+    /// fully-compacted copy of the database as a single self-contained file — no
+    /// WAL/`-shm` sidecars, no torn pages — without taking the database offline or
+    /// blocking the writer-actor for the duration. This is the snapshot the backup
+    /// engine bundles (`docs/08-database.md`: the writer-actor serializes writes,
+    /// so the read pool can run `VACUUM INTO` against a consistent view).
+    ///
+    /// `dest` must not already exist (SQLite refuses to overwrite), and its parent
+    /// directory must exist. After the copy the snapshot is reopened and
+    /// `PRAGMA integrity_check` is run so a corrupt or truncated file is caught
+    /// here rather than at restore time.
+    ///
+    /// # Errors
+    /// Returns [`crate::DbError::Backup`] if `dest` is unusable (already exists,
+    /// not valid UTF-8) or the integrity check fails, or the underlying sqlx error
+    /// if `VACUUM INTO` itself fails.
+    pub async fn snapshot_to(&self, dest: &std::path::Path) -> Result<()> {
+        if dest.exists() {
+            return Err(crate::DbError::Backup(format!(
+                "snapshot destination already exists: {}",
+                dest.display()
+            )));
+        }
+        let dest_str = dest.to_str().ok_or_else(|| {
+            crate::DbError::Backup(format!(
+                "snapshot destination is not valid UTF-8: {}",
+                dest.display()
+            ))
+        })?;
+        // `VACUUM INTO` binds no parameters; the path is a SQL string literal, so
+        // we reject embedded quotes outright rather than attempt escaping (a backup
+        // path with a quote in it is pathological and not worth a SQL-injection
+        // surface). Timestamped backup names never contain quotes.
+        if dest_str.contains('\'') {
+            return Err(crate::DbError::Backup(
+                "snapshot destination path contains a single quote".into(),
+            ));
+        }
+        sqlx::query(&format!("VACUUM INTO '{dest_str}'"))
+            .execute(&self.pool)
+            .await?;
+
+        // Reopen the snapshot read-only and verify integrity, so a silently
+        // corrupt copy never ships as a "valid" backup.
+        Self::verify_snapshot(dest_str).await
+    }
+
+    /// Open `path` read-only and run `PRAGMA integrity_check`, returning an error
+    /// if the file is not a healthy SQLite database. Used to validate both a
+    /// freshly written snapshot and a candidate restore file before it is trusted.
+    ///
+    /// # Errors
+    /// Returns [`crate::DbError::Backup`] if the file cannot be opened or the
+    /// integrity check reports anything other than `ok`.
+    pub async fn verify_snapshot(path: &str) -> Result<()> {
+        let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
+            .map_err(|e| crate::DbError::Backup(format!("opening snapshot {path}: {e}")))?
+            .read_only(true)
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(|e| crate::DbError::Backup(format!("opening snapshot {path}: {e}")))?;
+        let row: (String,) = sqlx::query_as("PRAGMA integrity_check")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| crate::DbError::Backup(format!("integrity check on {path}: {e}")))?;
+        pool.close().await;
+        if row.0 == "ok" {
+            Ok(())
+        } else {
+            Err(crate::DbError::Backup(format!(
+                "snapshot {path} failed integrity check: {}",
+                row.0
+            )))
+        }
+    }
+
     /// The read pool. Repositories use this for queries; callers needing an
     /// escape hatch (e.g. `cellarr-migrate` importing) may borrow it.
     #[must_use]

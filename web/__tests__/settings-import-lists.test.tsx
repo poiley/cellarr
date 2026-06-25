@@ -105,7 +105,10 @@ describe('ImportLists (settings)', () => {
     fireEvent.change(screen.getByLabelText('Import list name'), {
       target: { value: 'Trending' },
     });
-    fireEvent.change(screen.getByLabelText('TMDb API Key'), {
+    // The per-type schema fields (TMDb API Key, List ID) render after the schema
+    // load resolves; wait for them rather than reading synchronously (under full-
+    // suite concurrency the async fetch may not have settled yet).
+    fireEvent.change(await screen.findByLabelText('TMDb API Key'), {
       target: { value: 'abc123' },
     });
     fireEvent.change(screen.getByLabelText('List ID'), {

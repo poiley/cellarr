@@ -66,11 +66,13 @@ async fn real_main() -> Result<()> {
 
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
-            init_tracing(&config.log.filter);
+            // Hold the appender guard for the whole daemon lifetime so the
+            // non-blocking writer flushes buffered log lines on shutdown.
+            let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
             boot::run(config).await
         }
         Command::Migrate { sources } => {
-            init_tracing(&config.log.filter);
+            let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
             run_migrate(&config, &sources).await
         }
         Command::ConfigCheck => run_config_check(&config),
@@ -82,16 +84,67 @@ async fn real_main() -> Result<()> {
 }
 
 /// Initialize structured logging from the resolved filter, deferring to `RUST_LOG`
-/// when set so an operator can override at the process boundary. Idempotent-safe:
-/// a second init (e.g. in tests) is ignored rather than panicking.
-fn init_tracing(filter: &str) {
+/// when set so an operator can override at the process boundary.
+///
+/// When `log_dir` is given, a **rolling daily file appender** is added beside the
+/// console layer, writing to `<log_dir>/cellarr.log` (rotated daily). This is the
+/// file the `/api/v3/log/file` surface reads back. The returned
+/// [`tracing_appender::non_blocking::WorkerGuard`] must be held for the process
+/// lifetime so the background writer flushes on shutdown; dropping it early loses
+/// buffered lines.
+///
+/// Idempotent-safe: a second init (e.g. in tests) is ignored rather than
+/// panicking, in which case no guard is returned.
+#[must_use]
+fn init_tracing(
+    filter: &str,
+    log_dir: Option<&std::path::Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::EnvFilter;
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(filter))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .try_init();
+
+    let make_filter = || {
+        EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new(filter))
+            .unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+
+    // Try to set up the rolling file appender. If the directory cannot be created
+    // we degrade to console-only rather than refusing to start (logging must never
+    // block the daemon from running).
+    let file_layer_and_guard = log_dir.and_then(|dir| match std::fs::create_dir_all(dir) {
+        Ok(()) => {
+            let appender = tracing_appender::rolling::daily(dir, "cellarr.log");
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let layer = tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false);
+            Some((layer, guard))
+        }
+        Err(e) => {
+            eprintln!("warning: could not create log dir {}: {e}", dir.display());
+            None
+        }
+    });
+
+    match file_layer_and_guard {
+        Some((file_layer, guard)) => {
+            let registered = tracing_subscriber::registry()
+                .with(make_filter())
+                .with(tracing_subscriber::fmt::layer())
+                .with(file_layer)
+                .try_init()
+                .is_ok();
+            registered.then_some(guard)
+        }
+        None => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(make_filter())
+                .try_init();
+            None
+        }
+    }
 }
 
 /// Drive `cellarr-migrate` end to end: import the source database(s) into a fresh

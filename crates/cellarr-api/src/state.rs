@@ -80,6 +80,15 @@ pub struct AppState {
     /// delete reversible — the bytes land under the bin, preserving their layout
     /// relative to the library root. The daemon injects the configured path.
     pub recycle_bin_path: Option<PathBuf>,
+    /// The database backup/restore engine (`<data_dir>/backups`). `None` (the
+    /// default) leaves the `/api/v3/system/backup` surface reporting backups
+    /// unavailable — the offline/test path; the daemon injects the real engine
+    /// bound to the live DB + its file path.
+    pub backup: Option<Arc<crate::backup::BackupEngine>>,
+    /// The on-disk log-file reader (`<data_dir>/logs`). `None` (the default)
+    /// leaves the `/api/v3/log/file` surface reporting no log files; the daemon
+    /// injects the reader bound to the rolling appender's directory.
+    pub log_files: Option<Arc<crate::logfile::LogFiles>>,
 }
 
 impl AppState {
@@ -134,6 +143,8 @@ impl AppState {
             queue_client: None,
             artwork_dir: None,
             recycle_bin_path: None,
+            backup: None,
+            log_files: None,
         }
     }
 
@@ -216,6 +227,25 @@ impl AppState {
     #[must_use]
     pub fn with_recycle_bin_path(mut self, dir: PathBuf) -> Self {
         self.recycle_bin_path = Some(dir);
+        self
+    }
+
+    /// Attach the database backup/restore engine (`<data_dir>/backups`), enabling
+    /// the `/api/v3/system/backup` surface. Builder form so the base
+    /// [`AppState::new`] stays backup-less (the routes report unavailable) and the
+    /// daemon opts the real engine in.
+    #[must_use]
+    pub fn with_backup(mut self, engine: crate::backup::BackupEngine) -> Self {
+        self.backup = Some(Arc::new(engine));
+        self
+    }
+
+    /// Attach the on-disk log-file reader (`<data_dir>/logs`), enabling the
+    /// `/api/v3/log/file` surface. Builder form so the base [`AppState::new`]
+    /// stays log-file-less and the daemon opts the rolling appender's dir in.
+    #[must_use]
+    pub fn with_log_files(mut self, reader: crate::logfile::LogFiles) -> Self {
+        self.log_files = Some(Arc::new(reader));
         self
     }
 }

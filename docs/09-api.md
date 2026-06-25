@@ -51,6 +51,24 @@ Notifiarr, dashboards):
   `specifications[]`).
 - `indexer` CRUD + `indexer/schema` (Torznab + Newznab) + `POST indexer/test` + `?forceSave=true`.
 - Full paging envelope (`page,pageSize,sortKey,sortDirection,totalRecords,records`) on list endpoints.
+- **`system/backup`** — `GET` (list), `POST` (create a manual backup now), `GET {id}` (download the
+  bundle), `DELETE {id}`, plus restore: `POST system/backup/restore/{id}` and
+  `POST system/backup/restore/upload` (raw bundle body). A backup is a single self-contained file
+  (`*.cbk`, a `CELLARRBKP1` container = length-prefixed manifest + a `VACUUM INTO` DB snapshot) under
+  `<data_dir>/backups`; a daily scheduled backup runs in the daemon with retention 7. **Restore is
+  destructive and fenced:** it takes an automatic *pre-restore safety backup* of the live DB, then
+  `PRAGMA integrity_check`-validates the snapshot **before** touching the live file, then atomically
+  renames it into place. The running pool keeps the old inode, so the swap takes effect on **restart**
+  (`restartRequired: true` in the response). Engine: `cellarr_api::backup`; snapshot: `Database::snapshot_to`.
+  Postgres backup/restore is a documented `// TODO` (the SQLite-file swap does not apply).
+- **`log/file`** — `GET` (list the daemon's on-disk log files) + `GET {name}` (tail recent lines,
+  `?limit=`/`?lines=`, capped). The daemon writes a daily-rolling `cellarr.log` under `<data_dir>/logs`
+  (the CLI installs `tracing-appender`). The `{name}` is traversal-guarded (bare log filename only).
+- **Expanded `health`** (`cellarr_api::health`): `no-root-folder`/`root-folder-unwritable` (a real
+  local write-probe), `no-indexer`, `no-download-client`, `no-recent-backup`, and `database-ok` (a
+  liveness probe). Each record carries `{source,type,message,wikiUrl}`; the wikiUrl anchor is the
+  check `type` slug. The live `*-unreachable` network probes are a `// TODO` pending a reachability
+  seam (skipped, not guessed, to honor the offline non-negotiable).
 
 **Bug B1 (fixed):** unknown `/api/v3/*` (and `/sonarr|radarr/api/v3/*`) paths now return **404 JSON**
 (`{code,message}`), never the SPA HTML fallback — the asset fallback is scoped to non-API paths via

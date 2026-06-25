@@ -712,9 +712,57 @@ export interface WantedRecord {
 
 /** A v3 health check entry (`GET /api/v3/health`). */
 export interface HealthCheck {
+  /** Severity of the check ('warning' | 'error'); absence/'ok' means healthy. */
   type?: string;
   message?: string;
   source?: string;
+  /** Optional link to the wiki entry explaining the check. */
+  wikiUrl?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * A backup bundle as returned by `/api/v3/system/backup` (list + create).
+ * `id` is a numeric projection; `backupId` is the real identifier; both are
+ * accepted by the download / delete / restore routes.
+ */
+export interface BackupRecord {
+  id: number | string;
+  /** The real (string) backup identifier; prefer this for actions. */
+  backupId: string;
+  name: string;
+  /** Origin of the backup. */
+  type: 'manual' | 'scheduled' | 'pre-restore' | string;
+  /** Size of the bundle in bytes. */
+  size: number;
+  /** ISO8601 timestamp the backup was taken. */
+  time: string;
+  /** On-disk path of the bundle. */
+  path: string;
+}
+
+/** The result of restoring a backup (`POST /api/v3/system/backup/restore/{id}`). */
+export interface BackupRestoreResult {
+  /** The id of the backup that was restored. */
+  restored?: number | string;
+  /** The id of the automatic pre-restore safety backup that was taken first. */
+  safetyBackupId?: number | string;
+  /** Whether the daemon must be restarted for the restore to take full effect. */
+  restartRequired?: boolean;
+  message?: string;
+  [key: string]: unknown;
+}
+
+/** A log file as returned by `GET /api/v3/log/file`. */
+export interface LogFile {
+  id: number | string;
+  filename: string;
+  /** ISO8601 timestamp of the last write. */
+  lastWriteTime: string;
+  /** Relative URL to fetch the file's contents. */
+  contentsUrl: string;
+  /** Size in bytes. */
+  size: number;
   [key: string]: unknown;
 }
 

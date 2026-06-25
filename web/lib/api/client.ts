@@ -18,6 +18,8 @@
 
 import type {
   ApiErrorBody,
+  BackupRecord,
+  BackupRestoreResult,
   BlocklistRecord,
   CommandAccepted,
   CommandInfo,
@@ -49,6 +51,7 @@ import type {
   IndexerConfig,
   IndexerConfigV3,
   Library,
+  LogFile,
   LookupCandidate,
   MediaFile,
   MediaManagement,
@@ -236,6 +239,81 @@ export class CellarrClient {
   /** Health check entries (`/api/v3/health`). */
   health(signal?: AbortSignal) {
     return this.requestV3<HealthCheck[]>('/health', { signal });
+  }
+
+  // =========================================================================
+  // Backups (`/api/v3/system/backup`)
+  // =========================================================================
+
+  /** List backup bundles (`GET /api/v3/system/backup`). */
+  listBackups(signal?: AbortSignal) {
+    return this.requestV3<BackupRecord[]>('/system/backup', { signal });
+  }
+
+  /** Take a manual backup now (`POST /api/v3/system/backup`). */
+  createBackup(signal?: AbortSignal) {
+    return this.requestV3<BackupRecord>('/system/backup', { method: 'POST', signal });
+  }
+
+  /** Delete a backup bundle (`DELETE /api/v3/system/backup/{id}`, idempotent). */
+  deleteBackup(id: number | string, signal?: AbortSignal) {
+    return this.requestV3<void>(`/system/backup/${id}`, { method: 'DELETE', signal });
+  }
+
+  /**
+   * The absolute URL of a backup bundle's raw bytes
+   * (`GET /api/v3/system/backup/{id}`, served as an attachment). Used as an
+   * anchor href so the browser performs the download natively.
+   */
+  backupDownloadUrl(id: number | string): string {
+    return `${this.baseUrl}/api/v3/system/backup/${id}`;
+  }
+
+  /**
+   * Restore a stored backup (`POST /api/v3/system/backup/restore/{id}`).
+   * DESTRUCTIVE: replaces the live database. The daemon takes an automatic
+   * pre-restore safety backup first and reports it in the result.
+   */
+  restoreBackup(id: number | string, signal?: AbortSignal) {
+    return this.requestV3<BackupRestoreResult>(`/system/backup/restore/${id}`, {
+      method: 'POST',
+      signal,
+    });
+  }
+
+  // =========================================================================
+  // Log files (`/api/v3/log/file`)
+  // =========================================================================
+
+  /** List available log files (`GET /api/v3/log/file`). */
+  listLogFiles(signal?: AbortSignal) {
+    return this.requestV3<LogFile[]>('/log/file', { signal });
+  }
+
+  /**
+   * Fetch the tail of a log file (`GET /api/v3/log/file/{name}`), returned as
+   * plain text. `lines` bounds how many trailing lines to return (default 500,
+   * max 10000 server-side).
+   */
+  async getLogFile(name: string, lines?: number, signal?: AbortSignal): Promise<string> {
+    const url =
+      `${this.baseUrl}/api/v3/log/file/${encodeURIComponent(name)}` +
+      (lines ? `?lines=${lines}` : '');
+    const headers: Record<string, string> = { Accept: 'text/plain' };
+    if (this.apiKey) headers['X-Api-Key'] = this.apiKey;
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, { method: 'GET', headers, signal });
+    } catch (cause) {
+      throw new ApiError(
+        'network_error',
+        cause instanceof Error ? cause.message : 'network request failed',
+        0
+      );
+    }
+    if (!res.ok) throw await this.toApiError(res);
+    return res.text();
   }
 
   // =========================================================================

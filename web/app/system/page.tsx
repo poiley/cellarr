@@ -28,7 +28,7 @@ import ActionButton from '@components/ActionButton';
 import AppShell from '@app/_components/AppShell';
 import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
-import type { CommandInfo, SystemStatus } from '@lib/api/types';
+import type { CommandInfo, HealthCheck, SystemStatus } from '@lib/api/types';
 import {
   fetchSystemTasks,
   runTaskNow,
@@ -42,6 +42,7 @@ interface LoadState {
   status: SystemStatus | null;
   commands: CommandInfo[] | null;
   tasks: SystemTask[] | null;
+  health: HealthCheck[] | null;
   error: string | null;
   loading: boolean;
 }
@@ -53,6 +54,7 @@ export default function SystemPage() {
     status: null,
     commands: null,
     tasks: null,
+    health: null,
     error: null,
     loading: true,
   });
@@ -68,9 +70,12 @@ export default function SystemPage() {
       // The scheduler surface is best-effort: an older daemon without it should
       // not blank the whole screen, so swallow its failure into a null list.
       fetchSystemTasks(api, controller.signal).catch(() => null),
+      // The broader health surface (/api/v3/health) is also best-effort; a
+      // failure here should not blank status/tasks.
+      api.health(controller.signal).catch(() => null),
     ])
-      .then(([status, commands, tasks]) => {
-        setState({ status, commands, tasks, error: null, loading: false });
+      .then(([status, commands, tasks, health]) => {
+        setState({ status, commands, tasks, health, error: null, loading: false });
       })
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.code === 'network_error') {
@@ -86,7 +91,7 @@ export default function SystemPage() {
     return () => controller.abort();
   }, []);
 
-  const { status, commands, tasks, error, loading } = state;
+  const { status, commands, tasks, health, error, loading } = state;
 
   // A small health check derived from the status snapshot: zero indexers means
   // nothing can be searched, which is the canonical first-run warning.
@@ -195,6 +200,14 @@ export default function SystemPage() {
               Health
             </Text>
             <SimpleTable data={healthData} />
+          </>
+        ) : null}
+
+        {status ? (
+          <>
+            <Divider type="GRADIENT" />
+            <Text style={{ opacity: 0.6, marginBottom: '0.5ch' }}>Health checks</Text>
+            <HealthChecks health={health} />
           </>
         ) : null}
 
@@ -317,6 +330,73 @@ const TaskTable: React.FC<TaskTableProps> = ({ tasks, commands, running, onRunNo
               </ActionButton>
             </span>
           </RowSpaceBetween>
+        );
+      })}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Health checks — the broader /api/v3/health surface. Each entry carries a
+// severity (warning|error) + message; the absence of any entry is the canonical
+// 'all healthy' state. Composed from SRCL Badge / Text / Message + a row layout.
+// ---------------------------------------------------------------------------
+
+interface HealthChecksProps {
+  health: HealthCheck[] | null;
+}
+
+const SEVERITY_STYLE: Record<string, { glyph: string; color: string; label: string }> = {
+  error: { glyph: '✗', color: 'var(--ansi-9-red)', label: 'error' },
+  warning: { glyph: '▲', color: 'var(--ansi-3-yellow)', label: 'warning' },
+};
+
+const HealthChecks: React.FC<HealthChecksProps> = ({ health }) => {
+  // A null list means the health surface was unreachable (best-effort fetch);
+  // an empty list means every check passed.
+  if (health === null) {
+    return (
+      <Message>
+        The health surface is unavailable. Individual checks will appear once the daemon exposes
+        them.
+      </Message>
+    );
+  }
+
+  if (health.length === 0) {
+    return (
+      <div role="status" aria-live="polite">
+        <AlertBanner style={{ background: 'var(--ansi-2-green)', color: 'var(--ansi-15-white)' }}>
+          ✓ All health checks passed — no warnings or errors.
+        </AlertBanner>
+      </div>
+    );
+  }
+
+  return (
+    <div role="list" aria-label="Health checks">
+      {health.map((check, index) => {
+        const severity = (check.type ?? 'warning').toLowerCase();
+        const style = SEVERITY_STYLE[severity] ?? SEVERITY_STYLE.warning;
+        return (
+          <div
+            key={`${check.source ?? 'check'}-${index}`}
+            role="listitem"
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: '1ch',
+              padding: '0.5ch 0',
+              borderBottom: '1px solid var(--theme-border)',
+            }}
+          >
+            <span aria-hidden style={{ color: style.color }}>
+              {style.glyph}
+            </span>
+            <Badge>{style.label}</Badge>
+            {check.source ? <Text style={{ opacity: 0.7 }}>{check.source}</Text> : null}
+            <Text style={{ flex: 1 }}>{check.message ?? '(no message)'}</Text>
+          </div>
         );
       })}
     </div>

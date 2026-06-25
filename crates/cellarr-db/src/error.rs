@@ -34,6 +34,12 @@ pub enum DbError {
     /// The writer-actor channel is closed (the writer task has stopped).
     #[error("writer task is unavailable: {0}")]
     WriterUnavailable(String),
+
+    /// A consistent on-disk snapshot (backup) could not be produced — the
+    /// destination path was rejected, `VACUUM INTO` failed, or the produced file
+    /// failed its post-write integrity check.
+    #[error("backup error: {0}")]
+    Backup(String),
 }
 
 /// Convenience alias for fallible persistence operations.

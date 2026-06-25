@@ -213,6 +213,20 @@ impl Config {
         self.data_dir.join("cellarr.sqlite")
     }
 
+    /// The directory the rolling log appender writes to (`<data_dir>/logs`), which
+    /// the `/api/v3/log/file` surface reads back.
+    #[must_use]
+    pub fn log_dir(&self) -> PathBuf {
+        self.data_dir.join("logs")
+    }
+
+    /// The directory database backups are written to (`<data_dir>/backups`), which
+    /// the `/api/v3/system/backup` surface lists/serves/restores from.
+    #[must_use]
+    pub fn backup_dir(&self) -> PathBuf {
+        self.data_dir.join("backups")
+    }
+
     /// Build the runtime [`cellarr_meta::TheTvdbConfig`] from the loaded config,
     /// carrying the api key and optional pin onto the source's defaults (base
     /// url, cache TTL, conservative rate limit).

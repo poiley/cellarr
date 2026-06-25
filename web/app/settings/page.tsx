@@ -20,6 +20,7 @@ import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
 import Notifications from '@app/settings/_components/Notifications';
 import Naming from '@app/settings/_components/Naming';
+import SystemBackup from '@app/settings/_components/SystemBackup';
 
 type Section =
   | 'profiles'
@@ -31,7 +32,8 @@ type Section =
   | 'rootfolders'
   | 'remotepaths'
   | 'naming'
-  | 'notifications';
+  | 'notifications'
+  | 'backups';
 
 const TABS: { id: Section; label: string }[] = [
   { id: 'profiles', label: 'Quality Profiles' },
@@ -44,6 +46,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'remotepaths', label: 'Remote Path Mappings' },
   { id: 'naming', label: 'Naming' },
   { id: 'notifications', label: 'Notifications' },
+  { id: 'backups', label: 'Backups' },
 ];
 
 const INDEXER_IMPLS = ['Torznab', 'Newznab', 'Prowlarr', 'Jackett'];
@@ -85,6 +88,7 @@ export default function Page() {
         {section === 'remotepaths' ? <RemotePathMappings /> : null}
         {section === 'naming' ? <Naming /> : null}
         {section === 'notifications' ? <Notifications /> : null}
+        {section === 'backups' ? <SystemBackup /> : null}
       </div>
     </AppShell>
   );

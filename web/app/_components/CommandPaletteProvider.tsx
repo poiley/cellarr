@@ -53,6 +53,7 @@ const NAV: NavTarget[] = [
   { href: '/history/', label: 'History' },
   { href: '/settings/', label: 'Settings' },
   { href: '/system/', label: 'System' },
+  { href: '/logs/', label: 'Logs' },
   { href: '/decision-log/', label: 'Decision log' },
 ];
 

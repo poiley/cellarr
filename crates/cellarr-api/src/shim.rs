@@ -126,6 +126,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/system/task", get(system_tasks))
         .route("/system/task/{id}", get(system_task))
         .route("/health", get(health))
+        .route("/system/backup", get(list_backups))
+        .route("/system/backup/{id}", get(download_backup))
+        .route("/log/file", get(list_log_files))
+        .route("/log/file/{name}", get(read_log_file))
         .route("/rootfolder", get(root_folders))
         .route("/rootFolder", get(root_folders))
         .route("/tag", get(list_tags))
@@ -191,6 +195,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .with_state(fs.clone());
 
     let writes = Router::new()
+        .route("/system/backup", post(create_backup))
+        .route("/system/backup/{id}", delete(delete_backup))
+        .route("/system/backup/restore/{id}", post(restore_backup_id))
+        .route("/system/backup/restore/upload", post(restore_backup_upload))
         .route("/rootfolder", post(create_root_folder))
         .route("/rootFolder", post(create_root_folder))
         .route("/rootfolder/{id}", delete(delete_root_folder))
@@ -542,33 +550,18 @@ fn unix_to_iso(secs: u64) -> String {
 
 /// v3 health checks. cellarr surfaces its own health as v3-shaped
 /// `{ source, type, message, wikiUrl }` records; an all-clear is an empty array.
+///
+/// The breadth comes from [`crate::health::run_all`] (no-root-folder /
+/// root-folder-unwritable / no-indexer / no-download-client / no-recent-backup /
+/// database-ok), plus the loud cross-filesystem hardlink-fallback warning folded
+/// in from [`crate::fs_health`].
 async fn health(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
-    let cfg = fs.state.db.config();
-    let mut out = Vec::new();
-    if cfg.list_indexers().await?.is_empty() {
-        out.push(json!({
-            "source": "IndexerCheck",
-            "type": "warning",
-            "message": "No indexers are configured",
-            "wikiUrl": "",
-        }));
-    }
-    if cfg.list_download_clients().await?.is_empty() {
-        out.push(json!({
-            "source": "DownloadClientCheck",
-            "type": "warning",
-            "message": "No download client is configured",
-            "wikiUrl": "",
-        }));
-    }
-    if cfg.list_root_folders().await?.is_empty() {
-        out.push(json!({
-            "source": "RootFolderCheck",
-            "type": "error",
-            "message": "No root folders are configured",
-            "wikiUrl": "",
-        }));
-    }
+    let backup = fs.state.backup.as_deref();
+    let checks = crate::health::run_all(&fs.state.db, backup).await?;
+    let mut out: Vec<Value> = checks
+        .iter()
+        .map(crate::health::HealthCheck::to_v3)
+        .collect();
 
     // The loud cross-filesystem warning: a configured downloads dir on a
     // different filesystem from a library root means imports silently fall back
@@ -584,6 +577,228 @@ async fn health(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     }
 
     Ok(Json(out))
+}
+
+// --- system/backup ---------------------------------------------------------
+
+/// The engine, or a structured 503-ish error when no backup wiring is attached
+/// (the offline/test default). We use [`ApiError::Internal`] so the body is the
+/// standard `{ code, message }`.
+fn backup_engine(fs: &FaceState) -> ApiResult<&crate::backup::BackupEngine> {
+    fs.state
+        .backup
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("backup engine not configured".into()))
+}
+
+/// Map a [`crate::backup::BackupError`] onto the API error surface.
+fn map_backup_err(e: crate::backup::BackupError) -> ApiError {
+    use crate::backup::BackupError as B;
+    match e {
+        B::NotFound(id) => ApiError::NotFound(format!("backup {id} not found")),
+        B::Malformed(m) => ApiError::BadRequest(format!("malformed backup bundle: {m}")),
+        B::Unsupported(m) => ApiError::BadRequest(m),
+        B::Db(e) => ApiError::Db(e),
+        B::Io(m) => ApiError::Internal(format!("backup io error: {m}")),
+    }
+}
+
+/// Render a [`crate::backup::BackupInfo`] into the v3 backup-list shape
+/// (`{ id, name, type, time, size }`), mirroring the originals' `system/backup`.
+fn v3_backup(info: &crate::backup::BackupInfo) -> Value {
+    json!({
+        "id": rpm_numeric_id(&info.id),
+        "backupId": info.id,
+        "name": info.name,
+        "type": info.kind,
+        "size": info.size,
+        "time": unix_to_iso(info.created_unix.max(0) as u64),
+        // The originals expose a download path; ours mirrors the GET route.
+        "path": format!("/api/v3/system/backup/{}", info.id),
+    })
+}
+
+/// v3 `GET /system/backup` — list backups, newest first.
+async fn list_backups(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let eng = backup_engine(&fs)?;
+    let backups = eng.list().map_err(map_backup_err)?;
+    Ok(Json(backups.iter().map(v3_backup).collect()))
+}
+
+/// The backup create body — `{ type }` is optional (the UI sends it); we treat any
+/// create as a manual backup.
+#[derive(Debug, Deserialize, Default)]
+struct BackupCreateBody {
+    #[serde(default)]
+    #[allow(dead_code)]
+    name: Option<String>,
+}
+
+/// v3 `POST /system/backup` — take a manual backup now, returning its listing.
+async fn create_backup(
+    State(fs): State<FaceState>,
+    body: Option<Json<BackupCreateBody>>,
+) -> ApiResult<Json<Value>> {
+    let _ = body; // body is advisory; a create is always a manual backup
+    let eng = backup_engine(&fs)?;
+    let info = eng
+        .create("manual", serde_json::Value::Null)
+        .await
+        .map_err(map_backup_err)?;
+    Ok(Json(v3_backup(&info)))
+}
+
+/// v3 `GET /system/backup/{id}` — download a backup bundle's raw bytes.
+///
+/// The `{id}` may be the numeric-projected id (the v3 `id` field) or the real
+/// backup id string; we resolve a numeric id back to its string by listing.
+async fn download_backup(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let eng = backup_engine(&fs)?;
+    let real_id = resolve_backup_id(eng, &id)?;
+    let bytes = eng.read_bundle(&real_id).map_err(map_backup_err)?;
+    let body = axum::body::Body::from(bytes);
+    let mut resp = Response::new(body);
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(cd) = HeaderValue::from_str(&format!("attachment; filename=\"{real_id}.cbk\"")) {
+        resp.headers_mut()
+            .insert(axum::http::header::CONTENT_DISPOSITION, cd);
+    }
+    Ok(resp)
+}
+
+/// v3 `DELETE /system/backup/{id}` — remove a backup. Idempotent.
+async fn delete_backup(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let eng = backup_engine(&fs)?;
+    // A missing id resolves to itself (delete is idempotent on the engine).
+    let real_id = resolve_backup_id(eng, &id).unwrap_or(id);
+    eng.delete(&real_id).map_err(map_backup_err)?;
+    Ok(Json(json!({})))
+}
+
+/// v3 `POST /system/backup/restore/{id}` — restore from an existing backup id.
+/// Takes an automatic pre-restore safety backup, validates, and atomically swaps.
+async fn restore_backup_id(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let eng = backup_engine(&fs)?;
+    let real_id = resolve_backup_id(eng, &id)?;
+    let outcome = eng.restore_id(&real_id).await.map_err(map_backup_err)?;
+    Ok(Json(json!({
+        "restored": real_id,
+        "safetyBackupId": outcome.safety_backup_id,
+        "restartRequired": outcome.restart_required,
+        "message": "Database restored. Restart cellarr for the change to take effect.",
+    })))
+}
+
+/// v3 `POST /system/backup/restore/upload` — restore from an uploaded bundle (the
+/// raw bundle bytes as the request body). Same safety flow as the id path.
+async fn restore_backup_upload(
+    State(fs): State<FaceState>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Value>> {
+    let eng = backup_engine(&fs)?;
+    if body.is_empty() {
+        return Err(ApiError::BadRequest("empty backup upload".into()));
+    }
+    let outcome = eng
+        .restore_from_bytes(&body)
+        .await
+        .map_err(map_backup_err)?;
+    Ok(Json(json!({
+        "safetyBackupId": outcome.safety_backup_id,
+        "restartRequired": outcome.restart_required,
+        "message": "Database restored from upload. Restart cellarr for the change to take effect.",
+    })))
+}
+
+/// Resolve a v3 backup path id (either the numeric projection or the real id
+/// string) back to the real backup id, erroring if it matches nothing.
+fn resolve_backup_id(eng: &crate::backup::BackupEngine, id: &str) -> ApiResult<String> {
+    let list = eng.list().map_err(map_backup_err)?;
+    // Exact string match first (the UI round-trips the real id).
+    if list.iter().any(|b| b.id == id) {
+        return Ok(id.to_string());
+    }
+    // Else the numeric projection the v3 `id` field carries.
+    if let Ok(numeric) = id.parse::<i64>() {
+        if let Some(b) = list.iter().find(|b| rpm_numeric_id(&b.id) == numeric) {
+            return Ok(b.id.clone());
+        }
+    }
+    Err(ApiError::NotFound(format!("backup {id} not found")))
+}
+
+// --- log/file --------------------------------------------------------------
+
+/// The log reader, or a structured error when no log wiring is attached.
+fn log_files(fs: &FaceState) -> ApiResult<&crate::logfile::LogFiles> {
+    fs.state
+        .log_files
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("log file reader not configured".into()))
+}
+
+/// v3 `GET /log/file` — list the daemon's on-disk log files.
+async fn list_log_files(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let lf = log_files(&fs)?;
+    let files = lf
+        .list()
+        .map_err(|e| ApiError::Internal(format!("listing log files: {e}")))?;
+    let out = files
+        .iter()
+        .map(|f| {
+            json!({
+                "id": rpm_numeric_id(&f.name),
+                "filename": f.name,
+                "lastWriteTime": unix_to_iso(f.last_modified_unix.max(0) as u64),
+                "contentsUrl": format!("/api/v3/log/file/{}", f.name),
+                "size": f.size,
+            })
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+/// The `?limit=` (alias `?lines=`) query for a log tail read.
+#[derive(Debug, Deserialize, Default)]
+struct LogTailQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    lines: Option<usize>,
+}
+
+/// v3 `GET /log/file/{name}` — read the tail of a named log file. The originals
+/// return the raw file body; we return the recent lines (capped) as plain text so
+/// the operator sees the same content, with path-traversal on `name` rejected.
+async fn read_log_file(
+    State(fs): State<FaceState>,
+    Path(name): Path<String>,
+    Query(q): Query<LogTailQuery>,
+) -> ApiResult<Response> {
+    let lf = log_files(&fs)?;
+    let limit = q.limit.or(q.lines);
+    let lines = lf
+        .read_tail(&name, limit)
+        .map_err(|_| ApiError::NotFound(format!("log file {name} not found")))?;
+    let body = lines.join("\n");
+    let mut resp = Response::new(axum::body::Body::from(body));
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    Ok(resp)
 }
 
 // --- rootfolder ------------------------------------------------------------

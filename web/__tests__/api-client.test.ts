@@ -95,4 +95,55 @@ describe('CellarrClient', () => {
     await client.listEpisodes('s1');
     expect(fetchImpl.mock.calls[1][0]).toBe('/api/v3/episode?seriesId=s1');
   });
+
+  it('lists, creates, deletes and restores backups on /api/v3', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    const client = new CellarrClient({ fetchImpl });
+
+    await client.listBackups();
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v3/system/backup');
+
+    await client.createBackup();
+    expect(fetchImpl.mock.calls[1][0]).toBe('/api/v3/system/backup');
+    expect((fetchImpl.mock.calls[1][1] as RequestInit).method).toBe('POST');
+
+    await client.deleteBackup('bk-1');
+    expect(fetchImpl.mock.calls[2][0]).toBe('/api/v3/system/backup/bk-1');
+    expect((fetchImpl.mock.calls[2][1] as RequestInit).method).toBe('DELETE');
+
+    await client.restoreBackup('bk-1');
+    expect(fetchImpl.mock.calls[3][0]).toBe('/api/v3/system/backup/restore/bk-1');
+    expect((fetchImpl.mock.calls[3][1] as RequestInit).method).toBe('POST');
+  });
+
+  it('builds a same-origin backup download URL', () => {
+    const client = new CellarrClient({ baseUrl: 'http://host:1/' });
+    expect(client.backupDownloadUrl('bk-9')).toBe('http://host:1/api/v3/system/backup/bk-9');
+  });
+
+  it('lists log files and fetches a tail as plain text with a line bound', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ id: 1, filename: 'cellarr.txt' }]))
+      .mockResolvedValueOnce(new Response('line1\nline2', { status: 200 }));
+    const client = new CellarrClient({ fetchImpl });
+
+    const files = await client.listLogFiles();
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/v3/log/file');
+    expect(files[0].filename).toBe('cellarr.txt');
+
+    const text = await client.getLogFile('cellarr.txt', 250);
+    expect(fetchImpl.mock.calls[1][0]).toBe('/api/v3/log/file/cellarr.txt?lines=250');
+    expect(text).toBe('line1\nline2');
+  });
+
+  it('surfaces a structured error from the log tail route', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ code: 'not_found', message: 'no such log' }, { status: 404 }));
+    const client = new CellarrClient({ fetchImpl });
+    await expect(client.getLogFile('../etc/passwd')).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
 });

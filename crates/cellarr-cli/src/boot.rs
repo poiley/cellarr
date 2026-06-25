@@ -26,6 +26,12 @@ use crate::registry::build_media_registry;
 /// up. Kept modest so an idle daemon is quiet.
 const SCHEDULER_TICK_SECS: u64 = 5;
 
+/// How often the daemon takes an automatic backup (daily).
+const BACKUP_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// How many automatic backups to retain (older ones are pruned each run).
+const BACKUP_RETENTION: usize = 7;
+
 /// A booted daemon: the bound listener, the assembled state, and the resolved
 /// address. Split from [`run`] so a test can boot, learn the real port, talk to
 /// the server, and trigger shutdown deterministically rather than racing a signal.
@@ -175,6 +181,19 @@ impl Daemon {
             None => state,
         };
 
+        // The database backup/restore engine, bound to `<data_dir>/backups` and the
+        // live DB + its file path (the path is needed for the atomic restore swap).
+        // This powers the `/api/v3/system/backup` surface and the scheduled backup
+        // job below.
+        let backup_engine =
+            cellarr_api::BackupEngine::new(config.backup_dir(), state.db.clone(), db_path.clone());
+        let state = state.with_backup(backup_engine);
+
+        // The on-disk log-file reader, bound to the rolling appender's directory
+        // (`<data_dir>/logs`), powering the `/api/v3/log/file` surface.
+        let log_files = cellarr_api::LogFiles::new(config.log_dir());
+        let state = state.with_log_files(log_files);
+
         // Register the recurring maintenance jobs the daemon runs unattended.
         register_recurring(&state).await?;
 
@@ -241,6 +260,45 @@ impl Daemon {
             }
         });
 
+        // The scheduled-backup task: take an automatic backup on a daily cadence
+        // and prune to the retention bound. Runs on its own task with the same
+        // shutdown handle shape as the scheduler tick. Skipped if no backup engine
+        // is attached (it always is in the daemon). The first backup is taken one
+        // interval in, not at boot, so a flapping restart loop does not spam
+        // backups; the operator can still trigger one immediately via the API.
+        let (backup_stop_tx, mut backup_stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let backup_engine = state.backup.clone();
+        let backup_task = tokio::spawn(async move {
+            let Some(engine) = backup_engine else {
+                return;
+            };
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(BACKUP_INTERVAL_SECS));
+            // Consume the immediate first tick so the first backup lands after one
+            // full interval rather than at startup.
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        match engine.create("scheduled", serde_json::Value::Null).await {
+                            Ok(info) => {
+                                info!(backup = %info.id, "scheduled backup created");
+                                match engine.prune(BACKUP_RETENTION) {
+                                    Ok(pruned) if !pruned.is_empty() => {
+                                        info!(count = pruned.len(), "pruned old backups");
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => warn!(error = %e, "backup retention prune failed"),
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "scheduled backup failed"),
+                        }
+                    }
+                    _ = &mut backup_stop_rx => break,
+                }
+            }
+        });
+
         // The DB handle to drain after the server stops. Cloning is cheap; the
         // pool is shared, so closing it here closes it everywhere.
         let db = state.db.clone();
@@ -254,6 +312,12 @@ impl Daemon {
         let _ = tick_stop_tx.send(());
         if let Err(e) = tick_task.await {
             warn!(error = %e, "scheduler task join failed during shutdown");
+        }
+        // Stop the scheduled-backup task too (an in-flight backup is allowed to
+        // finish — `select!` only breaks at the next loop boundary).
+        let _ = backup_stop_tx.send(());
+        if let Err(e) = backup_task.await {
+            warn!(error = %e, "backup task join failed during shutdown");
         }
 
         // Drain the writer-actor and close the pool, leaving a consistent DB.

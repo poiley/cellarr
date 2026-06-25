@@ -17,12 +17,15 @@
 
 pub mod assets;
 pub mod auth;
+pub mod backup;
 pub mod calendar;
 pub mod commands;
 pub mod error;
 pub mod events;
 pub mod fs_health;
+pub mod health;
 pub mod import_list_sync;
+pub mod logfile;
 pub mod manual_import;
 pub mod mediacover;
 pub mod metadata;
@@ -41,8 +44,10 @@ use axum::Router;
 use tower_http::trace::TraceLayer;
 
 pub use auth::AuthConfig;
+pub use backup::{BackupEngine, BackupError, BackupInfo, RestoreOutcome};
 pub use error::{ApiError, ApiResult};
 pub use events::{DomainEvent, EventBus};
+pub use logfile::{LogFileInfo, LogFiles};
 pub use metadata::{LookupCandidate, LookupOutcome, MetadataLookup, MetadataLookupError};
 pub use notifications::default_senders;
 pub use state::AppState;

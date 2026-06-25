@@ -18,6 +18,7 @@ const render = (ui: React.ReactElement) =>
 const systemStatus = vi.fn();
 const getCommands = vi.fn();
 const requestV3 = vi.fn();
+const health = vi.fn();
 
 vi.mock('@lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@lib/api/client')>('@lib/api/client');
@@ -26,6 +27,7 @@ vi.mock('@lib/api/client', async () => {
     api: {
       systemStatus: (...args: unknown[]) => systemStatus(...args),
       getCommands: (...args: unknown[]) => getCommands(...args),
+      health: (...args: unknown[]) => health(...args),
       // The System screen reaches the scheduler surface + 'Run now' command
       // through the client's generic requestV3 escape hatch.
       requestV3: (...args: unknown[]) => requestV3(...args),
@@ -80,6 +82,9 @@ describe('System / Status screen', () => {
     systemStatus.mockReset();
     getCommands.mockReset();
     requestV3.mockReset();
+    health.mockReset();
+    // Default: an empty health list (the 'all healthy' state). Tests override.
+    health.mockResolvedValue([]);
     // Default: route GET /system/task and POST /command. Individual tests
     // override as needed.
     requestV3.mockImplementation((path: string, opts?: { method?: string }) => {
@@ -206,5 +211,31 @@ describe('System / Status screen', () => {
     const Screen = await loadScreen();
     const { findByText } = render(<Screen />);
     expect(await findByText(/Could not reach the API/i)).toBeTruthy();
+  });
+
+  it('shows an all-healthy empty state when there are no health checks', async () => {
+    systemStatus.mockResolvedValue(STATUS);
+    getCommands.mockResolvedValue(COMMANDS);
+    health.mockResolvedValue([]);
+    const Screen = await loadScreen();
+    const { findByText } = render(<Screen />);
+    expect(await findByText(/All health checks passed/i)).toBeTruthy();
+  });
+
+  it('renders each health check with its severity and message', async () => {
+    systemStatus.mockResolvedValue(STATUS);
+    getCommands.mockResolvedValue(COMMANDS);
+    health.mockResolvedValue([
+      { source: 'IndexerCheck', type: 'warning', message: 'No indexers are enabled' },
+      { source: 'RootFolderCheck', type: 'error', message: 'Root folder is not writable' },
+    ]);
+    const Screen = await loadScreen();
+    const { findByText, getAllByRole } = render(<Screen />);
+    expect(await findByText(/No indexers are enabled/)).toBeTruthy();
+    expect(await findByText(/Root folder is not writable/)).toBeTruthy();
+    // Both a warning and an error severity badge appear.
+    expect(await findByText('warning')).toBeTruthy();
+    expect(await findByText('error')).toBeTruthy();
+    expect(getAllByRole('listitem').length).toBe(2);
   });
 });
