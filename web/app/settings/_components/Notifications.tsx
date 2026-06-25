@@ -31,12 +31,14 @@ import type {
   NotificationConfigV3,
   NotificationField,
   NotificationSchema,
+  Tag,
 } from '@lib/api/types';
 
 import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import TagInput from '@app/settings/_components/TagInput';
 
 // A friendly label for each advertised implementation. The schema keys the *arr
 // implementation strings (PlexServer / MediaBrowser); the UI shows the names
@@ -85,6 +87,8 @@ interface NotificationForm {
   events: Record<EventKey, boolean>;
   /** Provider field values, keyed by field name (mirrors the schema fields). */
   values: Record<string, string>;
+  /** Tag ids that scope this connector (empty = fires for all content). */
+  tags: number[];
 }
 
 interface TestResult {
@@ -110,6 +114,7 @@ function blankForm(implementation: string): NotificationForm {
     enabled: true,
     events: defaultEvents(),
     values: {},
+    tags: [],
   };
 }
 
@@ -130,6 +135,7 @@ function toForm(raw: NotificationConfigV3): NotificationForm {
       onHealthIssue: raw.onHealthIssue !== false,
     },
     values,
+    tags: Array.isArray(raw.tags) ? raw.tags.filter((t): t is number => typeof t === 'number') : [],
   };
 }
 
@@ -206,8 +212,10 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
     (signal: AbortSignal) => client.getNotificationSchema(signal),
     [client]
   );
+  const loadTags = React.useCallback((signal: AbortSignal) => client.listTags(signal), [client]);
   const { data: list, loading, error, reload } = useAsync<NotificationConfigV3[]>(loadList);
   const { data: schema } = useAsync<NotificationSchema[]>(loadSchema);
+  const { data: tagList, reload: reloadTags } = useAsync<Tag[]>(loadTags);
   const { success, error: toastError, info } = useToast();
 
   const [form, setForm] = React.useState<NotificationForm | null>(null);
@@ -220,6 +228,17 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
 
   const configs = list ?? [];
   const templates = schema ?? [];
+  const tags = tagList ?? [];
+
+  // Mint a new tag inline (the TagInput "+ new" path) and refresh the catalogue.
+  const createTag = React.useCallback(
+    async (label: string): Promise<Tag> => {
+      const tag = await client.createTag({ label });
+      reloadTags();
+      return tag;
+    },
+    [client, reloadTags]
+  );
 
   // Seed the form once the schema arrives (so the type dropdown defaults to a
   // real implementation rather than an empty string).
@@ -267,7 +286,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
       onHealthIssue: f.events.onHealthIssue,
       onHealthRestored: f.events.onHealthIssue,
       fields,
-      tags: [],
+      tags: f.tags,
     } as Partial<NotificationConfigV3>;
   };
 
@@ -503,6 +522,15 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                   Enabled
                 </Checkbox>
               </div>
+
+              <Text style={{ opacity: 0.6, margin: '1ch 0 0.5ch' }}>Tags</Text>
+              <TagInput
+                available={tags}
+                value={form.tags}
+                onChange={(next) => setForm({ ...form, tags: next })}
+                onCreate={createTag}
+                label="Notification tags"
+              />
 
               {testResult ? (
                 <div role="status" style={{ margin: '0.5ch 0' }}>

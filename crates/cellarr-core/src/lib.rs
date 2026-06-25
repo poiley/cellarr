@@ -39,6 +39,7 @@ pub mod pipeline;
 pub mod profile;
 pub mod release;
 pub mod repo;
+pub mod tag;
 pub mod traits;
 pub mod webhook;
 
@@ -86,6 +87,7 @@ pub use repo::{
     ContentRepository, DecisionLogRepository, DeletedContent, GrabRepository, HistoryRepository,
     MediaFileRepository, ProfileRepository,
 };
+pub use tag::{tag_scope_applies, Tag};
 pub use traits::{
     DownloadClient, DownloadState, DownloadStatus, Indexer, MediaModule, MetadataSource,
     NamingTokens, SearchTerms,

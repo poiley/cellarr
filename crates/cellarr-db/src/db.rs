@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::error::Result;
 use crate::repos::{
     AuthRepo, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo,
-    HistoryRepo, ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
+    HistoryRepo, ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo, TagRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -256,6 +256,12 @@ impl Database {
     #[must_use]
     pub fn config(&self) -> ConfigRepo {
         ConfigRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The persisted tag-vocabulary repository (`/api/v3/tag`).
+    #[must_use]
+    pub fn tags(&self) -> TagRepo {
+        TagRepo::new(self.pool.clone(), self.writer.clone())
     }
 
     /// The failed-download blocklist repository.

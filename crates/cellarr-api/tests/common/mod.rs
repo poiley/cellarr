@@ -234,6 +234,7 @@ pub async fn seed_library(state: &AppState, media_type: MediaType, name: &str) -
 /// Insert an indexer config and return it.
 pub async fn seed_indexer(state: &AppState, name: &str) -> IndexerConfig {
     let indexer = IndexerConfig {
+        tags: Vec::new(),
         id: cellarr_core::IndexerId::new(),
         name: name.to_string(),
         kind: "torznab".to_string(),
@@ -295,6 +296,7 @@ impl cellarr_api::MetadataLookup for MockMetadata {
 /// Insert a download client config and return it.
 pub async fn seed_download_client(state: &AppState, name: &str) -> DownloadClientConfig {
     let client = DownloadClientConfig {
+        tags: Vec::new(),
         id: cellarr_core::DownloadClientId::new(),
         name: name.to_string(),
         kind: "qbittorrent".to_string(),

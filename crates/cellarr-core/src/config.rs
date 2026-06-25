@@ -332,6 +332,12 @@ pub struct IndexerConfig {
     /// these (seeders/seed-time/freeleech are torrent concepts).
     #[serde(default)]
     pub criteria: IndexerCriteria,
+    /// The tag ids this indexer is **scoped** to. A tagged indexer is searched
+    /// only for content sharing at least one of these tags; an empty list (the
+    /// default) is global — the indexer applies to all content, preserving prior
+    /// behavior. Mirrors Sonarr/Radarr per-indexer tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<u32>,
     /// Adapter-specific settings (base URL, API key, categories, …).
     #[serde(default)]
     pub settings: serde_json::Value,
@@ -437,6 +443,12 @@ pub struct DownloadClientConfig {
     /// The category/label cellarr tags its downloads with so it only ever
     /// touches its own downloads.
     pub category: String,
+    /// The tag ids this download client is **scoped** to. A tagged client is
+    /// chosen only for content sharing at least one of these tags; an empty list
+    /// (the default) is global — the client applies to all content, preserving
+    /// prior behavior. Mirrors Sonarr/Radarr per-client tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<u32>,
     /// Adapter-specific settings (host, port, credentials, paths, …).
     #[serde(default)]
     pub settings: serde_json::Value,
@@ -459,6 +471,12 @@ pub struct NotificationConfig {
     /// (e.g. "grab", "import", "upgrade", "health"). Empty means "all".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_events: Vec<String>,
+    /// The tag ids this notification is **scoped** to. A tagged notification
+    /// fires only for content sharing at least one of these tags; an empty list
+    /// (the default) is global — it fires for all content, preserving prior
+    /// behavior. Mirrors Sonarr/Radarr per-notification tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<u32>,
     /// Adapter-specific settings (webhook URL, channel, credentials, …).
     #[serde(default)]
     pub settings: serde_json::Value,

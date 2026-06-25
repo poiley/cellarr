@@ -64,6 +64,12 @@ pub struct DbIndexerSet {
     /// If true, a single indexer failing aborts the whole search; if false
     /// (default) a failing indexer is skipped and the rest still contribute.
     fail_fast: bool,
+    /// The tag ids of the content this search is for. A tag-scoped indexer (one
+    /// carrying [`tags`](cellarr_core::IndexerConfig::tags)) is included only when
+    /// it shares a tag id here; an untagged indexer is global. Empty (the
+    /// default) is the "no content tags" case — only global indexers apply, which
+    /// matches today's behavior since indexers are untagged by default.
+    content_tags: Vec<u32>,
 }
 
 impl DbIndexerSet {
@@ -75,6 +81,7 @@ impl DbIndexerSet {
             db,
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
             fail_fast: false,
+            content_tags: Vec::new(),
         }
     }
 
@@ -90,16 +97,34 @@ impl DbIndexerSet {
             db,
             rate_limiter,
             fail_fast,
+            content_tags: Vec::new(),
         }
     }
 
-    /// The enabled indexer configs, in configured priority order.
+    /// Scope this set to the tag ids of the content being searched, so a
+    /// tag-scoped indexer is only fanned across when it shares a tag. Builder
+    /// form; the default (no scoping) leaves only global indexers applying.
+    #[must_use]
+    pub fn with_content_tags(mut self, content_tags: Vec<u32>) -> Self {
+        self.content_tags = content_tags;
+        self
+    }
+
+    /// The enabled indexer configs the content's tags select, in configured
+    /// priority order. A tag-scoped indexer is kept only when it shares a tag id
+    /// with the content; an untagged indexer is global. With no content tags,
+    /// only global (untagged) indexers are kept.
     async fn enabled_configs(&self) -> Result<Vec<IndexerConfig>, IndexerSetError> {
-        self.db
+        let configs = self
+            .db
             .config()
             .list_enabled_indexers()
             .await
-            .map_err(IndexerSetError::Config)
+            .map_err(IndexerSetError::Config)?;
+        Ok(configs
+            .into_iter()
+            .filter(|ix| cellarr_core::tag_scope_applies(&ix.tags, &self.content_tags))
+            .collect())
     }
 
     /// Run `op` against every enabled, well-formed adapter, concatenating the
@@ -239,5 +264,82 @@ impl Indexer for DbIndexerSet {
     async fn latest(&self) -> Result<Vec<Release>, Self::Error> {
         self.fan_out(|adapter| async move { adapter.latest().await })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::IndexerId;
+    use serde_json::json;
+
+    fn indexer(name: &str, tags: Vec<u32>) -> IndexerConfig {
+        IndexerConfig {
+            id: IndexerId::new(),
+            name: name.into(),
+            kind: "torznab".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags,
+            settings: json!({ "baseUrl": "http://localhost", "apiKey": "k" }),
+        }
+    }
+
+    async fn temp_db() -> (tempfile::TempDir, Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().join("c.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        (dir, db)
+    }
+
+    #[tokio::test]
+    async fn tag_scoped_indexer_excluded_for_non_matching_included_for_matching() {
+        let (_dir, db) = temp_db().await;
+        // A global (untagged) indexer and one scoped to tag 7.
+        db.config()
+            .upsert_indexer(&indexer("global", vec![]))
+            .await
+            .unwrap();
+        db.config()
+            .upsert_indexer(&indexer("scoped", vec![7]))
+            .await
+            .unwrap();
+
+        // Content carrying tag 7: both apply.
+        let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![7]);
+        let names: Vec<String> = set
+            .enabled_configs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert!(names.contains(&"global".to_string()));
+        assert!(names.contains(&"scoped".to_string()));
+
+        // Content carrying tag 1 (not 7): the scoped indexer is excluded.
+        let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![1]);
+        let names: Vec<String> = set
+            .enabled_configs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["global".to_string()]);
+
+        // Untagged content: only the global indexer is searched.
+        let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![]);
+        let names: Vec<String> = set
+            .enabled_configs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["global".to_string()]);
     }
 }

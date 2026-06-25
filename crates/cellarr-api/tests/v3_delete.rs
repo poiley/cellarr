@@ -25,6 +25,7 @@ async fn seed_movie(
 ) -> ContentId {
     let id = ContentId::new();
     let node = ContentNode {
+        tags: Vec::new(),
         id,
         library_id: library,
         media_type: MediaType::Movie,
@@ -239,6 +240,7 @@ async fn delete_series_removes_subtree_and_files() {
     let content = server.state.db.content();
     content
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: series,
             library_id: library,
             media_type: MediaType::Tv,
@@ -257,6 +259,7 @@ async fn delete_series_removes_subtree_and_files() {
     let season = ContentId::new();
     content
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: season,
             library_id: library,
             media_type: MediaType::Tv,
@@ -271,6 +274,7 @@ async fn delete_series_removes_subtree_and_files() {
     let episode = ContentId::new();
     content
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: episode,
             library_id: library,
             media_type: MediaType::Tv,
@@ -354,6 +358,7 @@ async fn seed_movie_as_series(
         .db
         .content()
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id,
             library_id: library,
             media_type: MediaType::Tv,

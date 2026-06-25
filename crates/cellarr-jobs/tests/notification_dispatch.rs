@@ -111,6 +111,7 @@ impl NotificationSender for RecordingSender {
 
 async fn register_notification(db: &Database, name: &str, kind: &str, on_events: Vec<String>) {
     let n = NotificationConfig {
+        tags: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
         kind: kind.to_string(),
@@ -133,6 +134,7 @@ async fn dispatch_routes_by_kind_and_respects_toggles() {
     register_notification(&db, "tele", "telegram", vec![]).await;
     // A disabled Discord notification that must never fire.
     let disabled = NotificationConfig {
+        tags: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         name: "off".into(),
         kind: "discord".into(),
@@ -167,6 +169,71 @@ async fn dispatch_routes_by_kind_and_respects_toggles() {
     assert_eq!(tele.len(), 2, "telegram subscribes to all events");
     // The dispatcher stamps the instance name when the message leaves it empty.
     assert_eq!(tele[0].message.instance_name, "cellarr");
+}
+
+#[tokio::test]
+async fn dispatch_for_tags_only_fires_matching_tag_scoped_notifications() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+
+    // A global (untagged) discord, and a tag-scoped one restricted to tag 7.
+    register_notification(&db, "global", "discord", vec![]).await;
+    let scoped = NotificationConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "scoped".into(),
+        kind: "discord".into(),
+        enabled: true,
+        on_events: vec![],
+        tags: vec![7],
+        settings: json!({}),
+    };
+    db.config().upsert_notification(&scoped).await.unwrap();
+
+    let (discord, log) = RecordingSender::new("discord");
+    let notifier = ProviderNotifier::new(db.clone(), vec![Arc::new(discord)], "cellarr");
+
+    // Content carrying tag 7: BOTH the global and the matching scoped fire.
+    notifier
+        .dispatch_for_tags(NotificationMessage::new(NotificationEvent::Grab, ""), &[7])
+        .await;
+    {
+        let d = log.lock().unwrap();
+        let names: Vec<&str> = d.iter().map(|x| x.name.as_str()).collect();
+        assert!(names.contains(&"global"), "global fires for tagged content");
+        assert!(
+            names.contains(&"scoped"),
+            "tag-scoped fires for content sharing its tag"
+        );
+        assert_eq!(d.len(), 2);
+    }
+
+    // Content carrying tag 1 (not 7): only the global fires; scoped is excluded.
+    log.lock().unwrap().clear();
+    notifier
+        .dispatch_for_tags(NotificationMessage::new(NotificationEvent::Grab, ""), &[1])
+        .await;
+    {
+        let d = log.lock().unwrap();
+        assert_eq!(d.len(), 1, "only the global notification fires");
+        assert_eq!(d[0].name, "global");
+    }
+
+    // Untagged content: only the global fires (a tag-scoped one never applies).
+    log.lock().unwrap().clear();
+    notifier
+        .dispatch_for_tags(NotificationMessage::new(NotificationEvent::Grab, ""), &[])
+        .await;
+    {
+        let d = log.lock().unwrap();
+        assert_eq!(
+            d.len(),
+            1,
+            "untagged content gets only global notifications"
+        );
+        assert_eq!(d[0].name, "global");
+    }
 }
 
 #[tokio::test]
@@ -504,6 +571,7 @@ async fn seed_movie_node(db: &Database, title: &str) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -542,6 +610,7 @@ fn movie_registry(node: &ContentRef, title: &str) -> MediaRegistry {
 
 fn runner_config(library_root: PathBuf) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),

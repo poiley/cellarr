@@ -36,6 +36,7 @@ async fn temp_db() -> (TempDir, Database) {
 
 fn movie_node(library_id: LibraryId, id: ContentId) -> ContentNode {
     ContentNode {
+        tags: Vec::new(),
         id,
         library_id,
         media_type: MediaType::Movie,
@@ -460,6 +461,7 @@ async fn content_upsert_and_children_walk_the_tree() {
     config.upsert_library(&library).await.unwrap();
 
     let series = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library.id,
         media_type: MediaType::Tv,
@@ -522,6 +524,7 @@ async fn config_aggregates_round_trip() {
     assert_eq!(config.list_root_folders().await.expect("list"), vec![root]);
 
     let indexer = IndexerConfig {
+        tags: Vec::new(),
         id: IndexerId::new(),
         name: "Torznab Tracker".to_string(),
         kind: "torznab".to_string(),
@@ -546,6 +549,7 @@ async fn config_aggregates_round_trip() {
     assert_eq!(config.list_indexers().await.expect("list"), vec![indexer]);
 
     let client = DownloadClientConfig {
+        tags: Vec::new(),
         id: DownloadClientId::new(),
         name: "qBittorrent".to_string(),
         kind: "qbittorrent".to_string(),
@@ -569,6 +573,7 @@ async fn config_aggregates_round_trip() {
     );
 
     let notification = NotificationConfig {
+        tags: Vec::new(),
         id: "notif-1".to_string(),
         name: "Discord".to_string(),
         kind: "discord".to_string(),
@@ -596,6 +601,7 @@ async fn notification_delete_and_enabled_by_kind_filter() {
     let config = db.config();
 
     let discord = NotificationConfig {
+        tags: Vec::new(),
         id: "n-disc".into(),
         name: "Disc".into(),
         kind: "discord".into(),
@@ -604,6 +610,7 @@ async fn notification_delete_and_enabled_by_kind_filter() {
         settings: serde_json::json!({ "url": "https://d/x" }),
     };
     let telegram = NotificationConfig {
+        tags: Vec::new(),
         id: "n-tele".into(),
         name: "Tele".into(),
         kind: "telegram".into(),
@@ -612,6 +619,7 @@ async fn notification_delete_and_enabled_by_kind_filter() {
         settings: serde_json::json!({ "botToken": "t", "chatId": "1" }),
     };
     let disabled_discord = NotificationConfig {
+        tags: Vec::new(),
         id: "n-off".into(),
         name: "Off".into(),
         kind: "discord".into(),
@@ -655,6 +663,7 @@ async fn indexer_delete_and_enabled_filter() {
     let config = db.config();
 
     let enabled_lo = IndexerConfig {
+        tags: Vec::new(),
         id: IndexerId::new(),
         name: "Alpha".to_string(),
         kind: "torznab".to_string(),
@@ -665,6 +674,7 @@ async fn indexer_delete_and_enabled_filter() {
         settings: serde_json::json!({"baseUrl": "https://a/api"}),
     };
     let enabled_hi = IndexerConfig {
+        tags: Vec::new(),
         id: IndexerId::new(),
         name: "Bravo".to_string(),
         kind: "newznab".to_string(),
@@ -675,6 +685,7 @@ async fn indexer_delete_and_enabled_filter() {
         settings: serde_json::json!({"baseUrl": "https://b/api"}),
     };
     let disabled = IndexerConfig {
+        tags: Vec::new(),
         id: IndexerId::new(),
         name: "Charlie".to_string(),
         kind: "torznab".to_string(),
@@ -876,6 +887,7 @@ async fn fts_search_finds_indexed_titles() {
     config.upsert_library(&library).await.unwrap();
 
     let breaking = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library.id,
         media_type: MediaType::Tv,
@@ -1246,6 +1258,7 @@ async fn delete_movie_wrong_kind_or_missing_is_none() {
 
     // A series node addressed as a movie deletes nothing.
     let series = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library.id,
         media_type: MediaType::Tv,
@@ -1289,6 +1302,7 @@ async fn delete_series_removes_whole_subtree() {
 
     // series -> season -> two episodes; one file linked to an episode.
     let series = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library.id,
         media_type: MediaType::Tv,
@@ -1679,4 +1693,71 @@ async fn auth_sessions_lifecycle() {
         .await
         .expect("after nuke")
         .is_none());
+}
+
+#[tokio::test]
+async fn tag_vocabulary_and_content_tag_association_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let tags = db.tags();
+
+    // The persisted tag vocabulary: dense ids from 1, case-insensitive de-dup.
+    let anime = tags.create("Anime").await.expect("create anime");
+    let uhd = tags.create("4K").await.expect("create 4k");
+    assert_eq!(anime.id, 1);
+    assert_eq!(uhd.id, 2);
+    // A case-insensitive duplicate returns the existing tag, not a new id.
+    let dup = tags.create("anime").await.expect("dup");
+    assert_eq!(dup.id, anime.id);
+    assert_eq!(tags.list().await.expect("list").len(), 2);
+
+    // A library + a movie node to tag.
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let node = movie_node(library.id, ContentId::new());
+    content.upsert(&node).await.expect("upsert content");
+
+    // Set/get content tags round-trips, ascending and de-duplicated.
+    content
+        .set_tags(node.id, &[uhd.id, anime.id, anime.id])
+        .await
+        .expect("set tags");
+    assert_eq!(
+        content.get_tags(node.id).await.expect("get tags"),
+        vec![anime.id, uhd.id]
+    );
+    // get_node populates the tags onto the node.
+    let fetched = content
+        .get_node(node.id)
+        .await
+        .expect("get node")
+        .expect("present");
+    assert_eq!(fetched.tags, vec![anime.id, uhd.id]);
+
+    // Labels resolve for the delay-profile (label-keyed) path.
+    let mut labels = tags.labels_for(&[anime.id, uhd.id]).await.expect("labels");
+    labels.sort();
+    assert_eq!(labels, vec!["4K".to_string(), "Anime".to_string()]);
+
+    // Replacing the tag set rewrites it wholesale; an empty set clears it.
+    content.set_tags(node.id, &[uhd.id]).await.expect("retag");
+    assert_eq!(content.get_tags(node.id).await.unwrap(), vec![uhd.id]);
+    content.set_tags(node.id, &[]).await.expect("clear");
+    assert!(content.get_tags(node.id).await.unwrap().is_empty());
+
+    // Deleting a tag cascades the association away (re-tag, then delete).
+    content.set_tags(node.id, &[anime.id]).await.unwrap();
+    assert!(tags.delete(anime.id).await.expect("delete"));
+    assert!(
+        content.get_tags(node.id).await.unwrap().is_empty(),
+        "deleting a tag detaches it from every node it tagged"
+    );
+    assert!(tags.get(anime.id).await.expect("get").is_none());
 }

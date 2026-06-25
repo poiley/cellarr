@@ -17,6 +17,23 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+// The section now also loads the tag catalogue (GET /api/v3/tag) on mount for
+// its tag chip-input. That fetch must NOT consume the positional response queue
+// these ordered tests rely on, so intercept it and answer `[]` directly while
+// delegating every other call to the test's own mock.
+function withTags(
+  inner: (url: string, opts?: RequestInit) => Promise<Response>,
+  tags: unknown[] = [],
+) {
+  return vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith("/api/v3/tag") && (!opts || opts.method === undefined || opts.method === "GET")) {
+      return Promise.resolve(jsonResponse(tags));
+    }
+    return inner(url, opts);
+  });
+}
+
 const INDEXERS = [
   { id: "prowl", name: "Prowlarr", implementation: "Prowlarr", enabled: true },
 ];
@@ -36,7 +53,7 @@ describe("IntegrationSection (indexers / clients)", () => {
 
   it("lists existing configs", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(INDEXERS));
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="indexers"
@@ -55,7 +72,7 @@ describe("IntegrationSection (indexers / clients)", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(INDEXERS)) // load
       .mockResolvedValueOnce(jsonResponse({ ok: true })); // test
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="indexers"
@@ -90,7 +107,7 @@ describe("IntegrationSection (indexers / clients)", () => {
       .mockResolvedValueOnce(
         jsonResponse({ code: "connection_refused", message: "host down" }, 502),
       );
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="indexers"
@@ -127,7 +144,7 @@ describe("IntegrationSection (indexers / clients)", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 })) // delete
       .mockResolvedValueOnce(jsonResponse([])); // reload
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="indexers"
@@ -165,7 +182,7 @@ describe("IntegrationSection (indexers / clients)", () => {
       .mockResolvedValueOnce(jsonResponse([])) // load (empty)
       .mockResolvedValueOnce(jsonResponse({ id: "new" })) // save
       .mockResolvedValueOnce(jsonResponse([])); // reload
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="downloadclients"
@@ -215,7 +232,7 @@ describe("IntegrationSection (indexers / clients)", () => {
       .mockResolvedValueOnce(jsonResponse([])) // load (empty)
       .mockResolvedValueOnce(jsonResponse({ id: "new" })) // save
       .mockResolvedValueOnce(jsonResponse([])); // reload
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="downloadclients"
@@ -289,13 +306,61 @@ describe("IntegrationSection (indexers / clients)", () => {
     expect(field("category")).toBe("tv");
   });
 
+  it("posts the selected tag ids in the v3 body", async () => {
+    const inner = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // load (empty)
+      .mockResolvedValueOnce(jsonResponse({ id: "new" })) // save
+      .mockResolvedValueOnce(jsonResponse([])); // reload
+    // Seed the tag catalogue so a one-click suggestion chip is offered.
+    const fetchImpl = withTags(inner, [
+      { id: 1, label: "hd" },
+      { id: 2, label: "kids" },
+    ]);
+    const client = new CellarrClient({ fetchImpl });
+    render(
+      <IntegrationSection
+        kind="indexers"
+        title="Indexers"
+        implementations={["Torznab"]}
+        client={client}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/no indexers/i)).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "torznab" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "http://localhost:9117" },
+    });
+    // Pick an existing tag from the suggestion chips.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add tag hd" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add tag hd" }));
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      const postCall = inner.mock.calls.find(
+        ([url, opts]) =>
+          String(url).endsWith("/api/v3/indexer") && opts?.method === "POST",
+      );
+      expect(postCall).toBeTruthy();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string) as {
+        tags: number[];
+      };
+      expect(body.tags).toEqual([1]);
+    });
+  });
+
   it("posts the new indexer criteria fields (priority + seeders + seed criteria + freeleech)", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse([])) // load (empty)
       .mockResolvedValueOnce(jsonResponse({ id: "new" })) // save
       .mockResolvedValueOnce(jsonResponse([])); // reload
-    const client = new CellarrClient({ fetchImpl });
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
     render(
       <IntegrationSection
         kind="indexers"

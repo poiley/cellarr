@@ -60,6 +60,22 @@ export function setMonitored(
   return api.requestV3<Detail>(path, { method: 'PUT', body: { monitored }, signal });
 }
 
+/**
+ * Rewrite a content node's tag set via `PUT /api/v3/movie/{id}` | `/series/{id}`.
+ * `tags` present replaces the WHOLE set (an empty array clears every tag); the
+ * monitored flag is left untouched (omitted from the body). Resolves to the
+ * refreshed detail resource, whose `tags` reflects the new set.
+ */
+export function setContentTags(
+  kind: DetailKind,
+  id: string,
+  tags: number[],
+  signal?: AbortSignal
+): Promise<Detail> {
+  const path = kind === 'series' ? `/series/${id}` : `/movie/${id}`;
+  return api.requestV3<Detail>(path, { method: 'PUT', body: { tags }, signal });
+}
+
 /** The result of toggling a season's monitored flag. */
 export interface SeasonMonitorResult {
   seasonId: string;
@@ -128,6 +144,8 @@ export interface DetailView {
   hasFile?: boolean;
   monitored: boolean;
   path?: string;
+  /** The content node's assigned tag ids (`content_tag` join table). */
+  tags: number[];
 }
 
 /** Project a v3 detail resource into the metadata-block view-model. */
@@ -145,6 +163,9 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
     hasFile: r.hasFile === true,
     monitored: r.monitored === true,
     path: str(r.path),
+    tags: Array.isArray(r.tags)
+      ? r.tags.filter((t): t is number => typeof t === 'number')
+      : [],
   };
 }
 

@@ -476,6 +476,7 @@ async fn seed_blocklisted(
         common::seed_library(&server.state, cellarr_core::MediaType::Movie, "lib").await;
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: cellarr_core::MediaType::Movie,

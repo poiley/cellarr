@@ -77,6 +77,8 @@ import type {
   Series,
   SystemStatus,
   SystemStatusV3,
+  Tag,
+  TagBody,
   WantedRecord,
 } from '@lib/api/types';
 
@@ -778,6 +780,39 @@ export class CellarrClient {
 
   testNotification(body: Partial<NotificationConfigV3>, signal?: AbortSignal) {
     return this.requestV3<unknown>('/notification/test', { method: 'POST', body, signal });
+  }
+
+  // =========================================================================
+  // Tags (Radarr/Sonarr-compatible /api/v3/tag) — DB-backed, ids stable
+  // =========================================================================
+
+  /** Every label tag (`GET /api/v3/tag`). */
+  listTags(signal?: AbortSignal) {
+    return this.requestV3<Tag[]>('/tag', { signal });
+  }
+
+  /** A single tag (`GET /api/v3/tag/{id}`). */
+  getTag(id: number, signal?: AbortSignal) {
+    return this.requestV3<Tag>(`/tag/${id}`, { signal });
+  }
+
+  /**
+   * Create a tag (`POST /api/v3/tag`). Label de-dup is case-insensitive
+   * server-side, so creating an existing label returns that tag rather than a
+   * duplicate.
+   */
+  createTag(body: TagBody, signal?: AbortSignal) {
+    return this.requestV3<Tag>('/tag', { method: 'POST', body, signal });
+  }
+
+  /** Rename a tag (`PUT /api/v3/tag/{id}`). */
+  updateTag(id: number, body: TagBody, signal?: AbortSignal) {
+    return this.requestV3<Tag>(`/tag/${id}`, { method: 'PUT', body, signal });
+  }
+
+  /** Delete a tag (`DELETE /api/v3/tag/{id}`, idempotent). */
+  deleteTag(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/tag/${id}`, { method: 'DELETE', signal });
   }
 
   // =========================================================================

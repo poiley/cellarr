@@ -234,6 +234,7 @@ async fn failed_fetch_with_clean_remove_removes_nothing() {
     // Pre-populate the library with 3 movies (the things a buggy clean would wipe).
     for (i, title) in ["A", "B", "C"].iter().enumerate() {
         let node = ContentNode {
+            tags: Vec::new(),
             id: ContentId::new(),
             library_id: library,
             media_type: MediaType::Movie,

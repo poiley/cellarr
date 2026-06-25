@@ -190,6 +190,7 @@ fn anime_release(title: &str) -> Release {
 
 fn runner_config(library_root: PathBuf) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),
@@ -244,6 +245,7 @@ async fn seed_anime_series(db: &Database, season: u32, episode: u32) -> ContentR
     let series_id = ContentId::new();
     db.content()
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: series_id,
             library_id,
             media_type: MediaType::Tv,
@@ -269,6 +271,7 @@ async fn seed_anime_series(db: &Database, season: u32, episode: u32) -> ContentR
     };
     db.content()
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: episode_id,
             library_id,
             media_type: MediaType::Tv,
@@ -477,6 +480,7 @@ async fn absolute_without_linked_tvdb_id_is_surfaced_not_guessed() {
     };
     db.content()
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: episode_id,
             library_id,
             media_type: MediaType::Tv,

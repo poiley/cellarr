@@ -57,7 +57,16 @@ impl WebhookNotifier {
 
     /// Fire `payload` to every enabled webhook notification subscribed to its
     /// `eventType`. Best-effort: each delivery failure is logged, never returned.
-    pub async fn dispatch(&self, mut payload: WebhookPayload) {
+    pub async fn dispatch(&self, payload: WebhookPayload) {
+        self.dispatch_for_tags(payload, &[]).await;
+    }
+
+    /// Fire `payload` to every enabled webhook notification subscribed to its
+    /// `eventType` **and** tag-scoped to the content's `content_tags`. A
+    /// tag-scoped notification is delivered only when it shares a tag id with the
+    /// content; an untagged notification is global. `content_tags` empty leaves
+    /// only global notifications matching (today's behavior). Best-effort.
+    pub async fn dispatch_for_tags(&self, mut payload: WebhookPayload, content_tags: &[u32]) {
         // Stamp the instance identity (callers leave it for the dispatcher so the
         // configured name is authoritative).
         if payload.instance_name.is_empty() {
@@ -71,6 +80,9 @@ impl WebhookNotifier {
             }
         };
         for n in &notifications {
+            if !cellarr_core::tag_scope_applies(&n.tags, content_tags) {
+                continue;
+            }
             if let Some(url) = target_url(n, &payload) {
                 if let Err(detail) = self.sender.send(&url, &payload).await {
                     tracing::warn!(
@@ -146,7 +158,17 @@ impl ProviderNotifier {
     /// failure is logged, never returned. The Connect *webhook* kind is handled
     /// by [`WebhookNotifier`] and skipped here unless a provider sender is
     /// registered for it, so the two dispatchers never double-send.
-    pub async fn dispatch(&self, mut message: NotificationMessage) {
+    pub async fn dispatch(&self, message: NotificationMessage) {
+        self.dispatch_for_tags(message, &[]).await;
+    }
+
+    /// Fire `message` to every enabled, subscribed notification **also**
+    /// tag-scoped to the content's `content_tags`. A tag-scoped notification
+    /// fires only when it shares a tag id with the content; an untagged
+    /// notification is global. `content_tags` empty leaves only global
+    /// notifications matching (today's behavior). Best-effort, like
+    /// [`dispatch`](Self::dispatch).
+    pub async fn dispatch_for_tags(&self, mut message: NotificationMessage, content_tags: &[u32]) {
         if message.instance_name.is_empty() {
             message.instance_name = self.instance_name.clone();
         }
@@ -158,6 +180,9 @@ impl ProviderNotifier {
             }
         };
         for n in &notifications {
+            if !cellarr_core::tag_scope_applies(&n.tags, content_tags) {
+                continue;
+            }
             if !config_accepts(n, &message) {
                 continue;
             }
@@ -218,6 +243,7 @@ mod tests {
         enabled: bool,
     ) -> NotificationConfig {
         NotificationConfig {
+            tags: Vec::new(),
             id: "n1".into(),
             name: "mock".into(),
             kind: "webhook".into(),

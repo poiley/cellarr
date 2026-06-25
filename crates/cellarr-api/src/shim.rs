@@ -914,19 +914,22 @@ async fn delete_root_folder(
 // --- tag -------------------------------------------------------------------
 
 /// Render a tag as the v3 `{ id, label }` shape.
-fn v3_tag(tag: &crate::tags::Tag) -> Value {
+fn v3_tag(tag: &cellarr_core::Tag) -> Value {
     json!({ "id": tag.id, "label": tag.label })
 }
 
-async fn list_tags(State(fs): State<FaceState>) -> Json<Vec<Value>> {
-    Json(fs.state.tags.list().iter().map(v3_tag).collect())
+async fn list_tags(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let tags = fs.state.db.tags().list().await?;
+    Ok(Json(tags.iter().map(v3_tag).collect()))
 }
 
 async fn get_tag(State(fs): State<FaceState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let id = parse_u32(&id, "tag")?;
     fs.state
-        .tags
+        .db
+        .tags()
         .get(id)
+        .await?
         .map(|t| Json(v3_tag(&t)))
         .ok_or_else(|| ApiError::NotFound(format!("tag {id} not found")))
 }
@@ -943,7 +946,9 @@ async fn create_tag(
     if body.label.trim().is_empty() {
         return Err(ApiError::BadRequest("tag label is required".into()));
     }
-    Ok(Json(v3_tag(&fs.state.tags.create(body.label.trim()))))
+    Ok(Json(v3_tag(
+        &fs.state.db.tags().create(body.label.trim()).await?,
+    )))
 }
 
 async fn update_tag(
@@ -953,15 +958,17 @@ async fn update_tag(
 ) -> ApiResult<Json<Value>> {
     let id = parse_u32(&id, "tag")?;
     fs.state
-        .tags
+        .db
+        .tags()
         .update(id, body.label.trim())
+        .await?
         .map(|t| Json(v3_tag(&t)))
         .ok_or_else(|| ApiError::NotFound(format!("tag {id} not found")))
 }
 
 async fn delete_tag(State(fs): State<FaceState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let id = parse_u32(&id, "tag")?;
-    if fs.state.tags.delete(id) {
+    if fs.state.db.tags().delete(id).await? {
         Ok(Json(json!({})))
     } else {
         Err(ApiError::NotFound(format!("tag {id} not found")))
@@ -2019,7 +2026,7 @@ fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
         "supportsRss": true,
         "supportsSearch": true,
         "fields": fields,
-        "tags": [],
+        "tags": ix.tags,
     })
 }
 
@@ -2124,6 +2131,10 @@ struct IndexerBody {
     #[serde(default = "default_true")]
     #[serde(rename = "enableRss")]
     enable_rss: bool,
+    /// The tag ids this indexer is scoped to (the v3 `tags` array). Empty/omitted
+    /// = global (applies to all content).
+    #[serde(default)]
+    tags: Vec<u32>,
     #[serde(default)]
     fields: Vec<FieldBody>,
 }
@@ -2188,6 +2199,7 @@ fn indexer_from_body(
         enabled: body.enable_rss,
         priority: body.priority.unwrap_or(25),
         criteria,
+        tags: body.tags.clone(),
         settings: Value::Object(settings),
     }
 }
@@ -2336,7 +2348,7 @@ fn v3_download_client(dc: &cellarr_core::DownloadClientConfig) -> Value {
         "priority": dc.priority,
         "enable": dc.enabled,
         "fields": fields,
-        "tags": [],
+        "tags": dc.tags,
     })
 }
 
@@ -2488,6 +2500,10 @@ struct DownloadClientBody {
     priority: Option<i32>,
     #[serde(default = "default_true")]
     enable: bool,
+    /// The tag ids this client is scoped to (the v3 `tags` array). Empty/omitted
+    /// = global (applies to all content).
+    #[serde(default)]
+    tags: Vec<u32>,
     #[serde(default)]
     fields: Vec<FieldBody>,
 }
@@ -2534,6 +2550,7 @@ fn download_client_from_body(
         enabled: body.enable,
         priority: body.priority.unwrap_or(1),
         category,
+        tags: body.tags.clone(),
         settings: Value::Object(settings),
     }
 }
@@ -3008,7 +3025,7 @@ fn v3_notification(n: &NotificationConfig) -> Value {
         "supportsOnHealthRestored": true,
         "includeHealthWarnings": on("health"),
         "fields": fields,
-        "tags": [],
+        "tags": n.tags,
     })
 }
 
@@ -3193,6 +3210,10 @@ struct NotificationBody {
     #[serde(default = "default_true")]
     #[serde(rename = "onHealthIssue")]
     on_health: bool,
+    /// The tag ids this notification is scoped to (the v3 `tags` array).
+    /// Empty/omitted = global (fires for all content).
+    #[serde(default)]
+    tags: Vec<u32>,
     #[serde(default)]
     fields: Vec<FieldBody>,
 }
@@ -3233,6 +3254,7 @@ fn notification_from_body(body: &NotificationBody, id: String) -> NotificationCo
         kind,
         enabled: true,
         on_events,
+        tags: body.tags.clone(),
         settings: Value::Object(settings),
     }
 }
@@ -4082,7 +4104,7 @@ async fn v3_resource_item(
         "hasFile": file.is_some(),
         "sizeOnDisk": size_on_disk,
         "titleSlug": slug(title),
-        "tags": [],
+        "tags": node.tags,
     });
     // The numeric id (tmdb/tvdb) the ecosystem keys on, projected from the
     // persisted external id; 0 when the node carries no such id yet.
@@ -4433,6 +4455,12 @@ fn iso_to_utc(date: &str) -> String {
 struct ContentUpdateBody {
     #[serde(default)]
     monitored: Option<bool>,
+    /// The tag ids to associate with this movie/series (the v3 `tags` array).
+    /// `Some` rewrites the whole association (an empty array clears it); omitted
+    /// (`None`) leaves the existing tags untouched, so a partial PUT that only
+    /// flips `monitored` does not drop tags.
+    #[serde(default)]
+    tags: Option<Vec<u32>>,
 }
 
 /// v3 `PUT /movie/{id}` / `PUT /series/{id}` — the **monitor toggle**.
@@ -4460,6 +4488,9 @@ async fn update_content(
     if let Some(monitored) = body.monitored {
         node.monitored = monitored;
         content.upsert(&node).await?;
+    }
+    if let Some(tags) = &body.tags {
+        content.set_tags(content_id, tags).await?;
     }
     content_detail(&fs.state, &id, node.media_type)
         .await
@@ -4654,6 +4685,12 @@ struct AddBody {
     root_folder_path: Option<String>,
     #[serde(default)]
     monitored: Option<bool>,
+    /// The tag ids to associate with the added movie/series (the v3 `tags`
+    /// array). Persisted into the `content_tag` association so tag-scoped routing
+    /// (delay profile / indexer / client / notification) applies to it. Empty/
+    /// omitted leaves the item untagged (global config only).
+    #[serde(default)]
+    tags: Vec<u32>,
     /// The Sonarr/Radarr `addOptions` block; only its `monitor` selection is read
     /// (the per-episode monitoring policy applied as episodes are populated).
     #[serde(rename = "addOptions", default)]
@@ -4731,10 +4768,15 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
         coords,
         monitored,
         title_id: None,
+        // The add body's tags are persisted into the association below; the node
+        // also carries them so the response projection renders them.
+        tags: body.tags.clone(),
     };
     let content = state.db.content();
     content.upsert(&node).await?;
     content.index_title(node.id, &title).await?;
+    // Persist the tag association (the node row carries no tags column).
+    content.set_tags(node.id, &body.tags).await?;
 
     Ok(Json(merge(
         v3_resource_item(state, &node, &title).await?,

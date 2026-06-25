@@ -189,6 +189,7 @@ async fn seed_movie_node(db: &Database) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -231,6 +232,7 @@ fn runner_config(
     mappings: Vec<RemotePathMapping>,
 ) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),

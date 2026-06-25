@@ -408,7 +408,8 @@ impl ContentRepo {
         row.map(row_to_content_metadata).transpose()
     }
 
-    /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]).
+    /// Fetch a full [`ContentNode`] (not just the [`ContentRef`]), with its tag
+    /// ids populated from the `content_tag` association.
     ///
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
@@ -420,7 +421,65 @@ impl ContentRepo {
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
-        row.map(row_to_node).transpose()
+        let Some(mut node) = row.map(row_to_node).transpose()? else {
+            return Ok(None);
+        };
+        node.tags = self.get_tags(id).await?;
+        Ok(Some(node))
+    }
+
+    /// The tag ids associated with a content node, ascending. Empty when the node
+    /// carries no tags (or does not exist).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn get_tags(&self, id: ContentId) -> Result<Vec<u32>> {
+        let rows =
+            sqlx::query("SELECT tag_id FROM content_tag WHERE content_id = ?1 ORDER BY tag_id ASC")
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|r| {
+                let v: i64 = r.try_get("tag_id")?;
+                Ok(u32::try_from(v).unwrap_or(0))
+            })
+            .collect()
+    }
+
+    /// Replace the tag ids associated with a content node (the whole set is
+    /// rewritten, so an empty `tags` clears them). One writer transaction so a
+    /// crash never leaves a half-applied tag set.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn set_tags(&self, id: ContentId, tags: &[u32]) -> Result<()> {
+        let content_id = id.to_string();
+        // De-dup while preserving determinism (ascending).
+        let mut ids: Vec<i64> = tags.iter().map(|t| i64::from(*t)).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query("DELETE FROM content_tag WHERE content_id = ?1")
+                        .bind(&content_id)
+                        .execute(&mut *conn)
+                        .await?;
+                    for tag_id in &ids {
+                        sqlx::query(
+                            "INSERT OR IGNORE INTO content_tag (content_id, tag_id)
+                             VALUES (?1, ?2)",
+                        )
+                        .bind(&content_id)
+                        .bind(tag_id)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
     }
 
     /// Delete a content node identified by `id`, but only when its `kind` matches
@@ -609,6 +668,10 @@ fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
         coords,
         monitored: monitored != 0,
         title_id,
+        // Tags live in the `content_tag` association, not on the row; the read
+        // paths that need them populate this via `load_tags`. A bare row decode
+        // leaves it empty.
+        tags: Vec::new(),
     })
 }
 

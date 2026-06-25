@@ -401,6 +401,7 @@ mod tests {
             kind: "discord".into(),
             enabled: true,
             on_events: vec!["grab".into()],
+            tags: Vec::new(),
             settings: serde_json::json!({}),
         };
         let grab = NotificationMessage::new(NotificationEvent::Grab, "cellarr");

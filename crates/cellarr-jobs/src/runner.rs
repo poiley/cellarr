@@ -324,9 +324,17 @@ pub struct RunnerConfig {
     /// default) imposes no delay. The governing profile is resolved per run via
     /// [`cellarr_core::resolve_delay_profile`] against [`content_tags`](Self::content_tags).
     pub delay_profiles: Vec<cellarr_core::DelayProfile>,
-    /// The tags on the content this runner acquires, used to resolve which delay
-    /// profile applies. Empty selects the catch-all (tagless) profile.
+    /// The tag **labels** on the content this runner acquires, used to resolve
+    /// which delay profile applies (delay profiles scope by case-insensitive
+    /// label). Empty selects the catch-all (tagless) profile.
     pub content_tags: Vec<String>,
+    /// The tag **ids** on the content this runner acquires, used to honour
+    /// tag-scoped indexer / download-client / notification restrictions (those
+    /// scope by integer id). A tag-scoped indexer/client/notification applies
+    /// only when it shares an id here; empty leaves everything global (today's
+    /// behavior). Distinct from [`content_tags`](Self::content_tags), which is the
+    /// label projection the label-keyed delay profiles match on.
+    pub content_tag_ids: Vec<u32>,
     /// The Unix permission policy (`chmod`/`chown`) applied to imported media and
     /// the folders created for it, **after** the crash-safe commit. Best-effort and
     /// Unix-only: a failure is logged and never rolls back the import. The default
@@ -1977,7 +1985,9 @@ where
             String::new(),
         )
         .with_release(cellarr_core::WebhookRelease::from_release(release, None));
-        notifier.dispatch(payload).await;
+        notifier
+            .dispatch_for_tags(payload, &self.config.content_tag_ids)
+            .await;
     }
 
     /// Fire a `Download`(import) or `Rename` webhook carrying the destination
@@ -2002,7 +2012,9 @@ where
         let payload =
             WebhookPayload::for_subject(event_type, content_ref.media_type, subject, String::new())
                 .with_files(files);
-        notifier.dispatch(payload).await;
+        notifier
+            .dispatch_for_tags(payload, &self.config.content_tag_ids)
+            .await;
     }
 
     /// Fire the `Grab` provider notification (Discord/Telegram/Email/Custom
@@ -2019,7 +2031,9 @@ where
                 release,
                 quality_opt(quality),
             ));
-        notifier.dispatch(message).await;
+        notifier
+            .dispatch_for_tags(message, &self.config.content_tag_ids)
+            .await;
     }
 
     /// Fire the `Import`/`Upgrade` provider notification carrying the destination
@@ -2043,7 +2057,9 @@ where
                 quality_opt(quality),
             ))
             .with_files(destinations.to_vec());
-        notifier.dispatch(message).await;
+        notifier
+            .dispatch_for_tags(message, &self.config.content_tag_ids)
+            .await;
     }
 
     /// Build the provider-notification subject for a content node — its id +

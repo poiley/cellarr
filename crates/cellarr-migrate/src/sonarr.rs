@@ -111,6 +111,7 @@ async fn read_series(
                 },
                 monitored: monitored != 0,
                 title_id: None,
+                tags: Vec::new(),
             },
             title: series_title.clone(),
             year: series_year,
@@ -194,6 +195,7 @@ async fn read_episodes_for_series(
                     // the series-level decision being inherited at episode level.
                     monitored: true,
                     title_id: None,
+                    tags: Vec::new(),
                 },
                 title: format!("{series_title} - Season {season}"),
                 year: None,
@@ -217,6 +219,7 @@ async fn read_episodes_for_series(
                 },
                 monitored: monitored != 0,
                 title_id: None,
+                tags: Vec::new(),
             },
             title: ep_title,
             year: None,

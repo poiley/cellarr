@@ -144,6 +144,7 @@ mod tests {
     fn one_movie_install() -> MappedInstall {
         let library_id = LibraryId::new();
         let node = ContentNode {
+            tags: Vec::new(),
             id: ContentId::new(),
             library_id,
             media_type: MediaType::Movie,

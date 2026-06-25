@@ -479,6 +479,7 @@ async fn seed_movie_node(db: &Database, title: &str) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -518,6 +519,7 @@ fn movie_registry(node: &ContentRef, title: &str) -> MediaRegistry {
 
 fn runner_config(library_root: PathBuf) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),
@@ -543,6 +545,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
 /// Register a webhook notification pointing at `url`, subscribed to all events.
 async fn register_webhook(db: &Database, url: &str) {
     let n = NotificationConfig {
+        tags: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         name: "mock-webhook".into(),
         kind: "webhook".into(),

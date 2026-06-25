@@ -367,6 +367,7 @@ mod tests {
     #[test]
     fn required_str_reports_missing_key() {
         let cfg = NotificationConfig {
+            tags: Vec::new(),
             id: "1".into(),
             name: "n".into(),
             kind: "discord".into(),

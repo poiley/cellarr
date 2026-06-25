@@ -71,6 +71,7 @@ impl HttpClient for RecordingHttp {
 
 fn config(kind: &str, settings: Value) -> NotificationConfig {
     NotificationConfig {
+        tags: Vec::new(),
         id: "n1".into(),
         name: "test".into(),
         kind: kind.into(),

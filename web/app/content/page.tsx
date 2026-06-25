@@ -26,9 +26,10 @@ import ActionButton from '@components/ActionButton';
 import BreadCrumbs from '@components/BreadCrumbs';
 
 import AppShell from '@app/_components/AppShell';
+import TagInput from '@app/settings/_components/TagInput';
 import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
-import type { ContentNode, ContentRef, Episode, MediaFile, QualityProfile } from '@lib/api/types';
+import type { ContentNode, ContentRef, Episode, MediaFile, QualityProfile, Tag } from '@lib/api/types';
 import {
   basename,
   coordsLabel,
@@ -44,6 +45,7 @@ import {
   detailKindFor,
   getDetail,
   mediaCoverUrl,
+  setContentTags,
   setEpisodesMonitored,
   setMonitored,
   setSeasonMonitored,
@@ -444,6 +446,11 @@ function ItemDetail() {
   const [episodes, setEpisodes] = React.useState<Episode[]>([]);
   // In-flight guard for the monitored toggle (#21).
   const [toggling, setToggling] = React.useState(false);
+  // The tag catalogue (GET /api/v3/tag) + this node's current tag-id set, which
+  // the tag editor renders as removable chips and PUTs back on change.
+  const [tags, setTags] = React.useState<Tag[]>([]);
+  const [contentTags, setContentTags_] = React.useState<number[]>([]);
+  const [savingTags, setSavingTags] = React.useState(false);
   // Per-node monitored overrides for the season/episode toggles: a node id ->
   // its locally-applied monitored flag (wins over the loaded value until a
   // reload), plus the set of nodes whose toggle is mid-flight.
@@ -462,12 +469,19 @@ function ItemDetail() {
     setEpisodes([]);
     setMonitorOverrides({});
     setTogglingNodes(new Set());
+    setContentTags_([]);
 
     // Quality-profile catalogue — used to name the detail's qualityProfileId.
     api
       .getQualityProfiles(controller.signal)
       .then(setProfiles)
       .catch(() => setProfiles([]));
+
+    // Tag catalogue — the choices the tag editor offers. Best-effort.
+    api
+      .listTags(controller.signal)
+      .then(setTags)
+      .catch(() => setTags([]));
 
     // Resolve the readable title from the v3 catalogues. The content node itself
     // carries no title (only a title_id), so look this id up among movies/series
@@ -494,7 +508,11 @@ function ItemDetail() {
         // Fetch the rich v3 detail resource for the metadata block (#20). The
         // catalogue (movie vs series) is inferred from the node's media type.
         getDetail(detailKindFor(data as Loose), id, controller.signal)
-          .then((d) => setDetail(toDetailView(d)))
+          .then((d) => {
+            const view = toDetailView(d);
+            setDetail(view);
+            if (view) setContentTags_(view.tags);
+          })
           .catch(() => setDetail(undefined));
 
         // For a TV node, fetch its episode rows from the v3 episode endpoint
@@ -579,6 +597,45 @@ function ItemDetail() {
       .catch((err: unknown) => toastError(errorMessage(err, 'failed to update monitoring')))
       .finally(() => setToggling(false));
   };
+
+  /**
+   * Rewrite this node's tag set (#tags). PUTs the full id set to the v3 detail
+   * resource (an empty array clears every tag) and reflects the refreshed value
+   * back, with toast feedback. Optimistically applies the new set so the chips
+   * update immediately; a failure reloads the server's truth.
+   */
+  const saveContentTags = (next: number[]) => {
+    if (!id || !data || savingTags) return;
+    const kind = detailKindFor(data as Loose);
+    const prev = contentTags;
+    setContentTags_(next);
+    setSavingTags(true);
+    setContentTags(kind, id, next)
+      .then((refreshed) => {
+        const view = toDetailView(refreshed);
+        if (view) {
+          setDetail(view);
+          setContentTags_(view.tags);
+        }
+        success('Tags updated');
+      })
+      .catch((err: unknown) => {
+        setContentTags_(prev);
+        toastError(errorMessage(err, 'failed to update tags'));
+      })
+      .finally(() => setSavingTags(false));
+  };
+
+  /**
+   * Mint a brand-new tag from a typed label (the tag editor's "+ new" path).
+   * Resolves to the created tag so the editor can select it, and folds it into
+   * the local catalogue so its chip renders with the real label.
+   */
+  const createContentTag = (label: string): Promise<Tag> =>
+    api.createTag({ label }).then((tag) => {
+      setTags((prev) => (prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]));
+      return tag;
+    });
 
   /** Resolve a structural node's monitored flag (the inline glyph in the tree). */
   const nodeMonitored = React.useCallback(
@@ -914,6 +971,24 @@ function ItemDetail() {
             isToggling={(nodeId) => togglingNodes.has(nodeId)}
             onToggleSeason={toggleSeasonMonitored}
             onToggleEpisode={toggleEpisodeMonitored}
+          />
+        </Card>
+      ) : null}
+
+      {data ? (
+        <Card title="Tags" style={{ marginTop: '2ch' }}>
+          <Text style={{ opacity: 0.6 }}>
+            Tag this item to route it through tag-scoped delay profiles, indexers,
+            download clients, and notifications. Manage the tag list in Settings ▸ Tags.
+          </Text>
+          <Divider type="GRADIENT" />
+          <TagInput
+            available={tags}
+            value={contentTags}
+            onChange={saveContentTags}
+            onCreate={createContentTag}
+            label={`Tags for ${title}`}
+            disabled={savingTags}
           />
         </Card>
       ) : null}

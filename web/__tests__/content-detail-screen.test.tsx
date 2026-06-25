@@ -10,6 +10,8 @@ const listEpisodes = vi.fn();
 const runCommand = vi.fn();
 const getQualityProfiles = vi.fn();
 const getLibrary = vi.fn();
+const listTags = vi.fn();
+const createTag = vi.fn();
 const requestV3 = vi.fn();
 const push = vi.fn();
 let searchParams = new URLSearchParams();
@@ -28,6 +30,8 @@ vi.mock('@lib/api/client', async () => {
       runCommand: (...a: unknown[]) => runCommand(...a),
       getQualityProfiles: (...a: unknown[]) => getQualityProfiles(...a),
       getLibrary: (...a: unknown[]) => getLibrary(...a),
+      listTags: (...a: unknown[]) => listTags(...a),
+      createTag: (...a: unknown[]) => createTag(...a),
       requestV3: (...a: unknown[]) => requestV3(...a),
     },
   };
@@ -108,6 +112,8 @@ describe('Item-detail screen', () => {
     runCommand.mockReset();
     getQualityProfiles.mockReset();
     getLibrary.mockReset();
+    listTags.mockReset();
+    createTag.mockReset();
     requestV3.mockReset();
     push.mockReset();
     // Default: empty catalogues unless a test overrides them.
@@ -119,6 +125,9 @@ describe('Item-detail screen', () => {
     listEpisodes.mockResolvedValue([]);
     getQualityProfiles.mockResolvedValue([]);
     getLibrary.mockResolvedValue({ id: 'lib-tv', name: 'TV Shows' });
+    // Default: an empty tag catalogue (the tag editor renders, no chips).
+    listTags.mockResolvedValue([]);
+    createTag.mockResolvedValue({ id: 1, label: 'new' });
     // The v3 detail resource (GET) and monitored-PUT both go through requestV3;
     // default to a minimal detail resource that echoes the requested body.
     requestV3.mockImplementation((_path: string, opts?: { body?: { monitored?: boolean } }) =>
@@ -599,5 +608,87 @@ describe('Item-detail screen', () => {
     // The endpoint was queried, but an empty result renders no Monitoring card.
     expect(listEpisodes).toHaveBeenCalledWith('c-series', expect.anything());
     expect(screen.queryByText('Monitoring')).toBeNull();
+  });
+
+  it('renders the content tags from the v3 detail and PUTs an added tag id', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // The tag catalogue the editor picks from.
+    listTags.mockResolvedValue([
+      { id: 1, label: 'hd' },
+      { id: 2, label: 'kids' },
+    ]);
+    // The detail resource starts with tag #1 (hd) assigned; the PUT echoes the
+    // body so the optimistic + refreshed sets agree.
+    requestV3.mockImplementation((_path: string, opts?: { body?: { tags?: number[] } }) =>
+      Promise.resolve({
+        id: 'c-series',
+        title: 'Breaking Bad',
+        monitored: true,
+        tags: opts?.body?.tags ?? [1],
+      })
+    );
+
+    renderPage();
+
+    // The existing chip renders (#hd), with its remove control.
+    await waitFor(() => expect(screen.getByLabelText('Remove tag hd')).toBeTruthy());
+
+    requestV3.mockClear();
+    // The unselected tag (kids) is offered as a one-click suggestion chip.
+    fireEvent.click(screen.getByRole('button', { name: 'Add tag kids' }));
+
+    await waitFor(() => {
+      // The PUT rewrites the whole set to include both ids (1 already on, 2 added).
+      const put = requestV3.mock.calls.find(
+        ([path, opts]) =>
+          path === '/series/c-series' && (opts as { method?: string })?.method === 'PUT'
+      );
+      expect(put).toBeTruthy();
+      const body = (put![1] as { body?: { tags?: number[] } }).body;
+      expect(body?.tags).toEqual([1, 2]);
+      // It is the tag PUT, not a monitored PUT.
+      expect(body).not.toHaveProperty('monitored');
+    });
+    await waitFor(() => expect(screen.getByText(/Tags updated/i)).toBeTruthy());
+  });
+
+  it('removes a content tag with a PUT that drops its id', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    listTags.mockResolvedValue([
+      { id: 1, label: 'hd' },
+      { id: 2, label: 'kids' },
+    ]);
+    requestV3.mockImplementation((_path: string, opts?: { body?: { tags?: number[] } }) =>
+      Promise.resolve({
+        id: 'c-series',
+        title: 'Breaking Bad',
+        monitored: true,
+        tags: opts?.body?.tags ?? [1, 2],
+      })
+    );
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByLabelText('Remove tag hd')).toBeTruthy());
+
+    requestV3.mockClear();
+    fireEvent.click(screen.getByLabelText('Remove tag hd'));
+
+    await waitFor(() => {
+      const put = requestV3.mock.calls.find(
+        ([path, opts]) =>
+          path === '/series/c-series' && (opts as { method?: string })?.method === 'PUT'
+      );
+      expect(put).toBeTruthy();
+      const body = (put![1] as { body?: { tags?: number[] } }).body;
+      // The remaining set drops id 1, keeps id 2.
+      expect(body?.tags).toEqual([2]);
+    });
   });
 });

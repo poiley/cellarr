@@ -34,6 +34,7 @@ use cellarr_core::{
 async fn seed_grab(state: &AppState, title: &str) -> GrabId {
     let library = common::seed_library(state, MediaType::Movie, &format!("lib-{title}")).await;
     let node = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library,
         media_type: MediaType::Movie,

@@ -119,6 +119,33 @@ export interface CommandAccepted {
   status: string;
 }
 
+/**
+ * A label tag (`GET/POST/PUT/DELETE /api/v3/tag`). Persistent and DB-backed: ids
+ * are dense from 1 and stable across restart, so the content / indexer / download
+ * client / notification configs that reference a tag id by number stay valid.
+ * Label de-dup is case-insensitive server-side.
+ */
+export interface Tag {
+  id: number;
+  label: string;
+}
+
+/** The write body for a tag (`POST /api/v3/tag`, `PUT /api/v3/tag/{id}`). */
+export interface TagBody {
+  label: string;
+}
+
+/**
+ * The write body for a content tag rewrite (`PUT /api/v3/movie/{id}` |
+ * `/series/{id}`). `tags` present rewrites the whole set (empty array clears);
+ * omitting it leaves the existing tags untouched (so a monitored-only PUT never
+ * drops tags).
+ */
+export interface ContentUpdateBody {
+  monitored?: boolean;
+  tags?: number[];
+}
+
 /** The structured error body the daemon returns: `{ code, message }`. */
 export interface ApiErrorBody {
   code: string;

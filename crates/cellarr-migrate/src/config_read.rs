@@ -74,6 +74,12 @@ pub(crate) async fn read_indexers(
                 // TODO(deferred): lift minimumSeeders/seedCriteria/required flags
                 // out of the legacy Settings JSON into IndexerCriteria.
                 criteria: cellarr_core::IndexerCriteria::default(),
+                // Legacy per-indexer Tags (a JSON array of source tag ids) are not
+                // remapped to cellarr tag ids here; default to untagged (global),
+                // preserving prior behaviour.
+                // TODO(deferred): remap the source `Tags` column to migrated
+                // cellarr tag ids once the tag vocabulary is migrated across.
+                tags: Vec::new(),
                 settings,
             }
         })
@@ -112,6 +118,11 @@ pub(crate) async fn read_download_clients(
                 // The app names its download category per-app; default to the
                 // source app name so cellarr keeps touching only its own grabs.
                 category: kind.app_name().to_string(),
+                // Legacy per-client Tags are not remapped here; default to
+                // untagged (global), preserving prior behaviour.
+                // TODO(deferred): remap the source `Tags` column to migrated
+                // cellarr tag ids once the tag vocabulary is migrated across.
+                tags: Vec::new(),
                 settings,
             }
         })

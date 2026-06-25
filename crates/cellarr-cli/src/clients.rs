@@ -253,6 +253,7 @@ mod tests {
 
     fn config(kind: &str, settings: serde_json::Value) -> DownloadClientConfig {
         DownloadClientConfig {
+            tags: Vec::new(),
             id: DownloadClientId::new(),
             name: format!("test-{kind}"),
             kind: kind.to_string(),

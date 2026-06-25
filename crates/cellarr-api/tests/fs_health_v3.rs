@@ -35,6 +35,7 @@ async fn seed_layout(state: &cellarr_api::AppState, root: &str, downloads: &str)
         .expect("seed library");
 
     let client = DownloadClientConfig {
+        tags: Vec::new(),
         id: DownloadClientId::new(),
         name: "fs-health-client".to_string(),
         kind: "qbittorrent".to_string(),

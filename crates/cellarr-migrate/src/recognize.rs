@@ -98,6 +98,7 @@ mod tests {
     fn install_with_one_file(path: &str) -> MappedInstall {
         let library_id = LibraryId::new();
         let node = ContentNode {
+            tags: Vec::new(),
             id: ContentId::new(),
             library_id,
             media_type: MediaType::Movie,

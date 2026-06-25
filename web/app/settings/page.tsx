@@ -19,6 +19,7 @@ import ImportLists from '@app/settings/_components/ImportLists';
 import RootFolders from '@app/settings/_components/RootFolders';
 import RemotePathMappings from '@app/settings/_components/RemotePathMappings';
 import Notifications from '@app/settings/_components/Notifications';
+import Tags from '@app/settings/_components/Tags';
 import Naming from '@app/settings/_components/Naming';
 import SystemBackup from '@app/settings/_components/SystemBackup';
 import Security from '@app/settings/_components/Security';
@@ -34,6 +35,7 @@ type Section =
   | 'remotepaths'
   | 'naming'
   | 'notifications'
+  | 'tags'
   | 'backups'
   | 'security';
 
@@ -48,6 +50,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'remotepaths', label: 'Remote Path Mappings' },
   { id: 'naming', label: 'Naming' },
   { id: 'notifications', label: 'Notifications' },
+  { id: 'tags', label: 'Tags' },
   { id: 'backups', label: 'Backups' },
   { id: 'security', label: 'Security' },
 ];
@@ -91,6 +94,7 @@ export default function Page() {
         {section === 'remotepaths' ? <RemotePathMappings /> : null}
         {section === 'naming' ? <Naming /> : null}
         {section === 'notifications' ? <Notifications /> : null}
+        {section === 'tags' ? <Tags /> : null}
         {section === 'backups' ? <SystemBackup /> : null}
         {section === 'security' ? <Security /> : null}
       </div>

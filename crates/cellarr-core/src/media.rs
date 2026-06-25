@@ -260,6 +260,15 @@ pub struct ContentNode {
     /// Link to the typed identity/metadata row, when one has been resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_id: Option<TitleId>,
+    /// The tag ids associated with this node, read from the `content_tag`
+    /// association. These drive tag-scoped routing: a tag-scoped delay profile,
+    /// indexer, download client, or notification applies to this node only when
+    /// it shares a tag. Empty (the default) means the node is untagged — only
+    /// global (untagged) config applies, preserving prior behavior. Not persisted
+    /// on the `content` row itself (the association is its own table); the repo
+    /// populates it on read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<u32>,
 }
 
 impl ContentNode {

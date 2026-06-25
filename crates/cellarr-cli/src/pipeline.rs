@@ -398,19 +398,44 @@ impl LivePipelineEnv {
         }
     }
 
+    /// The tag ids and (case-insensitive) labels on a content node, read from the
+    /// persisted `content_tag` association and resolved against the tag
+    /// vocabulary. The ids drive tag-scoped indexer/client/notification
+    /// restrictions; the labels drive the (label-keyed) delay-profile resolution.
+    /// An untagged node yields two empty vectors — the global path.
+    async fn content_tags(&self, content: &ContentRef) -> Result<(Vec<u32>, Vec<String>), String> {
+        let ids = self
+            .db
+            .content()
+            .get_tags(content.id)
+            .await
+            .map_err(|e| format!("loading content tags failed: {e}"))?;
+        let labels = self
+            .db
+            .tags()
+            .labels_for(&ids)
+            .await
+            .map_err(|e| format!("resolving content tag labels failed: {e}"))?;
+        Ok((ids, labels))
+    }
+
     /// Pick the enabled download client to grab through: the highest-priority
-    /// (lowest `priority` number) enabled client, building its native adapter and
-    /// returning it alongside the category its grabs are tagged with. `Ok(None)`
-    /// when no enabled client is configured (a benign no-op — the daemon simply
-    /// has nothing to grab with yet).
-    async fn resolve_client(&self) -> Result<Option<(ConfiguredDownloadClient, String)>, String> {
+    /// (lowest `priority` number) enabled client **that applies to the content's
+    /// tags**, building its native adapter and returning it alongside the category
+    /// its grabs are tagged with. A tag-scoped client is eligible only when it
+    /// shares a tag id with `content_tags`; an untagged client is global.
+    /// `Ok(None)` when no eligible enabled client is configured (a benign no-op).
+    async fn resolve_client(
+        &self,
+        content_tags: &[u32],
+    ) -> Result<Option<(ConfiguredDownloadClient, String)>, String> {
         let mut clients = self
             .db
             .config()
             .list_download_clients()
             .await
             .map_err(|e| format!("loading download clients failed: {e}"))?;
-        clients.retain(|c| c.enabled);
+        clients.retain(|c| c.enabled && cellarr_core::tag_scope_applies(&c.tags, content_tags));
         clients.sort_by_key(|c| c.priority);
         let Some(config) = clients.first() else {
             return Ok(None);
@@ -468,11 +493,13 @@ impl LivePipelineEnv {
         let Some(config) = self.resolve_config(content, category).await? else {
             return Ok(None);
         };
+        let (content_tag_ids, _) = self.content_tags(content).await?;
         let indexer = DbIndexerSet::with_rate_limiter(
             self.db.clone(),
             Arc::clone(&self.rate_limiter),
             /* fail_fast = */ false,
-        );
+        )
+        .with_content_tags(content_tag_ids);
         Ok(Some((indexer, config)))
     }
 
@@ -554,6 +581,13 @@ impl LivePipelineEnv {
             .map_err(|e| format!("loading media-management settings failed: {e}"))?;
         let naming_format = media_management.naming.format_for(content.media_type);
 
+        // The node's real tags drive tag-scoped routing: the labels feed the
+        // label-keyed delay-profile resolution; the ids feed the id-keyed
+        // indexer / download-client / notification restrictions. An untagged node
+        // yields empties — the catch-all delay profile and every global config
+        // apply, preserving prior behavior.
+        let (content_tag_ids, content_tags) = self.content_tags(content).await?;
+
         Ok(Some(RunnerConfig {
             profile,
             custom_formats,
@@ -578,9 +612,10 @@ impl LivePipelineEnv {
             // default). Best-effort, post-commit, so it never affects crash safety.
             write_nfo: true,
             delay_profiles,
-            // Content tags are not yet modeled on the node; the catch-all (tagless)
-            // delay profile governs every node until per-node tags are wired.
-            content_tags: Vec::new(),
+            // The node's real tags: labels for the label-keyed delay profiles,
+            // ids for the id-keyed indexer/client/notification restrictions.
+            content_tags,
+            content_tag_ids,
             // Post-commit, best-effort policies from media-management settings.
             permissions: media_management.permissions.clone(),
             extra_files: media_management.extra_files.clone(),
@@ -598,7 +633,9 @@ impl PipelineEnv for LivePipelineEnv {
         &self,
         content: &ContentRef,
     ) -> Result<Option<(Self::Indexer, Self::Client, RunnerConfig)>, String> {
-        let Some((client, client_category)) = self.resolve_client().await? else {
+        // The node's tag ids scope which download client / indexers apply.
+        let (content_tag_ids, _) = self.content_tags(content).await?;
+        let Some((client, client_category)) = self.resolve_client(&content_tag_ids).await? else {
             return Ok(None);
         };
         let Some(config) = self.resolve_config(content, client_category).await? else {
@@ -608,7 +645,8 @@ impl PipelineEnv for LivePipelineEnv {
             self.db.clone(),
             Arc::clone(&self.rate_limiter),
             /* fail_fast = */ false,
-        );
+        )
+        .with_content_tags(content_tag_ids);
         Ok(Some((indexer, client, config)))
     }
 }
@@ -1072,7 +1110,9 @@ impl LiveQueueClient {
 #[async_trait]
 impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
     async fn remove(&self, download_id: &str, delete_data: bool) -> Result<(), String> {
-        let Some((client, _category)) = self.env.resolve_client().await? else {
+        // Queue removal is not content-scoped: pick any enabled client (the
+        // global selection — empty content tags matches every untagged client).
+        let Some((client, _category)) = self.env.resolve_client(&[]).await? else {
             return Err("no enabled download client is configured to remove from".to_string());
         };
         client

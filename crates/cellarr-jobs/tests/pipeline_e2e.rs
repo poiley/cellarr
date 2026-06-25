@@ -218,6 +218,7 @@ async fn seed_node(
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type,
@@ -275,6 +276,7 @@ fn registry_for(
 
 fn runner_config(library_root: PathBuf, profile: QualityProfile, naming: &str) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile,
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),

@@ -128,6 +128,7 @@ impl PipelineEnv for FakeEnv {
             indexer_flags: Vec::new(),
         };
         let config = RunnerConfig {
+            content_tag_ids: Vec::new(),
             profile: self.profile.clone(),
             custom_formats: Vec::<CustomFormat>::new(),
             ranking: QualityRanking::default(),
@@ -262,6 +263,7 @@ async fn seed_monitored_movie(db: &Database) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,

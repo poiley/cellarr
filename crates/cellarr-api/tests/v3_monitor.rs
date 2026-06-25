@@ -26,6 +26,7 @@ async fn seed_series_tree(
     let series = ContentId::new();
     content
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: series,
             library_id: library,
             media_type: MediaType::Tv,
@@ -44,6 +45,7 @@ async fn seed_series_tree(
     let season = ContentId::new();
     content
         .upsert(&ContentNode {
+            tags: Vec::new(),
             id: season,
             library_id: library,
             media_type: MediaType::Tv,
@@ -60,6 +62,7 @@ async fn seed_series_tree(
     for (id, episode) in [(e1, 1u32), (e2, 2u32)] {
         content
             .upsert(&ContentNode {
+                tags: Vec::new(),
                 id,
                 library_id: library,
                 media_type: MediaType::Tv,

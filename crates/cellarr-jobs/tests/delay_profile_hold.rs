@@ -185,6 +185,7 @@ async fn seed_movie_node(db: &Database) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -222,6 +223,7 @@ fn registry_for(node: &ContentRef) -> MediaRegistry {
 
 fn runner_config(library_root: PathBuf, delay_profiles: Vec<DelayProfile>) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),
@@ -327,6 +329,76 @@ async fn delay_profile_holds_release_until_window_elapses() {
     assert!(
         pending2.is_empty(),
         "the pending row is cleared once grabbed"
+    );
+}
+
+/// A torrent delay profile scoped to the given case-insensitive label tags.
+fn tagged_torrent_delay(minutes: u32, tags: Vec<String>) -> DelayProfile {
+    DelayProfile {
+        tags,
+        ..torrent_delay(minutes)
+    }
+}
+
+#[tokio::test]
+async fn tag_scoped_delay_profile_holds_only_tagged_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"bytes").unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_movie_node(&db).await;
+    let registry = registry_for(&node);
+    let indexer = FakeIndexer {
+        releases: vec![movie_release(
+            "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+            Protocol::Torrent,
+        )],
+    };
+    let client = FakeDownloadClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+    };
+
+    // A 30-minute delay scoped to the "anime" tag. The content's resolved tag
+    // labels are what the runner threads into `content_tags`.
+    let profiles = vec![tagged_torrent_delay(30, vec!["anime".into()])];
+
+    // Content tagged "Anime" (case-insensitive) -> the profile applies -> HELD.
+    let clock = LogicalClock::new(0);
+    let mut config = runner_config(library_root.clone(), profiles.clone());
+    config.content_tags = vec!["Anime".into()];
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Rejected { ref reason } if reason.contains("held by delay profile")),
+        "a tag-scoped profile holds content sharing its tag, got {outcome:?}"
+    );
+
+    // Clear the pending row so the second scenario starts clean.
+    db.pending_releases()
+        .clear(
+            node.id,
+            &movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP", Protocol::Torrent),
+        )
+        .await
+        .unwrap();
+
+    // The SAME tagged profile against UNtagged content does not apply (the
+    // catch-all is absent), so resolve_delay_profile finds no governing profile
+    // and the release grabs+imports immediately.
+    let clock2 = LogicalClock::new(0);
+    let config2 = runner_config(library_root.clone(), profiles);
+    let runner2 = PipelineRunner::new(&indexer, &client, &registry, &db, &clock2, &config2);
+    let outcome2 = runner2.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome2, RunOutcome::Imported { .. }),
+        "a tag-scoped profile never holds untagged content, got {outcome2:?}"
     );
 }
 

@@ -20,6 +20,7 @@ async fn seed_movie(state: &cellarr_api::AppState, title: &str, monitored: bool)
     let library = seed_library(state, MediaType::Movie, "Movies").await;
     let id = ContentId::new();
     let node = ContentNode {
+        tags: Vec::new(),
         id,
         library_id: library,
         media_type: MediaType::Movie,
@@ -182,6 +183,7 @@ async fn json_calendar_returns_dated_items_within_range() {
     let library = seed_library(&server.state, MediaType::Tv, "TV").await;
     let id = ContentId::new();
     let node = ContentNode {
+        tags: Vec::new(),
         id,
         library_id: library,
         media_type: MediaType::Tv,

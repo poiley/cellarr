@@ -199,6 +199,7 @@ async fn import_list_exclusion_crud() {
 async fn seed_dated_episode(state: &cellarr_api::AppState, title: &str, date: &str) {
     let library = seed_library(state, MediaType::Tv, "TV").await;
     let node = ContentNode {
+        tags: Vec::new(),
         id: ContentId::new(),
         library_id: library,
         media_type: MediaType::Tv,

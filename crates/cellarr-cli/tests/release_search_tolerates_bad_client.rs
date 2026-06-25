@@ -137,6 +137,7 @@ async fn seed_movie(db: &Database) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -157,6 +158,7 @@ async fn seed_movie(db: &Database) -> ContentRef {
 /// release search when the resolve step tried to build a live client adapter.
 async fn seed_misconfigured_client(db: &Database) {
     let client = DownloadClientConfig {
+        tags: Vec::new(),
         id: DownloadClientId::new(),
         name: "Synthetic SABnzbd".into(),
         kind: "sabnzbd".into(),

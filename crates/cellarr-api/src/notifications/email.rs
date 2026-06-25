@@ -336,6 +336,7 @@ mod tests {
     #[test]
     fn build_email_parses_recipients_and_defaults_port() {
         let cfg = NotificationConfig {
+            tags: Vec::new(),
             id: "1".into(),
             name: "mail".into(),
             kind: "email".into(),

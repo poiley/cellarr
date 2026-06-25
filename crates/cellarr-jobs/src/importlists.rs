@@ -310,6 +310,12 @@ impl ImportListSync {
                 coords,
                 monitored: list.monitored,
                 title_id: None,
+                // Import lists do not yet model per-list tags to stamp on added
+                // items; an added node starts untagged and can be tagged later via
+                // the v3 movie/series tags surface.
+                // TODO(deferred): apply an import list's configured tags to the
+                // content it adds, once ImportListConfig models them.
+                tags: Vec::new(),
             };
             content.upsert(&node).await?;
             content.index_title(node.id, &item.title).await?;

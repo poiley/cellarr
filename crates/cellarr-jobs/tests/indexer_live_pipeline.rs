@@ -297,6 +297,7 @@ fn permissive_profile() -> QualityProfile {
 /// + a `settings` JSON object carrying baseUrl / apiKey / categories.
 async fn configure_indexer(db: &Database, base_url: &str) -> IndexerConfig {
     let config = IndexerConfig {
+        tags: Vec::new(),
         id: IndexerId::new(),
         name: "Mock Torznab".into(),
         kind: "torznab".into(),
@@ -332,6 +333,7 @@ async fn seed_tv_episode(db: &Database, season: u32, episode: u32) -> ContentRef
         absolute: None,
     };
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Tv,
@@ -368,6 +370,7 @@ fn tv_registry(node: &ContentRef, title: &str) -> MediaRegistry {
 
 fn runner_config(library_root: PathBuf) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),

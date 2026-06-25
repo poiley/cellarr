@@ -35,6 +35,7 @@ import type {
   DownloadClientConfig,
   IndexerConfigV3,
   DownloadClientConfigV3,
+  Tag,
 } from "@lib/api/types";
 
 import { useToast } from "@app/_lib/ToastProvider";
@@ -45,6 +46,7 @@ import {
   EmptyState,
 } from "@app/settings/_components/StatusBanners";
 import ConfirmDialog from "@app/settings/_components/ConfirmDialog";
+import TagInput from "@app/settings/_components/TagInput";
 
 type IntegrationKind = "indexers" | "downloadclients";
 type RawConfig = IndexerConfig | DownloadClientConfig;
@@ -72,6 +74,8 @@ interface IntegrationForm {
   seedTime: string;
   /** The freeleech-only policy is `requiredFlags: ["freeleech"]`. */
   requireFreeleech: boolean;
+  /** Tag ids that scope this integration (empty = applies to all content). */
+  tags: number[];
 }
 
 // Which download-client implementations take credential / urlBase fields. A
@@ -158,6 +162,9 @@ function toForm(raw: RawConfig, implementations: string[]): IntegrationForm {
     seedRatio: str(seedCriteria.seedRatio),
     seedTime: str(seedCriteria.seedTime),
     requireFreeleech: flagList.includes("freeleech"),
+    tags: Array.isArray(rec.tags)
+      ? rec.tags.filter((t): t is number => typeof t === "number")
+      : [],
   };
 }
 
@@ -180,6 +187,7 @@ function blankForm(implementations: string[]): IntegrationForm {
     seedRatio: "",
     seedTime: "",
     requireFreeleech: false,
+    tags: [],
   };
 }
 
@@ -203,8 +211,25 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
         : client.listDownloadClients(signal),
     [client, kind],
   );
+  const loadTags = React.useCallback(
+    (signal: AbortSignal) => client.listTags(signal),
+    [client],
+  );
   const { data, loading, error, reload } = useAsync<RawConfig[]>(load);
+  const { data: tagList, reload: reloadTags } = useAsync<Tag[]>(loadTags);
   const { success, error: toastError, info } = useToast();
+
+  const tags = tagList ?? [];
+
+  // Mint a new tag inline (the TagInput "+ new" path) + refresh the catalogue.
+  const createTag = React.useCallback(
+    async (label: string): Promise<Tag> => {
+      const tag = await client.createTag({ label });
+      reloadTags();
+      return tag;
+    },
+    [client, reloadTags],
+  );
 
   const singular = title.replace(/s$/, "");
 
@@ -315,7 +340,7 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
           }
         : { enable: form.enabled }),
       fields,
-      tags: [],
+      tags: form.tags,
     } as Partial<IndexerConfigV3> & Partial<DownloadClientConfigV3>;
   };
 
@@ -690,6 +715,15 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
               </Checkbox>
             ) : null}
           </div>
+
+          <Text style={{ opacity: 0.6, margin: "1ch 0 0.5ch" }}>Tags</Text>
+          <TagInput
+            available={tags}
+            value={form.tags}
+            onChange={(next) => setForm({ ...form, tags: next })}
+            onCreate={createTag}
+            label={`${singular} tags`}
+          />
 
           {/* Inline test result stays near the form as a persistent indicator;
               the same outcome is also announced via toast. */}

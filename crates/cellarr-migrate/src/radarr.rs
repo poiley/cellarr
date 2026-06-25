@@ -113,6 +113,7 @@ async fn read_movies(
             coords: Coordinates::Movie,
             monitored: monitored != 0,
             title_id: None,
+            tags: Vec::new(),
         };
         contents.push(MappedContent {
             node,

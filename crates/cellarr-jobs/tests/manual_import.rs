@@ -174,6 +174,7 @@ async fn seed_movie_node(db: &Database, root: &str) -> ContentRef {
 
     let content_id = ContentId::new();
     let node = cellarr_core::ContentNode {
+        tags: Vec::new(),
         id: content_id,
         library_id,
         media_type: MediaType::Movie,
@@ -210,6 +211,7 @@ fn registry_for(node: &ContentRef, title: &str) -> MediaRegistry {
 
 fn runner_config(root: PathBuf) -> RunnerConfig {
     RunnerConfig {
+        content_tag_ids: Vec::new(),
         profile: permissive_profile(),
         custom_formats: Vec::<CustomFormat>::new(),
         ranking: QualityRanking::default(),
@@ -686,6 +688,7 @@ async fn tv_node_imports_even_when_a_movie_library_sorts_first() {
     let ep_id = ContentId::new();
     db.content()
         .upsert(&cellarr_core::ContentNode {
+            tags: Vec::new(),
             id: ep_id,
             library_id: series_lib,
             media_type: MediaType::Tv,
