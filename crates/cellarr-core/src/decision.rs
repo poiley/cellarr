@@ -61,6 +61,14 @@ pub enum RejectReason {
     Blocklisted,
     /// The size is outside the configured constraints.
     SizeOutOfRange,
+    /// The release's size-per-minute (release size / content runtime) is outside
+    /// the per-quality bounds configured on its resolved [`crate::QualityDefinition`]
+    /// (`min_size_per_min` / `max_size_per_min`). The `bound` says which side was
+    /// breached so the log reads "below minimum size" / "above maximum size".
+    QualitySizeOutOfBounds {
+        /// Which bound the release breached.
+        bound: SizeBound,
+    },
     /// A required language is missing.
     LanguageRequirementUnmet,
     /// The torrent release advertises fewer seeders than the indexer's configured
@@ -78,6 +86,16 @@ pub enum RejectReason {
         /// Human-readable detail.
         detail: String,
     },
+}
+
+/// Which per-quality size bound a release breached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeBound {
+    /// Below the quality's `min_size_per_min`.
+    BelowMinimum,
+    /// Above the quality's `max_size_per_min`.
+    AboveMaximum,
 }
 
 /// A decision together with the candidate and content it concerns. This is the

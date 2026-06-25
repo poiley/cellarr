@@ -647,7 +647,9 @@ where
             // Decide (real cellarr-decide) against the current on-disk file, so
             // the verdict and score match what a real run would compute.
             let on_disk = self.on_disk_for(content).await?;
-            let decision = self.decide(&matched.content_ref, release, &parsed, on_disk)?;
+            let decision = self
+                .decide(&matched.content_ref, release, &parsed, on_disk)
+                .await?;
             let (rejected, cf_score, reason) = match &decision.verdict {
                 // A reject verdict carries no score (the engine stops scoring once
                 // it rejects), so a rejected row reports 0 — it would not be
@@ -827,7 +829,9 @@ where
         // grab: the user explicitly chose this release. A Reject verdict is grabbed
         // anyway (recorded as a manual override); Grab/Upgrade carry their score.
         let on_disk = self.on_disk_for(content).await?;
-        let decision = self.decide(&matched.content_ref, &release, &parsed, on_disk)?;
+        let decision = self
+            .decide(&matched.content_ref, &release, &parsed, on_disk)
+            .await?;
         let score = match &decision.verdict {
             Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => *score,
             // A manually-overridden grab of a release the engine would reject: use a
@@ -947,7 +951,9 @@ where
 
             // --- Decide (real cellarr-decide) -----------------------------
             let on_disk = self.on_disk_for(content).await?;
-            let decision = self.decide(&matched.content_ref, release, &parsed, on_disk)?;
+            let decision = self
+                .decide(&matched.content_ref, release, &parsed, on_disk)
+                .await?;
             match &decision.verdict {
                 Verdict::Reject { reason } => {
                     let note = format!("rejected: {}", reason_text(reason));
@@ -1146,7 +1152,7 @@ where
         }
     }
 
-    fn decide(
+    async fn decide(
         &self,
         content_ref: &ContentRef,
         release: &Release,
@@ -1162,6 +1168,11 @@ where
             .get(&release.indexer_id)
             .cloned()
             .unwrap_or_default();
+        // The content runtime feeds the per-quality size-bounds gate (size /
+        // runtime = bytes-per-minute). Read from the persisted content metadata;
+        // `None` (never identified, or runtime not resolved) makes the size gate
+        // fail open, so the absence of a runtime never causes a false reject.
+        let content_runtime = self.content_runtime(content_ref).await;
         let ctx = DecisionContext {
             profile: &self.config.profile,
             custom_formats: &self.config.custom_formats,
@@ -1170,9 +1181,24 @@ where
             proper_repack_policy: self.config.proper_repack_policy,
             indexer_criteria: criteria,
             indexer_priority: priority,
+            content_runtime,
         };
         decide(content_ref.clone(), release, parsed, on_disk, &ctx)
             .map_err(|e| JobError::stage(Stage::Decide, e))
+    }
+
+    /// The persisted runtime (minutes) for a content node, used by the size-bounds
+    /// gate. Best-effort: any read failure or missing/unidentified row yields
+    /// `None`, which makes the size gate fail open.
+    async fn content_runtime(&self, content_ref: &ContentRef) -> Option<u32> {
+        match self.db.content().metadata(content_ref.id).await {
+            Ok(Some(meta)) => meta.runtime,
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(content = %content_ref.id, error = %e, "reading content runtime for size gate failed; failing open");
+                None
+            }
+        }
     }
 
     /// Apply the governing delay profile to a grabbable candidate.
@@ -2424,6 +2450,10 @@ fn reason_text(reason: &cellarr_core::RejectReason) -> String {
         R::BelowMinimumCustomFormatScore => "below minimum custom-format score".into(),
         R::Blocklisted => "release is blocklisted".into(),
         R::SizeOutOfRange => "size out of configured range".into(),
+        R::QualitySizeOutOfBounds { bound } => match bound {
+            cellarr_core::SizeBound::BelowMinimum => "below minimum size for quality".into(),
+            cellarr_core::SizeBound::AboveMaximum => "above maximum size for quality".into(),
+        },
         R::LanguageRequirementUnmet => "required language missing".into(),
         R::InsufficientSeeders => "below indexer minimum seeders".into(),
         R::RequiredFlagMissing => "missing required indexer flag (e.g. freeleech)".into(),
@@ -2683,6 +2713,12 @@ mod tests {
             reason_text(&R::BelowMinimumCustomFormatScore),
             reason_text(&R::Blocklisted),
             reason_text(&R::SizeOutOfRange),
+            reason_text(&R::QualitySizeOutOfBounds {
+                bound: cellarr_core::SizeBound::BelowMinimum,
+            }),
+            reason_text(&R::QualitySizeOutOfBounds {
+                bound: cellarr_core::SizeBound::AboveMaximum,
+            }),
             reason_text(&R::LanguageRequirementUnmet),
             reason_text(&R::InsufficientSeeders),
             reason_text(&R::RequiredFlagMissing),

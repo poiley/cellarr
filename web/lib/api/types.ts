@@ -793,7 +793,12 @@ export interface LogFile {
   [key: string]: unknown;
 }
 
-/** A v3 quality definition (`GET /api/v3/qualitydefinition`). */
+/**
+ * A v3 quality definition (`GET /api/v3/qualitydefinition`). `minSize` /
+ * `maxSize` / `preferredSize` are size bounds expressed as BYTES-PER-MINUTE
+ * (`minSize` 0 means no minimum; `maxSize` / `preferredSize` may be null when
+ * unset). `id` is `rank + 1` and is what the `PUT` routes address.
+ */
 export interface QualityDefinition {
   id: number;
   title: string;
@@ -803,6 +808,22 @@ export interface QualityDefinition {
   preferredSize: number | null;
   quality: Quality;
   [key: string]: unknown;
+}
+
+/**
+ * The write body for a quality definition (`PUT /api/v3/qualitydefinition/{id}`,
+ * and one element of the bulk `PUT /api/v3/qualitydefinition/update` array).
+ * camelCase, all fields optional (sizes = bytes-per-minute, floats accepted) —
+ * except the bulk-update variant, where each element MUST carry its own `id`.
+ * Server normalization: `minSize` 0 / empty title / title === canonical name
+ * persists as unset; a negative or non-finite size → 400.
+ */
+export interface QualityDefinitionBody {
+  id?: number;
+  title?: string;
+  minSize?: number;
+  maxSize?: number | null;
+  preferredSize?: number | null;
 }
 
 // ===========================================================================

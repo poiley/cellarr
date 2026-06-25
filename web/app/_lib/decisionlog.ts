@@ -40,6 +40,7 @@ export type RejectReason =
   | { reason: 'below_minimum_custom_format_score' }
   | { reason: 'blocklisted' }
   | { reason: 'size_out_of_range' }
+  | { reason: 'quality_size_out_of_bounds'; bound: 'below_minimum' | 'above_maximum' }
   | { reason: 'language_requirement_unmet' }
   | { reason: 'cutoff_already_met' }
   | { reason: 'not_an_upgrade' }
@@ -290,6 +291,7 @@ const REJECT_REASON_LABEL: Record<string, string> = {
   below_minimum_custom_format_score: 'Below the minimum custom-format score',
   blocklisted: 'Release or group is blocklisted',
   size_out_of_range: 'Size outside the configured range',
+  quality_size_out_of_bounds: 'Size outside the bounds for its quality',
   language_requirement_unmet: 'A required language is missing',
   cutoff_already_met: 'Cutoff already met — nothing to do',
   not_an_upgrade: 'An equal or better file already exists',
@@ -299,6 +301,11 @@ const REJECT_REASON_LABEL: Record<string, string> = {
 export function rejectReasonLabel(reason: RejectReason): string {
   const base = REJECT_REASON_LABEL[reason.reason] ?? reason.reason;
   if (reason.reason === 'other' && reason.detail) return `${base}: ${reason.detail}`;
+  if (reason.reason === 'quality_size_out_of_bounds') {
+    return reason.bound === 'below_minimum'
+      ? 'Below the minimum size for its quality'
+      : 'Above the maximum size for its quality';
+  }
   return base;
 }
 

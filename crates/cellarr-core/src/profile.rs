@@ -16,19 +16,42 @@ use crate::release::ReleaseType;
 /// A named, ordered quality (a position in the global worst→best ranking).
 ///
 /// The numeric `rank` is the authoritative ordering used by the decision engine;
-/// higher means better. Sizes are advisory bounds in bytes-per-minute.
+/// higher means better. The size bounds are per-quality acceptance limits, in
+/// bytes-per-minute: the decision engine rejects a release whose size-per-minute
+/// (release size / content runtime) falls below `min_size_per_min` or above
+/// `max_size_per_min` for its resolved quality. `preferred_size_per_min` is the
+/// advisory target the originals expose (it does not gate; surfaced for parity).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QualityDefinition {
-    /// Stable name (e.g. "Bluray-1080p").
+    /// Stable canonical name (e.g. "Bluray-1080p"). This is the identity used to
+    /// resolve a parse to a quality and to key persisted edits; it never changes.
     pub name: String,
+    /// Editable display title. Defaults to `name`; an edit can rename what the UI
+    /// and `/api/v3` shim show without disturbing the canonical `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Position in the global ranking; higher is better.
     pub rank: u32,
-    /// Minimum advisory size, bytes per minute.
+    /// Minimum size, bytes per minute. A release below this for its quality is
+    /// rejected (when both its size and the content runtime are known).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_size_per_min: Option<u64>,
-    /// Maximum advisory size, bytes per minute.
+    /// Maximum size, bytes per minute. A release above this for its quality is
+    /// rejected (when both its size and the content runtime are known).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_size_per_min: Option<u64>,
+    /// Advisory preferred size, bytes per minute. Surfaced for `/api/v3` parity;
+    /// not consulted by the size-bounds reject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_size_per_min: Option<u64>,
+}
+
+impl QualityDefinition {
+    /// The display title: the explicit `title` override, else the canonical `name`.
+    #[must_use]
+    pub fn display_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// A resolved quality: the concrete name plus its position in the global
@@ -128,10 +151,12 @@ impl Default for QualityRanking {
             .enumerate()
             .map(|(idx, name)| QualityDefinition {
                 name: (*name).to_string(),
+                title: None,
                 // Dense ascending ranks; index order is worst→best.
                 rank: idx as u32,
                 min_size_per_min: None,
                 max_size_per_min: None,
+                preferred_size_per_min: None,
             })
             .collect();
         Self { qualities }
@@ -155,6 +180,65 @@ impl QualityRanking {
         self.by_name("Unknown")
             .unwrap_or_else(|| Quality::new("Unknown", 0))
     }
+
+    /// The full [`QualityDefinition`] (including its size bounds) for a quality's
+    /// `rank`, if the rank is in the catalogue.
+    #[must_use]
+    pub fn definition_for_rank(&self, rank: u32) -> Option<&QualityDefinition> {
+        self.qualities.iter().find(|q| q.rank == rank)
+    }
+
+    /// Decide whether a release's size is acceptable for a given quality, **failing
+    /// open** when it cannot be judged.
+    ///
+    /// `size_bytes` is the release's reported size and `runtime_minutes` the
+    /// content's runtime. The size-per-minute (`size_bytes / runtime_minutes`) is
+    /// compared against the quality's `min_size_per_min` / `max_size_per_min`. Any
+    /// missing input — unknown size, unknown/zero runtime, an unrecognized quality
+    /// rank, or a bound that is simply unset — yields [`SizeVerdict::Ok`] so the
+    /// engine never rejects on a guess (the false-negative guard the task requires).
+    #[must_use]
+    pub fn size_verdict(
+        &self,
+        quality_rank: u32,
+        size_bytes: Option<u64>,
+        runtime_minutes: Option<u32>,
+    ) -> SizeVerdict {
+        // Fail open on any unknown input.
+        let (Some(size), Some(runtime)) = (size_bytes, runtime_minutes) else {
+            return SizeVerdict::Ok;
+        };
+        if runtime == 0 {
+            return SizeVerdict::Ok;
+        }
+        let Some(def) = self.definition_for_rank(quality_rank) else {
+            return SizeVerdict::Ok;
+        };
+        // Integer bytes-per-minute; the bounds are whole bytes-per-minute too.
+        let per_min = size / u64::from(runtime);
+        if let Some(min) = def.min_size_per_min {
+            if per_min < min {
+                return SizeVerdict::BelowMinimum;
+            }
+        }
+        if let Some(max) = def.max_size_per_min {
+            if per_min > max {
+                return SizeVerdict::AboveMaximum;
+            }
+        }
+        SizeVerdict::Ok
+    }
+}
+
+/// The outcome of a per-quality size-bounds check (see [`QualityRanking::size_verdict`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeVerdict {
+    /// The size is acceptable, or cannot be judged (fail-open).
+    Ok,
+    /// The size-per-minute is below the quality's minimum.
+    BelowMinimum,
+    /// The size-per-minute is above the quality's maximum.
+    AboveMaximum,
 }
 
 /// Map a parsed release's source + resolution (+ remux/proper signals) to a
@@ -751,6 +835,72 @@ mod tests {
             10,
         );
         assert!(!custom_format_matches(&movie, &p, &[]));
+    }
+
+    /// A ranking with explicit size bounds on Bluray-1080p, for the size tests.
+    fn ranking_with_bluray_bounds(min: Option<u64>, max: Option<u64>) -> QualityRanking {
+        let mut r = QualityRanking::default();
+        let rank = r.by_name("Bluray-1080p").expect("present").rank;
+        let def = r
+            .qualities
+            .iter_mut()
+            .find(|q| q.rank == rank)
+            .expect("present");
+        def.min_size_per_min = min;
+        def.max_size_per_min = max;
+        r
+    }
+
+    #[test]
+    fn size_verdict_rejects_below_minimum_and_above_maximum() {
+        // Bounds: [10, 100] bytes/min on Bluray-1080p (rank known).
+        let r = ranking_with_bluray_bounds(Some(10), Some(100));
+        let rank = r.by_name("Bluray-1080p").unwrap().rank;
+        // runtime 10 min: 50 bytes total -> 5/min (below 10) -> reject.
+        assert_eq!(
+            r.size_verdict(rank, Some(50), Some(10)),
+            SizeVerdict::BelowMinimum
+        );
+        // 2000 bytes / 10 min -> 200/min (above 100) -> reject.
+        assert_eq!(
+            r.size_verdict(rank, Some(2000), Some(10)),
+            SizeVerdict::AboveMaximum
+        );
+        // 500 bytes / 10 min -> 50/min (in [10,100]) -> ok.
+        assert_eq!(r.size_verdict(rank, Some(500), Some(10)), SizeVerdict::Ok);
+    }
+
+    #[test]
+    fn size_verdict_fails_open_on_unknowns() {
+        let r = ranking_with_bluray_bounds(Some(10), Some(100));
+        let rank = r.by_name("Bluray-1080p").unwrap().rank;
+        // Unknown size, unknown runtime, zero runtime: never reject.
+        assert_eq!(r.size_verdict(rank, None, Some(10)), SizeVerdict::Ok);
+        assert_eq!(r.size_verdict(rank, Some(5), None), SizeVerdict::Ok);
+        assert_eq!(r.size_verdict(rank, Some(5), Some(0)), SizeVerdict::Ok);
+        // An unset bound on a quality also fails open.
+        let no_bounds = QualityRanking::default();
+        assert_eq!(
+            no_bounds.size_verdict(rank, Some(1), Some(10_000)),
+            SizeVerdict::Ok
+        );
+        // An unrecognized rank fails open.
+        assert_eq!(r.size_verdict(9_999, Some(5), Some(10)), SizeVerdict::Ok);
+    }
+
+    #[test]
+    fn display_title_prefers_override() {
+        let mut def = QualityDefinition {
+            name: "Bluray-1080p".into(),
+            title: None,
+            rank: 1,
+            min_size_per_min: None,
+            max_size_per_min: None,
+            preferred_size_per_min: None,
+        };
+        assert_eq!(def.display_title(), "Bluray-1080p");
+        def.title = Some("HD Bluray".into());
+        assert_eq!(def.display_title(), "HD Bluray");
     }
 
     #[test]

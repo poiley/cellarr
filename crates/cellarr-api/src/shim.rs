@@ -224,6 +224,10 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/qualityProfile/{id}", put(update_quality_profile))
         .route("/qualityprofile/{id}", delete(delete_quality_profile))
         .route("/qualityProfile/{id}", delete(delete_quality_profile))
+        .route("/qualitydefinition/{id}", put(update_quality_definition))
+        .route("/qualityDefinition/{id}", put(update_quality_definition))
+        .route("/qualitydefinition/update", put(update_quality_definitions))
+        .route("/qualityDefinition/update", put(update_quality_definitions))
         .route("/customformat", post(create_custom_format))
         .route("/customFormat", post(create_custom_format))
         .route("/customformat/{id}", put(update_custom_format))
@@ -1244,29 +1248,180 @@ fn face_quality_name<'a>(canonical: &'a str, face: Face) -> std::borrow::Cow<'a,
     }
 }
 
-/// v3 `qualitydefinition` — the quality catalogue with size limits. Built from
-/// cellarr's default quality ranking; Recyclarr reads it to map quality names.
-/// The remux tiers are rendered with the addressed face's spelling
-/// (`Bluray-…  Remux` on Sonarr, `Remux-…` on Radarr).
-async fn quality_definitions(State(fs): State<FaceState>) -> Json<Vec<Value>> {
-    let ranking = cellarr_core::QualityRanking::default();
+/// v3 `qualitydefinition` — the quality catalogue with its editable size limits.
+/// Built from cellarr's quality ranking **with persisted per-quality edits merged
+/// in** (title + min/max/preferred size), so a `PUT` is reflected here. Recyclarr
+/// reads it to map quality names. The remux tiers are rendered with the addressed
+/// face's spelling (`Bluray-…  Remux` on Sonarr, `Remux-…` on Radarr).
+///
+/// `quality.name` carries the canonical (face-spelled) bucket name; `title` is the
+/// editable display title, which defaults to that name until overridden.
+async fn quality_definitions(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let ranking = fs.state.db.profiles().quality_ranking().await?;
     let out: Vec<Value> = ranking
         .qualities
         .iter()
         .map(|q| {
             let name = face_quality_name(&q.name, fs.face);
+            let title = face_quality_name(q.display_title(), fs.face);
             json!({
                 "id": q.rank + 1,
                 "quality": { "id": q.rank, "name": name, "source": "unknown", "resolution": 0 },
-                "title": name,
+                "title": title,
                 "weight": q.rank + 1,
                 "minSize": q.min_size_per_min.unwrap_or(0),
                 "maxSize": q.max_size_per_min,
-                "preferredSize": Value::Null,
+                "preferredSize": q.preferred_size_per_min,
             })
         })
         .collect();
-    Json(out)
+    Ok(Json(out))
+}
+
+/// The editable fields a `PUT /qualitydefinition` body carries (mirrors the
+/// originals' shape: `title`, `minSize`, `maxSize`, `preferredSize`, all optional).
+/// Sizes are bytes-per-minute; `minSize: 0` (the originals' "no minimum" sentinel)
+/// is normalized to "unset" so a default GET round-trips unchanged.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct QualityDefinitionBody {
+    #[serde(default)]
+    id: Option<u32>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    min_size: Option<f64>,
+    #[serde(default)]
+    max_size: Option<f64>,
+    #[serde(default)]
+    preferred_size: Option<f64>,
+}
+
+/// Resolve the canonical [`cellarr_core::QualityDefinition::name`] a v3 id (which
+/// the GET renders as `rank + 1`) addresses, against the current ranking. A
+/// `rank + 1` of 0, or an id past the catalogue, is a structured 404.
+fn quality_name_for_id(ranking: &cellarr_core::QualityRanking, id: u32) -> ApiResult<String> {
+    let rank = id
+        .checked_sub(1)
+        .ok_or_else(|| ApiError::NotFound(format!("quality definition {id} not found")))?;
+    ranking
+        .qualities
+        .iter()
+        .find(|q| q.rank == rank)
+        .map(|q| q.name.clone())
+        .ok_or_else(|| ApiError::NotFound(format!("quality definition {id} not found")))
+}
+
+/// Build the merged [`cellarr_core::QualityDefinition`] to persist for the quality
+/// named `name`, applying the body's edits onto the catalogue's current state.
+///
+/// `title` is normalized: an empty/whitespace-only title, or one equal to the
+/// canonical name, persists as "unset" (so the GET shows the canonical name and
+/// the row stays clean). A `minSize` of `0` is the originals' "no minimum"
+/// sentinel and persists as unset. Negative or non-finite sizes are rejected.
+fn apply_definition_edits(
+    current: &cellarr_core::QualityDefinition,
+    body: &QualityDefinitionBody,
+) -> ApiResult<cellarr_core::QualityDefinition> {
+    fn size_field(v: Option<f64>, treat_zero_as_unset: bool) -> ApiResult<Option<u64>> {
+        match v {
+            None => Ok(None),
+            Some(n) if !n.is_finite() || n < 0.0 => {
+                Err(ApiError::BadRequest(format!("invalid size value: {n}")))
+            }
+            Some(n) if treat_zero_as_unset && n == 0.0 => Ok(None),
+            Some(n) => Ok(Some(n as u64)),
+        }
+    }
+
+    let title = body.title.as_ref().and_then(|t| {
+        let t = t.trim();
+        if t.is_empty() || t.eq_ignore_ascii_case(&current.name) {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+
+    Ok(cellarr_core::QualityDefinition {
+        name: current.name.clone(),
+        title,
+        rank: current.rank,
+        min_size_per_min: size_field(body.min_size, true)?,
+        max_size_per_min: size_field(body.max_size, false)?,
+        preferred_size_per_min: size_field(body.preferred_size, false)?,
+    })
+}
+
+/// `PUT /qualitydefinition/{id}` — update one quality's editable knobs (title +
+/// min/max/preferred size-per-minute). `id` is the GET's `rank + 1`. The merged
+/// definition is persisted; subsequent GETs and decisions read it back.
+async fn update_quality_definition(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<QualityDefinitionBody>,
+) -> ApiResult<Json<Value>> {
+    let id: u32 = id
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("invalid qualitydefinition id: {id}")))?;
+    let repo = fs.state.db.profiles();
+    let ranking = repo.quality_ranking().await?;
+    let name = quality_name_for_id(&ranking, id)?;
+    let current = ranking
+        .qualities
+        .iter()
+        .find(|q| q.name == name)
+        .expect("name resolved from this ranking");
+    let updated = apply_definition_edits(current, &body)?;
+    repo.upsert_quality_definition(&updated).await?;
+    Ok(Json(definition_view(&updated, fs.face)))
+}
+
+/// `PUT /qualitydefinition/update` — the originals' bulk "update many" endpoint,
+/// taking an array of definition bodies (each carrying its own `id`). Each is
+/// applied; the updated list is returned.
+async fn update_quality_definitions(
+    State(fs): State<FaceState>,
+    Json(bodies): Json<Vec<QualityDefinitionBody>>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let repo = fs.state.db.profiles();
+    let mut out = Vec::with_capacity(bodies.len());
+    for body in &bodies {
+        let Some(id) = body.id else {
+            return Err(ApiError::BadRequest(
+                "each quality definition must carry an id".into(),
+            ));
+        };
+        // Re-read the ranking each iteration so an earlier edit in the batch is
+        // visible to a later one addressing the same quality.
+        let ranking = repo.quality_ranking().await?;
+        let name = quality_name_for_id(&ranking, id)?;
+        let current = ranking
+            .qualities
+            .iter()
+            .find(|q| q.name == name)
+            .expect("name resolved from this ranking");
+        let updated = apply_definition_edits(current, body)?;
+        repo.upsert_quality_definition(&updated).await?;
+        out.push(definition_view(&updated, fs.face));
+    }
+    Ok(Json(out))
+}
+
+/// Render a single [`cellarr_core::QualityDefinition`] in the v3 shape (the same
+/// shape a list element of [`quality_definitions`] has), for a PUT response.
+fn definition_view(def: &cellarr_core::QualityDefinition, face: Face) -> Value {
+    let name = face_quality_name(&def.name, face);
+    let title = face_quality_name(def.display_title(), face);
+    json!({
+        "id": def.rank + 1,
+        "quality": { "id": def.rank, "name": name, "source": "unknown", "resolution": 0 },
+        "title": title,
+        "weight": def.rank + 1,
+        "minSize": def.min_size_per_min.unwrap_or(0),
+        "maxSize": def.max_size_per_min,
+        "preferredSize": def.preferred_size_per_min,
+    })
 }
 
 // --- languageprofile -------------------------------------------------------

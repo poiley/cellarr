@@ -52,7 +52,8 @@ pub use config::{
     RemotePathMapping, RootFolder,
 };
 pub use decision::{
-    Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score, Verdict,
+    Decision, Grab, GrabRequest, GrabStatus, ImportPlan, PlannedMove, RejectReason, Score,
+    SizeBound, Verdict,
 };
 pub use delay::{resolve_delay_profile, DelayProfile, DelayVerdict, PreferredProtocol};
 pub use error::{CoreError, Result};
@@ -80,7 +81,7 @@ pub use parsed::{
 pub use pipeline::{is_legal_transition, Stage, Transition, TransitionKind};
 pub use profile::{
     condition_matches, custom_format_matches, resolve_quality, Condition, ConditionKind,
-    CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking,
+    CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking, SizeVerdict,
 };
 pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType};
 pub use repo::{

@@ -167,6 +167,7 @@ proptest! {
             proper_repack_policy: ProperRepackPolicy::Prefer,
             indexer_criteria: Default::default(),
             indexer_priority: 0,
+            content_runtime: None,
         };
         // On-disk file: the better quality, with CF score 0 (so the candidate's
         // CF score is strictly higher — the temptation the rule must resist).
@@ -223,6 +224,7 @@ proptest! {
             proper_repack_policy: ProperRepackPolicy::DoNotPrefer,
             indexer_criteria: Default::default(),
             indexer_priority: 0,
+            content_runtime: None,
         };
         let existing = OnDiskFile {
             file_id: MediaFileId::new(),
@@ -305,6 +307,7 @@ proptest! {
             proper_repack_policy: ProperRepackPolicy::Prefer,
             indexer_criteria: Default::default(),
             indexer_priority: 0,
+            content_runtime: None,
         };
         // decide returns Result (InvalidRegex is an error, not a panic); both
         // arms are acceptable — the property is only that it does not panic.

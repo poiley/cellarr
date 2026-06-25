@@ -17,7 +17,7 @@ use cellarr_core::{
     CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, DownloadClientConfig,
     DownloadClientId, Grab, GrabRequest, GrabStatus, IndexerConfig, IndexerId, Library, LibraryId,
     MediaFile, MediaFileId, MediaType, NotificationConfig, PipelineRunId, PreferredProtocol,
-    Protocol, QualityProfile, QualityProfileId, Release, RootFolder, Source,
+    Protocol, QualityDefinition, QualityProfile, QualityProfileId, Release, RootFolder, Source,
 };
 use cellarr_db::Database;
 use tempfile::TempDir;
@@ -1560,6 +1560,85 @@ async fn delay_profile_crud_round_trip() {
     assert!(profiles.delete_delay_profile(dp.id).await.expect("delete"));
     assert!(!profiles.delete_delay_profile(dp.id).await.expect("delete2"));
     assert_eq!(profiles.list_delay_profiles().await.expect("list").len(), 1);
+}
+
+#[tokio::test]
+async fn quality_definition_edit_persists_and_merges_into_ranking() {
+    let (_dir, db) = temp_db().await;
+    let profiles = db.profiles();
+
+    // A fresh DB has no overrides: the ranking equals the code default, and the
+    // edited bucket starts with no size bounds.
+    let base = profiles.quality_ranking().await.expect("ranking");
+    let target = base
+        .by_name("Bluray-1080p")
+        .expect("Bluray-1080p present in catalogue");
+    let before = base
+        .definition_for_rank(target.rank)
+        .expect("definition present");
+    assert_eq!(before.min_size_per_min, None);
+    assert_eq!(before.max_size_per_min, None);
+    assert_eq!(before.title, None);
+
+    // Persist an edit: title + size bounds + preferred, keyed by canonical name.
+    let edited = QualityDefinition {
+        name: "Bluray-1080p".to_string(),
+        title: Some("HD Bluray".to_string()),
+        rank: target.rank,
+        min_size_per_min: Some(10),
+        max_size_per_min: Some(200),
+        preferred_size_per_min: Some(100),
+    };
+    profiles
+        .upsert_quality_definition(&edited)
+        .await
+        .expect("upsert quality definition");
+
+    // The merged ranking reflects the edit while keeping the canonical name/rank.
+    let after = profiles.quality_ranking().await.expect("ranking2");
+    let def = after
+        .definition_for_rank(target.rank)
+        .expect("definition present");
+    assert_eq!(def.name, "Bluray-1080p", "canonical name unchanged");
+    assert_eq!(def.rank, target.rank, "rank unchanged");
+    assert_eq!(def.title.as_deref(), Some("HD Bluray"));
+    assert_eq!(def.display_title(), "HD Bluray");
+    assert_eq!(def.min_size_per_min, Some(10));
+    assert_eq!(def.max_size_per_min, Some(200));
+    assert_eq!(def.preferred_size_per_min, Some(100));
+
+    // Every other bucket is untouched by the override.
+    let unedited = after.by_name("WEBDL-1080p").expect("WEBDL-1080p present");
+    let unedited_def = after.definition_for_rank(unedited.rank).expect("present");
+    assert_eq!(unedited_def.min_size_per_min, None);
+    assert_eq!(unedited_def.title, None);
+
+    // A second upsert (same name) replaces the prior override, not appends.
+    let re_edited = QualityDefinition {
+        name: "Bluray-1080p".to_string(),
+        title: None,
+        rank: target.rank,
+        min_size_per_min: Some(50),
+        max_size_per_min: None,
+        preferred_size_per_min: None,
+    };
+    profiles
+        .upsert_quality_definition(&re_edited)
+        .await
+        .expect("re-upsert");
+    let overrides = profiles
+        .quality_definition_overrides()
+        .await
+        .expect("overrides");
+    assert_eq!(overrides.len(), 1, "upsert replaces, never duplicates");
+    let final_ranking = profiles.quality_ranking().await.expect("ranking3");
+    let final_def = final_ranking
+        .definition_for_rank(target.rank)
+        .expect("present");
+    assert_eq!(final_def.min_size_per_min, Some(50));
+    assert_eq!(final_def.max_size_per_min, None);
+    assert_eq!(final_def.title, None, "title cleared by the second edit");
+    assert_eq!(final_def.display_title(), "Bluray-1080p");
 }
 
 #[tokio::test]

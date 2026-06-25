@@ -71,6 +71,7 @@ fn ctx<'a>(
         proper_repack_policy: ProperRepackPolicy::Prefer,
         indexer_criteria: criteria,
         indexer_priority: 0,
+        content_runtime: None,
     }
 }
 

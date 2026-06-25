@@ -12,6 +12,7 @@ import Divider from '@components/Divider';
 
 import AppShell from '@app/_components/AppShell';
 import QualityProfiles from '@app/settings/_components/QualityProfiles';
+import QualityDefinitions from '@app/settings/_components/QualityDefinitions';
 import CustomFormats from '@app/settings/_components/CustomFormats';
 import DelayProfiles from '@app/settings/_components/DelayProfiles';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
@@ -26,6 +27,7 @@ import Security from '@app/settings/_components/Security';
 
 type Section =
   | 'profiles'
+  | 'definitions'
   | 'formats'
   | 'delays'
   | 'indexers'
@@ -41,6 +43,7 @@ type Section =
 
 const TABS: { id: Section; label: string }[] = [
   { id: 'profiles', label: 'Quality Profiles' },
+  { id: 'definitions', label: 'Quality Definitions' },
   { id: 'formats', label: 'Custom Formats' },
   { id: 'delays', label: 'Delay Profiles' },
   { id: 'indexers', label: 'Indexers' },
@@ -73,6 +76,7 @@ export default function Page() {
       <Divider type="GRADIENT" />
       <div style={{ marginTop: '1ch' }}>
         {section === 'profiles' ? <QualityProfiles /> : null}
+        {section === 'definitions' ? <QualityDefinitions /> : null}
         {section === 'formats' ? <CustomFormats /> : null}
         {section === 'delays' ? <DelayProfiles /> : null}
         {section === 'indexers' ? (

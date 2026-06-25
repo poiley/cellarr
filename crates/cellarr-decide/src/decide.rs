@@ -14,7 +14,7 @@
 use cellarr_core::{
     ContentRef, CustomFormat, Decision, IndexerCriteria, MediaFileId, ParsedRelease, ProperRepack,
     Protocol, Quality, QualityProfile, QualityRanking, RejectReason, Release, ReleaseType, Score,
-    Verdict,
+    SizeBound, SizeVerdict, Verdict,
 };
 
 use crate::error::DecideError;
@@ -82,6 +82,12 @@ pub struct DecisionContext<'a> {
     /// between otherwise-equal releases by indexer priority; it does **not** affect
     /// the grab/reject verdict itself.
     pub indexer_priority: i32,
+    /// The runtime, in minutes, of the content node under consideration (a movie's
+    /// running time or an episode's length). Paired with the candidate's reported
+    /// size it yields a size-per-minute the per-quality size bounds gate on. `None`
+    /// when the runtime is unknown — in which case the size gate **fails open** (no
+    /// size rejection), so a missing runtime never produces a false negative.
+    pub content_runtime: Option<u32>,
 }
 
 /// The candidate's computed standing: quality + CF score, ready to compare.
@@ -150,6 +156,28 @@ fn decide_verdict(
 
     if !ctx.profile.allowed_qualities.contains(&quality.rank) {
         return reject(RejectReason::QualityNotAllowed);
+    }
+
+    // Per-quality size bounds: a release whose size-per-minute (reported size /
+    // content runtime) is below `min_size_per_min` or above `max_size_per_min` for
+    // its resolved quality is rejected. Fails open on unknown size or unknown/zero
+    // runtime — the verdict helper returns `Ok` for any missing input — so a
+    // false negative can never be caused by absent metadata.
+    match ctx
+        .ranking
+        .size_verdict(quality.rank, candidate.size, ctx.content_runtime)
+    {
+        SizeVerdict::Ok => {}
+        SizeVerdict::BelowMinimum => {
+            return reject(RejectReason::QualitySizeOutOfBounds {
+                bound: SizeBound::BelowMinimum,
+            });
+        }
+        SizeVerdict::AboveMaximum => {
+            return reject(RejectReason::QualitySizeOutOfBounds {
+                bound: SizeBound::AboveMaximum,
+            });
+        }
     }
 
     if cf_score < ctx.profile.min_custom_format_score {

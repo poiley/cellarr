@@ -277,6 +277,7 @@ fn decision_vectors() {
             proper_repack_policy: Default::default(),
             indexer_criteria: Default::default(),
             indexer_priority: 0,
+            content_runtime: None,
         };
 
         let decision =

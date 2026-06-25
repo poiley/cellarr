@@ -168,6 +168,7 @@ fn imported_cam_guard_drives_a_below_minimum_reject() {
         proper_repack_policy: Default::default(),
         indexer_criteria: Default::default(),
         indexer_priority: 0,
+        content_runtime: None,
     };
 
     let decision = decide(

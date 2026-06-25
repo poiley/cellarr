@@ -41,7 +41,7 @@ use async_trait::async_trait;
 
 use cellarr_api::events::{DomainEvent, EventBus};
 use cellarr_core::repo::{ContentRepository, ProfileRepository};
-use cellarr_core::{ContentRef, DownloadClient, Indexer, MediaType, QualityRanking};
+use cellarr_core::{ContentRef, DownloadClient, Indexer, MediaType};
 use cellarr_db::Database;
 use cellarr_decide::ProperRepackPolicy;
 use cellarr_indexers::HostRateLimiter;
@@ -588,10 +588,20 @@ impl LivePipelineEnv {
         // apply, preserving prior behavior.
         let (content_tag_ids, content_tags) = self.content_tags(content).await?;
 
+        // The quality catalogue with any persisted per-quality edits (titles +
+        // size bounds) merged in, so the decision engine enforces the operator's
+        // edited size bounds. Falls back to the code default on a read failure.
+        let ranking = self
+            .db
+            .profiles()
+            .quality_ranking()
+            .await
+            .map_err(|e| format!("loading quality definitions failed: {e}"))?;
+
         Ok(Some(RunnerConfig {
             profile,
             custom_formats,
-            ranking: QualityRanking::default(),
+            ranking,
             proper_repack_policy: ProperRepackPolicy::default(),
             library_root: std::path::PathBuf::from(library_root),
             naming_format,

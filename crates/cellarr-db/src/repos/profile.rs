@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use cellarr_core::repo::ProfileRepository;
 use cellarr_core::{
-    CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, QualityProfile, QualityProfileId,
+    CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, QualityDefinition, QualityProfile,
+    QualityProfileId, QualityRanking,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -212,6 +213,99 @@ impl ProfileRepo {
                 serde_json::from_str(&body).map_err(DbError::from)
             })
             .collect()
+    }
+
+    /// Persist a per-quality edit (title + size bounds), keyed by the quality's
+    /// stable canonical [`QualityDefinition::name`]. The full definition is stored
+    /// in `body`; the typed columns mirror the gating fields for cheap inspection.
+    ///
+    /// This stores an **override** of the code-owned default ranking — only the
+    /// editable knobs persist; the catalogue and ranks stay in code. Reload the
+    /// merged catalogue with [`Self::quality_ranking`].
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on serialization or write failure.
+    pub async fn upsert_quality_definition(&self, def: &QualityDefinition) -> Result<()> {
+        let name = def.name.clone();
+        let title = def.title.clone();
+        let min = def.min_size_per_min.map(|v| v as i64);
+        let max = def.max_size_per_min.map(|v| v as i64);
+        let preferred = def.preferred_size_per_min.map(|v| v as i64);
+        let body = serde_json::to_string(def)?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO quality_definition
+                            (name, title, min_size_per_min, max_size_per_min, preferred_size_per_min, body)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(name) DO UPDATE SET
+                            title = excluded.title,
+                            min_size_per_min = excluded.min_size_per_min,
+                            max_size_per_min = excluded.max_size_per_min,
+                            preferred_size_per_min = excluded.preferred_size_per_min,
+                            body = excluded.body",
+                    )
+                    .bind(name)
+                    .bind(title)
+                    .bind(min)
+                    .bind(max)
+                    .bind(preferred)
+                    .bind(body)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// The persisted per-quality edits, keyed by canonical name.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on read or deserialization failure.
+    pub async fn quality_definition_overrides(&self) -> Result<Vec<QualityDefinition>> {
+        let rows = sqlx::query("SELECT body FROM quality_definition")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let body: String = row.try_get("body")?;
+                serde_json::from_str(&body).map_err(DbError::from)
+            })
+            .collect()
+    }
+
+    /// The effective quality catalogue: the code-owned default ranking with any
+    /// persisted per-quality edits (title + size bounds) merged in by canonical
+    /// name. The `rank` (and thus all ordering) always comes from the default; an
+    /// override row only carries the editable knobs. An override for a name not in
+    /// the catalogue is ignored (the catalogue is the source of truth for which
+    /// qualities exist).
+    ///
+    /// This is what the decision engine and the `/api/v3/qualitydefinition` GET
+    /// read, so an edit through the PUT is reflected by both.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on read or deserialization failure.
+    pub async fn quality_ranking(&self) -> Result<QualityRanking> {
+        let mut ranking = QualityRanking::default();
+        let overrides = self.quality_definition_overrides().await?;
+        for ov in overrides {
+            if let Some(def) = ranking
+                .qualities
+                .iter_mut()
+                .find(|q| q.name.eq_ignore_ascii_case(&ov.name))
+            {
+                // Keep the canonical name/rank from the catalogue; take only the
+                // editable knobs from the override.
+                def.title = ov.title;
+                def.min_size_per_min = ov.min_size_per_min;
+                def.max_size_per_min = ov.max_size_per_min;
+                def.preferred_size_per_min = ov.preferred_size_per_min;
+            }
+        }
+        Ok(ranking)
     }
 
     /// Delete a delay profile by id.

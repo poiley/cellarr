@@ -67,6 +67,7 @@ import type {
   NotificationSchema,
   Page,
   QualityDefinition,
+  QualityDefinitionBody,
   QualityProfile,
   QueueEntry,
   QueueGrabResult,
@@ -569,6 +570,33 @@ export class CellarrClient {
   /** Quality definitions (sizes/weights) — `/api/v3/qualitydefinition`. */
   getQualityDefinitions(signal?: AbortSignal) {
     return this.requestV3<QualityDefinition[]>('/qualitydefinition', { signal });
+  }
+
+  /**
+   * Edit a single quality definition's title / size bounds
+   * (`PUT /api/v3/qualitydefinition/{id}`). `id` is the `rank + 1` from a GET
+   * element; sizes are bytes-per-minute. Returns the updated definition in the
+   * same shape as a GET element.
+   */
+  updateQualityDefinition(id: number, body: QualityDefinitionBody, signal?: AbortSignal) {
+    return this.requestV3<QualityDefinition>(`/qualitydefinition/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  /**
+   * Bulk-edit quality definitions (`PUT /api/v3/qualitydefinition/update`). The
+   * body is an array of {@link QualityDefinitionBody}, each REQUIRING its own
+   * `id`. Returns the array of updated definitions.
+   */
+  updateQualityDefinitions(bodies: QualityDefinitionBody[], signal?: AbortSignal) {
+    return this.requestV3<QualityDefinition[]>('/qualitydefinition/update', {
+      method: 'PUT',
+      body: bodies,
+      signal,
+    });
   }
 
   // =========================================================================
