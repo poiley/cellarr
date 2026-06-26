@@ -110,6 +110,8 @@ async fn read_movies(
             media_type: MediaType::Movie,
             parent_id: None,
             kind: ContentKind::Movie,
+            // Movies carry no series numbering; the default applies.
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Movie,
             monitored: monitored != 0,
             title_id: None,

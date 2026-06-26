@@ -173,6 +173,20 @@ async fn import_writes_structure_files_and_identities() {
     .unwrap();
     assert_eq!(shared_links, 2, "multi-episode file satisfies two episodes");
 
+    // The Sonarr series was SeriesType=anime in the fixture; the migration must
+    // carry that across so the series keeps its absolute-numbering switch. Every
+    // node of the series subtree inherits the type (series/season/episode).
+    let series_type: String = sqlx::query_scalar(
+        "SELECT series_type FROM content WHERE kind = 'series' AND media_type = 'tv' LIMIT 1",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        series_type, "anime",
+        "an anime Sonarr series migrates as series_type=anime"
+    );
+
     // The file path is recognized in place (unchanged from the source).
     let in_place: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM media_file

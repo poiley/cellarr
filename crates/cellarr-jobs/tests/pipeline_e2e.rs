@@ -224,6 +224,7 @@ async fn seed_node(
         media_type,
         parent_id: None,
         kind,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: coords.clone(),
         monitored: true,
         title_id: None,

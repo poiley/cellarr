@@ -4499,7 +4499,7 @@ async fn v3_resource_item(
         MediaType::Tv => {
             let mut v = merge(
                 base,
-                json!({ "tvdbId": numeric_external_id("tvdb"), "seriesType": "standard", "status": "continuing" }),
+                json!({ "tvdbId": numeric_external_id("tvdb"), "seriesType": series_type_str(node.series_type), "status": "continuing" }),
             );
             if let Some(imdb) = imdb_external() {
                 merge_into(&mut v, json!({ "imdbId": imdb }));
@@ -4812,6 +4812,30 @@ async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiR
 /// date fields use (`airDateUtc`/`inCinemas`/`digitalRelease`). A malformed date
 /// is passed through unchanged rather than dropped, so a partial parse never
 /// blanks the field.
+/// Render a [`SeriesType`](cellarr_core::SeriesType) as its v3 wire string
+/// (`"standard"`/`"daily"`/`"anime"`), the spelling Sonarr uses on a series
+/// resource. Single-sourced from the enum's serde form so the shim never drifts
+/// from the stored value.
+fn series_type_str(series_type: cellarr_core::SeriesType) -> &'static str {
+    match series_type {
+        cellarr_core::SeriesType::Standard => "standard",
+        cellarr_core::SeriesType::Daily => "daily",
+        cellarr_core::SeriesType::Anime => "anime",
+    }
+}
+
+/// Parse a v3 `seriesType` wire string into a [`SeriesType`](cellarr_core::SeriesType),
+/// case-insensitively. An unknown/empty value falls back to
+/// [`SeriesType::Standard`](cellarr_core::SeriesType::Standard) — the safe default
+/// that leaves a series on native numbering rather than rejecting the request.
+fn series_type_from_wire(raw: &str) -> cellarr_core::SeriesType {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "anime" => cellarr_core::SeriesType::Anime,
+        "daily" => cellarr_core::SeriesType::Daily,
+        _ => cellarr_core::SeriesType::Standard,
+    }
+}
+
 fn iso_to_utc(date: &str) -> String {
     if date.len() == 10 && date.as_bytes()[4] == b'-' {
         format!("{date}T00:00:00Z")
@@ -4835,6 +4859,12 @@ struct ContentUpdateBody {
     /// flips `monitored` does not drop tags.
     #[serde(default)]
     tags: Option<Vec<u32>>,
+    /// The Sonarr `seriesType` (`standard`/`daily`/`anime`). `Some` updates the
+    /// series' numbering type (the anime absolute-remap switch); omitted (`None`)
+    /// leaves it untouched, so a partial PUT that only flips `monitored` never
+    /// resets it. Ignored for a movie node.
+    #[serde(rename = "seriesType", default)]
+    series_type: Option<String>,
 }
 
 /// v3 `PUT /movie/{id}` / `PUT /series/{id}` — the **monitor toggle**.
@@ -4859,8 +4889,19 @@ async fn update_content(
         .get_node(content_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("content {id} not found")))?;
+    // Apply the monitored flag and/or the series type when present. A series-type
+    // change applies only to a TV node (the anime-numbering switch). Both mutate
+    // the node row, so coalesce into a single upsert when either is present.
+    let mut node_dirty = false;
     if let Some(monitored) = body.monitored {
         node.monitored = monitored;
+        node_dirty = true;
+    }
+    if let (Some(raw), MediaType::Tv) = (body.series_type.as_deref(), node.media_type) {
+        node.series_type = series_type_from_wire(raw);
+        node_dirty = true;
+    }
+    if node_dirty {
         content.upsert(&node).await?;
     }
     if let Some(tags) = &body.tags {
@@ -5065,6 +5106,12 @@ struct AddBody {
     /// omitted leaves the item untagged (global config only).
     #[serde(default)]
     tags: Vec<u32>,
+    /// The Sonarr `seriesType` (`standard`/`daily`/`anime`) for an added series —
+    /// the switch that turns on anime absolute-numbering + scene-remap behavior.
+    /// Ignored for a movie add. Omitted defaults to `standard`, preserving prior
+    /// behavior.
+    #[serde(rename = "seriesType", default)]
+    series_type: Option<String>,
     /// The Sonarr/Radarr `addOptions` block; only its `monitor` selection is read
     /// (the per-episode monitoring policy applied as episodes are populated).
     #[serde(rename = "addOptions", default)]
@@ -5133,12 +5180,23 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
     let monitored = body.monitored.unwrap_or_else(|| {
         body.add_options.as_ref().and_then(|o| o.monitor) != Some(cellarr_core::MonitorOption::None)
     });
+    // The series type (the anime-numbering switch) applies only to a TV add; a
+    // movie carries the default. An omitted/unknown value defaults to standard.
+    let series_type = match surface {
+        MediaType::Tv => body
+            .series_type
+            .as_deref()
+            .map(series_type_from_wire)
+            .unwrap_or_default(),
+        _ => cellarr_core::SeriesType::default(),
+    };
     let node = cellarr_core::ContentNode {
         id: cellarr_core::ContentId::new(),
         library_id: library.id,
         media_type: surface,
         parent_id: None,
         kind,
+        series_type,
         coords,
         monitored,
         title_id: None,

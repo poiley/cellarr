@@ -339,6 +339,7 @@ async fn seed_tv_episode(db: &Database, season: u32, episode: u32) -> ContentRef
         media_type: MediaType::Tv,
         parent_id: None,
         kind: cellarr_core::ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: coords.clone(),
         monitored: true,
         title_id: None,

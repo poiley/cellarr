@@ -1023,7 +1023,11 @@ where
     /// Behavior:
     /// - No absolute coordinate, or a non-TV node: the parse is returned
     ///   unchanged (fast path; nothing to remap).
-    /// - An absolute coordinate present: resolve the node's series TVDB id through
+    /// - The series is not `anime`-typed ([`cellarr_core::SeriesType`]): the parse
+    ///   is returned unchanged. Only an anime series is force-remapped, so a
+    ///   standard show parsing a bare number keeps its native numbering.
+    /// - An absolute coordinate present on an anime series: resolve the node's
+    ///   series TVDB id through
     ///   the identity-link db query, then remap through the scene provider. On
     ///   success the absolute coordinate is replaced in-place by the resolved
     ///   `Episode { season, episode, absolute: Some(n) }`.
@@ -1036,7 +1040,7 @@ where
         content: &ContentRef,
         mut parsed: ParsedRelease,
     ) -> std::result::Result<ParsedRelease, String> {
-        use cellarr_core::Coordinates;
+        use cellarr_core::{Coordinates, SeriesType};
         // Fast path: nothing absolute to reconcile.
         if !parsed
             .coordinates
@@ -1046,8 +1050,24 @@ where
             return Ok(parsed);
         }
 
-        // No provider wired: an absolute release cannot be safely placed. Surface
-        // it rather than guess.
+        // Series-type gate: only an *anime*-typed series goes through the
+        // absolute→season/episode remap. A standard (or daily) series parsing a
+        // bare number is NOT force-remapped — the absolute coordinate is left
+        // untouched for the media module to match (or reject) on its native
+        // numbering, so a standard show whose release title happens to carry a
+        // bare number is never mis-placed by the scene map.
+        let series_type = self
+            .db
+            .content()
+            .series_type_for(content.id)
+            .await
+            .map_err(|e| format!("series-type lookup failed: {e}"))?;
+        if series_type != SeriesType::Anime {
+            return Ok(parsed);
+        }
+
+        // No provider wired: an absolute release for an anime series cannot be
+        // safely placed. Surface it rather than guess.
         let Some(provider) = self.scene_provider.as_ref() else {
             return Err(
                 "anime absolute release needs scene mapping but no provider is configured \

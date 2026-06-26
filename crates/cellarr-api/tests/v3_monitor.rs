@@ -32,6 +32,7 @@ async fn seed_series_tree(
             media_type: MediaType::Tv,
             parent_id: None,
             kind: ContentKind::Series,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Episode {
                 season: 0,
                 episode: 0,
@@ -51,6 +52,7 @@ async fn seed_series_tree(
             media_type: MediaType::Tv,
             parent_id: Some(series),
             kind: ContentKind::Season,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::SeasonPack { season: 1 },
             monitored: true,
             title_id: None,
@@ -68,6 +70,7 @@ async fn seed_series_tree(
                 media_type: MediaType::Tv,
                 parent_id: Some(season),
                 kind: ContentKind::Episode,
+                series_type: cellarr_core::SeriesType::Standard,
                 coords: Coordinates::Episode {
                     season: 1,
                     episode,
@@ -293,6 +296,108 @@ async fn add_with_monitor_none_stores_series_unmonitored() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["monitored"], true, "default add is monitored");
+}
+
+/// `seriesType` round-trips through the v3 series surface: a POST persists it,
+/// the GET detail and list reflect it, and a PUT updates it — for each of the
+/// three values (standard/daily/anime). An anime add is the switch that turns on
+/// the absolute-numbering + scene-remap behavior, so it must survive the trip.
+#[tokio::test]
+async fn series_type_round_trips_through_v3_series() {
+    let server = start_open().await;
+    let _library = seed_library(&server.state, MediaType::Tv, "TV").await;
+
+    // POST each series type and confirm the response echoes it back.
+    for ty in ["standard", "daily", "anime"] {
+        let resp = server
+            .client()
+            .post(server.url("/api/v3/series"))
+            .json(&json!({ "title": format!("Show {ty}"), "seriesType": ty }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["seriesType"], ty,
+            "POST /series must round-trip seriesType={ty}"
+        );
+
+        // The persisted node carries the type (read back through the repo).
+        let id: cellarr_core::ContentId =
+            cellarr_core::ContentId::from_uuid(body["id"].as_str().unwrap().parse().unwrap());
+        let node = server
+            .state
+            .db
+            .content()
+            .get_node(id)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected = match ty {
+            "anime" => cellarr_core::SeriesType::Anime,
+            "daily" => cellarr_core::SeriesType::Daily,
+            _ => cellarr_core::SeriesType::Standard,
+        };
+        assert_eq!(node.series_type, expected, "node persists seriesType={ty}");
+
+        // The GET detail surfaces the same type.
+        let detail: serde_json::Value = server
+            .client()
+            .get(server.url(&format!("/api/v3/series/{id}")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            detail["seriesType"], ty,
+            "GET detail surfaces seriesType={ty}"
+        );
+    }
+
+    // A series added as standard can be switched to anime via PUT — the runtime
+    // way an operator turns on anime numbering for an existing show.
+    let resp = server
+        .client()
+        .post(server.url("/api/v3/series"))
+        .json(&json!({ "title": "Switch Me" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["seriesType"], "standard", "defaults to standard");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let resp = server
+        .client()
+        .put(server.url(&format!("/api/v3/series/{id}")))
+        .json(&json!({ "seriesType": "anime" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["seriesType"], "anime",
+        "PUT updates seriesType to anime"
+    );
+
+    // A partial PUT that only flips monitored must NOT reset the series type.
+    let resp = server
+        .client()
+        .put(server.url(&format!("/api/v3/series/{id}")))
+        .json(&json!({ "monitored": false }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["monitored"], false);
+    assert_eq!(
+        body["seriesType"], "anime",
+        "a monitored-only PUT must not reset seriesType"
+    );
 }
 
 #[tokio::test]

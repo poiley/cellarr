@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use cellarr_core::{
     repo::ContentRepository, ContentId, ContentKind, ContentNode, ContentRef, Coordinates,
     CustomFormat, LibraryId, MediaType, Protocol, QualityProfile, QualityProfileId, QualityRanking,
-    Release, SearchTerms, TitleId,
+    Release, SearchTerms, SeriesType, TitleId,
 };
 use cellarr_db::Database;
 use cellarr_decide::ProperRepackPolicy;
@@ -252,6 +252,8 @@ async fn seed_anime_series(db: &Database, season: u32, episode: u32) -> ContentR
             media_type: MediaType::Tv,
             parent_id: None,
             kind: ContentKind::Series,
+            // Anime-typed: this is the switch that turns on the absolute remap.
+            series_type: SeriesType::Anime,
             coords: Coordinates::Episode {
                 season: 0,
                 episode: 0,
@@ -278,6 +280,9 @@ async fn seed_anime_series(db: &Database, season: u32, episode: u32) -> ContentR
             media_type: MediaType::Tv,
             parent_id: Some(series_id),
             kind: ContentKind::Episode,
+            // Inherits the series' type via the walk-to-root; set here too for
+            // consistency with the seeded tree.
+            series_type: SeriesType::Anime,
             coords: coords.clone(),
             monitored: true,
             title_id: None,
@@ -487,6 +492,9 @@ async fn absolute_without_linked_tvdb_id_is_surfaced_not_guessed() {
             media_type: MediaType::Tv,
             parent_id: None,
             kind: ContentKind::Episode,
+            // Anime-typed (no series ancestor here), so the gate still opens and
+            // the test exercises the "unlinked TVDB id" hold path, not the gate.
+            series_type: SeriesType::Anime,
             coords: coords.clone(),
             monitored: true,
             title_id: None,

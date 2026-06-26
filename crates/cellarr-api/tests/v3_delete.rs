@@ -31,6 +31,7 @@ async fn seed_movie(
         media_type: MediaType::Movie,
         parent_id: None,
         kind: ContentKind::Movie,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Movie,
         monitored: true,
         title_id: None,
@@ -246,6 +247,7 @@ async fn delete_series_removes_subtree_and_files() {
             media_type: MediaType::Tv,
             parent_id: None,
             kind: ContentKind::Series,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Episode {
                 season: 0,
                 episode: 0,
@@ -265,6 +267,7 @@ async fn delete_series_removes_subtree_and_files() {
             media_type: MediaType::Tv,
             parent_id: Some(series),
             kind: ContentKind::Season,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::SeasonPack { season: 1 },
             monitored: true,
             title_id: None,
@@ -280,6 +283,7 @@ async fn delete_series_removes_subtree_and_files() {
             media_type: MediaType::Tv,
             parent_id: Some(season),
             kind: ContentKind::Episode,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Episode {
                 season: 1,
                 episode: 1,
@@ -364,6 +368,7 @@ async fn seed_movie_as_series(
             media_type: MediaType::Tv,
             parent_id: None,
             kind: ContentKind::Series,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Episode {
                 season: 0,
                 episode: 0,

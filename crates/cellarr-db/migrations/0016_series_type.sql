@@ -1,0 +1,11 @@
+-- Series type: how a TV series is numbered (standard / daily / anime).
+--
+-- This is the switch that turns on the anime absolute->season/episode scene-map
+-- remap: only an `anime`-typed series reaches that path, so a standard show
+-- parsing a bare number is never force-remapped (the library-safety rule).
+--
+-- Carried on the `content` row (every node has it, defaulting to 'standard') but
+-- only meaningful on a `series`-kind TV node; the remap reads the series root's
+-- value by walking the tree up from the episode. A pre-existing row reads as
+-- 'standard' via the column default, so the migration is behaviour-preserving.
+ALTER TABLE content ADD COLUMN series_type TEXT NOT NULL DEFAULT 'standard';

@@ -482,6 +482,7 @@ async fn seed_blocklisted(
         media_type: cellarr_core::MediaType::Movie,
         parent_id: None,
         kind: cellarr_core::ContentKind::Movie,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: cellarr_core::Coordinates::Movie,
         monitored: true,
         title_id: None,

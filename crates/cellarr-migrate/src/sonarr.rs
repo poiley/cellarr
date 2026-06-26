@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use cellarr_core::{
     ContentId, ContentKind, ContentNode, Coordinates, LibraryId, MediaFile, MediaFileId, MediaType,
-    QualityProfileId, QualityRanking,
+    QualityProfileId, QualityRanking, SeriesType,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -79,7 +79,8 @@ async fn read_series(
 ) -> Result<(Vec<MappedContent>, Vec<MappedFile>)> {
     let series_rows = sqlx::query(
         "SELECT Id AS id, Title AS title, Year AS year, TvdbId AS tvdb_id,
-                TmdbId AS tmdb_id, ImdbId AS imdb_id, Monitored AS monitored
+                TmdbId AS tmdb_id, ImdbId AS imdb_id, Monitored AS monitored,
+                SeriesType AS series_type
          FROM Series ORDER BY Id ASC",
     )
     .fetch_all(pool)
@@ -93,6 +94,14 @@ async fn read_series(
         let series_title: String = srow.try_get("title").unwrap_or_default();
         let series_year: Option<i64> = srow.try_get("year").ok().flatten();
         let monitored: i64 = srow.try_get("monitored").unwrap_or(0);
+        // Sonarr stores SeriesType as an integer enum (0=standard, 1=daily,
+        // 2=anime). Carry it across so an anime series keeps its absolute-numbering
+        // switch after migration; anything unrecognized falls back to standard.
+        let series_type = match srow.try_get::<i64, _>("series_type").unwrap_or(0) {
+            2 => SeriesType::Anime,
+            1 => SeriesType::Daily,
+            _ => SeriesType::Standard,
+        };
 
         let series_content_id = ContentId::new();
         contents.push(MappedContent {
@@ -102,6 +111,7 @@ async fn read_series(
                 media_type: MediaType::Tv,
                 parent_id: None,
                 kind: ContentKind::Series,
+                series_type,
                 // A series root carries no per-episode numbering; use season 0 as
                 // the structural placeholder coordinate (it is never grabbable).
                 coords: Coordinates::Episode {
@@ -127,6 +137,7 @@ async fn read_series(
             library_id,
             series_id,
             series_content_id,
+            series_type,
             &series_title,
             ranking,
             &mut contents,
@@ -146,6 +157,7 @@ async fn read_episodes_for_series(
     library_id: LibraryId,
     series_id: i64,
     series_content_id: ContentId,
+    series_type: SeriesType,
     series_title: &str,
     ranking: &QualityRanking,
     contents: &mut Vec<MappedContent>,
@@ -186,6 +198,7 @@ async fn read_episodes_for_series(
                     media_type: MediaType::Tv,
                     parent_id: Some(series_content_id),
                     kind: ContentKind::Season,
+                    series_type,
                     coords: Coordinates::Episode {
                         season: season.max(0) as u32,
                         episode: 0,
@@ -212,6 +225,7 @@ async fn read_episodes_for_series(
                 media_type: MediaType::Tv,
                 parent_id: Some(season_content_id),
                 kind: ContentKind::Episode,
+                series_type,
                 coords: Coordinates::Episode {
                     season: season.max(0) as u32,
                     episode: episode.max(0) as u32,

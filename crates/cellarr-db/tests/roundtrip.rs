@@ -43,6 +43,7 @@ fn movie_node(library_id: LibraryId, id: ContentId) -> ContentNode {
         media_type: MediaType::Movie,
         parent_id: None,
         kind: ContentKind::Movie,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Movie,
         monitored: true,
         title_id: None,
@@ -468,6 +469,7 @@ async fn content_upsert_and_children_walk_the_tree() {
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Series,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 0,
             episode: 0,
@@ -482,6 +484,7 @@ async fn content_upsert_and_children_walk_the_tree() {
         id: ContentId::new(),
         parent_id: Some(series.id),
         kind: ContentKind::Season,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::SeasonPack { season: 1 },
         ..series.clone()
     };
@@ -894,6 +897,7 @@ async fn fts_search_finds_indexed_titles() {
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 1,
             episode: 1,
@@ -1265,6 +1269,7 @@ async fn delete_movie_wrong_kind_or_missing_is_none() {
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Series,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 0,
             episode: 0,
@@ -1309,6 +1314,7 @@ async fn delete_series_removes_whole_subtree() {
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Series,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 0,
             episode: 0,
@@ -1322,6 +1328,7 @@ async fn delete_series_removes_whole_subtree() {
         id: ContentId::new(),
         parent_id: Some(series.id),
         kind: ContentKind::Season,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::SeasonPack { season: 1 },
         ..series.clone()
     };
@@ -1330,6 +1337,7 @@ async fn delete_series_removes_whole_subtree() {
         id: ContentId::new(),
         parent_id: Some(season.id),
         kind: ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 1,
             episode: 1,
@@ -1341,6 +1349,7 @@ async fn delete_series_removes_whole_subtree() {
         id: ContentId::new(),
         parent_id: Some(season.id),
         kind: ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Episode {
             season: 1,
             episode: 2,

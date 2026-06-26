@@ -307,6 +307,10 @@ impl ImportListSync {
                 media_type: list.media_type,
                 parent_id: None,
                 kind,
+                // Import lists do not model a per-item series type; an added series
+                // starts on standard numbering and can be switched to anime later
+                // via the v3 series `seriesType` surface.
+                series_type: cellarr_core::SeriesType::Standard,
                 coords,
                 monitored: list.monitored,
                 title_id: None,

@@ -205,6 +205,7 @@ async fn seed_dated_episode(state: &cellarr_api::AppState, title: &str, date: &s
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Daily {
             date: date.to_string(),
         },

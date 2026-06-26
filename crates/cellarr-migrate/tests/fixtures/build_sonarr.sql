@@ -16,6 +16,9 @@ CREATE TABLE Series (
     TmdbId    INTEGER,
     ImdbId    TEXT,
     Monitored INTEGER NOT NULL DEFAULT 1,
+    -- Sonarr's series numbering type (0=standard, 1=daily, 2=anime). cellarr-migrate
+    -- carries it across so an anime series keeps its absolute-numbering switch.
+    SeriesType INTEGER NOT NULL DEFAULT 0,
     QualityProfileId INTEGER
 );
 
@@ -81,8 +84,9 @@ CREATE TABLE DownloadClients (
     Enable         INTEGER NOT NULL DEFAULT 1
 );
 
-INSERT INTO Series (Id, Title, Year, TvdbId, TmdbId, ImdbId, Monitored, QualityProfileId)
-VALUES (1, 'Synthetic Series', 2015, 900001, 800001, 'tt2000001', 1, 1);
+-- SeriesType 2 = anime, so the migration must carry the anime series type across.
+INSERT INTO Series (Id, Title, Year, TvdbId, TmdbId, ImdbId, Monitored, SeriesType, QualityProfileId)
+VALUES (1, 'Synthetic Series', 2015, 900001, 800001, 'tt2000001', 1, 2, 1);
 
 -- S01E01 has its own file (id 21); S01E02 and S02E01 share a multi-episode file
 -- (id 22) to exercise the multi-content link; S02E02 is missing (file id 0).

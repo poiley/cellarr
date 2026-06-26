@@ -101,6 +101,13 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// persists the node's facts + artwork, and driving `RefreshMetadata`. `None`
     /// (the default) means no metadata persistence (the offline path).
     resolver: Option<Arc<dyn cellarr_media::DynMetadataResolver>>,
+    /// The anime scene-mapping provider (TheTVDB/TheXEM), attached to each run so
+    /// the Identify stage remaps an absolute episode number to its season/episode
+    /// for an anime-typed series. `None` (the default) leaves the remap dead — an
+    /// absolute release is then surfaced for manual resolution rather than guessed,
+    /// so the absence is safe. The daemon constructs one from the meta-service and
+    /// opts in via [`with_scene_provider`](Self::with_scene_provider).
+    scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -114,7 +121,22 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             env,
             clock: SystemClock,
             resolver: None,
+            scene_provider: None,
         }
+    }
+
+    /// Attach the anime scene-mapping provider (TheTVDB/TheXEM) so the Identify
+    /// stage's absolute→season/episode remap runs in the daemon for anime-typed
+    /// series — the dead-in-prod fix. Builder form so the offline path stays
+    /// provider-less (an absolute release is then surfaced for manual resolution,
+    /// never guessed).
+    #[must_use]
+    pub fn with_scene_provider(
+        mut self,
+        provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
+    ) -> Self {
+        self.scene_provider = Some(provider);
+        self
     }
 
     /// Attach a content-metadata resolver so identify persists metadata/artwork and
@@ -217,6 +239,13 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         );
         if let Some(resolver) = self.resolver.as_ref() {
             runner = runner.with_metadata_resolver(resolver.clone());
+        }
+        // Attach the anime scene-mapping provider so the absolute→episode remap
+        // runs in the daemon for anime-typed series (the dead-in-prod fix). With
+        // none configured the runner surfaces an absolute release for manual
+        // resolution rather than guessing — the offline-safe default.
+        if let Some(scene_provider) = self.scene_provider.as_ref() {
+            runner = runner.with_scene_provider(scene_provider.clone());
         }
         // Attach the live notification dispatchers so Grab/Import/Upgrade
         // transitions fire the configured Connect webhook *and* the broadened
@@ -705,6 +734,12 @@ pub struct LiveReleaseSearch {
     registry: Arc<MediaRegistry>,
     env: LivePipelineEnv,
     clock: SystemClock,
+    /// The anime scene-mapping provider, attached to the preview runner so the
+    /// interactive search remaps an absolute release the same way an acquisition
+    /// would (the score/placement the user previews matches a real run). `None`
+    /// leaves an absolute release un-remapped (skipped from the preview), never
+    /// guessed.
+    scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
 }
 
 impl LiveReleaseSearch {
@@ -719,7 +754,19 @@ impl LiveReleaseSearch {
             registry,
             env,
             clock: SystemClock,
+            scene_provider: None,
         }
+    }
+
+    /// Attach the anime scene-mapping provider so the interactive search remaps an
+    /// absolute release for anime-typed series (parity with an acquisition).
+    #[must_use]
+    pub fn with_scene_provider(
+        mut self,
+        provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
+    ) -> Self {
+        self.scene_provider = Some(provider);
+        self
     }
 }
 
@@ -756,7 +803,7 @@ impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
         // The preview stops before Grab, so the client is never driven; supply a
         // no-op rather than constructing a live adapter.
         let client = NoopDownloadClient;
-        let runner = PipelineRunner::new(
+        let mut runner = PipelineRunner::new(
             &indexer,
             &client,
             &self.registry,
@@ -764,6 +811,9 @@ impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
             &self.clock,
             &config,
         );
+        if let Some(scene_provider) = self.scene_provider.as_ref() {
+            runner = runner.with_scene_provider(scene_provider.clone());
+        }
         let candidates = runner
             .preview_releases(&node)
             .await
@@ -797,6 +847,11 @@ pub struct LiveReleaseGrab {
     events: EventBus,
     env: LivePipelineEnv,
     clock: SystemClock,
+    /// The anime scene-mapping provider, attached to the grab runner so a manual
+    /// grab of an absolute release for an anime-typed series remaps to the correct
+    /// season/episode (parity with an automatic acquisition). `None` surfaces an
+    /// absolute release for manual resolution rather than guessing.
+    scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
 }
 
 impl LiveReleaseGrab {
@@ -813,7 +868,19 @@ impl LiveReleaseGrab {
             events,
             env,
             clock: SystemClock,
+            scene_provider: None,
         }
+    }
+
+    /// Attach the anime scene-mapping provider so a manual grab remaps an absolute
+    /// release for anime-typed series (parity with an automatic acquisition).
+    #[must_use]
+    pub fn with_scene_provider(
+        mut self,
+        provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
+    ) -> Self {
+        self.scene_provider = Some(provider);
+        self
     }
 }
 
@@ -844,7 +911,7 @@ impl cellarr_api::release_search::ReleaseGrab for LiveReleaseGrab {
             ));
         };
 
-        let runner = PipelineRunner::new(
+        let mut runner = PipelineRunner::new(
             &indexer,
             &client,
             &self.registry,
@@ -852,6 +919,9 @@ impl cellarr_api::release_search::ReleaseGrab for LiveReleaseGrab {
             &self.clock,
             &config,
         );
+        if let Some(scene_provider) = self.scene_provider.as_ref() {
+            runner = runner.with_scene_provider(scene_provider.clone());
+        }
         let outcome = runner
             .grab_release(&node, guid)
             .await

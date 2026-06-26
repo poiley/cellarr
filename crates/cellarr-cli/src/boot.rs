@@ -88,6 +88,17 @@ impl Daemon {
             "metadata sources initialized"
         );
 
+        //     The anime scene-mapping provider (TheTVDB/TheXEM), constructed from
+        //     the same meta-service config and shared (as a `dyn` trait object)
+        //     across the automatic pipeline handler and the interactive
+        //     search/grab seams. THIS is the dead-in-prod fix: attaching it makes
+        //     the Identify-stage absolute→season/episode remap actually run in the
+        //     daemon for anime-typed series. With no TheTVDB key it degrades to
+        //     "no mapping", so an absolute release is surfaced for manual
+        //     resolution rather than guessed (offline non-negotiable).
+        let scene_provider: std::sync::Arc<dyn cellarr_media::DynSceneMappingProvider> =
+            std::sync::Arc::new(crate::metadata::TvdbSceneMappings::from_config(config));
+
         // 3. State (which builds the command scheduler over a shared event bus).
         //    The live metadata seam is attached so `series/lookup`/`movie/lookup`
         //    resolve real identities.
@@ -113,10 +124,10 @@ impl Daemon {
         // preview (no grab).
         let search_db = db.clone();
         let search_registry = std::sync::Arc::clone(&registry);
-        let release_search = std::sync::Arc::new(crate::pipeline::LiveReleaseSearch::new(
-            search_db,
-            search_registry,
-        ));
+        let release_search = std::sync::Arc::new(
+            crate::pipeline::LiveReleaseSearch::new(search_db, search_registry)
+                .with_scene_provider(std::sync::Arc::clone(&scene_provider)),
+        );
         // The interactive grab seam (POST /api/v3/release) shares the same DB +
         // media registry, but — unlike search — builds the download client and
         // drives the real Grab→Track→Import path for the chosen release. It needs
@@ -124,22 +135,27 @@ impl Daemon {
         // state (which owns the bus) is built.
         let grab_db = db.clone();
         let grab_registry = std::sync::Arc::clone(&registry);
+        let handler_scene_provider = std::sync::Arc::clone(&scene_provider);
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
-            std::sync::Arc::new(crate::pipeline::LivePipelineHandler::new(
-                handler_db,
-                handler_registry,
-                events,
-                env,
-            ))
+            // Attach the scene-mapping provider so a fired job's Identify stage
+            // runs the anime absolute→episode remap (the dead-in-prod fix).
+            std::sync::Arc::new(
+                crate::pipeline::LivePipelineHandler::new(
+                    handler_db,
+                    handler_registry,
+                    events,
+                    env,
+                )
+                .with_scene_provider(handler_scene_provider),
+            )
         })
         .with_metadata(metadata)
         .with_release_search(release_search);
-        let release_grab = std::sync::Arc::new(crate::pipeline::LiveReleaseGrab::new(
-            grab_db,
-            grab_registry,
-            state.events.clone(),
-        ));
+        let release_grab = std::sync::Arc::new(
+            crate::pipeline::LiveReleaseGrab::new(grab_db, grab_registry, state.events.clone())
+                .with_scene_provider(std::sync::Arc::clone(&scene_provider)),
+        );
         let state = state.with_release_grab(release_grab);
 
         // The manual-import seam (GET/POST /api/v3/manualimport) shares the same DB +

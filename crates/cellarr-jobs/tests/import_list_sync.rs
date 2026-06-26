@@ -240,6 +240,7 @@ async fn failed_fetch_with_clean_remove_removes_nothing() {
             media_type: MediaType::Movie,
             parent_id: None,
             kind: ContentKind::Movie,
+            series_type: cellarr_core::SeriesType::Standard,
             coords: Coordinates::Movie,
             monitored: true,
             title_id: None,

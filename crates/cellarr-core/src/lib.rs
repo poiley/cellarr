@@ -69,7 +69,7 @@ pub use importlist::{
 };
 pub use media::{
     ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, Library, MediaFile,
-    MediaType,
+    MediaType, SeriesType,
 };
 pub use monitor::{EpisodeFacts, MonitorOption};
 pub use notification::{

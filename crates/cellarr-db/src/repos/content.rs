@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use cellarr_core::repo::{ContentRepository, DeletedContent};
 use cellarr_core::{
     ContentId, ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, LibraryId,
-    MediaType, TitleId,
+    MediaType, SeriesType, TitleId,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -384,6 +384,48 @@ impl ContentRepo {
         }
     }
 
+    /// Resolve a content node to the **[`SeriesType`] of the series it belongs
+    /// to** — the gate that decides whether the anime absolute→episode remap runs
+    /// for this node.
+    ///
+    /// Like [`series_tvdb_id`](Self::series_tvdb_id), it walks up the structural
+    /// tree from `id` to the series root (following `parent_id`) and reads that
+    /// root node's `series_type`, so an *episode* node correctly inherits its
+    /// series' type. A node with no series ancestor (or a missing row) reads as
+    /// [`SeriesType::Standard`] — the safe default that leaves an absolute number
+    /// un-remapped rather than guessing, preserving prior behaviour.
+    ///
+    /// The walk is depth-capped against a malformed adjacency cycle (the TV tree
+    /// is at most series→season→episode).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn series_type_for(&self, id: ContentId) -> Result<SeriesType> {
+        const MAX_DEPTH: usize = 8;
+        let mut current = id;
+        for _ in 0..MAX_DEPTH {
+            let row = sqlx::query("SELECT parent_id, series_type FROM content WHERE id = ?1")
+                .bind(current.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+            let Some(row) = row else {
+                return Ok(SeriesType::Standard);
+            };
+            let parent_id: Option<String> = row.try_get("parent_id")?;
+            let series_type: String = row.try_get("series_type")?;
+            match parent_id {
+                // Not the root yet; keep climbing to the series node, which is the
+                // authoritative carrier of the type.
+                Some(parent) => {
+                    current = ContentId::from_uuid(parse_uuid("parent_id", &parent)?);
+                }
+                // Reached the series root: its series_type is the answer.
+                None => return Ok(series_type_from_str(&series_type)),
+            }
+        }
+        Ok(SeriesType::Standard)
+    }
+
     /// Read the persisted content-scoped metadata for a node, or `None` when the
     /// node has never been identified/refreshed.
     ///
@@ -415,7 +457,7 @@ impl ContentRepo {
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_node(&self, id: ContentId) -> Result<Option<ContentNode>> {
         let row = sqlx::query(
-            "SELECT id, library_id, media_type, parent_id, kind, coords, monitored, title_id
+            "SELECT id, library_id, media_type, parent_id, kind, series_type, coords, monitored, title_id
              FROM content WHERE id = ?1",
         )
         .bind(id.to_string())
@@ -638,12 +680,32 @@ fn kind_from_str(kind: &str) -> Result<ContentKind> {
     serde_json::from_value(serde_json::Value::String(kind.to_string())).map_err(DbError::from)
 }
 
+/// Serialize a [`SeriesType`] to its stored lowercase string form (the
+/// `content.series_type` TEXT column).
+fn series_type_to_str(series_type: SeriesType) -> String {
+    serde_json::to_value(series_type)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "standard".to_string())
+}
+
+/// Parse a stored `content.series_type` string back into a [`SeriesType`].
+///
+/// An unrecognized/legacy value (or a row written before the column existed,
+/// which reads as the `'standard'` default) decodes to [`SeriesType::Standard`]
+/// rather than erroring, so the read path stays total and behaviour-preserving.
+fn series_type_from_str(series_type: &str) -> SeriesType {
+    serde_json::from_value(serde_json::Value::String(series_type.to_string()))
+        .unwrap_or(SeriesType::Standard)
+}
+
 fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
     let id: String = row.try_get("id")?;
     let library_id: String = row.try_get("library_id")?;
     let media_type: String = row.try_get("media_type")?;
     let parent_id: Option<String> = row.try_get("parent_id")?;
     let kind: String = row.try_get("kind")?;
+    let series_type: String = row.try_get("series_type")?;
     let coords: String = row.try_get("coords")?;
     let monitored: i64 = row.try_get("monitored")?;
     let title_id: Option<String> = row.try_get("title_id")?;
@@ -651,6 +713,7 @@ fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
     let media_type: MediaType =
         serde_json::from_value(serde_json::Value::String(media_type)).map_err(DbError::from)?;
     let kind = kind_from_str(&kind)?;
+    let series_type = series_type_from_str(&series_type);
     let coords: Coordinates = serde_json::from_str(&coords)?;
     let parent_id = parent_id
         .map(|p| parse_uuid("parent_id", &p).map(ContentId::from_uuid))
@@ -665,6 +728,7 @@ fn row_to_node(row: sqlx::sqlite::SqliteRow) -> Result<ContentNode> {
         media_type,
         parent_id,
         kind,
+        series_type,
         coords,
         monitored: monitored != 0,
         title_id,
@@ -688,7 +752,7 @@ impl ContentRepository for ContentRepo {
         // (series/season/artist/album/author) are excluded: only leaf, grabbable
         // nodes are acquisition targets.
         let rows = sqlx::query(
-            "SELECT c.id, c.library_id, c.media_type, c.parent_id, c.kind, c.coords,
+            "SELECT c.id, c.library_id, c.media_type, c.parent_id, c.kind, c.series_type, c.coords,
                     c.monitored, c.title_id
              FROM content c
              WHERE c.monitored = 1
@@ -713,6 +777,7 @@ impl ContentRepository for ContentRepo {
             .to_string();
         let parent_id = node.parent_id.map(|p| p.to_string());
         let kind = kind_to_str(node.kind)?;
+        let series_type = series_type_to_str(node.series_type);
         let coords = serde_json::to_string(&node.coords)?;
         let monitored = i64::from(node.monitored);
         let title_id = node.title_id.map(|t| t.to_string());
@@ -722,22 +787,24 @@ impl ContentRepository for ContentRepo {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO content
-                            (id, library_id, media_type, parent_id, kind, coords, monitored, title_id)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                            (id, library_id, media_type, parent_id, kind, series_type, coords, monitored, title_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                          ON CONFLICT(id) DO UPDATE SET
-                            library_id = excluded.library_id,
-                            media_type = excluded.media_type,
-                            parent_id  = excluded.parent_id,
-                            kind       = excluded.kind,
-                            coords     = excluded.coords,
-                            monitored  = excluded.monitored,
-                            title_id   = excluded.title_id",
+                            library_id  = excluded.library_id,
+                            media_type  = excluded.media_type,
+                            parent_id   = excluded.parent_id,
+                            kind        = excluded.kind,
+                            series_type = excluded.series_type,
+                            coords      = excluded.coords,
+                            monitored   = excluded.monitored,
+                            title_id    = excluded.title_id",
                     )
                     .bind(id)
                     .bind(library_id)
                     .bind(media_type)
                     .bind(parent_id)
                     .bind(kind)
+                    .bind(series_type)
                     .bind(coords)
                     .bind(monitored)
                     .bind(title_id)
@@ -754,7 +821,7 @@ impl ContentRepository for ContentRepo {
         // require parsing the tagged JSON, which the adjacency-list walk does not
         // need. Callers that want numbering order sort on the decoded coords.
         let rows = sqlx::query(
-            "SELECT id, library_id, media_type, parent_id, kind, coords, monitored, title_id
+            "SELECT id, library_id, media_type, parent_id, kind, series_type, coords, monitored, title_id
              FROM content WHERE parent_id = ?1 ORDER BY id ASC",
         )
         .bind(parent.to_string())
@@ -767,7 +834,7 @@ impl ContentRepository for ContentRepo {
         // Root nodes have no parent: a flat movie, or a series/artist/author the
         // tree hangs off of. Ordered by id for a stable list.
         let rows = sqlx::query(
-            "SELECT id, library_id, media_type, parent_id, kind, coords, monitored, title_id
+            "SELECT id, library_id, media_type, parent_id, kind, series_type, coords, monitored, title_id
              FROM content WHERE library_id = ?1 AND parent_id IS NULL ORDER BY id ASC",
         )
         .bind(library.to_string())

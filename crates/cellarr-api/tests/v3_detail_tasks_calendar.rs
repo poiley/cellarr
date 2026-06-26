@@ -26,6 +26,7 @@ async fn seed_movie(state: &cellarr_api::AppState, title: &str, monitored: bool)
         media_type: MediaType::Movie,
         parent_id: None,
         kind: ContentKind::Movie,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Movie,
         monitored,
         title_id: None,
@@ -189,6 +190,7 @@ async fn json_calendar_returns_dated_items_within_range() {
         media_type: MediaType::Tv,
         parent_id: None,
         kind: ContentKind::Episode,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Daily {
             date: "2026-07-04".into(),
         },

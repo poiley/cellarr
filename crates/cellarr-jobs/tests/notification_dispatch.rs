@@ -577,6 +577,7 @@ async fn seed_movie_node(db: &Database, title: &str) -> ContentRef {
         media_type: MediaType::Movie,
         parent_id: None,
         kind: cellarr_core::ContentKind::Movie,
+        series_type: cellarr_core::SeriesType::Standard,
         coords: Coordinates::Movie,
         monitored: true,
         title_id: None,

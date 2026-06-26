@@ -32,6 +32,37 @@ pub enum MediaType {
     Book,
 }
 
+/// How a television series is numbered, which selects the addressing behaviour
+/// Identify applies to its releases.
+///
+/// This mirrors Sonarr's `seriesType`: a `Standard` series is addressed by its
+/// native season/episode numbering; a `Daily` series is broadcast-date addressed;
+/// an `Anime` series is the one that advertises **absolute** episode numbers a
+/// release carries, so it is the switch that turns on the absolute→season/episode
+/// scene-mapping remap. A non-anime series parsing a bare number is therefore
+/// **never** force-remapped — only an `Anime`-typed series reaches the scene-map
+/// path (the library-safety rule: do not guess a placement for a standard show).
+///
+/// Serializes in lowercase to match the v3 (`"standard"`/`"daily"`/`"anime"`)
+/// wire shape and the `content.series_type` column.
+///
+/// ```
+/// # use cellarr_core::SeriesType;
+/// assert_eq!(serde_json::to_string(&SeriesType::Anime).unwrap(), "\"anime\"");
+/// assert_eq!(SeriesType::default(), SeriesType::Standard);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeriesType {
+    /// Native season/episode numbering (the default for any non-anime show).
+    #[default]
+    Standard,
+    /// A broadcast-date addressed (daily) show.
+    Daily,
+    /// An absolute-numbered anime show — turns on the absolute→episode remap.
+    Anime,
+}
+
 /// How a unit of media is addressed within its type.
 ///
 /// This is the one place the media types genuinely differ, so it is named
@@ -253,6 +284,14 @@ pub struct ContentNode {
     pub parent_id: Option<ContentId>,
     /// The node's structural role within its media type.
     pub kind: ContentKind,
+    /// For a TV series, how it is numbered ([`SeriesType`]) — the switch that
+    /// turns on anime absolute→season/episode remapping. Carried on every node
+    /// (defaulting to [`SeriesType::Standard`]) but only meaningful on a
+    /// `Series`-kind TV node; the remap reads the *series root's* value by
+    /// walking up the tree. Defaulted so a node decoded from a pre-`series_type`
+    /// row (or a non-TV node) reads as `Standard`, preserving prior behaviour.
+    #[serde(default)]
+    pub series_type: SeriesType,
     /// The node's numbering within its type.
     pub coords: Coordinates,
     /// Whether the node is monitored for acquisition.
