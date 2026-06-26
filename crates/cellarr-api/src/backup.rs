@@ -311,10 +311,10 @@ impl BackupEngine {
     /// restarts, so [`RestoreOutcome::restart_required`] is always `true`.
     ///
     /// # Errors
-    /// [`BackupError::Malformed`] if the bundle is invalid, [`BackupError::Db`] if
-    /// the snapshot fails its integrity check, [`BackupError::Io`] on a filesystem
-    /// failure during the swap. The pre-restore safety backup is taken before any
-    /// destructive step, so the prior state is always recoverable.
+    /// [`BackupError::Malformed`] if the bundle is invalid *or* its snapshot fails
+    /// the integrity check (both are bad uploads → 400), [`BackupError::Io`] on a
+    /// filesystem failure during the swap. The pre-restore safety backup is taken
+    /// before any destructive step, so the prior state is always recoverable.
     pub async fn restore_from_bytes(&self, bundle: &[u8]) -> Result<RestoreOutcome> {
         // Postgres restore is not modeled (the swap is a SQLite-file rename).
         // TODO(postgres-restore): restore a logical dump for the Postgres backend.
@@ -334,7 +334,10 @@ impl BackupEngine {
         ));
         std::fs::write(&staged, &snap_bytes)
             .map_err(|e| BackupError::Io(format!("staging restore snapshot: {e}")))?;
-        // Validate BEFORE touching the live DB; a corrupt upload stops here.
+        // Validate BEFORE touching the live DB; a corrupt upload stops here. A
+        // snapshot that fails its integrity check is a bad *upload* (client error),
+        // not a server fault — surface it as Malformed (400), like bad magic, so a
+        // valid-magic-but-corrupt-DB bundle doesn't masquerade as a 500.
         if let Err(e) = Database::verify_snapshot(
             staged
                 .to_str()
@@ -343,7 +346,9 @@ impl BackupEngine {
         .await
         {
             let _ = std::fs::remove_file(&staged);
-            return Err(BackupError::Db(e));
+            return Err(BackupError::Malformed(format!(
+                "snapshot failed integrity check: {e}"
+            )));
         }
 
         // 2. Pre-restore safety backup of the CURRENT live DB (reversible restore).
@@ -670,8 +675,10 @@ mod tests {
         bundle.extend_from_slice(&4u64.to_le_bytes());
         bundle.extend_from_slice(b"junk");
 
+        // A valid-magic bundle whose DB section fails the integrity check is a bad
+        // upload (client error / 400), not a server fault — Malformed, not Db.
         let err = eng.restore_from_bytes(&bundle).await.unwrap_err();
-        assert!(matches!(err, BackupError::Db(_)));
+        assert!(matches!(err, BackupError::Malformed(_)));
 
         // Live DB still good — no pre-restore backup was even taken.
         db.config().list_root_folders().await.unwrap();

@@ -67,6 +67,31 @@ describe("IntegrationSection (indexers / clients)", () => {
     );
   });
 
+  it("labels a saved client by its real kind, not the first implementation", async () => {
+    // The native /api/v1 list carries `kind` (e.g. "deluge"), not `implementation`.
+    // The row must show "Deluge" — not fall back to implementations[0] ("qBittorrent").
+    const clients = [
+      { id: "dl1", name: "My Deluge", kind: "deluge", enabled: true },
+    ];
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(clients));
+    const client = new CellarrClient({ fetchImpl: withTags(fetchImpl) });
+    render(
+      <IntegrationSection
+        kind="downloadclients"
+        title="Download Clients"
+        implementations={["qBittorrent", "Deluge", "RTorrent"]}
+        client={client}
+      />,
+    );
+    // Pre-fix the saved row mislabeled to implementations[0] ("qBittorrent") and
+    // "Deluge" appeared nowhere (the add-form dropdown is closed). Post-fix the row
+    // shows its real kind, so "Deluge" is rendered.
+    await waitFor(() =>
+      expect(screen.getAllByText("Deluge").length).toBeGreaterThan(0),
+    );
+    expect(screen.getByText("My Deluge")).toBeTruthy();
+  });
+
   it("shows a success indicator when the test passes", async () => {
     const fetchImpl = vi
       .fn()

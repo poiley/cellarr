@@ -126,6 +126,25 @@ interface TestResult {
   message: string;
 }
 
+// The native /api/v1 list carries the adapter as `kind` ("deluge", "qbittorrent",
+// "torznab", …), not the camel/Pascal `implementation` the form models. Match the
+// kind against the schema's implementation list (case/separator-insensitive) so a
+// saved client/indexer shows its real type instead of falling back to the first
+// implementation in the list (which mislabeled e.g. Deluge as "qBittorrent").
+function normImpl(s: unknown): string {
+  return String(s ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+function implFromKind(
+  kind: unknown,
+  implementations: string[],
+): string | undefined {
+  const k = normImpl(kind);
+  if (!k) return undefined;
+  return implementations.find((impl) => normImpl(impl) === k);
+}
+
 function toForm(raw: RawConfig, implementations: string[]): IntegrationForm {
   const rec = raw as Record<string, unknown>;
   // Native list configs carry the typed extras either at the top level
@@ -147,7 +166,12 @@ function toForm(raw: RawConfig, implementations: string[]): IntegrationForm {
   return {
     id: String(rec.id ?? rec.name ?? ""),
     name: String(rec.name ?? ""),
-    implementation: String(rec.implementation ?? implementations[0] ?? ""),
+    implementation: String(
+      rec.implementation ??
+        implFromKind(rec.kind, implementations) ??
+        implementations[0] ??
+        "",
+    ),
     host: str(rec.host, settings.host, settings.base_url),
     port: str(rec.port, settings.port),
     apiKey: str(rec.api_key, rec.apiKey, settings.apiKey),
