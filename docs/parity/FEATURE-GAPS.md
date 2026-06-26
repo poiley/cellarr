@@ -34,3 +34,30 @@ Music/books (Lidarr/Readarr) are a separate media-type axis and are **out of sco
 breadth (every Cardigann definition, every niche download client/notification provider) is filled
 incrementally and noted where partial. Anything that can't be completed is deferred **with a reason +
 TODO**, never faked.
+
+---
+
+## Audit fixes (post-parity gap audit)
+
+A concrete `/api/v3`-surface + feature audit (vs the Sonarr/Radarr v3 spec) found four real gaps beyond
+the original 6 packs. All four addressed, each gated by `just ci`, live + browser verified, fake-green
+hunted:
+
+- **Tags wired end-to-end** (`ea33081`) — were scaffolded but INERT (content untaggable, pipeline
+  hardcoded `content_tags: Vec::new()`). Now: content is taggable (migration 0013), the pipeline threads
+  real tags, and one predicate (`tag_scope_applies`) gates delay profiles, indexers, download-client
+  selection, and notification dispatch by tag; v3 `movie`/`series` tags round-trip.
+- **Quality-definition size enforcement + editing** (`b1ac207`) — was GET-only and unenforced. Now:
+  `PUT /qualitydefinition` (migration 0014) + the decision engine rejects out-of-bounds size-per-min
+  (`QualitySizeOutOfBounds`), failing OPEN on unknown size/runtime.
+- **Release profiles** (`3854dec`) — were absent. Now: a `ReleaseProfile` entity (migration 0015,
+  required/ignored/preferred terms + scores, tag-scoped) wired into decide (ignored/required ->
+  reject/require; preferred -> score that gates min-score + drives ranking) + `/api/v3/releaseprofile`.
+- **Missing v3 resources** (`7943186`) — `/parse`, `/episodefile`, `/moviefile`, `/collection`,
+  `/metadata` now return real data (real parse; real media_file rows + DELETE; import-list collections;
+  nfo-consumer config); `/update` is an honest empty-`[]` stub (single static binary, no auto-update).
+
+**Honest deferrals:** the v3 `delayprofile.tags` field is modeled as label strings rather than integer
+ids (functional end-to-end — the pipeline resolves ids->labels — but a v3-shape deviation; indexer/
+download-client/notification tags use integer ids). `/update` is intentionally a no-op stub. `/collection`
+is derived from import-list collection data, not a separate first-class collection store.
