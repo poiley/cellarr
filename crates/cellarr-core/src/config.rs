@@ -32,7 +32,7 @@ use crate::MediaType;
 /// them, so a mistaken delete is reversible. `None` (the default) unlinks
 /// directly, matching the *arr default of an empty recycle-bin path. Mirrors
 /// Sonarr/Radarr `recycleBin`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaManagement {
     /// The recycle-bin directory deleted media is moved into instead of being
@@ -57,6 +57,29 @@ pub struct MediaManagement {
     /// imported alongside a media file, renamed to match it.
     #[serde(default)]
     pub extra_files: ExtraFileImport,
+    /// Whether the Kodi/Jellyfin `.nfo` metadata sidecar is written next to
+    /// imported media (a `movie.nfo` / `tvshow.nfo` / per-episode `.nfo`). This is
+    /// the enable flag the v3 `metadata` consumer resource toggles. Defaults to
+    /// `true` so an existing library keeps writing sidecars exactly as before this
+    /// became configurable; a user can turn the consumer off to suppress them.
+    #[serde(default = "default_true")]
+    pub write_nfo: bool,
+}
+
+impl Default for MediaManagement {
+    /// The zero-config defaults. Note `write_nfo` defaults to `true` (matching the
+    /// serde default), so a library with no persisted settings still writes the
+    /// `.nfo` sidecars it always did — a derived `Default` would wrongly disable
+    /// them.
+    fn default() -> Self {
+        Self {
+            recycle_bin_path: None,
+            naming: NamingFormats::default(),
+            permissions: ImportPermissions::default(),
+            extra_files: ExtraFileImport::default(),
+            write_nfo: true,
+        }
+    }
 }
 
 /// The user-configurable on-disk naming formats, one per nameable surface.

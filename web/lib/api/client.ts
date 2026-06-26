@@ -26,6 +26,8 @@ import type {
   CommandAccepted,
   CommandInfo,
   CommandResource,
+  Collection,
+  CollectionUpdateBody,
   ContentNode,
   ContentRef,
   CustomFormat,
@@ -528,6 +530,37 @@ export class CellarrClient {
   /** Monitored items that are missing an acceptable file (`/api/v3/wanted/missing`). */
   wantedMissing(signal?: AbortSignal) {
     return this.requestV3<Page<WantedRecord>>('/wanted/missing', { signal });
+  }
+
+  // =========================================================================
+  // Collections (Radarr-compatible /api/v3 — TMDb collection import lists)
+  // =========================================================================
+
+  /**
+   * List movie collections (`GET /api/v3/collection`). Radarr-only — the
+   * Sonarr/cellarr faces return `[]`. Each entry carries its member `movies[]`
+   * (we surface only the count) plus the writable `monitored` flag.
+   */
+  listCollections(signal?: AbortSignal) {
+    return this.requestV3<Collection[]>('/collection', { signal });
+  }
+
+  /** A single collection (`GET /api/v3/collection/{id}`). */
+  getCollection(id: number, signal?: AbortSignal) {
+    return this.requestV3<Collection>(`/collection/${id}`, { signal });
+  }
+
+  /**
+   * Persist the writable subset of a collection (`PUT /api/v3/collection/{id}`)
+   * onto its backing import list. The list view sends `{ monitored }`; the body
+   * also accepts `qualityProfileId`. Returns the updated collection.
+   */
+  updateCollection(id: number, body: CollectionUpdateBody, signal?: AbortSignal) {
+    return this.requestV3<Collection>(`/collection/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
   }
 
   // =========================================================================

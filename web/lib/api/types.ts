@@ -580,6 +580,39 @@ export interface Series {
 }
 
 /**
+ * A v3 movie collection (`GET /api/v3/collection`) — the Radarr-shaped grouping
+ * backed by a TMDb-collection import list. Sonarr/cellarr faces return `[]`.
+ * `movies[]` is the member set; we only surface its length in the list view.
+ */
+export interface Collection {
+  id: number;
+  title: string;
+  tmdbId: number;
+  monitored: boolean;
+  qualityProfileId: number | null;
+  searchOnAdd: boolean;
+  minimumAvailability: string;
+  movies: CollectionMovie[];
+  [key: string]: unknown;
+}
+
+/** A member of a {@link Collection}. Only loosely modelled (count + title). */
+export interface CollectionMovie {
+  tmdbId?: number;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Body for `PUT /api/v3/collection/{id}` — the writable subset persisted onto
+ * the backing import list. Both fields optional (the toggle sends `monitored`).
+ */
+export interface CollectionUpdateBody {
+  monitored?: boolean;
+  qualityProfileId?: number;
+}
+
+/**
  * A v3 episode (`GET /api/v3/episode?seriesId=…`). `id`/`seriesId` come back as
  * the numeric projection the v3 list endpoints emit (a JSON number), which the
  * `/episode/monitor` + `/season/monitor` routes accept as their ids. `airDate` is

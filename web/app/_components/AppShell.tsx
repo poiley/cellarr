@@ -36,6 +36,7 @@ const IMPORT_ROUTE = `/${'imp'}ort`;
 const NAV: NavEntry[] = [
   { href: '/', label: 'Dashboard' },
   { href: '/library', label: 'Library' },
+  { href: '/collections', label: 'Collections' },
   { href: '/calendar', label: 'Calendar' },
   { href: IMPORT_ROUTE, label: 'Manual Import' },
   { href: '/activity', label: 'Activity' },

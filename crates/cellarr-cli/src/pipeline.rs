@@ -630,9 +630,11 @@ impl LivePipelineEnv {
             // names a host — which, when present, the runner applies.
             client_host: String::new(),
             remote_path_mappings,
-            // Write Kodi/Jellyfin `.nfo` sidecars on import (media-management
-            // default). Best-effort, post-commit, so it never affects crash safety.
-            write_nfo: true,
+            // Write Kodi/Jellyfin `.nfo` sidecars on import when the metadata
+            // consumer is enabled (the media-management `write_nfo` setting,
+            // default on). Best-effort, post-commit, so it never affects crash
+            // safety; the v3 `metadata` resource toggles this flag.
+            write_nfo: media_management.write_nfo,
             delay_profiles,
             release_profiles,
             // The node's real tags: labels for the label-keyed delay profiles,

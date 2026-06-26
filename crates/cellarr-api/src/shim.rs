@@ -198,6 +198,26 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/history", get(history))
         .route("/wanted/missing", get(wanted_missing))
         .route("/command", get(list_commands))
+        // Release-name parser (read-only).
+        .route("/parse", get(parse_release))
+        // Episode/movie file resources, mapped to the content files seam.
+        .route("/episodefile", get(list_episode_files))
+        .route("/episodeFile", get(list_episode_files))
+        .route("/episodefile/{id}", get(get_episode_file))
+        .route("/episodeFile/{id}", get(get_episode_file))
+        .route("/moviefile", get(list_movie_files))
+        .route("/movieFile", get(list_movie_files))
+        .route("/moviefile/{id}", get(get_movie_file))
+        .route("/movieFile/{id}", get(get_movie_file))
+        // Radarr collections, derived from collection import lists.
+        .route("/collection", get(list_collections))
+        .route("/collection/{id}", get(get_collection))
+        // Metadata consumers (the `.nfo` sidecar export).
+        .route("/metadata", get(list_metadata_consumers))
+        .route("/metadata/{id}", get(get_metadata_consumer))
+        // Auto-update compat stub.
+        .route("/update", get(list_updates))
+        .route("/system/update", get(list_updates))
         .with_state(fs.clone());
 
     let writes = Router::new()
@@ -311,6 +331,15 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/queue/{id}", delete(delete_queue_item))
         .route("/queue/{id}", put(update_queue_category))
         .route("/queue/grab", post(queue_grab))
+        // Episode/movie file delete (recycle via the content files seam).
+        .route("/episodefile/{id}", delete(delete_episode_file))
+        .route("/episodeFile/{id}", delete(delete_episode_file))
+        .route("/moviefile/{id}", delete(delete_movie_file))
+        .route("/movieFile/{id}", delete(delete_movie_file))
+        // Collection monitor / quality-profile toggle.
+        .route("/collection/{id}", put(update_collection))
+        // Metadata-consumer enable/disable.
+        .route("/metadata/{id}", put(update_metadata_consumer))
         .layer(middleware::from_fn_with_state(
             fs.state.clone(),
             require_api_key,
@@ -6423,6 +6452,805 @@ fn slug(title: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string()
+}
+
+// --- parse (GET /parse) ----------------------------------------------------
+
+/// The `GET /parse` query. `title` is the release/file title to parse; the
+/// optional `path` mirrors the originals' field (a full path whose file name is
+/// parsed when `title` is absent).
+#[derive(Debug, Deserialize)]
+struct ParseQuery {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// v3 `GET /parse` — run the release-name parser and return the Sonarr/Radarr
+/// `ParseResource` shape. Read-only; it never touches the library.
+///
+/// The originals expose this so a tool (or a curious user) can ask "what does the
+/// app make of this release name?". cellarr answers via [`cellarr_parse::parse_title`]
+/// and projects the [`ParsedRelease`](cellarr_core::parsed::ParsedRelease) into the
+/// v3 shape: `title` (the input) plus a `parsedMovieInfo`/`parsedEpisodeInfo`
+/// block (chosen by the addressed face/surface, or by whether the parse found TV
+/// coordinates) carrying the parsed quality / year / season+episode / languages /
+/// edition / release group. When the title carries no path-derived numbering it
+/// still parses (a bare movie title yields `parsedMovieInfo`).
+async fn parse_release(
+    State(fs): State<FaceState>,
+    Query(q): Query<ParseQuery>,
+) -> ApiResult<Json<Value>> {
+    // Prefer the explicit title; else parse the file name out of `path` (the
+    // originals' behavior), else error — there is nothing to parse.
+    let input = q
+        .title
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            q.path.as_deref().and_then(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            })
+        })
+        .ok_or_else(|| ApiError::BadRequest("a `title` (or `path`) is required to parse".into()))?;
+
+    let parsed = cellarr_parse::parse_title(&input);
+
+    // Choose the info block by surface: a dedicated face is pinned; the Cellarr
+    // face infers from the parse (TV coordinates -> episode info, else movie).
+    let surface = surface_for(&fs, None).await?;
+    let is_tv = match fs.face.fixed_media() {
+        Some(MediaType::Tv) => true,
+        Some(_) => false,
+        None => {
+            surface == MediaType::Tv
+                || parsed
+                    .coordinates
+                    .iter()
+                    .any(|c| c.media_type() == MediaType::Tv)
+        }
+    };
+
+    let info = parsed_info_block(&parsed, is_tv);
+    let key = if is_tv {
+        "parsedEpisodeInfo"
+    } else {
+        "parsedMovieInfo"
+    };
+    let mut out = json!({
+        "title": input,
+        key: info,
+        // The fields the *arr clients read alongside the info block. We do not run
+        // identification here (parse is title-only), so these stay empty/null.
+        "languages": parsed_languages(&parsed),
+        "customFormats": [],
+        "customFormatScore": 0,
+    });
+    if is_tv {
+        merge_into(&mut out, json!({ "series": Value::Null, "episodes": [] }));
+    } else {
+        merge_into(&mut out, json!({ "movie": Value::Null }));
+    }
+    Ok(Json(out))
+}
+
+/// Build the `parsedMovieInfo` / `parsedEpisodeInfo` block from a parse: the
+/// release title, year, the v3 quality block, languages, edition, release group,
+/// and (for TV) the season/episode numbering.
+fn parsed_info_block(parsed: &cellarr_core::parsed::ParsedRelease, is_tv: bool) -> Value {
+    let release_title = parsed
+        .clean_title
+        .clone()
+        .unwrap_or_else(|| parsed.raw_title.clone());
+    let mut block = json!({
+        "releaseTitle": parsed.raw_title,
+        "title": release_title,
+        "year": parsed.year.unwrap_or(0),
+        "quality": parsed_quality_block(parsed),
+        "languages": parsed_languages(parsed),
+        "releaseGroup": parsed.group.clone().unwrap_or_default(),
+        "edition": parsed.edition.clone().unwrap_or_default(),
+        "releaseHash": "",
+    });
+    if is_tv {
+        // Project the parsed coordinates into the season/episode fields the v3
+        // episode info carries. A multi-episode parse contributes several episode
+        // numbers; the season is taken from the first episode-bearing coordinate.
+        let mut season: Option<u32> = None;
+        let mut episodes: Vec<u32> = Vec::new();
+        let mut absolute: Vec<u32> = Vec::new();
+        let mut air_date: Option<String> = None;
+        for c in &parsed.coordinates {
+            match c {
+                cellarr_core::Coordinates::Episode {
+                    season: s,
+                    episode,
+                    absolute: abs,
+                } => {
+                    season.get_or_insert(*s);
+                    episodes.push(*episode);
+                    if let Some(a) = abs {
+                        absolute.push(*a);
+                    }
+                }
+                cellarr_core::Coordinates::SeasonPack { season: s } => {
+                    season.get_or_insert(u32::from(*s));
+                }
+                cellarr_core::Coordinates::Absolute { number } => absolute.push(*number),
+                cellarr_core::Coordinates::Daily { date } => {
+                    air_date.get_or_insert_with(|| date.clone());
+                }
+                _ => {}
+            }
+        }
+        merge_into(
+            &mut block,
+            json!({
+                "seriesTitle": release_title,
+                "seasonNumber": season.unwrap_or(0),
+                "episodeNumbers": episodes,
+                "absoluteEpisodeNumbers": absolute,
+                "airDate": air_date.map_or(Value::Null, Value::String),
+                "fullSeason": parsed.coordinates.iter().any(|c| matches!(c, cellarr_core::Coordinates::SeasonPack { .. })),
+                "special": false,
+            }),
+        );
+    } else {
+        merge_into(&mut block, json!({ "movieTitle": release_title }));
+    }
+    block
+}
+
+/// The v3 `quality` block for a parse: `{ quality: { id, name, source, resolution }, revision }`.
+/// The names are the cleaned, *arr-conventional spellings derived from the parsed
+/// resolution/source; `revision.real`/`isRepack` reflect a parsed proper/repack.
+fn parsed_quality_block(parsed: &cellarr_core::parsed::ParsedRelease) -> Value {
+    use cellarr_core::parsed::ProperRepack;
+    let resolution = parsed.resolution.map(parsed_resolution_px).unwrap_or(0);
+    let source = parsed.source.map(parsed_source_str).unwrap_or("unknown");
+    let name = quality_display_name(parsed);
+    let is_repack = matches!(parsed.proper_repack, Some(ProperRepack::Repack));
+    let is_proper = matches!(parsed.proper_repack, Some(ProperRepack::Proper));
+    json!({
+        "quality": {
+            "id": 0,
+            "name": name,
+            "source": source,
+            "resolution": resolution,
+        },
+        "revision": {
+            // A proper/repack is "real version 1"; the *arr clients read `version`
+            // and `isRepack` to rank a re-release above the original.
+            "version": if is_proper || is_repack { 2 } else { 1 },
+            "real": 0,
+            "isRepack": is_repack,
+        },
+    })
+}
+
+/// A human `<Source>-<Resolution>` quality name from a parse, e.g. "Bluray-1080p"
+/// or "WEBDL-2160p". Falls back to whichever half is known, or "Unknown".
+fn quality_display_name(parsed: &cellarr_core::parsed::ParsedRelease) -> String {
+    let res = parsed.resolution.map(parsed_resolution_label);
+    let src = parsed.source.map(parsed_source_label);
+    match (src, res) {
+        (Some(s), Some(r)) => format!("{s}-{r}"),
+        (Some(s), None) => s.to_string(),
+        (None, Some(r)) => r.to_string(),
+        (None, None) => "Unknown".to_string(),
+    }
+}
+
+/// The pixel height the v3 `quality.resolution` field carries for a parsed
+/// resolution bucket.
+fn parsed_resolution_px(r: cellarr_core::parsed::Resolution) -> u32 {
+    use cellarr_core::parsed::Resolution as R;
+    match r {
+        R::R480p => 480,
+        R::R576p => 576,
+        R::R720p => 720,
+        R::R1080p => 1080,
+        R::R2160p => 2160,
+    }
+}
+
+/// The `<Resolution>` label used in a quality name (e.g. "1080p").
+fn parsed_resolution_label(r: cellarr_core::parsed::Resolution) -> &'static str {
+    use cellarr_core::parsed::Resolution as R;
+    match r {
+        R::R480p => "480p",
+        R::R576p => "576p",
+        R::R720p => "720p",
+        R::R1080p => "1080p",
+        R::R2160p => "2160p",
+    }
+}
+
+/// The v3 `quality.source` enum string for a parsed source/medium.
+fn parsed_source_str(s: cellarr_core::parsed::Source) -> &'static str {
+    use cellarr_core::parsed::Source as S;
+    match s {
+        S::Workprint | S::Cam | S::Telesync | S::Telecine | S::Regional | S::Dvdscr => "cam",
+        S::Sdtv | S::Hdtv | S::RawHd => "television",
+        S::Webrip => "webrip",
+        S::WebDl => "web",
+        S::Dvd | S::DvdR => "dvd",
+        S::Bluray | S::BrDisk | S::Remux => "bluray",
+    }
+}
+
+/// The `<Source>` label used in a quality name (e.g. "Bluray", "WEBDL").
+fn parsed_source_label(s: cellarr_core::parsed::Source) -> &'static str {
+    use cellarr_core::parsed::Source as S;
+    match s {
+        S::Workprint => "WORKPRINT",
+        S::Cam => "CAM",
+        S::Telesync => "TELESYNC",
+        S::Telecine => "TELECINE",
+        S::Regional => "REGIONAL",
+        S::Dvdscr => "DVDSCR",
+        S::Sdtv => "SDTV",
+        S::Hdtv => "HDTV",
+        S::RawHd => "Raw-HD",
+        S::Webrip => "WEBRip",
+        S::WebDl => "WEBDL",
+        S::Dvd => "DVD",
+        S::DvdR => "DVD-R",
+        S::Bluray => "Bluray",
+        S::BrDisk => "BR-DISK",
+        S::Remux => "Remux",
+    }
+}
+
+/// The parsed languages as the v3 `languages[]` shape (`{ id, name }`). cellarr
+/// carries language names/codes, not the *arr numeric language ids, so each is
+/// surfaced by name with a `0` id (the originals' "unknown id" sentinel) — enough
+/// for a tool to read the language, without inventing an id mapping.
+fn parsed_languages(parsed: &cellarr_core::parsed::ParsedRelease) -> Vec<Value> {
+    parsed
+        .languages
+        .iter()
+        .map(|l| json!({ "id": 0, "name": l }))
+        .collect()
+}
+
+// --- episode/movie files (GET/DELETE episodefile, moviefile) ---------------
+
+/// Render a [`MediaFile`](cellarr_core::MediaFile) into the v3 EpisodeFile /
+/// MovieFile shape: `id`, `relativePath`/`path`, `size`, the `quality` block, and
+/// `dateAdded`. `content_numeric` is the projected id of the owning content node,
+/// surfaced as `seriesId`/`movieId` so a tool can group files by their content.
+/// `root` is the library root the `relativePath` is computed against.
+fn v3_media_file(
+    file: &cellarr_core::MediaFile,
+    content_numeric: i64,
+    root: &str,
+    is_tv: bool,
+) -> Value {
+    let relative = if root.is_empty() {
+        file.path.clone()
+    } else {
+        file.path
+            .strip_prefix(root.trim_end_matches('/'))
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| file.path.clone())
+    };
+    let mut out = json!({
+        "id": mf_numeric_id(file.id),
+        "relativePath": relative,
+        "path": file.path,
+        "size": file.size,
+        "dateAdded": "0001-01-01T00:00:00Z",
+        "languages": file
+            .languages
+            .iter()
+            .map(|l| json!({ "id": 0, "name": l }))
+            .collect::<Vec<_>>(),
+        "quality": {
+            "quality": { "id": file.quality.rank, "name": file.quality.name, "source": "unknown", "resolution": 0 },
+            "revision": { "version": 1, "real": 0, "isRepack": false },
+        },
+        "customFormatScore": file.custom_format_score.unwrap_or(0),
+    });
+    let owner = if is_tv { "seriesId" } else { "movieId" };
+    merge_into(&mut out, json!({ owner: content_numeric }));
+    out
+}
+
+/// The `?seriesId=` / `?movieId=` filter on the file-list resources, accepting
+/// both spellings plus cellarr's own `contentId`.
+#[derive(Debug, Deserialize)]
+struct FileListQuery {
+    #[serde(rename = "seriesId", default)]
+    series_id: Option<String>,
+    #[serde(rename = "movieId", default)]
+    movie_id: Option<String>,
+    #[serde(rename = "contentId", default)]
+    content_id: Option<String>,
+}
+
+impl FileListQuery {
+    /// The single content id the caller addressed, whichever spelling they used.
+    fn content(&self) -> Option<&str> {
+        self.series_id
+            .as_deref()
+            .or(self.movie_id.as_deref())
+            .or(self.content_id.as_deref())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// v3 `GET /episodefile?seriesId=` — the media files under a series (every file
+/// linked to any node in its season/episode subtree). Mirrors Sonarr's per-series
+/// file list. Without a `seriesId` it returns an empty array (the *arr clients
+/// always scope the call to a series).
+async fn list_episode_files(
+    State(fs): State<FaceState>,
+    Query(q): Query<FileListQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    list_content_files_v3(&fs, &q, MediaType::Tv).await
+}
+
+/// v3 `GET /moviefile?movieId=` — the media file(s) for a movie. Mirrors Radarr's
+/// per-movie file list.
+async fn list_movie_files(
+    State(fs): State<FaceState>,
+    Query(q): Query<FileListQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    list_content_files_v3(&fs, &q, MediaType::Movie).await
+}
+
+/// Shared file-list path: resolve the addressed content node, gather the media
+/// files linked anywhere under it (subtree-aware for a series), and render each in
+/// the v3 file shape. An unresolved id yields an empty array (benign, matching the
+/// list endpoints).
+async fn list_content_files_v3(
+    fs: &FaceState,
+    q: &FileListQuery,
+    surface: MediaType,
+) -> ApiResult<Json<Vec<Value>>> {
+    use cellarr_core::repo::MediaFileRepository;
+    let Some(id) = q.content() else {
+        return Ok(Json(vec![]));
+    };
+    let Some(node) = resolve_content_node(&fs.state, id, surface).await? else {
+        return Ok(Json(vec![]));
+    };
+    let root = fs
+        .state
+        .db
+        .config()
+        .get_library(node.library_id)
+        .await?
+        .and_then(|l| l.root_folders.into_iter().next())
+        .unwrap_or_default();
+    let content_numeric = rpm_numeric_id(&node.id.to_string());
+    let is_tv = surface == MediaType::Tv;
+
+    // Walk the node's subtree (for a movie this is just the node) and collect the
+    // distinct media files linked to any node in it.
+    let node_ids = subtree_content_ids(&fs.state, node.id).await?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for cid in node_ids {
+        for file in fs.state.db.media_files().list_for_content(cid).await? {
+            if seen.insert(file.id) {
+                out.push(v3_media_file(&file, content_numeric, &root, is_tv));
+            }
+        }
+    }
+    Ok(Json(out))
+}
+
+/// Every content id in the subtree rooted at `id` (the node itself plus all
+/// descendants), walked breadth-first via the adjacency list. For a movie (a leaf
+/// root) this is just `[id]`. Used to gather a series' files across its
+/// season/episode tree.
+async fn subtree_content_ids(
+    state: &AppState,
+    id: cellarr_core::ContentId,
+) -> ApiResult<Vec<cellarr_core::ContentId>> {
+    use cellarr_core::repo::ContentRepository;
+    let content = state.db.content();
+    let mut ids = vec![id];
+    let mut frontier = vec![id];
+    while let Some(parent) = frontier.pop() {
+        for child in content.children(parent).await? {
+            if !ids.contains(&child.id) {
+                ids.push(child.id);
+                frontier.push(child.id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// v3 `GET /episodefile/{id}` — one episode file by its (projected) id.
+async fn get_episode_file(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    get_media_file_v3(&fs, &id, MediaType::Tv).await
+}
+
+/// v3 `GET /moviefile/{id}` — one movie file by its (projected) id.
+async fn get_movie_file(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    get_media_file_v3(&fs, &id, MediaType::Movie).await
+}
+
+/// Shared single-file GET: resolve the file by its projected id, find its owning
+/// content node (for the `seriesId`/`movieId` and the library root), and render it.
+async fn get_media_file_v3(fs: &FaceState, id: &str, surface: MediaType) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(id, "file")?;
+    let Some(file) = resolve_media_file(&fs.state, numeric).await? else {
+        return Err(ApiError::NotFound(format!("file {id} not found")));
+    };
+    let (content_numeric, root) = file_owner(&fs.state, file.id).await?;
+    let is_tv = surface == MediaType::Tv;
+    Ok(Json(v3_media_file(&file, content_numeric, &root, is_tv)))
+}
+
+/// Resolve a media file by the projected integer id the v3 file resources emit.
+/// The projection is stateless (re-derived per request); we scan the files of
+/// every content node and match the projection — the same approach the other
+/// numeric-id lookups use. Returns `None` when nothing projects to `numeric`.
+async fn resolve_media_file(
+    state: &AppState,
+    numeric: i64,
+) -> ApiResult<Option<cellarr_core::MediaFile>> {
+    use cellarr_core::repo::{ContentRepository, MediaFileRepository};
+    for lib in state.db.config().list_libraries().await? {
+        let roots = state.db.content().roots(lib.id).await?;
+        for root in roots {
+            for cid in subtree_content_ids(state, root.id).await? {
+                for file in state.db.media_files().list_for_content(cid).await? {
+                    if mf_numeric_id(file.id) == numeric {
+                        return Ok(Some(file));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The owning content node's projected id and library root for a media file, via
+/// the reverse `content_file` link. Falls back to `(0, "")` for an unlinked file.
+async fn file_owner(state: &AppState, file: cellarr_core::MediaFileId) -> ApiResult<(i64, String)> {
+    let owners = state.db.media_files().content_ids_for_file(file).await?;
+    let Some(content_id) = owners.first().copied() else {
+        return Ok((0, String::new()));
+    };
+    let node = state.db.content().get_node(content_id).await?;
+    let (root, owner_root_id) = match node {
+        Some(n) => {
+            // The projected id the file resources surface as seriesId/movieId is the
+            // root of the node's tree (a series/movie), not an inner season/episode.
+            let root_id = tree_root_id(state, &n).await?;
+            let root = state
+                .db
+                .config()
+                .get_library(n.library_id)
+                .await?
+                .and_then(|l| l.root_folders.into_iter().next())
+                .unwrap_or_default();
+            (root, root_id)
+        }
+        None => (String::new(), content_id),
+    };
+    Ok((rpm_numeric_id(&owner_root_id.to_string()), root))
+}
+
+/// Walk a node up to its tree root (the series/movie node with no parent), so a
+/// file linked to an inner episode reports the series id its tool expects.
+async fn tree_root_id(
+    state: &AppState,
+    node: &cellarr_core::ContentNode,
+) -> ApiResult<cellarr_core::ContentId> {
+    let content = state.db.content();
+    let mut current = node.clone();
+    while let Some(parent) = current.parent_id {
+        match content.get_node(parent).await? {
+            Some(p) => current = p,
+            None => break,
+        }
+    }
+    Ok(current.id)
+}
+
+/// v3 `DELETE /episodefile/{id}` — remove an episode file from disk (recycled when
+/// a bin is configured, else unlinked) via the same crash-safe path the content
+/// delete uses, then drop the `media_file` row. Idempotent on a missing id.
+async fn delete_episode_file(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    delete_media_file_v3(&fs.state, &id).await
+}
+
+/// v3 `DELETE /moviefile/{id}` — remove a movie file. Same path as the episode
+/// file delete.
+async fn delete_movie_file(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    delete_media_file_v3(&fs.state, &id).await
+}
+
+/// Shared file-delete path: resolve the file, recycle/unlink the bytes through the
+/// library-root-bounded [`recycle_or_delete`](cellarr_fs::recycle_or_delete) seam
+/// (the Pack-3a crash-safe path), then remove the row. The on-disk removal runs
+/// *before* the row is dropped, so a refused escape (out-of-root path) surfaces as
+/// an error and leaves the row intact rather than orphaning a still-present file.
+async fn delete_media_file_v3(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
+    use cellarr_core::repo::MediaFileRepository;
+    let numeric = parse_i64(id, "file")?;
+    let Some(file) = resolve_media_file(state, numeric).await? else {
+        // Idempotent: a missing/already-deleted file still returns 200.
+        return Ok(Json(json!({})));
+    };
+    // Resolve the library root the file must stay within (via its owning node), so
+    // the recycle path has a boundary to enforce the escape guard against.
+    let owners = state.db.media_files().content_ids_for_file(file.id).await?;
+    if let Some(node) = first_owner_node(state, &owners).await? {
+        recycle_content_files(state, &node, std::slice::from_ref(&file.path)).await?;
+    }
+    // Bytes handled (or no owner to bound a delete against): drop the row.
+    state.db.media_files().delete(file.id).await?;
+    Ok(Json(json!({})))
+}
+
+/// The first owning content node for a set of content ids (used to bound a file
+/// recycle to its library root). `None` when the file is unlinked.
+async fn first_owner_node(
+    state: &AppState,
+    owners: &[cellarr_core::ContentId],
+) -> ApiResult<Option<cellarr_core::ContentNode>> {
+    for cid in owners {
+        if let Some(node) = state.db.content().get_node(*cid).await? {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
+}
+
+/// Project a [`MediaFileId`](cellarr_core::MediaFileId) onto the stable positive
+/// integer the v3 file `id` field requires.
+fn mf_numeric_id(id: cellarr_core::MediaFileId) -> i64 {
+    uuid_to_i64(id.as_uuid())
+}
+
+// --- collection (GET/PUT collection) ---------------------------------------
+
+/// v3 `GET /collection` — the Radarr collections cellarr knows about.
+///
+/// cellarr has no standalone collection store. The collection concept it *does*
+/// have is the **TMDb collection import list** (the auto-add-the-rest source: from
+/// a collection id, add every movie in the collection — see
+/// [`import_list_kind`]). So a collection here is one such import-list config: its
+/// `collection_id` setting is the TMDb collection, `monitored` is whether new
+/// collection members are added, and `quality_profile_id` is the profile they are
+/// added with. This is the honest, derived view — no new store, no migration.
+///
+/// Collections are a Radarr-only concept; the Sonarr face returns an empty list.
+async fn list_collections(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    if matches!(fs.face.fixed_media(), Some(MediaType::Tv)) {
+        return Ok(Json(vec![]));
+    }
+    use cellarr_core::ImportListRepository;
+    let lists = ImportListRepository::list(&fs.state.db.import_lists()).await?;
+    let out = lists
+        .iter()
+        .filter(|l| l.kind.eq_ignore_ascii_case("collection"))
+        .map(v3_collection)
+        .collect();
+    Ok(Json(out))
+}
+
+/// v3 `GET /collection/{id}` — one collection by its (projected) id.
+async fn get_collection(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "collection")?;
+    let Some(list) = find_collection_list(&fs, numeric).await? else {
+        return Err(ApiError::NotFound(format!("collection {id} not found")));
+    };
+    Ok(Json(v3_collection(&list)))
+}
+
+/// The v3 `collection` PUT body — the monitor toggle and (optional) quality
+/// profile a tool changes. Radarr also sends `searchOnAdd`/`minimumAvailability`
+/// (accepted and ignored — cellarr's monitored-missing sweep covers acquisition).
+#[derive(Debug, Deserialize, Default)]
+struct CollectionBody {
+    #[serde(default)]
+    monitored: Option<bool>,
+    #[serde(rename = "qualityProfileId", default)]
+    quality_profile_id: Option<Value>,
+}
+
+/// v3 `PUT /collection/{id}` — toggle a collection's monitored flag and/or its
+/// quality profile. Persists onto the backing import-list config (the
+/// `monitored` flag drives whether new collection members are added; the profile
+/// is the one they are added with), so the change is durable and round-trips.
+async fn update_collection(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<CollectionBody>,
+) -> ApiResult<Json<Value>> {
+    use cellarr_core::ImportListRepository;
+    let numeric = parse_i64(&id, "collection")?;
+    let Some(mut list) = find_collection_list(&fs, numeric).await? else {
+        return Err(ApiError::NotFound(format!("collection {id} not found")));
+    };
+    if let Some(monitored) = body.monitored {
+        list.monitored = monitored;
+    }
+    if let Some(qp) = body.quality_profile_id {
+        // Accept both the string id cellarr stores and a JSON number/string from a
+        // tool; an explicit null clears the pin (fall back to the library default).
+        list.quality_profile_id = match qp {
+            Value::Null => None,
+            Value::String(s) if s.is_empty() => None,
+            Value::String(s) => Some(s),
+            other => Some(other.to_string()),
+        };
+    }
+    fs.state.db.import_lists().upsert(&list).await?;
+    Ok(Json(v3_collection(&list)))
+}
+
+/// Find the collection import-list whose projected id is `numeric`.
+async fn find_collection_list(
+    fs: &FaceState,
+    numeric: i64,
+) -> ApiResult<Option<cellarr_core::ImportListConfig>> {
+    use cellarr_core::ImportListRepository;
+    Ok(ImportListRepository::list(&fs.state.db.import_lists())
+        .await?
+        .into_iter()
+        .find(|l| l.kind.eq_ignore_ascii_case("collection") && il_numeric_id(&l.id) == numeric))
+}
+
+/// Render a collection import-list config into the v3 Radarr collection shape.
+/// `tmdbId` is the collection id from the list's `collection_id` setting (0 when
+/// unset); `movies` is left empty (cellarr does not enumerate a collection's
+/// members until a sync runs — a // TODO below).
+fn v3_collection(l: &cellarr_core::ImportListConfig) -> Value {
+    let tmdb_id = l
+        .settings
+        .get("collection_id")
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        })
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    let quality_profile = l
+        .quality_profile_id
+        .as_deref()
+        .map_or(Value::Null, |s| json!(s));
+    json!({
+        "id": il_numeric_id(&l.id),
+        "title": l.name,
+        "tmdbId": tmdb_id,
+        "monitored": l.monitored,
+        "qualityProfileId": quality_profile,
+        // cellarr discovers collection members at sync time via the import-list
+        // source, not eagerly; the per-member list is therefore not derivable here
+        // without a fetch.
+        // TODO: populate `movies` from a cached collection-member list once the
+        // TMDb collection source persists its last fetch.
+        "movies": [],
+        "searchOnAdd": false,
+        "minimumAvailability": "released",
+    })
+}
+
+// --- metadata (GET/PUT metadata) -------------------------------------------
+
+/// The stable id of the single metadata consumer cellarr exposes (the Kodi/Jellyfin
+/// `.nfo` sidecar writer). A fixed small integer the *arr clients can address.
+const NFO_METADATA_ID: i64 = 1;
+
+/// v3 `GET /metadata` — the metadata consumers (Sonarr/Radarr "Metadata"
+/// settings). cellarr has one: the Kodi/Jellyfin `.nfo` sidecar export, whose
+/// enable flag is the media-management `write_nfo` setting. Returns the single
+/// consumer with its current enabled state.
+async fn list_metadata_consumers(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let enabled = fs.state.db.config().get_media_management().await?.write_nfo;
+    Ok(Json(vec![v3_metadata_consumer(enabled)]))
+}
+
+/// v3 `GET /metadata/{id}` — the single metadata consumer by id.
+async fn get_metadata_consumer(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "metadata")?;
+    if numeric != NFO_METADATA_ID {
+        return Err(ApiError::NotFound(format!(
+            "metadata consumer {id} not found"
+        )));
+    }
+    let enabled = fs.state.db.config().get_media_management().await?.write_nfo;
+    Ok(Json(v3_metadata_consumer(enabled)))
+}
+
+/// The v3 metadata-consumer PUT body. The originals carry `enable` plus a
+/// `fields[]` set of per-artifact toggles; cellarr reads the single `enable` flag
+/// (mapped to `write_nfo`) and accepts the rest.
+#[derive(Debug, Deserialize, Default)]
+struct MetadataBody {
+    #[serde(default)]
+    enable: Option<bool>,
+}
+
+/// v3 `PUT /metadata/{id}` — enable/disable the `.nfo` consumer. Persists onto the
+/// media-management `write_nfo` setting, so the next import respects it.
+async fn update_metadata_consumer(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<MetadataBody>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "metadata")?;
+    if numeric != NFO_METADATA_ID {
+        return Err(ApiError::NotFound(format!(
+            "metadata consumer {id} not found"
+        )));
+    }
+    let cfg = fs.state.db.config();
+    let mut mm = cfg.get_media_management().await?;
+    if let Some(enable) = body.enable {
+        mm.write_nfo = enable;
+    }
+    cfg.set_media_management(&mm).await?;
+    Ok(Json(v3_metadata_consumer(mm.write_nfo)))
+}
+
+/// Render the `.nfo` metadata consumer in the Sonarr/Radarr metadata-resource
+/// shape: identity + the `enable` flag + the per-artifact `fields[]` (all true:
+/// cellarr writes the movie/series/episode metadata sidecars together).
+fn v3_metadata_consumer(enabled: bool) -> Value {
+    json!({
+        "id": NFO_METADATA_ID,
+        "name": "Kodi (XBMC) / Emby / Jellyfin",
+        "implementation": "XbmcMetadata",
+        "implementationName": "Kodi (XBMC) / Emby / Jellyfin",
+        "configContract": "XbmcMetadataSettings",
+        "enable": enabled,
+        "tags": [],
+        "fields": [
+            { "name": "movieMetadata", "value": enabled },
+            { "name": "seriesMetadata", "value": enabled },
+            { "name": "episodeMetadata", "value": enabled },
+        ],
+    })
+}
+
+// --- update (GET /update, /system/update) ----------------------------------
+
+/// v3 `GET /update` and `GET /system/update` — the application-update history the
+/// originals' "Updates" screen reads.
+///
+/// cellarr is a single static binary with **no auto-update mechanism** (the user
+/// replaces the binary / pulls a new image out of band). There are therefore no
+/// update packages to report. We return an empty array — a valid, well-formed v3
+/// response — rather than a 404, so an ecosystem client that polls this endpoint
+/// (e.g. a dashboard's "update available?" check) gets a clean "nothing to update"
+/// instead of an error. The shape is the v3 `UpdateResource` list (empty).
+async fn list_updates() -> Json<Vec<Value>> {
+    // No-op stub: cellarr does not self-update. An empty list is the correct
+    // "you are up to date / nothing to install" answer for the Updates screen.
+    Json(vec![])
 }
 
 #[cfg(test)]
