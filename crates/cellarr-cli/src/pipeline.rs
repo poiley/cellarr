@@ -571,6 +571,18 @@ impl LivePipelineEnv {
             .await
             .map_err(|e| format!("loading delay profiles failed: {e}"))?;
 
+        // Release profiles gate and score a candidate by its required / ignored /
+        // preferred terms (an ignored term or unmet required-term profile rejects;
+        // matching preferred terms add to the score). Loaded so the decision engine
+        // applies every enabled one whose tags match the node; an empty set (the
+        // default) gates and scores nothing.
+        let release_profiles = self
+            .db
+            .profiles()
+            .list_release_profiles()
+            .await
+            .map_err(|e| format!("loading release profiles failed: {e}"))?;
+
         // The library-wide media-management settings drive the on-disk naming
         // format (per media type), the post-commit chmod/chown policy, and the
         // extra-file import policy. Absent settings resolve to defaults, preserving
@@ -622,6 +634,7 @@ impl LivePipelineEnv {
             // default). Best-effort, post-commit, so it never affects crash safety.
             write_nfo: true,
             delay_profiles,
+            release_profiles,
             // The node's real tags: labels for the label-keyed delay profiles,
             // ids for the id-keyed indexer/client/notification restrictions.
             content_tags,

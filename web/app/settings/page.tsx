@@ -15,6 +15,7 @@ import QualityProfiles from '@app/settings/_components/QualityProfiles';
 import QualityDefinitions from '@app/settings/_components/QualityDefinitions';
 import CustomFormats from '@app/settings/_components/CustomFormats';
 import DelayProfiles from '@app/settings/_components/DelayProfiles';
+import ReleaseProfiles from '@app/settings/_components/ReleaseProfiles';
 import IntegrationSection from '@app/settings/_components/IntegrationSection';
 import ImportLists from '@app/settings/_components/ImportLists';
 import RootFolders from '@app/settings/_components/RootFolders';
@@ -30,6 +31,7 @@ type Section =
   | 'definitions'
   | 'formats'
   | 'delays'
+  | 'releaseprofiles'
   | 'indexers'
   | 'clients'
   | 'importlists'
@@ -46,6 +48,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'definitions', label: 'Quality Definitions' },
   { id: 'formats', label: 'Custom Formats' },
   { id: 'delays', label: 'Delay Profiles' },
+  { id: 'releaseprofiles', label: 'Release Profiles' },
   { id: 'indexers', label: 'Indexers' },
   { id: 'clients', label: 'Download Clients' },
   { id: 'importlists', label: 'Import Lists' },
@@ -79,6 +82,7 @@ export default function Page() {
         {section === 'definitions' ? <QualityDefinitions /> : null}
         {section === 'formats' ? <CustomFormats /> : null}
         {section === 'delays' ? <DelayProfiles /> : null}
+        {section === 'releaseprofiles' ? <ReleaseProfiles /> : null}
         {section === 'indexers' ? (
           <IntegrationSection
             kind="indexers"

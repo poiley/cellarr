@@ -91,6 +91,10 @@ id_newtype!(
     DelayProfileId
 );
 id_newtype!(
+    /// Identifies a release profile.
+    ReleaseProfileId
+);
+id_newtype!(
     /// Correlates all log/history records produced by one pipeline run.
     PipelineRunId
 );

@@ -95,6 +95,8 @@ fn ctx<'a>(
         indexer_criteria: IndexerCriteria::default(),
         indexer_priority: 0,
         content_runtime,
+        release_profiles: &[],
+        content_tags: &[],
     }
 }
 

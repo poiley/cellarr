@@ -69,6 +69,9 @@ import type {
   QualityDefinition,
   QualityDefinitionBody,
   QualityProfile,
+  ReleaseProfile,
+  ReleaseProfileBody,
+  ReleaseProfileSchema,
   QueueEntry,
   QueueGrabResult,
   QueueRecord,
@@ -694,6 +697,49 @@ export class CellarrClient {
 
   deleteDelayProfile(id: number, signal?: AbortSignal) {
     return this.requestV3<void>(`/delayprofile/${id}`, { method: 'DELETE', signal });
+  }
+
+  // =========================================================================
+  // Release profiles (Sonarr-compatible /api/v3)
+  // =========================================================================
+
+  /** Release profiles (`GET /api/v3/releaseprofile`). */
+  getReleaseProfiles(signal?: AbortSignal) {
+    return this.requestV3<ReleaseProfile[]>('/releaseprofile', { signal });
+  }
+
+  /** A single release profile (`GET /api/v3/releaseprofile/{id}`). */
+  getReleaseProfile(id: number, signal?: AbortSignal) {
+    return this.requestV3<ReleaseProfile>(`/releaseprofile/${id}`, { signal });
+  }
+
+  /**
+   * The editor template for a release profile
+   * (`GET /api/v3/releaseprofile/schema`) — the blank object shape plus the
+   * `fields[]` describing each editable input.
+   */
+  getReleaseProfileSchema(signal?: AbortSignal) {
+    return this.requestV3<ReleaseProfileSchema>('/releaseprofile/schema', { signal });
+  }
+
+  createReleaseProfile(body: ReleaseProfileBody, signal?: AbortSignal) {
+    return this.requestV3<ReleaseProfile>('/releaseprofile', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  }
+
+  updateReleaseProfile(id: number, body: ReleaseProfileBody, signal?: AbortSignal) {
+    return this.requestV3<ReleaseProfile>(`/releaseprofile/${id}`, {
+      method: 'PUT',
+      body,
+      signal,
+    });
+  }
+
+  deleteReleaseProfile(id: number, signal?: AbortSignal) {
+    return this.requestV3<void>(`/releaseprofile/${id}`, { method: 'DELETE', signal });
   }
 
   // =========================================================================

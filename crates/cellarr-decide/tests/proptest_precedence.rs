@@ -168,6 +168,8 @@ proptest! {
             indexer_criteria: Default::default(),
             indexer_priority: 0,
             content_runtime: None,
+            release_profiles: &[],
+            content_tags: &[],
         };
         // On-disk file: the better quality, with CF score 0 (so the candidate's
         // CF score is strictly higher — the temptation the rule must resist).
@@ -225,6 +227,8 @@ proptest! {
             indexer_criteria: Default::default(),
             indexer_priority: 0,
             content_runtime: None,
+            release_profiles: &[],
+            content_tags: &[],
         };
         let existing = OnDiskFile {
             file_id: MediaFileId::new(),
@@ -308,6 +312,8 @@ proptest! {
             indexer_criteria: Default::default(),
             indexer_priority: 0,
             content_runtime: None,
+            release_profiles: &[],
+            content_tags: &[],
         };
         // decide returns Result (InvalidRegex is an error, not a panic); both
         // arms are acceptable — the property is only that it does not panic.

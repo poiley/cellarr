@@ -248,6 +248,7 @@ fn runner_config(
         remote_path_mappings: mappings,
         write_nfo: false,
         delay_profiles: Vec::new(),
+        release_profiles: Vec::new(),
         content_tags: Vec::new(),
         permissions: Default::default(),
         extra_files: Default::default(),

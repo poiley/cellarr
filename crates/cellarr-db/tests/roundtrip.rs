@@ -17,7 +17,8 @@ use cellarr_core::{
     CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, DownloadClientConfig,
     DownloadClientId, Grab, GrabRequest, GrabStatus, IndexerConfig, IndexerId, Library, LibraryId,
     MediaFile, MediaFileId, MediaType, NotificationConfig, PipelineRunId, PreferredProtocol,
-    Protocol, QualityDefinition, QualityProfile, QualityProfileId, Release, RootFolder, Source,
+    PreferredTerm, Protocol, QualityDefinition, QualityProfile, QualityProfileId, Release,
+    ReleaseProfile, ReleaseProfileId, RootFolder, Source,
 };
 use cellarr_db::Database;
 use tempfile::TempDir;
@@ -1560,6 +1561,91 @@ async fn delay_profile_crud_round_trip() {
     assert!(profiles.delete_delay_profile(dp.id).await.expect("delete"));
     assert!(!profiles.delete_delay_profile(dp.id).await.expect("delete2"));
     assert_eq!(profiles.list_delay_profiles().await.expect("list").len(), 1);
+}
+
+#[tokio::test]
+async fn release_profile_crud_round_trip() {
+    let (_dir, db) = temp_db().await;
+    let profiles = db.profiles();
+
+    let rp = ReleaseProfile {
+        id: ReleaseProfileId::new(),
+        name: "anime".to_string(),
+        enabled: true,
+        tags: vec![3, 7],
+        required: vec!["bluray".to_string(), "/x26[45]/".to_string()],
+        ignored: vec!["cam".to_string()],
+        preferred: vec![
+            PreferredTerm {
+                term: "remux".to_string(),
+                score: 100,
+            },
+            PreferredTerm {
+                term: "/atmos/".to_string(),
+                score: -25,
+            },
+        ],
+    };
+    profiles.upsert_release_profile(&rp).await.expect("upsert");
+
+    // GET + LIST return it losslessly (terms, scores, tag ids all round-trip).
+    assert_eq!(
+        profiles
+            .get_release_profile(rp.id)
+            .await
+            .expect("get")
+            .expect("present"),
+        rp
+    );
+    assert_eq!(
+        profiles.list_release_profiles().await.expect("list"),
+        vec![rp.clone()]
+    );
+
+    // UPDATE (same id) replaces it.
+    let rp2 = ReleaseProfile {
+        id: rp.id,
+        name: "anime-v2".to_string(),
+        enabled: false,
+        tags: Vec::new(),
+        required: Vec::new(),
+        ignored: vec!["x265".to_string()],
+        preferred: Vec::new(),
+    };
+    profiles.upsert_release_profile(&rp2).await.expect("update");
+    assert_eq!(
+        profiles
+            .get_release_profile(rp.id)
+            .await
+            .expect("get")
+            .expect("present"),
+        rp2
+    );
+
+    // A second profile; list is ordered by name ascending.
+    let second = ReleaseProfile::new("aardvark");
+    profiles
+        .upsert_release_profile(&second)
+        .await
+        .expect("upsert2");
+    let ordered = profiles.list_release_profiles().await.expect("list");
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].name, "aardvark", "name-ascending");
+    assert_eq!(ordered[1].name, "anime-v2");
+
+    // DELETE removes one, idempotently.
+    assert!(profiles
+        .delete_release_profile(rp.id)
+        .await
+        .expect("delete"));
+    assert!(!profiles
+        .delete_release_profile(rp.id)
+        .await
+        .expect("delete2"));
+    assert_eq!(
+        profiles.list_release_profiles().await.expect("list").len(),
+        1
+    );
 }
 
 #[tokio::test]

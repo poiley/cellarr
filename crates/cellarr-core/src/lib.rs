@@ -38,6 +38,7 @@ pub mod parsed;
 pub mod pipeline;
 pub mod profile;
 pub mod release;
+pub mod releaseprofile;
 pub mod repo;
 pub mod tag;
 pub mod traits;
@@ -60,7 +61,7 @@ pub use error::{CoreError, Result};
 pub use history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 pub use ids::{
     ContentId, CustomFormatId, DelayProfileId, DownloadClientId, GrabId, IndexerId, LibraryId,
-    MediaFileId, PipelineRunId, QualityProfileId, TitleId,
+    MediaFileId, PipelineRunId, QualityProfileId, ReleaseProfileId, TitleId,
 };
 pub use importlist::{
     sync_import_list, CleanAction, FetchResult, ImportListConfig, ImportListExclusion,
@@ -84,6 +85,7 @@ pub use profile::{
     CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking, SizeVerdict,
 };
 pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType};
+pub use releaseprofile::{plain_term_matches, regex_term, PreferredTerm, ReleaseProfile};
 pub use repo::{
     ContentRepository, DecisionLogRepository, DeletedContent, GrabRepository, HistoryRepository,
     MediaFileRepository, ProfileRepository,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use cellarr_core::repo::ProfileRepository;
 use cellarr_core::{
     CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, QualityDefinition, QualityProfile,
-    QualityProfileId, QualityRanking,
+    QualityProfileId, QualityRanking, ReleaseProfile, ReleaseProfileId,
 };
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -325,6 +325,99 @@ impl ProfileRepo {
             .submit(move |conn| {
                 Box::pin(async move {
                     let result = sqlx::query("DELETE FROM delay_profile WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
+    /// Insert or replace a release profile.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on serialization or write failure.
+    pub async fn upsert_release_profile(&self, profile: &ReleaseProfile) -> Result<()> {
+        let id = profile.id.to_string();
+        let enabled = i64::from(profile.enabled);
+        let name = profile.name.clone();
+        let body = serde_json::to_string(profile)?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO release_profile (id, enabled, name, body) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(id) DO UPDATE SET
+                            enabled = excluded.enabled, name = excluded.name, body = excluded.body",
+                    )
+                    .bind(id)
+                    .bind(enabled)
+                    .bind(name)
+                    .bind(body)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// Fetch one release profile by its id, or `None` if absent.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on read or deserialization failure.
+    pub async fn get_release_profile(
+        &self,
+        id: ReleaseProfileId,
+    ) -> Result<Option<ReleaseProfile>> {
+        let row = sqlx::query("SELECT body FROM release_profile WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let body: String = row.try_get("body")?;
+        Ok(Some(serde_json::from_str(&body)?))
+    }
+
+    /// All release profiles, ordered by name, so the shim can list them and the
+    /// decision path can apply every enabled one whose tags match.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on read or deserialization failure.
+    pub async fn list_release_profiles(&self) -> Result<Vec<ReleaseProfile>> {
+        let rows = sqlx::query("SELECT body FROM release_profile ORDER BY name ASC")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let body: String = row.try_get("body")?;
+                serde_json::from_str(&body).map_err(DbError::from)
+            })
+            .collect()
+    }
+
+    /// Delete a release profile by id.
+    ///
+    /// Idempotent: returns `true` if a row was removed, `false` otherwise.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_release_profile(&self, id: ReleaseProfileId) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM release_profile WHERE id = ?1")
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;

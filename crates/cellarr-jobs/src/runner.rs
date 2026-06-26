@@ -324,6 +324,13 @@ pub struct RunnerConfig {
     /// default) imposes no delay. The governing profile is resolved per run via
     /// [`cellarr_core::resolve_delay_profile`] against [`content_tags`](Self::content_tags).
     pub delay_profiles: Vec<cellarr_core::DelayProfile>,
+    /// The configured release profiles. Each enabled profile whose tags match the
+    /// content (by id, via [`content_tag_ids`](Self::content_tag_ids)) gates and
+    /// scores a candidate by its required / ignored / preferred terms: an ignored
+    /// term or an unmet required-term profile rejects the release, and matching
+    /// preferred terms add their score to its total (alongside the custom-format
+    /// score, influencing ranking). Empty (the default) gates and scores nothing.
+    pub release_profiles: Vec<cellarr_core::ReleaseProfile>,
     /// The tag **labels** on the content this runner acquires, used to resolve
     /// which delay profile applies (delay profiles scope by case-insensitive
     /// label). Empty selects the catch-all (tagless) profile.
@@ -1182,6 +1189,8 @@ where
             indexer_criteria: criteria,
             indexer_priority: priority,
             content_runtime,
+            release_profiles: &self.config.release_profiles,
+            content_tags: &self.config.content_tag_ids,
         };
         decide(content_ref.clone(), release, parsed, on_disk, &ctx)
             .map_err(|e| JobError::stage(Stage::Decide, e))
@@ -2457,6 +2466,10 @@ fn reason_text(reason: &cellarr_core::RejectReason) -> String {
         R::LanguageRequirementUnmet => "required language missing".into(),
         R::InsufficientSeeders => "below indexer minimum seeders".into(),
         R::RequiredFlagMissing => "missing required indexer flag (e.g. freeleech)".into(),
+        R::ReleaseProfileIgnoredTerm { term } => {
+            format!("rejected by release-profile ignored term: {term}")
+        }
+        R::ReleaseProfileRequiredTermMissing => "missing a release-profile required term".into(),
         R::CutoffAlreadyMet => "cutoff already met".into(),
         R::NotAnUpgrade => "not an upgrade over existing file".into(),
         R::Other { detail } => detail.clone(),

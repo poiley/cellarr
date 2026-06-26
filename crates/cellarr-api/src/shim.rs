@@ -152,6 +152,12 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/delayProfile", get(list_delay_profiles))
         .route("/delayprofile/{id}", get(get_delay_profile))
         .route("/delayProfile/{id}", get(get_delay_profile))
+        .route("/releaseprofile", get(list_release_profiles))
+        .route("/releaseProfile", get(list_release_profiles))
+        .route("/releaseprofile/schema", get(release_profile_schema))
+        .route("/releaseProfile/schema", get(release_profile_schema))
+        .route("/releaseprofile/{id}", get(get_release_profile))
+        .route("/releaseProfile/{id}", get(get_release_profile))
         .route("/indexer", get(list_indexers))
         .route("/indexer/schema", get(indexer_schema))
         .route("/downloadclient", get(list_download_clients))
@@ -242,6 +248,12 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/delayProfile/{id}", put(update_delay_profile))
         .route("/delayprofile/{id}", delete(delete_delay_profile))
         .route("/delayProfile/{id}", delete(delete_delay_profile))
+        .route("/releaseprofile", post(create_release_profile))
+        .route("/releaseProfile", post(create_release_profile))
+        .route("/releaseprofile/{id}", put(update_release_profile))
+        .route("/releaseProfile/{id}", put(update_release_profile))
+        .route("/releaseprofile/{id}", delete(delete_release_profile))
+        .route("/releaseProfile/{id}", delete(delete_release_profile))
         .route("/indexer", post(create_indexer))
         .route("/indexer/{id}", put(update_indexer))
         .route("/indexer/{id}", delete(delete_indexer))
@@ -2128,6 +2140,184 @@ async fn find_delay_profile_by_numeric(
         .into_iter()
         .find(|dp| dp_numeric_id(dp.id) == numeric)
         .ok_or_else(|| ApiError::NotFound(format!("delay profile {id} not found")))
+}
+
+// --- releaseprofile --------------------------------------------------------
+
+/// Render a cellarr [`ReleaseProfile`](cellarr_core::ReleaseProfile) into the v3
+/// release-profile shape the ecosystem reads back. Mirrors Sonarr's fields:
+/// `name`, `enabled`, `required`/`ignored` term arrays, the `preferred` list of
+/// `{key, value}` (term + score), and the integer `tags`.
+fn v3_release_profile(rp: &cellarr_core::ReleaseProfile) -> Value {
+    let preferred: Vec<Value> = rp
+        .preferred
+        .iter()
+        .map(|p| json!({ "key": p.term, "value": p.score }))
+        .collect();
+    json!({
+        "id": rp_numeric_id(rp.id),
+        "name": rp.name,
+        "enabled": rp.enabled,
+        "required": rp.required,
+        "ignored": rp.ignored,
+        "preferred": preferred,
+        "includePreferredWhenRenaming": false,
+        // Sonarr scopes a release profile to a single indexer (0 = any). cellarr
+        // has no per-indexer release-profile scoping, so it is always "any".
+        "indexerId": 0,
+        "tags": rp.tags,
+    })
+}
+
+/// One `{key, value}` preferred-term entry in the v3 release-profile write body.
+#[derive(Debug, Deserialize)]
+struct PreferredTermBody {
+    /// The preferred term (the `key`).
+    key: String,
+    /// The score the term contributes (the `value`).
+    #[serde(default)]
+    value: i32,
+}
+
+/// The v3 release-profile write body (the Sonarr shape). `preferred` accepts the
+/// `[{key, value}]` form the ecosystem sends.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseProfileBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    required: Vec<String>,
+    #[serde(default)]
+    ignored: Vec<String>,
+    #[serde(default)]
+    preferred: Vec<PreferredTermBody>,
+    #[serde(default)]
+    tags: Vec<u32>,
+}
+
+/// Build a cellarr [`ReleaseProfile`](cellarr_core::ReleaseProfile) from a write
+/// body, preserving `id` (updates) or minting a fresh one (creates).
+fn release_profile_from_body(
+    id: cellarr_core::ReleaseProfileId,
+    body: &ReleaseProfileBody,
+) -> cellarr_core::ReleaseProfile {
+    cellarr_core::ReleaseProfile {
+        id,
+        name: body.name.clone().unwrap_or_default(),
+        enabled: body.enabled.unwrap_or(true),
+        tags: body.tags.clone(),
+        required: body.required.clone(),
+        ignored: body.ignored.clone(),
+        preferred: body
+            .preferred
+            .iter()
+            .map(|p| cellarr_core::PreferredTerm {
+                term: p.key.clone(),
+                score: p.value,
+            })
+            .collect(),
+    }
+}
+
+async fn list_release_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
+    let profiles = fs.state.db.profiles().list_release_profiles().await?;
+    Ok(Json(profiles.iter().map(v3_release_profile).collect()))
+}
+
+async fn get_release_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let rp = find_release_profile_by_numeric(&fs, &id).await?;
+    Ok(Json(v3_release_profile(&rp)))
+}
+
+async fn create_release_profile(
+    State(fs): State<FaceState>,
+    Json(body): Json<ReleaseProfileBody>,
+) -> ApiResult<Json<Value>> {
+    let rp = release_profile_from_body(cellarr_core::ReleaseProfileId::new(), &body);
+    fs.state.db.profiles().upsert_release_profile(&rp).await?;
+    Ok(Json(v3_release_profile(&rp)))
+}
+
+async fn update_release_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReleaseProfileBody>,
+) -> ApiResult<Json<Value>> {
+    let existing = find_release_profile_by_numeric(&fs, &id).await?;
+    let rp = release_profile_from_body(existing.id, &body);
+    fs.state.db.profiles().upsert_release_profile(&rp).await?;
+    Ok(Json(v3_release_profile(&rp)))
+}
+
+async fn delete_release_profile(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "releaseprofile")?;
+    if let Some(rp) = fs
+        .state
+        .db
+        .profiles()
+        .list_release_profiles()
+        .await?
+        .into_iter()
+        .find(|rp| rp_numeric_id(rp.id) == numeric)
+    {
+        fs.state.db.profiles().delete_release_profile(rp.id).await?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// Resolve a v3 numeric releaseprofile id back to its cellarr
+/// [`ReleaseProfile`](cellarr_core::ReleaseProfile), 404ing when none projects
+/// onto it.
+async fn find_release_profile_by_numeric(
+    fs: &FaceState,
+    id: &str,
+) -> ApiResult<cellarr_core::ReleaseProfile> {
+    let numeric = parse_i64(id, "releaseprofile")?;
+    fs.state
+        .db
+        .profiles()
+        .list_release_profiles()
+        .await?
+        .into_iter()
+        .find(|rp| rp_numeric_id(rp.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("release profile {id} not found")))
+}
+
+/// v3 `releaseprofile/schema` — the spec of a release profile's editable fields,
+/// so a client can render the editor (the required/ignored term lists, the
+/// preferred `{key, value}` list, the enabled flag, and tags).
+async fn release_profile_schema() -> Json<Value> {
+    Json(json!({
+        "enabled": true,
+        "required": [],
+        "ignored": [],
+        "preferred": [],
+        "includePreferredWhenRenaming": false,
+        "indexerId": 0,
+        "tags": [],
+        // A description of each field's shape, for an editor building the form.
+        "fields": [
+            { "name": "name", "type": "textbox", "label": "Name" },
+            { "name": "enabled", "type": "checkbox", "label": "Enabled" },
+            { "name": "required", "type": "termList", "label": "Must Contain",
+              "helpText": "A release must contain at least one of these terms (plain substring, or /regex/)." },
+            { "name": "ignored", "type": "termList", "label": "Must Not Contain",
+              "helpText": "A release containing any of these terms is rejected (plain substring, or /regex/)." },
+            { "name": "preferred", "type": "keyValueList", "label": "Preferred",
+              "keyLabel": "Term", "valueLabel": "Score",
+              "helpText": "Each matching term adds its score to the release (negative demotes); /regex/ supported." },
+            { "name": "tags", "type": "tagSelect", "label": "Tags" },
+        ],
+    }))
 }
 
 // --- indexer ---------------------------------------------------------------
@@ -6110,6 +6300,12 @@ fn cf_numeric_id(id: cellarr_core::CustomFormatId) -> i64 {
 /// Project a [`DelayProfileId`](cellarr_core::DelayProfileId) onto a stable
 /// positive integer the v3 `id` field requires.
 fn dp_numeric_id(id: cellarr_core::DelayProfileId) -> i64 {
+    uuid_to_i64(id.as_uuid())
+}
+
+/// Project a [`ReleaseProfileId`](cellarr_core::ReleaseProfileId) onto a stable
+/// positive integer the v3 `id` field requires.
+fn rp_numeric_id(id: cellarr_core::ReleaseProfileId) -> i64 {
     uuid_to_i64(id.as_uuid())
 }
 

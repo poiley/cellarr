@@ -363,6 +363,73 @@ export interface DelayProfileBody {
   order: number;
 }
 
+/**
+ * One preferred-term scoring entry on a release profile: a match term
+ * (plain substring or `/regex/`) and the score added when it matches. Mirrors
+ * Sonarr's `preferred[]` `{ key, value }` shape exactly.
+ */
+export interface ReleaseProfilePreferred {
+  /** The match term — a plain substring or a `/regex/`. */
+  key: string;
+  /** The score added to a release when the term matches (may be negative). */
+  value: number;
+}
+
+/**
+ * A release profile exactly as the v3 shim serializes it
+ * (`GET /api/v3/releaseprofile`, alias `/releaseProfile`). Sonarr-compatible:
+ * `required` terms a release MUST contain, `ignored` terms that reject it, and
+ * `preferred` terms that nudge its score. `id` is a stable JS-safe numeric
+ * projection; empty `tags` means the profile applies everywhere.
+ */
+export interface ReleaseProfile {
+  id: number;
+  name: string;
+  enabled: boolean;
+  required: string[];
+  ignored: string[];
+  preferred: ReleaseProfilePreferred[];
+  includePreferredWhenRenaming: boolean;
+  indexerId: number;
+  tags: number[];
+  [key: string]: unknown;
+}
+
+/** The v3 release-profile write body (`POST`/`PUT /api/v3/releaseprofile`). */
+export interface ReleaseProfileBody {
+  name?: string;
+  enabled?: boolean;
+  required: string[];
+  ignored: string[];
+  preferred: ReleaseProfilePreferred[];
+  tags: number[];
+}
+
+/** A field in the release-profile editor schema (`fields[]`). */
+export interface ReleaseProfileSchemaField {
+  name: 'name' | 'enabled' | 'required' | 'ignored' | 'preferred' | 'tags' | string;
+  type?: string;
+  label?: string;
+  helpText?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * The release-profile editor template (`GET /api/v3/releaseprofile/schema`):
+ * the blank object shape plus the `fields[]` describing each editable input.
+ */
+export interface ReleaseProfileSchema {
+  enabled: boolean;
+  required: string[];
+  ignored: string[];
+  preferred: ReleaseProfilePreferred[];
+  includePreferredWhenRenaming: boolean;
+  indexerId: number;
+  tags: number[];
+  fields: ReleaseProfileSchemaField[];
+  [key: string]: unknown;
+}
+
 /** A v3 provider field (indexer / download-client settings entry). */
 export interface ProviderField {
   name: string;

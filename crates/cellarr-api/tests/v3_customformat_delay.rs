@@ -470,3 +470,178 @@ async fn delayprofile_create_list_update_delete_roundtrip() {
         .expect("delete 2");
     assert_eq!(del2.status(), 200);
 }
+
+// --- release-profile CRUD + schema -----------------------------------------
+
+#[tokio::test]
+async fn releaseprofile_schema_lists_the_spec() {
+    let server = start_open().await;
+    let client = server.client();
+    let schema: Value = client
+        .get(server.url("/api/v3/releaseprofile/schema"))
+        .send()
+        .await
+        .expect("schema request")
+        .json()
+        .await
+        .expect("schema json");
+    // The schema spells out the editable fields (required / ignored / preferred /
+    // enabled / tags) so a client can build the form.
+    let names: Vec<&str> = schema["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    for expected in [
+        "name",
+        "enabled",
+        "required",
+        "ignored",
+        "preferred",
+        "tags",
+    ] {
+        assert!(names.contains(&expected), "schema missing field {expected}");
+    }
+    // The empty-form defaults are present.
+    assert!(schema["required"].is_array());
+    assert!(schema["ignored"].is_array());
+    assert!(schema["preferred"].is_array());
+}
+
+#[tokio::test]
+async fn releaseprofile_create_list_update_delete_roundtrip() {
+    let server = start_open().await;
+    let client = server.client();
+
+    let created: Value = client
+        .post(server.url("/api/v3/releaseProfile"))
+        .json(&json!({
+            "name": "anime",
+            "enabled": true,
+            "required": ["bluray", "/x26[45]/"],
+            "ignored": ["cam"],
+            "preferred": [
+                { "key": "remux", "value": 100 },
+                { "key": "/atmos/", "value": -25 },
+            ],
+            "tags": [3, 7],
+        }))
+        .send()
+        .await
+        .expect("create")
+        .json()
+        .await
+        .expect("create json");
+    assert_eq!(created["name"], "anime");
+    assert_eq!(created["enabled"], true);
+    assert_eq!(created["required"], json!(["bluray", "/x26[45]/"]));
+    assert_eq!(created["ignored"], json!(["cam"]));
+    assert_eq!(
+        created["preferred"],
+        json!([
+            { "key": "remux", "value": 100 },
+            { "key": "/atmos/", "value": -25 },
+        ])
+    );
+    assert_eq!(created["tags"], json!([3, 7]));
+    let id = created["id"].as_i64().expect("numeric id");
+    // The id is JS-safe.
+    assert!(id <= 9_007_199_254_740_991, "id must be JS-safe");
+
+    // LIST shows it.
+    let list: Value = client
+        .get(server.url("/api/v3/releaseprofile"))
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("list json");
+    let arr = list.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], id);
+
+    // GET by id.
+    let got: Value = client
+        .get(server.url(&format!("/api/v3/releaseprofile/{id}")))
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("get json");
+    assert_eq!(got["id"], id);
+    assert_eq!(got["name"], "anime");
+
+    // The persisted profile carries the typed fields (tag ids, terms, scores).
+    let stored = server
+        .state
+        .db
+        .profiles()
+        .list_release_profiles()
+        .await
+        .expect("list_release_profiles");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].tags, vec![3, 7]);
+    assert_eq!(stored[0].ignored, vec!["cam".to_string()]);
+    assert_eq!(stored[0].preferred[0].term, "remux");
+    assert_eq!(stored[0].preferred[0].score, 100);
+    assert_eq!(stored[0].preferred[1].score, -25);
+
+    // UPDATE: rename, disable, swap the term lists.
+    let updated: Value = client
+        .put(server.url(&format!("/api/v3/releaseprofile/{id}")))
+        .json(&json!({
+            "name": "anime-v2",
+            "enabled": false,
+            "required": [],
+            "ignored": ["x265"],
+            "preferred": [],
+            "tags": [],
+        }))
+        .send()
+        .await
+        .expect("update")
+        .json()
+        .await
+        .expect("update json");
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["name"], "anime-v2");
+    assert_eq!(updated["enabled"], false);
+    assert_eq!(updated["ignored"], json!(["x265"]));
+
+    let stored = server
+        .state
+        .db
+        .profiles()
+        .list_release_profiles()
+        .await
+        .expect("list_release_profiles");
+    assert!(!stored[0].enabled);
+    assert_eq!(stored[0].ignored, vec!["x265".to_string()]);
+    assert!(stored[0].preferred.is_empty());
+    assert!(stored[0].tags.is_empty());
+
+    // DELETE removes it, idempotently.
+    let del = client
+        .delete(server.url(&format!("/api/v3/releaseprofile/{id}")))
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(del.status(), 200);
+    assert!(server
+        .state
+        .db
+        .profiles()
+        .list_release_profiles()
+        .await
+        .expect("list_release_profiles")
+        .is_empty());
+    let del2 = client
+        .delete(server.url(&format!("/api/v3/releaseprofile/{id}")))
+        .send()
+        .await
+        .expect("delete 2");
+    assert_eq!(del2.status(), 200);
+}

@@ -13,13 +13,14 @@
 
 use cellarr_core::{
     ContentRef, CustomFormat, Decision, IndexerCriteria, MediaFileId, ParsedRelease, ProperRepack,
-    Protocol, Quality, QualityProfile, QualityRanking, RejectReason, Release, ReleaseType, Score,
-    SizeBound, SizeVerdict, Verdict,
+    Protocol, Quality, QualityProfile, QualityRanking, RejectReason, Release, ReleaseProfile,
+    ReleaseType, Score, SizeBound, SizeVerdict, Verdict,
 };
 
 use crate::error::DecideError;
 use crate::matching::MatchContext;
 use crate::quality::resolve_candidate_quality;
+use crate::releaseprofile::{evaluate_release_profile, ReleaseProfileVerdict};
 use crate::scoring::score;
 
 /// What is already on disk for the content node under consideration.
@@ -88,6 +89,18 @@ pub struct DecisionContext<'a> {
     /// when the runtime is unknown — in which case the size gate **fails open** (no
     /// size rejection), so a missing runtime never produces a false negative.
     pub content_runtime: Option<u32>,
+    /// The configured release profiles. Each *enabled* profile whose tags apply to
+    /// the content (via [`ReleaseProfile::applies_to`] against
+    /// [`content_tags`](Self::content_tags); an untagged profile is global) gates and
+    /// scores the candidate by its required / ignored / preferred terms: an ignored
+    /// term rejects, a required-but-unmatched profile rejects, and matching preferred
+    /// terms add their score to the candidate's total. Empty (the default) gates and
+    /// scores nothing.
+    pub release_profiles: &'a [ReleaseProfile],
+    /// The tag ids on the content under consideration, used to scope which release
+    /// profiles apply (by id, matching the rest of cellarr's id-keyed tag handling).
+    /// Empty leaves only the untagged (global) profiles applicable.
+    pub content_tags: &'a [u32],
 }
 
 /// The candidate's computed standing: quality + CF score, ready to compare.
@@ -123,6 +136,55 @@ pub fn decide(
 /// The pure verdict computation, factored out so it can be tested without
 /// constructing a [`MatchContext`] from scratch each time.
 fn decide_verdict(
+    candidate: &Release,
+    parsed: &ParsedRelease,
+    cf_score: i32,
+    on_disk: Option<OnDiskFile>,
+    ctx: &DecisionContext<'_>,
+) -> Verdict {
+    // Release-profile term gating + scoring. Each enabled profile whose tags apply
+    // to the content is evaluated against the release title: an ignored term or a
+    // required-but-unmatched profile is a hard reject; matching preferred terms add
+    // their score to the candidate's total alongside the custom-format score, so
+    // they influence the min-score gate and the upgrade/ranking comparison below.
+    let cf_score = match apply_release_profiles(candidate, cf_score, ctx) {
+        Ok(adjusted) => adjusted,
+        Err(reason) => return reject(reason),
+    };
+    decide_verdict_inner(candidate, parsed, cf_score, on_disk, ctx)
+}
+
+/// Apply every applicable release profile to the candidate: reject on an ignored
+/// term or an unmet required-term profile, otherwise return `cf_score` with every
+/// matching preferred-term score folded in.
+fn apply_release_profiles(
+    candidate: &Release,
+    cf_score: i32,
+    ctx: &DecisionContext<'_>,
+) -> Result<i32, RejectReason> {
+    let mut total = cf_score;
+    for profile in ctx.release_profiles {
+        if !profile.enabled || !profile.applies_to(ctx.content_tags) {
+            continue;
+        }
+        match evaluate_release_profile(profile, &candidate.title) {
+            ReleaseProfileVerdict::Ignored { term } => {
+                return Err(RejectReason::ReleaseProfileIgnoredTerm { term });
+            }
+            ReleaseProfileVerdict::RequiredMissing => {
+                return Err(RejectReason::ReleaseProfileRequiredTermMissing);
+            }
+            ReleaseProfileVerdict::Accept { preferred_score } => {
+                total = total.saturating_add(preferred_score);
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// The verdict computation once release-profile gating and scoring have already
+/// been folded into `cf_score`.
+fn decide_verdict_inner(
     candidate: &Release,
     parsed: &ParsedRelease,
     cf_score: i32,

@@ -77,6 +77,16 @@ pub enum RejectReason {
     /// The release is missing an indexer flag the indexer requires (e.g. a
     /// freeleech-only indexer rejecting a non-freeleech release).
     RequiredFlagMissing,
+    /// A release-profile **ignored** term matched the release title: the profile's
+    /// "must not contain" list rejected it. Carries the matched term so the log
+    /// reads "rejected by ignored term <term>".
+    ReleaseProfileIgnoredTerm {
+        /// The ignored term that matched the title.
+        term: String,
+    },
+    /// A release-profile has **required** terms ("must contain") but the release
+    /// title matched none of them, so it is rejected.
+    ReleaseProfileRequiredTermMissing,
     /// A file at or above both cutoffs already exists; nothing to do.
     CutoffAlreadyMet,
     /// An existing file is equal or better; no upgrade.
