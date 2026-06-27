@@ -1,0 +1,86 @@
+# cellarr on the program (rinzler) k3s cluster.
+#
+# Deployed to its OWN namespace (not the ArgoCD-managed arr-stack) so a direct
+# `kubectl apply` is safe and nothing prunes it. Multi-arch image, so NO
+# nodeSelector is needed on the mixed arm64/amd64 cluster.
+#
+# NAS mounts mirror radarr/sonarr exactly (hostPath to /mnt/unas-* — present on all
+# nodes, which is why those apps need no nodeSelector): config (the SQLite DB) on
+# the NAS, plus the shared media + downloads trees. Runs as UID/GID 1000 like the
+# linuxserver *arr apps so it can read/write the NAS dirs.
+#
+#   KUBECONFIG=~/.kube/program-cluster.yaml kubectl apply -f deploy/k8s/cellarr.yaml
+#
+# Service is ClusterIP — reach the UI with:
+#   kubectl -n cellarr port-forward svc/cellarr 9494:9494
+# Then point cellarr's root folder at /media and download-client path at /downloads
+# (the mounted NAS trees) from the UI, same as radarr/sonarr.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cellarr
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cellarr
+  namespace: cellarr
+  labels: { app: cellarr }
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # single SQLite writer
+  selector:
+    matchLabels: { app: cellarr }
+  template:
+    metadata:
+      labels: { app: cellarr }
+    spec:
+      securityContext: # match the linuxserver *arr apps (NAS dirs are owned 1000:1000)
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: cellarr
+          image: ghcr.io/poiley/cellarr:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 9494 }
+          env:
+            - { name: CELLARR_API__BIND, value: "0.0.0.0" }
+            - { name: CELLARR_API__PORT, value: "9494" }
+            - { name: CELLARR_DATA_DIR, value: "/data" }
+            - { name: TZ, value: "America/Los_Angeles" }
+          volumeMounts:
+            - { name: config, mountPath: /data } # cellarr's SQLite DB + config, on NAS
+            - { name: media, mountPath: /media }
+            - { name: downloads, mountPath: /downloads }
+          readinessProbe:
+            tcpSocket: { port: 9494 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9494 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: config
+          hostPath: { path: /mnt/unas-services/configs/cellarr, type: DirectoryOrCreate }
+        - name: media
+          hostPath: { path: /mnt/unas-media, type: Directory }
+        - name: downloads
+          hostPath: { path: /mnt/unas-downloads, type: Directory }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cellarr
+  namespace: cellarr
+  labels: { app: cellarr }
+spec:
+  type: ClusterIP
+  selector: { app: cellarr }
+  ports:
+    - { name: http, port: 9494, targetPort: 9494 }
