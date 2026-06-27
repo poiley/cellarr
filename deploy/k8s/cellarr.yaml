@@ -84,3 +84,33 @@ spec:
   selector: { app: cellarr }
   ports:
     - { name: http, port: 9494, targetPort: 9494 }
+---
+# Traefik ingress, mirroring the cluster convention (grafana/kavita/etc.):
+# <app>.rinzler.me + <app>.rinzler.cloud, TLS via cert-manager (letsencrypt-dns).
+# *.rinzler.cloud already resolves to the Traefik LB (192.168.1.210).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cellarr
+  namespace: cellarr
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: cellarr.rinzler.me
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: cellarr, port: { number: 9494 } } }
+    - host: cellarr.rinzler.cloud
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: cellarr, port: { number: 9494 } } }
+  tls:
+    - hosts: [cellarr.rinzler.me, cellarr.rinzler.cloud]
+      secretName: cellarr-tls
