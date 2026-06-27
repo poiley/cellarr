@@ -61,3 +61,30 @@ hunted:
 ids (functional end-to-end — the pipeline resolves ids->labels — but a v3-shape deviation; indexer/
 download-client/notification tags use integer ids). `/update` is intentionally a no-op stub. `/collection`
 is derived from import-list collection data, not a separate first-class collection store.
+
+---
+
+## Anime support
+
+A focused 2-pack program that took anime from ~70%-existing-infra (absolute-numbering model + DB column,
+anime-form parsing, the scene-mapping data layer) to genuinely working. Each pack gated by `just ci`,
+live + browser verified, fake-green hunted.
+
+- **Anime 1/2** (`11f0f0f`) — `SeriesType` {Standard, Daily, Anime} on the series (migration 0016,
+  behaviour-preserving default; v3 `seriesType` round-trip; repo resolves an episode's type from its
+  series root). And the headline fix: the absolute→episode **scene remap now runs in the live daemon** —
+  `boot.rs` constructs a `TvdbSceneMappings` provider and attaches it via `.with_scene_provider()` to all
+  three live seams (auto pipeline, interactive search, grab). Previously it was wired only in tests.
+  Remap is gated to anime-only (standard/daily untouched) and an unmapped/unlinked absolute is **held for
+  review, never guessed** to a wrong episode.
+- **Anime 2/2** (`b30d03e`) — anime episode naming format (`{Absolute Episode}`), applied in both
+  automatic and manual import for anime series, with **safe fallback** to the standard format when the
+  absolute is unknown (no broken names). `absoluteEpisodeNumber` on the v3 episode list. SRCL UI:
+  series-type selector (Add + content detail), absolute numbers in the episode/monitor tree, and the
+  anime naming field in Settings→Naming with token palette + live preview.
+
+**Honest deferrals:** no dedicated **AniDB** metadata source — identification + absolute↔season/episode
+mapping come from TheTVDB + the anime-lists/TheXEM scene-mapping data layer (the common path); the live
+remap requires a TheTVDB key + external mapping data (degrades offline-safe to standard numbering when
+absent). **Fansub release-group preferences** are expressed via Release Profiles (preferred/required/
+ignored terms), not a dedicated group-whitelist UI.
