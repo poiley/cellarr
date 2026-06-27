@@ -285,8 +285,25 @@ pub struct RunnerConfig {
     pub library_root: std::path::PathBuf,
     /// The naming format passed to the rename engine (cellarr-fs `render_name`),
     /// rendered against the media module's [`NamingTokens`]. The result is a
-    /// relative path joined onto `library_root`.
+    /// relative path joined onto `library_root`. This is the **standard** episode /
+    /// movie format; an anime episode with a known absolute number renders
+    /// [`anime_naming_format`](Self::anime_naming_format) instead (see
+    /// [`Self::naming_format_for_node`]).
     pub naming_format: String,
+    /// The composed **anime** episode naming format, used for a TV episode whose
+    /// series is [`SeriesType::Anime`] *and* whose absolute number is known (the
+    /// tokens carry `{Absolute Episode}`). Empty when this run's node is not an
+    /// anime series, in which case the standard [`naming_format`](Self::naming_format)
+    /// is always used. The graceful fallback (anime series, absolute unknown → the
+    /// standard format) keeps a broken name from ever rendering.
+    #[allow(clippy::doc_markdown)]
+    pub anime_naming_format: String,
+    /// The node's series type, resolved from the series root. Only
+    /// [`SeriesType::Anime`] enables the anime format; every other type (and any
+    /// non-TV node) uses the standard format. Defaulted to
+    /// [`SeriesType::Standard`](cellarr_core::SeriesType::Standard) for a run whose
+    /// node is not a TV series, preserving prior behavior.
+    pub series_type: cellarr_core::SeriesType,
     /// The indexer id grabs are attributed to (the seam itself is type-erased).
     pub indexer_id: IndexerId,
     /// The download client id grabs are attributed to.
@@ -1717,12 +1734,18 @@ where
             .await
             .map_err(|e| format!("naming tokens: {e}"))?;
 
+        let naming_format = naming_format_for_node(
+            &self.config.naming_format,
+            &self.config.anime_naming_format,
+            self.config.series_type,
+            matched_ref.media_type,
+            &tokens,
+        );
         let mut moves = Vec::with_capacity(sources.len());
         for source in &sources {
             let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-            let rel =
-                cellarr_fs::render_name(&self.config.naming_format, &with_ext_token(&tokens, ext))
-                    .map_err(|e| format!("render name: {e}"))?;
+            let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
+                .map_err(|e| format!("render name: {e}"))?;
             let dest = self.config.library_root.join(&rel);
             moves.push(PlannedMove {
                 source_path: source.to_string_lossy().into_owned(),
@@ -2369,7 +2392,13 @@ where
         // the wrong shape for this node). Render against the node's media-type
         // format so a TV node renders with the series format even when a movie
         // library was picked to build the config, and vice-versa.
-        let naming_format = naming_format_for(&self.config.naming_format, matched_ref.media_type);
+        let naming_format = naming_format_for_node(
+            &self.config.naming_format,
+            &self.config.anime_naming_format,
+            self.config.series_type,
+            matched_ref.media_type,
+            &tokens,
+        );
         let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
             .map_err(|e| format!("render name: {e}"))?;
         let dest = self.config.library_root.join(&rel);
@@ -2519,6 +2548,33 @@ fn naming_format_for(configured: &str, media_type: cellarr_core::MediaType) -> &
         return configured;
     }
     default_naming_format(media_type)
+}
+
+/// Choose the naming format to render for a node, honoring the anime episode
+/// format for an anime TV episode whose absolute number is known.
+///
+/// For a TV node whose series is [`SeriesType::Anime`] and whose `tokens` carry a
+/// non-empty `{Absolute Episode}` (see [`cellarr_fs::has_absolute_episode`]), the
+/// configured `anime_format` is used — falling through to the media-type fixer
+/// [`naming_format_for`] so a manual import across a mixed library still renders a
+/// correctly-shaped TV name. An anime episode with no reconciled absolute number,
+/// any non-anime series, and any non-TV node all use the standard `format`. This
+/// is the single place the standard-vs-anime selection lives so both the automatic
+/// and manual import paths agree.
+fn naming_format_for_node<'a>(
+    format: &'a str,
+    anime_format: &'a str,
+    series_type: cellarr_core::SeriesType,
+    media_type: cellarr_core::MediaType,
+    tokens: &cellarr_core::NamingTokens,
+) -> &'a str {
+    use cellarr_core::{MediaType, SeriesType};
+    let use_anime = media_type == MediaType::Tv
+        && series_type == SeriesType::Anime
+        && !anime_format.trim().is_empty()
+        && cellarr_fs::has_absolute_episode(tokens);
+    let chosen = if use_anime { anime_format } else { format };
+    naming_format_for(chosen, media_type)
 }
 
 /// The built-in per-media-type naming format — the safe default shape used when a
@@ -2827,6 +2883,78 @@ mod tests {
         let movie_default = naming_format_for(tv_fmt, MediaType::Movie);
         assert!(movie_default.contains("{Movie Title}"));
         assert!(movie_default.contains("{Release Year}"));
+    }
+
+    // --- naming_format_for_node: standard-vs-anime per-node selection --------
+
+    fn tv_tokens(with_absolute: bool) -> cellarr_core::NamingTokens {
+        let mut tokens = vec![
+            ("Series Title".to_string(), "Frieren".to_string()),
+            ("Season".to_string(), "01".to_string()),
+            ("Episode".to_string(), "13".to_string()),
+            ("Extension".to_string(), "mkv".to_string()),
+        ];
+        if with_absolute {
+            tokens.push(("Absolute Episode".to_string(), "013".to_string()));
+        }
+        cellarr_core::NamingTokens { tokens }
+    }
+
+    #[test]
+    fn naming_format_for_node_uses_anime_format_for_anime_episode_with_absolute() {
+        use cellarr_core::{MediaType, SeriesType};
+        let std_fmt = "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}";
+        let anime_fmt =
+            "{Series Title}/{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}";
+        // Anime + known absolute -> the anime format.
+        assert_eq!(
+            naming_format_for_node(
+                std_fmt,
+                anime_fmt,
+                SeriesType::Anime,
+                MediaType::Tv,
+                &tv_tokens(true),
+            ),
+            anime_fmt
+        );
+    }
+
+    #[test]
+    fn naming_format_for_node_falls_back_for_anime_without_absolute() {
+        use cellarr_core::{MediaType, SeriesType};
+        let std_fmt = "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}";
+        let anime_fmt =
+            "{Series Title}/{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}";
+        // Anime but no absolute token -> graceful fall back to the standard format.
+        assert_eq!(
+            naming_format_for_node(
+                std_fmt,
+                anime_fmt,
+                SeriesType::Anime,
+                MediaType::Tv,
+                &tv_tokens(false),
+            ),
+            std_fmt
+        );
+    }
+
+    #[test]
+    fn naming_format_for_node_ignores_anime_for_standard_series() {
+        use cellarr_core::{MediaType, SeriesType};
+        let std_fmt = "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}";
+        let anime_fmt =
+            "{Series Title}/{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}";
+        // A standard series never uses the anime format, even with an absolute token.
+        assert_eq!(
+            naming_format_for_node(
+                std_fmt,
+                anime_fmt,
+                SeriesType::Standard,
+                MediaType::Tv,
+                &tv_tokens(true),
+            ),
+            std_fmt
+        );
     }
 
     // --- coords_agree: the library-safety second-parse agreement -------------

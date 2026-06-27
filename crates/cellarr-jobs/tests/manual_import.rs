@@ -219,6 +219,8 @@ fn runner_config(root: PathBuf) -> RunnerConfig {
         proper_repack_policy: ProperRepackPolicy::default(),
         library_root: root,
         naming_format: "{Movie Title} ({Release Year})/{Movie Title}.{Extension}".into(),
+        anime_naming_format: String::new(),
+        series_type: cellarr_core::SeriesType::Standard,
         indexer_id: cellarr_core::IndexerId::new(),
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),

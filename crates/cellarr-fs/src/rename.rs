@@ -47,7 +47,7 @@
 //! spaces are all handled. [`RenderOptions`] tunes the colon replacement and the
 //! target platform.
 
-use cellarr_core::{MediaType, NameTarget, NamingTokens};
+use cellarr_core::{MediaType, NameTarget, NamingFormats, NamingTokens, SeriesType};
 
 use crate::error::{FsError, Result};
 
@@ -202,6 +202,40 @@ pub fn render_name_with(
     }
 
     Ok(segments.join("/"))
+}
+
+/// Whether `tokens` carry a known, non-empty `{Absolute Episode}` value — the
+/// signal that the anime numbering has reconciled an absolute episode number for
+/// this episode. Used by [`render_episode_name`] to decide whether the anime
+/// episode format can render without leaving a hole; an anime episode whose
+/// absolute is still unknown falls back to the standard format.
+#[must_use]
+pub fn has_absolute_episode(tokens: &NamingTokens) -> bool {
+    lookup(tokens, "Absolute Episode").is_some_and(|v| !v.trim().is_empty())
+}
+
+/// Render a TV episode's on-disk name, selecting the **anime** episode format for
+/// an [`SeriesType::Anime`] series whose absolute number is known and the standard
+/// episode format otherwise.
+///
+/// The format choice is [`NamingFormats::episode_format_for`]: the anime format is
+/// used only when `series_type == Anime` *and* `tokens` carry a non-empty
+/// `{Absolute Episode}` value (see [`has_absolute_episode`]). An anime episode with
+/// no reconciled absolute number therefore renders with the standard format rather
+/// than the anime format — so a missing absolute never produces a broken name (a
+/// dangling ` -  - ` where the absolute would have gone). A standard/daily series
+/// always renders the standard episode format regardless of any absolute token.
+///
+/// # Errors
+/// See [`render_name`]: a format referencing a *required* token the module did not
+/// supply hard-errors; the result being empty/malformed errors.
+pub fn render_episode_name(
+    naming: &NamingFormats,
+    series_type: SeriesType,
+    tokens: &NamingTokens,
+) -> Result<String> {
+    let format = naming.episode_format_for(series_type, has_absolute_episode(tokens));
+    render_name(&format, tokens)
 }
 
 /// One entry in a [`NameTarget`]'s naming-token vocabulary: the `{Token}` name a
@@ -1132,6 +1166,86 @@ mod tests {
                 assert!(!rendered.is_empty(), "{} rendered empty", t.token);
             }
         }
+    }
+
+    // --- anime episode naming (render_episode_name) ---
+
+    fn anime_naming() -> NamingFormats {
+        NamingFormats::default()
+    }
+
+    #[test]
+    fn anime_episode_with_absolute_renders_anime_format() {
+        // An anime series whose episode carries a known absolute number renders the
+        // anime format — the absolute appears (padded to three digits as the module
+        // supplies it), so the name shows "- 013 -".
+        let naming = anime_naming();
+        let t = tk(&[
+            ("Series Title", "Frieren"),
+            ("Season", "01"),
+            ("Episode", "13"),
+            ("Absolute Episode", "013"),
+            ("Extension", "mkv"),
+        ]);
+        let out = render_episode_name(&naming, SeriesType::Anime, &t).unwrap();
+        assert_eq!(out, "Frieren/Season 01/Frieren - 013 - S01E13.mkv");
+        assert!(out.contains("- 013 -"));
+    }
+
+    #[test]
+    fn anime_episode_without_absolute_falls_back_to_standard_format() {
+        // An anime episode whose absolute number is NOT known falls back to the
+        // standard episode format — never the anime format (which would leave a
+        // dangling " -  - " where the absolute would have gone).
+        let naming = anime_naming();
+        let t = tk(&[
+            ("Series Title", "Frieren"),
+            ("Season", "01"),
+            ("Episode", "13"),
+            ("Extension", "mkv"),
+        ]);
+        let out = render_episode_name(&naming, SeriesType::Anime, &t).unwrap();
+        assert_eq!(out, "Frieren/Season 01/Frieren - S01E13.mkv");
+        // No broken name: no absolute number and no dangling separator pair.
+        assert!(!out.contains(" -  - "));
+        assert!(!out.contains("- 013 -"));
+    }
+
+    #[test]
+    fn anime_episode_with_empty_absolute_token_falls_back() {
+        // An empty (whitespace) absolute token is treated as unknown, not as a
+        // present value, so the standard format is used.
+        let naming = anime_naming();
+        let t = tk(&[
+            ("Series Title", "Frieren"),
+            ("Season", "01"),
+            ("Episode", "13"),
+            ("Absolute Episode", "   "),
+            ("Extension", "mkv"),
+        ]);
+        assert!(!has_absolute_episode(&t));
+        let out = render_episode_name(&naming, SeriesType::Anime, &t).unwrap();
+        assert_eq!(out, "Frieren/Season 01/Frieren - S01E13.mkv");
+    }
+
+    #[test]
+    fn standard_series_ignores_anime_format_even_with_absolute() {
+        // A standard (non-anime) series renders the standard format regardless of
+        // whether an absolute number happens to be present.
+        let naming = anime_naming();
+        let t = tk(&[
+            ("Series Title", "The Expanse"),
+            ("Season", "02"),
+            ("Episode", "06"),
+            ("Absolute Episode", "019"),
+            ("Extension", "mkv"),
+        ]);
+        let out = render_episode_name(&naming, SeriesType::Standard, &t).unwrap();
+        assert_eq!(out, "The Expanse/Season 02/The Expanse - S02E06.mkv");
+        assert!(!out.contains("- 019 -"));
+        // A daily series likewise never uses the anime format.
+        let daily = render_episode_name(&naming, SeriesType::Daily, &t).unwrap();
+        assert_eq!(daily, out);
     }
 
     #[test]

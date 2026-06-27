@@ -16,6 +16,7 @@ const NAMING = {
   seriesFolderFormat: '{Series Title}',
   seasonFolderFormat: 'Season {Season}',
   episodeFileFormat: '{Series Title} - S{Season}E{Episode}.{Extension}',
+  animeEpisodeFileFormat: '{Series Title} - {Absolute Episode}.{Extension}',
   renameEpisodes: true,
   renameMovies: true,
   seasonFolders: true,
@@ -32,7 +33,14 @@ const TOKENS = {
     },
     { target: 'seriesFolder', tokens: [] },
     { target: 'seasonFolder', tokens: [] },
-    { target: 'episodeFile', tokens: [] },
+    {
+      target: 'episodeFile',
+      tokens: [
+        { token: '{Series Title}', name: 'Series Title', label: 'Series Title', required: true, example: 'Frieren' },
+        { token: '{Absolute Episode}', name: 'Absolute Episode', label: 'Absolute Number', required: false, example: '19' },
+        { token: '{Extension}', name: 'Extension', label: 'Extension', required: false, example: 'mkv' },
+      ],
+    },
   ],
 };
 
@@ -127,6 +135,65 @@ describe('Naming (settings)', () => {
       const body = JSON.parse((put![1] as RequestInit).body as string);
       expect(body.movieFileFormat).toBe('X{Extension}');
       expect(body.seriesFolderFormat).toBe(NAMING.seriesFolderFormat);
+    });
+  });
+
+  it('renders the anime episode-file format with the {Absolute Episode} token and saves it', async () => {
+    const fetchImpl = routedFetch();
+    const client = new CellarrClient({ fetchImpl });
+    render(<Naming client={client} />);
+
+    // The dedicated anime episode-file field loads its persisted format.
+    const animeInput = await waitFor(
+      () => screen.getByLabelText('Anime episode file format') as HTMLInputElement
+    );
+    expect(animeInput.value).toBe(NAMING.animeEpisodeFileFormat);
+
+    // Its token palette carries the {Absolute Episode} token (sourced from the
+    // EpisodeFile target) and click-to-insert appends it.
+    fireEvent.change(animeInput, { target: { value: '{Series Title}-' } });
+    fireEvent.click(
+      screen.getByLabelText('Insert Absolute Episode token into Anime episode file format')
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText('Anime episode file format') as HTMLInputElement).value).toBe(
+        '{Series Title}-{Absolute Episode}'
+      )
+    );
+
+    fireEvent.click(screen.getByText('Save naming'));
+
+    await waitFor(() => {
+      const put = fetchImpl.mock.calls.find(
+        ([u, o]) =>
+          String(u).endsWith('/api/v3/config/naming') && (o as RequestInit)?.method === 'PUT'
+      );
+      expect(put).toBeTruthy();
+      const body = JSON.parse((put![1] as RequestInit).body as string);
+      expect(body.animeEpisodeFileFormat).toBe('{Series Title}-{Absolute Episode}');
+      // The standard episode-file format is preserved alongside it.
+      expect(body.episodeFileFormat).toBe(NAMING.episodeFileFormat);
+    });
+  });
+
+  it('previews the anime episode-file format against the EpisodeFile sample', async () => {
+    const fetchImpl = routedFetch();
+    const client = new CellarrClient({ fetchImpl });
+    render(<Naming client={client} />);
+
+    const animeInput = await waitFor(
+      () => screen.getByLabelText('Anime episode file format') as HTMLInputElement
+    );
+    fireEvent.change(animeInput, { target: { value: '{Absolute Episode}.{Extension}' } });
+
+    await waitFor(() => {
+      // The preview POSTs the anime format against the episodeFile target.
+      const previews = fetchImpl.mock.calls.filter(([u, o]) => {
+        if (!String(u).endsWith('/api/v3/config/naming/preview')) return false;
+        const b = JSON.parse(((o as RequestInit)?.body as string) ?? '{}');
+        return b.format === '{Absolute Episode}.{Extension}' && b.target === 'episodeFile';
+      });
+      expect(previews.length).toBeGreaterThan(0);
     });
   });
 

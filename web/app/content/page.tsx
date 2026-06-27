@@ -18,6 +18,7 @@ import SimpleTable from '@components/SimpleTable';
 import TreeView from '@components/TreeView';
 import Badge from '@components/Badge';
 import Button from '@components/Button';
+import Select from '@components/Select';
 import Text from '@components/Text';
 import Row from '@components/Row';
 import RowSpaceBetween from '@components/RowSpaceBetween';
@@ -49,8 +50,10 @@ import {
   setEpisodesMonitored,
   setMonitored,
   setSeasonMonitored,
+  setSeriesType,
   toDetailView,
   type DetailView,
+  type SeriesTypeValue,
 } from './_lib/detail';
 
 type Loose = Record<string, unknown>;
@@ -168,6 +171,37 @@ function episodeCoord(ep: Episode): string {
   return `S${s}E${e}`;
 }
 
+/**
+ * The episode's absolute number for an anime series, as ` · abs NNN` — or an
+ * empty string when none is known. The v3 episode row carries
+ * `absoluteEpisodeNumber` (null for standard episodes and anime episodes whose
+ * absolute is not yet reconciled), so a missing/null value renders nothing. The
+ * number is zero-padded to three digits to match the anime convention
+ * (e.g. `abs 013`).
+ */
+function absoluteSuffix(ep: Episode): string {
+  const abs = (ep as Record<string, unknown>).absoluteEpisodeNumber;
+  if (typeof abs !== 'number' || !Number.isFinite(abs)) return '';
+  return ` · abs ${String(abs).padStart(3, '0')}`;
+}
+
+/**
+ * The Sonarr `seriesType` options the detail screen offers, in display order,
+ * with labels. Mirrors the Add dialog's selector (crates/cellarr-core
+ * `SeriesType`).
+ */
+const SERIES_TYPE_OPTIONS: ReadonlyArray<{ value: SeriesTypeValue; label: string }> = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'anime', label: 'Anime' },
+];
+
+/** The display label for a `seriesType` wire value (case-insensitive). */
+function seriesTypeLabel(value: string | undefined): string {
+  const v = (value ?? 'standard').trim().toLowerCase();
+  return SERIES_TYPE_OPTIONS.find((o) => o.value === v)?.label ?? 'Standard';
+}
+
 /** The on-disk glyph for an episode: `✓` when a file is linked, `✗` when not. */
 function fileGlyphFor(ep: Episode): '✓' | '✗' {
   return ep.hasFile ? '✓' : '✗';
@@ -191,7 +225,9 @@ const SeasonMonitoring: React.FC<{
   isToggling: (id: string) => boolean;
   onToggleSeason: (group: SeasonGroup) => void;
   onToggleEpisode: (ep: Episode) => void;
-}> = ({ seasons, isEpisodeMonitored, isSeasonMonitored, isToggling, onToggleSeason, onToggleEpisode }) => {
+  /** When true (anime series), each episode row shows its absolute number. */
+  showAbsolute: boolean;
+}> = ({ seasons, isEpisodeMonitored, isSeasonMonitored, isToggling, onToggleSeason, onToggleEpisode, showAbsolute }) => {
   if (seasons.length === 0) return null;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1ch' }}>
@@ -225,6 +261,8 @@ const SeasonMonitoring: React.FC<{
                   const id = epId(ep);
                   const epOn = isEpisodeMonitored(id);
                   const label = ep.title?.length ? ep.title : episodeCoord(ep);
+                  // Anime rows show the absolute number after the SxxEyy coord.
+                  const coord = `${episodeCoord(ep)}${showAbsolute ? absoluteSuffix(ep) : ''}`;
                   return (
                     <RowSpaceBetween key={id} style={{ gap: '2ch', alignItems: 'center' }}>
                       <Row style={{ gap: '1ch', alignItems: 'center' }}>
@@ -232,7 +270,7 @@ const SeasonMonitoring: React.FC<{
                           {epOn ? '●' : '○'}
                         </Text>
                         <Text style={{ opacity: 0.8 }}>
-                          {episodeCoord(ep)} {label}
+                          {coord} {label}
                         </Text>
                         <Badge>
                           {fileGlyphFor(ep)}
@@ -446,6 +484,8 @@ function ItemDetail() {
   const [episodes, setEpisodes] = React.useState<Episode[]>([]);
   // In-flight guard for the monitored toggle (#21).
   const [toggling, setToggling] = React.useState(false);
+  // In-flight guard for the series-type change (anime/daily/standard).
+  const [changingType, setChangingType] = React.useState(false);
   // The tag catalogue (GET /api/v3/tag) + this node's current tag-id set, which
   // the tag editor renders as removable chips and PUTs back on change.
   const [tags, setTags] = React.useState<Tag[]>([]);
@@ -596,6 +636,28 @@ function ItemDetail() {
       })
       .catch((err: unknown) => toastError(errorMessage(err, 'failed to update monitoring')))
       .finally(() => setToggling(false));
+  };
+
+  /**
+   * Change a series' `seriesType` (standard/daily/anime). PUTs ONLY `seriesType`
+   * to the v3 series resource (so the monitored flag + tags are untouched) and
+   * reflects the refreshed value back into the metadata block. A no-op when the
+   * value is unchanged. Toast feedback on success and failure.
+   */
+  const changeSeriesType = (next: SeriesTypeValue) => {
+    if (!id || !data || changingType) return;
+    const current = (detail?.seriesType ?? 'standard').trim().toLowerCase();
+    if (current === next) return;
+    setChangingType(true);
+    info(`Setting series type to ${seriesTypeLabel(next)}…`, { durationMs: 2000 });
+    setSeriesType(id, next)
+      .then((refreshed) => {
+        const view = toDetailView(refreshed);
+        if (view) setDetail(view);
+        success(`Series type set to ${seriesTypeLabel(next)}`);
+      })
+      .catch((err: unknown) => toastError(errorMessage(err, 'failed to update series type')))
+      .finally(() => setChangingType(false));
   };
 
   /**
@@ -868,6 +930,13 @@ function ItemDetail() {
   const overview = detail?.overview;
   const isMonitored = detail?.monitored ?? (loose ?? {}).monitored === true;
 
+  // Series-type display + whether this node is a series at all (the seriesType
+  // card + absolute-number column only apply to a series). `seriesType` lives on
+  // the v3 series detail resource; absent for a movie.
+  const isSeries = loose ? detailKindFor(loose) === 'series' : false;
+  const seriesType = (detail?.seriesType ?? 'standard').trim().toLowerCase();
+  const isAnime = seriesType === 'anime';
+
   return (
     <AppShell>
       <BreadCrumbs items={breadcrumbs} />
@@ -942,6 +1011,44 @@ function ItemDetail() {
         ) : null}
       </CardDouble>
 
+      {data && isSeries ? (
+        <Card title="Series type" style={{ marginTop: '2ch' }}>
+          <Text style={{ opacity: 0.6 }}>
+            How cellarr numbers this series. <strong>Anime</strong> uses absolute
+            numbering (with the live absolute → season/episode scene-remap) and the
+            anime episode-file naming format; <strong>Daily</strong> keys episodes
+            by air date; <strong>Standard</strong> uses native season/episode
+            numbering.
+          </Text>
+          <Divider type="GRADIENT" />
+          <RowSpaceBetween style={{ gap: '2ch', alignItems: 'center' }}>
+            <Row style={{ gap: '1ch', alignItems: 'center' }}>
+              <Text style={{ opacity: 0.6 }}>Type</Text>
+              <Badge>{seriesTypeLabel(detail?.seriesType)}</Badge>
+            </Row>
+            <div style={{ minWidth: '20ch' }}>
+              <Select
+                key={`series-type-${seriesType}`}
+                name="series-type"
+                aria-label="Series type"
+                options={SERIES_TYPE_OPTIONS.map((o) => o.label)}
+                defaultValue={seriesTypeLabel(detail?.seriesType)}
+                placeholder="Choose a series type"
+                onChange={(label) => {
+                  if (changingType) return;
+                  const opt = SERIES_TYPE_OPTIONS.find((o) => o.label === label);
+                  if (opt) changeSeriesType(opt.value);
+                }}
+              />
+            </div>
+          </RowSpaceBetween>
+          <Text style={{ opacity: 0.5, marginTop: '0.5ch' }}>
+            Fansub-group preferences (required / preferred / ignored terms, scoped by
+            tag) are configured in Settings ▸ Release Profiles.
+          </Text>
+        </Card>
+      ) : null}
+
       {data && root ? (
         <Card title="Structure" style={{ marginTop: '2ch' }}>
           <ContentBranch
@@ -971,6 +1078,7 @@ function ItemDetail() {
             isToggling={(nodeId) => togglingNodes.has(nodeId)}
             onToggleSeason={toggleSeasonMonitored}
             onToggleEpisode={toggleEpisodeMonitored}
+            showAbsolute={isAnime}
           />
         </Card>
       ) : null}

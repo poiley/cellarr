@@ -135,6 +135,8 @@ impl PipelineEnv for FakeEnv {
             proper_repack_policy: ProperRepackPolicy::default(),
             library_root: self.library_root.clone(),
             naming_format: "{Movie Title} ({Release Year})/{Movie Title}.{Extension}".into(),
+            anime_naming_format: String::new(),
+            series_type: cellarr_core::SeriesType::Standard,
             indexer_id: IndexerId::new(),
             client_id: DownloadClientId::new(),
             category: "cellarr".into(),

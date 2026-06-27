@@ -76,7 +76,30 @@ export interface AddContentRequest {
    * carry a single monitored flag). When omitted the shim defaults to `all`.
    */
   monitor_option?: MonitorOption;
+  /**
+   * For series adds: the Sonarr `seriesType` (`standard`/`daily`/`anime`) sent on
+   * the create body. It switches the series' numbering model — `anime` turns on
+   * absolute-numbering + scene-remap, and selects the anime episode-file naming
+   * format on rename. Ignored for movies. When omitted the shim defaults to
+   * `standard`.
+   */
+  series_type?: SeriesType;
 }
+
+/**
+ * The Sonarr `seriesType` the v3 add/update accepts (crates/cellarr-core
+ * `SeriesType`). `standard` keeps native S/E numbering; `daily` keys episodes by
+ * air date; `anime` turns on absolute-numbering + scene-remap and the anime
+ * episode-file naming format.
+ */
+export type SeriesType = 'standard' | 'daily' | 'anime';
+
+/** The series-type options the Add dialog offers, in display order, with labels. */
+export const SERIES_TYPE_OPTIONS: ReadonlyArray<{ value: SeriesType; label: string }> = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'anime', label: 'Anime' },
+];
 
 /**
  * The Sonarr-style monitor selections the v3 add accepts on `addOptions.monitor`
@@ -259,6 +282,9 @@ export async function addContent(
         ...common,
         monitored: seriesMonitored,
         tvdbId: body.tvdb_id,
+        // `seriesType` selects the numbering model (standard/daily/anime). Sent
+        // only when chosen; omitted defaults the shim to `standard`.
+        ...(body.series_type !== undefined ? { seriesType: body.series_type } : {}),
         addOptions: {
           searchForMissingEpisodes: body.search_on_add ?? false,
           ...(monitorOption !== undefined ? { monitor: monitorOption } : {}),

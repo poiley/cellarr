@@ -621,6 +621,26 @@ impl LivePipelineEnv {
             .await
             .map_err(|e| format!("loading media-management settings failed: {e}"))?;
         let naming_format = media_management.naming.format_for(content.media_type);
+        // The node's series type (resolved from the series root) selects the anime
+        // episode naming format for an anime episode whose absolute number is known.
+        // A non-TV node, or a read failure, resolves to the safe `Standard` default
+        // so the standard format is used — preserving prior behavior. The composed
+        // anime episode format is carried alongside so the runner can pick it
+        // per-node; it is empty for a non-TV node (the standard format always wins).
+        let series_type = if content.media_type == MediaType::Tv {
+            self.db
+                .content()
+                .series_type_for(content.id)
+                .await
+                .unwrap_or_default()
+        } else {
+            cellarr_core::SeriesType::Standard
+        };
+        let anime_naming_format = if content.media_type == MediaType::Tv {
+            media_management.naming.anime_episode_format()
+        } else {
+            String::new()
+        };
 
         // The node's real tags drive tag-scoped routing: the labels feed the
         // label-keyed delay-profile resolution; the ids feed the id-keyed
@@ -646,6 +666,8 @@ impl LivePipelineEnv {
             proper_repack_policy: ProperRepackPolicy::default(),
             library_root: std::path::PathBuf::from(library_root),
             naming_format,
+            anime_naming_format,
+            series_type,
             // The aggregate indexer is type-erased; attribution ids identify the
             // configured set/client the grab is tagged to.
             indexer_id: cellarr_core::IndexerId::new(),

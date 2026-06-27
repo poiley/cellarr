@@ -378,6 +378,8 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         proper_repack_policy: ProperRepackPolicy::default(),
         library_root,
         naming_format: "{Series Title}/{Series Title}.{Extension}".into(),
+        anime_naming_format: String::new(),
+        series_type: cellarr_core::SeriesType::Standard,
         indexer_id: IndexerId::new(),
         client_id: DownloadClientId::new(),
         category: "cellarr".into(),

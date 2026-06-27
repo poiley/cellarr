@@ -49,7 +49,8 @@ pub use nfo::{render_nfo, sidecar_path, write_sidecar, NfoKind, NfoMetadata};
 pub use permissions::{apply_to_file, apply_to_folder, PermissionOutcome};
 pub use recycle::{recycle_or_delete, RecycleDisposition, RecycleResult};
 pub use rename::{
-    primary_target, render_name, render_name_with, render_preview, sample_tokens, token_vocabulary,
-    ColonReplacement, MultiEpisodeStyle, NamingToken, RenderOptions, TargetPlatform,
+    has_absolute_episode, primary_target, render_episode_name, render_name, render_name_with,
+    render_preview, sample_tokens, token_vocabulary, ColonReplacement, MultiEpisodeStyle,
+    NamingToken, RenderOptions, TargetPlatform,
 };
 pub use scan::{scan, Inventory, InventoryEntry};

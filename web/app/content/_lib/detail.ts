@@ -76,6 +76,32 @@ export function setContentTags(
   return api.requestV3<Detail>(path, { method: 'PUT', body: { tags }, signal });
 }
 
+/**
+ * The Sonarr `seriesType` (`standard`/`daily`/`anime`) — the series numbering
+ * model. `anime` turns on absolute-numbering + scene-remap and the anime
+ * episode-file naming format.
+ */
+export type SeriesTypeValue = 'standard' | 'daily' | 'anime';
+
+/**
+ * Rewrite a series' `seriesType` via `PUT /api/v3/series/{id}`. The shim's
+ * content update reads `seriesType` as a partial field (omitting it leaves the
+ * value untouched), so this PUT carries ONLY `seriesType` — it never disturbs
+ * the monitored flag or tags. Resolves to the refreshed detail resource, whose
+ * `seriesType` reflects the new value. Only meaningful for a series node.
+ */
+export function setSeriesType(
+  id: string,
+  seriesType: SeriesTypeValue,
+  signal?: AbortSignal
+): Promise<Detail> {
+  return api.requestV3<Detail>(`/series/${id}`, {
+    method: 'PUT',
+    body: { seriesType },
+    signal,
+  });
+}
+
 /** The result of toggling a season's monitored flag. */
 export interface SeasonMonitorResult {
   seasonId: string;
@@ -146,6 +172,11 @@ export interface DetailView {
   path?: string;
   /** The content node's assigned tag ids (`content_tag` join table). */
   tags: number[];
+  /**
+   * The Sonarr `seriesType` (`standard`/`daily`/`anime`) for a series node; the
+   * v3 series resource carries it, a movie resource does not (so it is absent).
+   */
+  seriesType?: string;
 }
 
 /** Project a v3 detail resource into the metadata-block view-model. */
@@ -166,6 +197,7 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
     tags: Array.isArray(r.tags)
       ? r.tags.filter((t): t is number => typeof t === 'number')
       : [],
+    seriesType: str(r.seriesType),
   };
 }
 

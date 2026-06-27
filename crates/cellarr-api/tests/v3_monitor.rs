@@ -202,6 +202,12 @@ async fn list_episodes_returns_the_series_episode_set() {
     assert_eq!(row1["monitored"], true);
     assert_eq!(row1["hasFile"], false, "no media file linked yet");
     assert_eq!(row1["airDate"], "2020-04-01");
+    // A standard episode with no absolute number reports a null absoluteEpisodeNumber.
+    assert_eq!(
+        row1["absoluteEpisodeNumber"],
+        serde_json::Value::Null,
+        "a non-anime episode has no absolute number"
+    );
     let series_numeric = row1["seriesId"].as_i64().expect("a numeric seriesId");
     assert_eq!(rows[1]["seriesId"].as_i64().unwrap(), series_numeric);
 
@@ -223,6 +229,49 @@ async fn list_episodes_returns_the_series_episode_set() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn list_episodes_surfaces_the_absolute_episode_number() {
+    let server = start_open().await;
+    let library = seed_library(&server.state, MediaType::Tv, "TV").await;
+    let (series, _season, e1, _e2) = seed_series_tree(&server.state, library).await;
+
+    // Reconcile a known absolute number onto e1 (the anime absolute→episode remap
+    // populates `absolute` on the episode coordinate).
+    let content = server.state.db.content();
+    let mut e1_node = content.get_node(e1).await.unwrap().unwrap();
+    e1_node.coords = Coordinates::Episode {
+        season: 1,
+        episode: 1,
+        absolute: Some(13),
+    };
+    content.upsert(&e1_node).await.unwrap();
+
+    let body: serde_json::Value = server
+        .client()
+        .get(server.url(&format!("/api/v3/episode?seriesId={series}")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = body.as_array().expect("an array of episodes");
+    let row1 = rows
+        .iter()
+        .find(|r| r["episodeNumber"] == 1)
+        .expect("episode 1");
+    assert_eq!(
+        row1["absoluteEpisodeNumber"], 13,
+        "the reconciled absolute number is surfaced"
+    );
+    // The other episode, with no absolute, still reports null.
+    let row2 = rows
+        .iter()
+        .find(|r| r["episodeNumber"] == 2)
+        .expect("episode 2");
+    assert_eq!(row2["absoluteEpisodeNumber"], serde_json::Value::Null);
 }
 
 #[tokio::test]

@@ -57,7 +57,10 @@ const TARGETS: {
   { target: 'episodeFile', field: 'episodeFileFormat', label: 'Episode file', allowEmpty: false },
 ];
 
-type Formats = Record<NamingTarget, string>;
+// The four standard targets plus the anime episode-file format, which is a
+// distinct config field that nonetheless previews + validates against the
+// EpisodeFile sample (so the `{Absolute Episode}` token can be exercised).
+type Formats = Record<NamingTarget, string> & { animeEpisodeFile: string };
 
 function formatsFrom(cfg: NamingConfig): Formats {
   return {
@@ -65,19 +68,24 @@ function formatsFrom(cfg: NamingConfig): Formats {
     seriesFolder: cfg.seriesFolderFormat ?? '',
     seasonFolder: cfg.seasonFolderFormat ?? '',
     episodeFile: cfg.episodeFileFormat ?? '',
+    animeEpisodeFile: cfg.animeEpisodeFileFormat ?? '',
   };
 }
 
 /** One naming-format row: label, input, token palette, and a live preview line. */
 const FormatRow: React.FC<{
   client: CellarrClient;
+  /** The preview/validation target (the anime row previews against episodeFile). */
   target: NamingTarget;
+  /** A unique field key for the input name/id (defaults to `target`). */
+  fieldKey?: string;
   label: string;
   allowEmpty: boolean;
   value: string;
   tokens: NamingTokens['targets'][number]['tokens'];
   onChange: (next: string) => void;
-}> = ({ client, target, label, allowEmpty, value, tokens, onChange }) => {
+}> = ({ client, target, fieldKey, label, allowEmpty, value, tokens, onChange }) => {
+  const name = fieldKey ?? target;
   const [preview, setPreview] = React.useState<string>('');
   const [previewError, setPreviewError] = React.useState<string | null>(null);
 
@@ -114,7 +122,7 @@ const FormatRow: React.FC<{
     <div style={{ margin: '1ch 0' }}>
       <Text style={{ opacity: 0.6 }}>{label}</Text>
       <Input
-        name={`naming-${target}`}
+        name={`naming-${name}`}
         aria-label={`${label} format`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -207,8 +215,8 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
   const tokensFor = (target: NamingTarget) =>
     tokens.data?.targets.find((t) => t.target === target)?.tokens ?? [];
 
-  const setFormat = (target: NamingTarget, next: string) =>
-    setFormats((prev) => (prev ? { ...prev, [target]: next } : prev));
+  const setFormat = (key: keyof Formats, next: string) =>
+    setFormats((prev) => (prev ? { ...prev, [key]: next } : prev));
 
   const saveNaming = async () => {
     if (!formats) return;
@@ -219,6 +227,7 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
         seriesFolderFormat: formats.seriesFolder,
         seasonFolderFormat: formats.seasonFolder,
         episodeFileFormat: formats.episodeFile,
+        animeEpisodeFileFormat: formats.animeEpisodeFile,
       });
       setFormats(formatsFrom(updated));
       success('Naming formats saved.');
@@ -301,6 +310,26 @@ const Naming: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi }) =
             onChange={(next) => setFormat(t.target, next)}
           />
         ))}
+
+        {/* The anime episode-file format applies to ANIME-typed series. It shares
+            the EpisodeFile token palette (so the {Absolute Episode} token is
+            available) and previews/validates against the EpisodeFile sample. */}
+        <FormatRow
+          client={client}
+          target="episodeFile"
+          fieldKey="animeEpisodeFile"
+          label="Anime episode file"
+          allowEmpty={false}
+          value={formats.animeEpisodeFile}
+          tokens={tokensFor('episodeFile')}
+          onChange={(next) => setFormat('animeEpisodeFile', next)}
+        />
+        <Text style={{ opacity: 0.55, marginBottom: '1ch' }}>
+          Applies only to series whose type is <strong>Anime</strong>. Use the{' '}
+          <code>{'{Absolute Episode}'}</code> token for absolute numbering. Set a
+          series&apos; type on its detail page or when adding it; fansub-group
+          preferences live in Settings ▸ Release Profiles.
+        </Text>
 
         <div style={{ marginTop: '1ch' }}>
           <Button theme="PRIMARY" isDisabled={savingNaming} onClick={savingNaming ? undefined : saveNaming}>

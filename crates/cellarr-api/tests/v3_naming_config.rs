@@ -74,6 +74,63 @@ async fn naming_config_defaults_then_round_trips_through_put() {
 }
 
 #[tokio::test]
+async fn anime_episode_file_format_round_trips_through_put() {
+    let server = start_open().await;
+    let client = server.client();
+
+    // The default anime episode format is surfaced on GET alongside the standard one.
+    let cfg: Value = client
+        .get(server.url("/api/v3/config/naming"))
+        .send()
+        .await
+        .expect("get naming")
+        .json()
+        .await
+        .expect("naming json");
+    assert_eq!(
+        cfg["animeEpisodeFileFormat"],
+        "{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}"
+    );
+
+    // PUT a new anime episode format; it persists and leaves the standard one alone.
+    let updated: Value = client
+        .put(server.url("/api/v3/config/naming"))
+        .json(&json!({
+            "animeEpisodeFileFormat":
+                "{Series Title} - {Absolute Episode:000} - S{Season}E{Episode}.{Extension}",
+        }))
+        .send()
+        .await
+        .expect("put naming")
+        .json()
+        .await
+        .expect("put json");
+    assert_eq!(
+        updated["animeEpisodeFileFormat"],
+        "{Series Title} - {Absolute Episode:000} - S{Season}E{Episode}.{Extension}"
+    );
+    // The standard episode format is untouched by the partial PUT.
+    assert_eq!(
+        updated["episodeFileFormat"],
+        "{Series Title} - S{Season}E{Episode}.{Extension}"
+    );
+
+    // A fresh GET sees the persisted anime format.
+    let after: Value = client
+        .get(server.url("/api/v3/config/naming"))
+        .send()
+        .await
+        .expect("get naming again")
+        .json()
+        .await
+        .expect("naming json");
+    assert_eq!(
+        after["animeEpisodeFileFormat"],
+        "{Series Title} - {Absolute Episode:000} - S{Season}E{Episode}.{Extension}"
+    );
+}
+
+#[tokio::test]
 async fn put_rejects_an_invalid_format_and_does_not_persist() {
     let server = start_open().await;
     let client = server.client();

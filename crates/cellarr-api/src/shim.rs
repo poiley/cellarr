@@ -3135,6 +3135,7 @@ fn v3_naming_config(naming: &cellarr_core::NamingFormats) -> Value {
         "seriesFolderFormat": naming.series_folder_format,
         "seasonFolderFormat": naming.season_folder_format,
         "episodeFileFormat": naming.episode_file_format,
+        "animeEpisodeFileFormat": naming.anime_episode_file_format,
         "renameEpisodes": true,
         "renameMovies": true,
         "seasonFolders": !naming.season_folder_format.trim().is_empty(),
@@ -3159,6 +3160,8 @@ struct NamingConfigBody {
     season_folder_format: Option<String>,
     #[serde(rename = "episodeFileFormat", default)]
     episode_file_format: Option<String>,
+    #[serde(rename = "animeEpisodeFileFormat", default)]
+    anime_episode_file_format: Option<String>,
 }
 
 /// `PUT /config/naming` — update one or more naming formats. A submitted format is
@@ -3172,13 +3175,22 @@ async fn update_naming_config(
     use cellarr_core::NameTarget;
 
     let mut mm = fs.state.db.config().get_media_management().await?;
+    // The anime episode format shares the episode-file token vocabulary (it adds the
+    // `{Absolute Episode}` token), so it is validated against the EpisodeFile sample
+    // context like the standard episode format. Tracked separately so it writes to
+    // the dedicated `anime_episode_file_format` field.
     let validated = [
-        (NameTarget::MovieFile, &body.movie_file_format),
-        (NameTarget::SeriesFolder, &body.series_folder_format),
-        (NameTarget::SeasonFolder, &body.season_folder_format),
-        (NameTarget::EpisodeFile, &body.episode_file_format),
+        (NameTarget::MovieFile, &body.movie_file_format, false),
+        (NameTarget::SeriesFolder, &body.series_folder_format, false),
+        (NameTarget::SeasonFolder, &body.season_folder_format, false),
+        (NameTarget::EpisodeFile, &body.episode_file_format, false),
+        (
+            NameTarget::EpisodeFile,
+            &body.anime_episode_file_format,
+            true,
+        ),
     ];
-    for (target, submitted) in validated {
+    for (target, submitted, is_anime) in validated {
         let Some(fmt) = submitted else { continue };
         // A folder format may legitimately be empty (flat layout); a file format
         // may not. Validate non-empty formats render against the sample context so
@@ -3188,11 +3200,12 @@ async fn update_naming_config(
                 ApiError::BadRequest(format!("invalid {} format: {e}", target.key()))
             })?;
         }
-        match target {
-            NameTarget::MovieFile => mm.naming.movie_file_format = fmt.clone(),
-            NameTarget::SeriesFolder => mm.naming.series_folder_format = fmt.clone(),
-            NameTarget::SeasonFolder => mm.naming.season_folder_format = fmt.clone(),
-            NameTarget::EpisodeFile => mm.naming.episode_file_format = fmt.clone(),
+        match (target, is_anime) {
+            (NameTarget::MovieFile, _) => mm.naming.movie_file_format = fmt.clone(),
+            (NameTarget::SeriesFolder, _) => mm.naming.series_folder_format = fmt.clone(),
+            (NameTarget::SeasonFolder, _) => mm.naming.season_folder_format = fmt.clone(),
+            (NameTarget::EpisodeFile, false) => mm.naming.episode_file_format = fmt.clone(),
+            (NameTarget::EpisodeFile, true) => mm.naming.anime_episode_file_format = fmt.clone(),
         }
     }
     fs.state.db.config().set_media_management(&mm).await?;
@@ -3336,6 +3349,8 @@ async fn update_media_management(
             (NameTarget::SeriesFolder, &naming.series_folder_format),
             (NameTarget::SeasonFolder, &naming.season_folder_format),
             (NameTarget::EpisodeFile, &naming.episode_file_format),
+            // The anime episode format shares the episode-file vocabulary.
+            (NameTarget::EpisodeFile, &naming.anime_episode_file_format),
         ] {
             if !fmt.trim().is_empty() {
                 cellarr_fs::render_preview(fmt, target, None).map_err(|e| {
@@ -4645,13 +4660,15 @@ async fn v3_episode(
     series_numeric: i64,
 ) -> ApiResult<Value> {
     use cellarr_core::repo::MediaFileRepository;
-    let (season, episode) = match &node.coords {
+    let (season, episode, absolute) = match &node.coords {
         cellarr_core::Coordinates::Episode {
-            season, episode, ..
-        } => (*season, *episode),
+            season,
+            episode,
+            absolute,
+        } => (*season, *episode, *absolute),
         // A non-episode coordinate on an episode-kind node is degenerate; surface
         // zeros rather than failing the whole list.
-        _ => (0, 0),
+        _ => (0, 0, None),
     };
     let content = state.db.content();
     let title = content
@@ -4677,6 +4694,11 @@ async fn v3_episode(
         "seriesId": series_numeric,
         "seasonNumber": season,
         "episodeNumber": episode,
+        // The anime absolute episode number, when the absolute→episode remap has
+        // reconciled it; `null` for a standard episode or an anime episode whose
+        // absolute number is not yet known. Mirrors Sonarr's `absoluteEpisodeNumber`
+        // so the UI can show the absolute number in the monitor tree.
+        "absoluteEpisodeNumber": absolute.map(Value::from).unwrap_or(Value::Null),
         "title": title,
         "monitored": node.monitored,
         "hasFile": has_file,

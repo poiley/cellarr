@@ -197,6 +197,10 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         proper_repack_policy: ProperRepackPolicy::default(),
         library_root,
         naming_format: "{Series Title}/S{Season}E{Episode}.{Extension}".to_string(),
+        anime_naming_format:
+            "{Series Title}/{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}"
+                .to_string(),
+        series_type: cellarr_core::SeriesType::Anime,
         indexer_id: cellarr_core::IndexerId::new(),
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),
@@ -389,11 +393,15 @@ async fn absolute_anime_release_remaps_to_season_episode_through_the_runner() {
     let dest = PathBuf::from(&destinations[0]);
     assert!(dest.exists(), "imported file must exist at {dest:?}");
     // The file landed at the REMAPPED season/episode (S02E01), proving the
-    // absolute->episode reconciliation drove naming.
+    // absolute->episode reconciliation drove naming. The series is anime-typed and
+    // the run uses an anime episode format, but the matched episode *node* carries
+    // no reconciled absolute number (`absolute: None`), so the rename engine
+    // gracefully falls back to the standard episode format rather than rendering a
+    // broken anime name — the real-runner proof of the absolute-unknown fallback.
     assert_eq!(
         dest.file_name().unwrap().to_str().unwrap(),
         "S02E01.mkv",
-        "the file must land at the remapped S02E01, not the absolute number"
+        "anime series, node with no absolute -> standard format, never a broken name"
     );
 }
 

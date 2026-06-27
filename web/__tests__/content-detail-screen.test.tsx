@@ -610,6 +610,125 @@ describe('Item-detail screen', () => {
     expect(screen.queryByText('Monitoring')).toBeNull();
   });
 
+  it('shows the series type and changes it via a PUT carrying only seriesType', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // The series detail starts as `standard`; the PUT echoes the chosen type.
+    requestV3.mockImplementation((path: string, opts?: { body?: { seriesType?: string } }) => {
+      if (path === '/series/c-series' && opts?.body?.seriesType) {
+        return Promise.resolve({
+          id: 'c-series',
+          title: 'Breaking Bad',
+          monitored: true,
+          status: 'continuing',
+          seriesType: opts.body.seriesType,
+        });
+      }
+      return Promise.resolve({
+        id: 'c-series',
+        title: 'Breaking Bad',
+        monitored: true,
+        status: 'continuing',
+        seriesType: 'standard',
+      });
+    });
+
+    renderPage();
+
+    // The Series type card renders with a Standard badge + a select.
+    await waitFor(() => expect(screen.getByText('Series type')).toBeTruthy());
+    const typeSelect = await screen.findByRole('button', { name: 'Series type' });
+    expect(typeSelect).toBeTruthy();
+
+    requestV3.mockClear();
+    // Change to Anime (the listbox option, not the bold word in the helper text).
+    fireEvent.click(typeSelect);
+    fireEvent.click(screen.getByRole('option', { name: 'Anime' }));
+
+    await waitFor(() => {
+      const put = requestV3.mock.calls.find(
+        ([p, o]) => p === '/series/c-series' && (o as { method?: string })?.method === 'PUT'
+      );
+      expect(put).toBeTruthy();
+      const body = (put![1] as { body?: Record<string, unknown> }).body ?? {};
+      expect(body.seriesType).toBe('anime');
+      // The seriesType PUT must not disturb monitored / tags.
+      expect(body).not.toHaveProperty('monitored');
+      expect(body).not.toHaveProperty('tags');
+    });
+    await waitFor(() => expect(screen.getByText(/Series type set to Anime/i)).toBeTruthy());
+  });
+
+  it('shows no Series type card for a movie node', async () => {
+    const MOVIE = { id: 'c-movie', library_id: 'lib-movies', media_type: 'movie', kind: 'movie', monitored: true, coords: { type: 'movie' }, title: 'Blade Runner' };
+    searchParams = new URLSearchParams('id=c-movie');
+    getContent.mockResolvedValue(MOVIE);
+    listContent.mockResolvedValue([MOVIE]);
+    listContentFiles.mockResolvedValue([]);
+    getLibrary.mockResolvedValue({ id: 'lib-movies', name: 'Movies' });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByText('Blade Runner').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Series type')).toBeNull();
+  });
+
+  it('shows the absolute episode number for an anime series', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // Anime episodes carry an absoluteEpisodeNumber (the second is not yet
+    // reconciled -> null, so it shows no absolute suffix).
+    listEpisodes.mockResolvedValue([
+      { id: 2001, seriesId: 42, seasonNumber: 2, episodeNumber: 1, title: 'Journey', monitored: true, hasFile: true, airDate: '2023-10-01', absoluteEpisodeNumber: 13 },
+      { id: 2002, seriesId: 42, seasonNumber: 2, episodeNumber: 2, title: 'Mage', monitored: true, hasFile: false, airDate: '2023-10-08', absoluteEpisodeNumber: null },
+    ]);
+    requestV3.mockResolvedValue({
+      id: 'c-series',
+      title: 'Breaking Bad',
+      monitored: true,
+      status: 'continuing',
+      seriesType: 'anime',
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      // The anime series renders the absolute number alongside the SxxEyy coord.
+      expect(screen.getByText(/S02E01 · abs 013/)).toBeTruthy();
+      // A null absolute renders no suffix (bare coord).
+      expect(screen.getByText(/S02E02 Mage/)).toBeTruthy();
+      expect(screen.queryByText(/S02E02 · abs/)).toBeNull();
+    });
+  });
+
+  it('hides the absolute number for a standard series', async () => {
+    searchParams = new URLSearchParams('id=c-series');
+    getContent.mockResolvedValue(SERIES);
+    listContent.mockResolvedValue(SIBLINGS);
+    listContentFiles.mockResolvedValue([]);
+    // Even if a row happens to carry an absoluteEpisodeNumber, a standard series
+    // never shows the absolute suffix.
+    listEpisodes.mockResolvedValue([
+      { id: 3001, seriesId: 42, seasonNumber: 1, episodeNumber: 1, title: 'Pilot', monitored: true, hasFile: true, airDate: '2008-01-20', absoluteEpisodeNumber: 1 },
+    ]);
+    requestV3.mockResolvedValue({
+      id: 'c-series',
+      title: 'Breaking Bad',
+      monitored: true,
+      status: 'continuing',
+      seriesType: 'standard',
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/S01E01 Pilot/)).toBeTruthy());
+    expect(screen.queryByText(/abs 001/)).toBeNull();
+  });
+
   it('renders the content tags from the v3 detail and PUTs an added tag id', async () => {
     searchParams = new URLSearchParams('id=c-series');
     getContent.mockResolvedValue(SERIES);

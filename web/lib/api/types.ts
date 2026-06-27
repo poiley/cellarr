@@ -941,6 +941,12 @@ export interface NamingConfig {
   /** Empty string = flat layout (no per-season subfolder). */
   seasonFolderFormat: string;
   episodeFileFormat: string;
+  /**
+   * The episode-file naming format applied to ANIME-typed series — typically
+   * carrying the `{Absolute Episode}` token. Validated against the EpisodeFile
+   * sample, same as `episodeFileFormat`.
+   */
+  animeEpisodeFileFormat: string;
   renameEpisodes: boolean;
   renameMovies: boolean;
   seasonFolders: boolean;
@@ -957,6 +963,12 @@ export interface NamingConfigBody {
   seriesFolderFormat?: string;
   seasonFolderFormat?: string;
   episodeFileFormat?: string;
+  /**
+   * The anime episode-file format (applies to anime-typed series). Validated
+   * against the EpisodeFile sample; a malformed/under-specified format → 400 and
+   * nothing is persisted.
+   */
+  animeEpisodeFileFormat?: string;
 }
 
 /** Which naming target a token belongs to / a preview renders against. */

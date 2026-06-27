@@ -284,6 +284,8 @@ fn runner_config(library_root: PathBuf, profile: QualityProfile, naming: &str) -
         proper_repack_policy: ProperRepackPolicy::default(),
         library_root,
         naming_format: naming.to_string(),
+        anime_naming_format: String::new(),
+        series_type: cellarr_core::SeriesType::Standard,
         indexer_id: cellarr_core::IndexerId::new(),
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),

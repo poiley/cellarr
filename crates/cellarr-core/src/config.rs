@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{DownloadClientId, IndexerId};
 use crate::release::Protocol;
-use crate::MediaType;
+use crate::{MediaType, SeriesType};
 
 /// Media-management settings: the cross-library file-handling policy.
 ///
@@ -107,6 +107,16 @@ pub struct NamingFormats {
     /// `{Series Title} - S{Season}E{Episode}.{Extension}`.
     #[serde(default = "default_episode_file_format")]
     pub episode_file_format: String,
+    /// The TV *anime* episode file name (extension included), rendered for an
+    /// episode whose series root is [`SeriesType::Anime`] **and** whose absolute
+    /// number is known, e.g. `{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}`.
+    /// Uses the [`{Absolute Episode}`] token the anime numbering supplies. When an
+    /// anime episode has no known absolute number the rename engine falls back to
+    /// [`episode_file_format`](Self::episode_file_format) so it never renders a
+    /// broken name (a dangling ` -  - `); see
+    /// [`episode_format_for`](Self::episode_format_for).
+    #[serde(default = "default_anime_episode_file_format")]
+    pub anime_episode_file_format: String,
     /// The movie *file* name (extension included), rendered inside the movie
     /// folder, e.g. `{Movie Title} ({Release Year})/{Movie Title}.{Extension}`.
     #[serde(default = "default_movie_file_format")]
@@ -122,6 +132,9 @@ fn default_season_folder_format() -> String {
 fn default_episode_file_format() -> String {
     "{Series Title} - S{Season}E{Episode}.{Extension}".to_string()
 }
+fn default_anime_episode_file_format() -> String {
+    "{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}".to_string()
+}
 fn default_movie_file_format() -> String {
     "{Movie Title} ({Release Year})/{Movie Title}.{Extension}".to_string()
 }
@@ -132,6 +145,7 @@ impl Default for NamingFormats {
             series_folder_format: default_series_folder_format(),
             season_folder_format: default_season_folder_format(),
             episode_file_format: default_episode_file_format(),
+            anime_episode_file_format: default_anime_episode_file_format(),
             movie_file_format: default_movie_file_format(),
         }
     }
@@ -216,6 +230,26 @@ impl NamingFormats {
         .join("/")
     }
 
+    /// The composed full relative path format for an **anime** TV episode:
+    /// `<series folder>/<season folder>/<anime episode file>`. Composed exactly like
+    /// [`episode_format`](Self::episode_format) but substituting the
+    /// [`anime_episode_file_format`](Self::anime_episode_file_format) for the episode
+    /// file segment, so the series/season folder layout is shared and only the file
+    /// name differs (it carries the `{Absolute Episode}` token).
+    #[must_use]
+    pub fn anime_episode_format(&self) -> String {
+        [
+            self.series_folder_format.trim_matches('/'),
+            self.season_folder_format.trim_matches('/'),
+            self.anime_episode_file_format.trim_matches('/'),
+        ]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("/")
+    }
+
     /// The composed full relative path format for a movie. The movie file format
     /// already carries its enclosing folder (`{Movie Title} (…)/{Movie Title}.…`),
     /// so it is returned as-is.
@@ -233,6 +267,44 @@ impl NamingFormats {
             MediaType::Tv => self.episode_format(),
             // Music/books are not v1 naming surfaces; fall back to a bare title.
             MediaType::Music | MediaType::Book => "{Title}.{Extension}".to_string(),
+        }
+    }
+
+    /// The TV episode format to render for an episode, choosing the **anime**
+    /// episode format only when the series is [`SeriesType::Anime`] *and* the
+    /// episode's absolute number is known.
+    ///
+    /// This is the graceful-fallback rule the rename engine relies on: the anime
+    /// format references the `{Absolute Episode}` token, which the numbering only
+    /// supplies once Identify has reconciled the absolute number. An anime episode
+    /// whose absolute is still unknown (`has_absolute == false`) therefore falls
+    /// back to [`episode_format`](Self::episode_format) so it never renders a broken
+    /// name (a dangling ` -  - ` where the absolute would have gone). A non-anime
+    /// series always uses the standard episode format regardless of `has_absolute`.
+    #[must_use]
+    pub fn episode_format_for(&self, series_type: SeriesType, has_absolute: bool) -> String {
+        if series_type == SeriesType::Anime && has_absolute {
+            self.anime_episode_format()
+        } else {
+            self.episode_format()
+        }
+    }
+
+    /// The full relative-path naming format to render for a node, accounting for a
+    /// TV series' [`SeriesType`] (so an anime episode with a known absolute number
+    /// renders the anime format). For non-TV media types this is identical to
+    /// [`format_for`](Self::format_for); for TV it delegates to
+    /// [`episode_format_for`](Self::episode_format_for).
+    #[must_use]
+    pub fn format_for_series(
+        &self,
+        media_type: MediaType,
+        series_type: SeriesType,
+        has_absolute: bool,
+    ) -> String {
+        match media_type {
+            MediaType::Tv => self.episode_format_for(series_type, has_absolute),
+            other => self.format_for(other),
         }
     }
 }
@@ -691,6 +763,53 @@ mod tests {
     }
 
     #[test]
+    fn naming_anime_format_composes_with_absolute_token() {
+        let n = NamingFormats::default();
+        assert_eq!(
+            n.anime_episode_format(),
+            "{Series Title}/Season {Season}/{Series Title} - {Absolute Episode} - S{Season}E{Episode}.{Extension}"
+        );
+    }
+
+    #[test]
+    fn episode_format_for_selects_anime_only_with_absolute() {
+        let n = NamingFormats::default();
+        // Anime + known absolute -> the anime file format.
+        assert_eq!(
+            n.episode_format_for(SeriesType::Anime, true),
+            n.anime_episode_format()
+        );
+        // Anime but no known absolute -> graceful fall back to the standard format.
+        assert_eq!(
+            n.episode_format_for(SeriesType::Anime, false),
+            n.episode_format()
+        );
+        // A standard/daily series never uses the anime format, even with an absolute.
+        assert_eq!(
+            n.episode_format_for(SeriesType::Standard, true),
+            n.episode_format()
+        );
+        assert_eq!(
+            n.episode_format_for(SeriesType::Daily, true),
+            n.episode_format()
+        );
+    }
+
+    #[test]
+    fn format_for_series_routes_by_media_type() {
+        let n = NamingFormats::default();
+        // TV anime with absolute -> anime format; movie ignores series type.
+        assert_eq!(
+            n.format_for_series(MediaType::Tv, SeriesType::Anime, true),
+            n.anime_episode_format()
+        );
+        assert_eq!(
+            n.format_for_series(MediaType::Movie, SeriesType::Anime, true),
+            n.movie_format()
+        );
+    }
+
+    #[test]
     fn naming_episode_format_drops_empty_season_folder() {
         let n = NamingFormats {
             season_folder_format: String::new(),
@@ -724,6 +843,36 @@ mod tests {
         assert_eq!(mm.naming, NamingFormats::default());
         assert!(!mm.extra_files.enabled);
         assert!(mm.permissions.chmod_file.is_none());
+    }
+
+    #[test]
+    fn naming_anime_episode_format_round_trips_through_json() {
+        // The dedicated anime episode format survives a serialize → deserialize.
+        let n = NamingFormats {
+            anime_episode_file_format:
+                "{Series Title} - {Absolute Episode} - {Episode}.{Extension}".to_string(),
+            ..NamingFormats::default()
+        };
+        let json = serde_json::to_string(&n).unwrap();
+        assert!(json.contains("animeEpisodeFileFormat"));
+        let back: NamingFormats = serde_json::from_str(&json).unwrap();
+        assert_eq!(n, back);
+        assert_eq!(
+            back.anime_episode_file_format,
+            "{Series Title} - {Absolute Episode} - {Episode}.{Extension}"
+        );
+    }
+
+    #[test]
+    fn naming_partial_json_keeps_anime_default() {
+        // A pre-anime-field naming row (no animeEpisodeFileFormat) decodes with the
+        // built-in anime default, so existing rows upgrade cleanly.
+        let n: NamingFormats =
+            serde_json::from_str(r#"{"seriesFolderFormat":"{Series Title}"}"#).unwrap();
+        assert_eq!(
+            n.anime_episode_file_format,
+            default_anime_episode_file_format()
+        );
     }
 
     #[test]

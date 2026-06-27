@@ -43,8 +43,10 @@ import {
   lookup,
   rankResults,
   MONITOR_OPTIONS,
+  SERIES_TYPE_OPTIONS,
   type LookupResult,
   type MonitorOption,
+  type SeriesType,
 } from '../_search/api';
 
 type Phase = 'idle' | 'loading' | 'ready' | 'error';
@@ -63,6 +65,11 @@ interface AddSelection {
    * Movies ignore it (they carry a single monitored flag). Defaults to `all`.
    */
   monitorOption: MonitorOption;
+  /**
+   * For series adds: the Sonarr `seriesType` (standard/daily/anime) — the
+   * numbering model. Movies ignore it. Defaults to `standard`.
+   */
+  seriesType: SeriesType;
 }
 
 export default function Page() {
@@ -163,6 +170,8 @@ export default function Page() {
           search_on_add: selection.searchOnAdd,
           monitor_option:
             (result.media_type ?? 'movie') === 'tv' ? selection.monitorOption : undefined,
+          series_type:
+            (result.media_type ?? 'movie') === 'tv' ? selection.seriesType : undefined,
         });
         setAdded((prev) => new Set(prev).add(key));
         success(
@@ -426,6 +435,7 @@ const AddDialogBody: React.FC<{
       monitor: selectionRef.current.monitor,
       searchOnAdd: selectionRef.current.searchOnAdd,
       monitorOption: selectionRef.current.monitorOption,
+      seriesType: selectionRef.current.seriesType,
     };
     // Run once on mount with the resolved defaults.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -494,6 +504,34 @@ const AddDialogBody: React.FC<{
           <Text style={{ opacity: 0.6 }}>No root folders configured.</Text>
         )}
       </Field>
+
+      {result.media_type === 'tv' ? (
+        // Series type (standard/daily/anime): the numbering model. Anime turns on
+        // absolute-numbering + scene-remap and the anime episode-file naming
+        // format. Sent as `seriesType` on the create body.
+        <Field label="Series type">
+          <Select
+            name="add-series-type"
+            aria-label="Series type"
+            options={SERIES_TYPE_OPTIONS.map((o) => o.label)}
+            defaultValue={
+              SERIES_TYPE_OPTIONS.find((o) => o.value === selectionRef.current.seriesType)?.label ??
+              SERIES_TYPE_OPTIONS[0].label
+            }
+            placeholder="Choose a series type"
+            onChange={(label) => {
+              const opt = SERIES_TYPE_OPTIONS.find((o) => o.label === label);
+              if (!opt) return;
+              selectionRef.current = { ...selectionRef.current, seriesType: opt.value };
+            }}
+          />
+          <Text style={{ opacity: 0.55, marginTop: '0.5ch' }}>
+            Anime uses absolute numbering and the anime episode-file naming format.
+            Fansub-group preferences (required / preferred / ignored terms) live in
+            Settings ▸ Release Profiles.
+          </Text>
+        </Field>
+      ) : null}
 
       {result.media_type === 'tv' ? (
         // Series: the per-episode monitoring policy (Sonarr addOptions.monitor).
@@ -570,6 +608,7 @@ function defaultSelection(
     monitor: true,
     searchOnAdd: true,
     monitorOption: 'all',
+    seriesType: 'standard',
   };
 }
 

@@ -381,6 +381,90 @@ describe('Add / search-new screen', () => {
     );
   });
 
+  it('offers a series-type selector and posts the chosen seriesType (anime)', async () => {
+    const series = {
+      title: 'Frieren',
+      titleSlug: 'frieren',
+      year: 2023,
+      tvdbId: 424536,
+      overview: 'An elf mage.',
+      monitored: false,
+      hasFile: false,
+      status: 'continuing',
+    };
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([]);
+      if (path === '/series/lookup') return Promise.resolve([series]);
+      if (path === '/series') return Promise.resolve({ id: 'c-series' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'frieren' } });
+    await waitFor(() => expect(screen.getByText('Frieren')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Frieren"/)).toBeTruthy());
+
+    // The series dialog exposes a Series Type select with an accessible name.
+    const typeSelect = screen.getByRole('button', { name: 'Series type' });
+    expect(typeSelect).toBeTruthy();
+    // The default is "Standard".
+    expect(screen.getByText('Standard')).toBeTruthy();
+
+    // Choose "Anime".
+    fireEvent.click(typeSelect);
+    fireEvent.click(screen.getByText('Anime'));
+
+    fireEvent.click(screen.getByText('OK'));
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/series',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.objectContaining({
+            tvdbId: 424536,
+            seriesType: 'anime',
+          }),
+        })
+      )
+    );
+  });
+
+  it('does not send seriesType on a movie add', async () => {
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') return Promise.resolve([bladeRunner]);
+      if (path === '/series/lookup') return Promise.resolve([]);
+      if (path === '/movie') return Promise.resolve({ id: 'c1' });
+      return Promise.resolve(undefined);
+    });
+    const { container } = renderPage();
+    const input = container.querySelector('input[name="add-search"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'blade' } });
+    await waitFor(() => expect(screen.getByText('Blade Runner')).toBeTruthy(), { timeout: 2000 });
+
+    const addButton = screen
+      .getAllByRole('button')
+      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+    fireEvent.click(addButton);
+    await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
+    // A movie dialog has no series-type select.
+    expect(screen.queryByRole('button', { name: 'Series type' })).toBeNull();
+
+    fireEvent.click(screen.getByText('OK'));
+    await waitFor(() => {
+      const post = requestV3.mock.calls.find(
+        ([p, o]) => p === '/movie' && (o as { method?: string })?.method === 'POST'
+      );
+      expect(post).toBeTruthy();
+      const body = (post![1] as { body?: Record<string, unknown> }).body ?? {};
+      expect(body).not.toHaveProperty('seriesType');
+    });
+  });
+
   it('renders an error banner when both lookups fail', async () => {
     requestV3.mockRejectedValue(new Error('boom'));
     const { container } = renderPage();
