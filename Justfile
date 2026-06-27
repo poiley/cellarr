@@ -26,11 +26,9 @@ _default:
 
 # --- one-time setup -------------------------------------------------------------------------
 
-# Install toolchains, wire the no-push git hook, install web deps.
+# Install toolchains and web deps.
 setup:
     mise install
-    git config core.hooksPath .githooks
-    @echo "pre-push guard wired (pushing is blocked by policy — see CLAUDE.md)"
     @if [ -d web ]; then cd web && npm install; else echo "web/ not present yet (pre Phase 6)"; fi
     @echo "RUN_ID={{run_id}}  PORT_BASE={{port_base}}"
 

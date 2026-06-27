@@ -4,15 +4,11 @@ Project-level instructions for any agent working in `~/repos/cellarr`. These ove
 sit alongside the global `~/.claude/CLAUDE.md` (system tools) and the plan in
 [`docs/`](docs/README.md). Read [`docs/agents/AGENTS.md`](docs/agents/AGENTS.md) before working.
 
-## 🚫 Rule #1: this project is PRIVATE — never push to a remote
+## Repository
 
-- **Local commits are permitted and encouraged.** Branch, commit, use worktrees freely.
-- **Remote pushing is forbidden.** Do not `git push`, do not add/enable a remote, do not create a
-  GitHub repo, do not open PRs, do not publish packages (crates.io / npm), do not deploy. The user
-  does **not** want this project published anywhere.
-- This is enforced defense-in-depth by a committed pre-push hook (`.githooks/pre-push`) that rejects
-  all pushes. `just setup` wires it via `git config core.hooksPath .githooks`. Do not disable it.
-- If a task seems to require publishing, it is wrong — stop and ask.
+Public personal project: [github.com/poiley/cellarr](https://github.com/poiley/cellarr). Branch,
+commit, and push freely. Default branch is `main`. This repo uses a local git identity
+(`benjpoile@gmail.com`); other repos use the machine default.
 
 ## Non-negotiables (from the plan — memorize)
 
@@ -54,4 +50,4 @@ prefer `isolation: "worktree"`.
 
 Code/comment/commit/test conventions live in [`docs/agents/conventions.md`](docs/agents/conventions.md).
 Definition of done in [`docs/agents/definition-of-done.md`](docs/agents/definition-of-done.md).
-Don't reference issue/bug numbers in code comments. Commit locally; never push.
+Don't reference issue/bug numbers in code comments.

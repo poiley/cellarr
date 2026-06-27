@@ -99,4 +99,4 @@ mise exec -- cargo run -p cellarr-cli      # daemon (zero-config), serves UI + A
 mise exec -- cargo run -p cellarr-cli -- migrate <radarr.sqlite> <sonarr.sqlite>
 ```
 
-Private project: local commits only, **never pushed** (enforced by `.githooks/pre-push`).
+Public repo ([github.com/poiley/cellarr](https://github.com/poiley/cellarr)): local commits pushed to `main`.

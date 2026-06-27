@@ -5,8 +5,7 @@ This doc defines how that works without collisions: ports, databases, Docker con
 artifacts, and scratch dirs are all **namespaced per run** and use **OS-allocated ports**. Nothing
 in the test/dev flow may assume it is the only one running.
 
-> **Reminder:** cellarr is private. Local commits are fine; **never push** (see [../CLAUDE.md](../CLAUDE.md)
-> — enforced by `.githooks/pre-push`).
+> **Reminder:** cellarr is a public repo ([github.com/poiley/cellarr](https://github.com/poiley/cellarr)); push to `main` freely.
 
 ## TL;DR
 
