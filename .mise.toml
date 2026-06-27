@@ -4,8 +4,15 @@
 [tools]
 rust = "stable"      # cargo, rustc, clippy, rustfmt
 node = "lts"         # for web/ (Next.js + SRCL) and the differential-oracle harness tooling
+sccache = "latest"   # shared compilation cache — warms once, reused across every worktree
+# cargo-nextest (faster test runner, powers `just test`) is installed into ~/.cargo/bin by
+# `just setup` from its official prebuilt tarball — nextest's dual-tag GitHub releases don't
+# resolve cleanly through mise's generic backends.
 
 [env]
 # Keep each git worktree's build artifacts isolated by default (do not set a shared
 # CARGO_TARGET_DIR). See docs/16-local-dev-and-testing.md for the isolation model.
 RUST_BACKTRACE = "1"
+# Route compilation through sccache. target/ stays per-worktree (isolation preserved); only the
+# compiled-artifact CACHE is shared, so a fresh worktree skips recompiling unchanged deps.
+RUSTC_WRAPPER = "sccache"

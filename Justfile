@@ -29,6 +29,11 @@ _default:
 # Install toolchains and web deps.
 setup:
     mise install
+    @# cargo-nextest: prebuilt tarball into ~/.cargo/bin (shared by all worktrees). See .mise.toml.
+    @if ! command -v cargo-nextest >/dev/null 2>&1; then \
+        echo "installing cargo-nextest..."; \
+        curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C "$HOME/.cargo/bin"; \
+    fi
     @if [ -d web ]; then cd web && npm install; else echo "web/ not present yet (pre Phase 6)"; fi
     @echo "RUN_ID={{run_id}}  PORT_BASE={{port_base}}"
 
@@ -47,8 +52,16 @@ ports:
 # Fast, hermetic: full workspace test suite (SQLite + record/replay; NO Docker, NO ports).
 # Safe to run in many worktrees simultaneously: each has its own target/ and tests use tempdirs.
 test *ARGS:
-    @if [ ! -f Cargo.toml ]; then echo "no crates yet (pre Phase 0) — nothing to test"; exit 0; fi
-    cargo test --workspace {{ARGS}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f Cargo.toml ]; then echo "no crates yet (pre Phase 0) — nothing to test"; exit 0; fi
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        cargo nextest run --workspace {{ARGS}}
+        cargo test --workspace --doc {{ARGS}}   # nextest skips doctests; run them separately
+    else
+        echo "note: cargo-nextest not found — falling back to 'cargo test' (run 'just setup' for the faster runner)"
+        cargo test --workspace {{ARGS}}
+    fi
 
 # Lint + format gates.
 lint:

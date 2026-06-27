@@ -99,3 +99,11 @@ proptest = "1.5"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Faster dev/test builds: keep line tables for backtraces in our own code, but strip all
+# debuginfo from the 500+ third-party deps (the dominant link-time and target/ disk cost).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

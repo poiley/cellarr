@@ -23,6 +23,19 @@ Managed by **mise** (see `.mise.toml`): Rust (stable) and Node. Run `just setup`
 toolchains, wire the git hook, and install web deps. Rust/Cargo are **not** globally installed on
 this machine — use the project's mise-managed toolchain, not a system one.
 
+**Build/test speed.** `just setup` also wires three accelerators; don't undo them:
+- **sccache** (`RUSTC_WRAPPER` in `.mise.toml`) — a shared compile cache. `target/` stays
+  per-worktree (isolation intact); only compiled artifacts are shared, so a fresh worktree/agent
+  skips recompiling unchanged deps. First build of a given dep set is a full miss that warms the
+  cache; the win lands on the *next* cold build. Check it with `sccache --show-stats`.
+- **dep debuginfo stripped** (`[profile.dev.package."*"] debug = false` in `Cargo.toml`) — our own
+  code keeps line-tables for backtraces; the 500+ third-party crates compile with none, cutting
+  link time and `target/` size. Don't widen debuginfo back onto deps to "fix" a debugging session.
+- **cargo-nextest** powers `just test` (faster, better-parallelized). It does **not** run doctests,
+  so the recipe runs `cargo test --doc` separately — keep both legs if you edit it. nextest is
+  installed into `~/.cargo/bin` from its official tarball (its dual-tag GitHub releases don't
+  resolve through mise backends); `just test` falls back to plain `cargo test` if it's absent.
+
 ## Local development & testing
 
 **Every workflow runs isolated.** Multiple agents test their own versions on this machine at once, so
@@ -45,6 +58,12 @@ just clean-run        # tear down this run's containers, DBs, and ./.run/<id>
 folder name), its own `target/`, its own `./.run/<id>/` data dir, its own port block, and uniquely
 named Docker containers / Postgres databases. Two worktrees never collide. When launching agents,
 prefer `isolation: "worktree"`.
+
+This is not just for ports/DBs — cargo takes a **per-directory lock on `target/`**, so two builds
+in the *same* checkout serialize (you'll see `Blocking waiting for file lock on build directory`,
+and a `just test` can fail if it collides with another build's lock). Separate worktrees have
+separate `target/` dirs and build in parallel; sccache still shares the compiled-artifact cache
+across them. So: never run concurrent agents in one checkout — give each its own worktree.
 
 ## Conventions
 
