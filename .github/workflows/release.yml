@@ -1,0 +1,79 @@
+name: release
+
+# Build the web UI (embedded into the binary), cross-compile a static arm64
+# binary, and publish a container image to GHCR on every push to main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/poiley/cellarr
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the web UI -> web/dist (rust-embed bakes it into the binary).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      # 2. Cross-compile static musl binaries for both arches (cross handles the
+      #    musl + C toolchain for the bundled SQLite). Multi-arch so the image runs
+      #    on any node of the mixed (arm64 + amd64) cluster, no nodeSelector needed.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Cross-compile cellarr (arm64 + amd64)
+        run: |
+          cross build --release --locked -p cellarr-cli --target aarch64-unknown-linux-musl
+          cross build --release --locked -p cellarr-cli --target x86_64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/cellarr ./cellarr-arm64
+          cp target/x86_64-unknown-linux-musl/release/cellarr  ./cellarr-amd64
+          file ./cellarr-arm64 ./cellarr-amd64
+
+      # 3. Assemble + push the multi-arch image (the Dockerfile COPYs the per-arch
+      #    binary via TARGETARCH).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false

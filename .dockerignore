@@ -1,0 +1,5 @@
+# The image only needs the prebuilt per-arch binaries (CI cross-compiles them and
+# drops them at ./cellarr-amd64 / ./cellarr-arm64). Keep the build context tiny.
+*
+!cellarr-amd64
+!cellarr-arm64
