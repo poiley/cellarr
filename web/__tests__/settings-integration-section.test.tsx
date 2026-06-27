@@ -17,18 +17,34 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-// The section now also loads the tag catalogue (GET /api/v3/tag) on mount for
-// its tag chip-input. That fetch must NOT consume the positional response queue
-// these ordered tests rely on, so intercept it and answer `[]` directly while
-// delegating every other call to the test's own mock.
+// The section loads, on mount, two side catalogues that must NOT consume the
+// positional response queue these ordered tests rely on:
+//   * the tag catalogue (GET /api/v3/tag) for its tag chip-input;
+//   * the Radarr-shaped list (GET /api/v3/indexer | /downloadclient) used purely
+//     to learn which configs the config-as-code reconciler owns (the `managed`
+//     flag the native /api/v1 list does not carry).
+// Intercept both and answer directly, delegating every other call (incl. the
+// POST/DELETE/test that share those URLs) to the test's own mock. `managed` is
+// the optional list of config-owned v3 configs the managed-badge derives from.
+function isGet(opts?: RequestInit) {
+  return !opts || opts.method === undefined || opts.method === "GET";
+}
+
 function withTags(
   inner: (url: string, opts?: RequestInit) => Promise<Response>,
   tags: unknown[] = [],
+  managed: unknown[] = [],
 ) {
   return vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
     const u = String(url);
-    if (u.endsWith("/api/v3/tag") && (!opts || opts.method === undefined || opts.method === "GET")) {
+    if (u.endsWith("/api/v3/tag") && isGet(opts)) {
       return Promise.resolve(jsonResponse(tags));
+    }
+    if (
+      (u.endsWith("/api/v3/indexer") || u.endsWith("/api/v3/downloadclient")) &&
+      isGet(opts)
+    ) {
+      return Promise.resolve(jsonResponse(managed));
     }
     return inner(url, opts);
   });

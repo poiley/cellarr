@@ -46,6 +46,7 @@ import {
   EmptyState,
 } from "@app/settings/_components/StatusBanners";
 import ConfirmDialog from "@app/settings/_components/ConfirmDialog";
+import ManagedBadge from "@app/settings/_components/ManagedBadge";
 import TagInput from "@app/settings/_components/TagInput";
 
 type IntegrationKind = "indexers" | "downloadclients";
@@ -239,11 +240,36 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
     (signal: AbortSignal) => client.listTags(signal),
     [client],
   );
+  // The native /api/v1 list the form is built from does NOT carry the additive
+  // `managed` flag — only the Radarr-shaped /api/v3 list does. Fetch that in
+  // parallel purely to learn which configs the config-as-code reconciler owns,
+  // matched back to the native rows by name (the human identity shown per row).
+  // Best-effort: a failure here just means nothing is badged as managed.
+  const loadManaged = React.useCallback(
+    (signal: AbortSignal) =>
+      kind === "indexers"
+        ? client.listIndexersV3(signal)
+        : client.listDownloadClientsV3(signal),
+    [client, kind],
+  );
   const { data, loading, error, reload } = useAsync<RawConfig[]>(load);
+  const { data: managedList } = useAsync<
+    (IndexerConfigV3 | DownloadClientConfigV3)[]
+  >(loadManaged);
   const { data: tagList, reload: reloadTags } = useAsync<Tag[]>(loadTags);
   const { success, error: toastError, info } = useToast();
 
   const tags = tagList ?? [];
+
+  // The set of config-owned names (a config-managed indexer / download client is
+  // locked read-only in the UI). Empty when the v3 list is unavailable.
+  const managedNames = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const m of managedList ?? []) {
+      if (m.managed === true && typeof m.name === "string") set.add(m.name);
+    }
+    return set;
+  }, [managedList]);
 
   // Mint a new tag inline (the TagInput "+ new" path) + refresh the catalogue.
   const createTag = React.useCallback(
@@ -453,6 +479,7 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
             <ul style={{ listStyle: "none", padding: 0, margin: "0 0 1ch 0" }}>
               {configs.map((raw) => {
                 const f = toForm(raw, implementations);
+                const managed = !!f.name && managedNames.has(f.name);
                 return (
                   <li
                     key={f.id || f.name}
@@ -467,20 +494,25 @@ const IntegrationSection: React.FC<IntegrationSectionProps> = ({
                     <span>
                       <Badge>{f.enabled ? "enabled" : "disabled"}</Badge>{" "}
                       {f.name || "(unnamed)"}{" "}
-                      <span style={{ opacity: 0.5 }}>{f.implementation}</span>
+                      <span style={{ opacity: 0.5 }}>{f.implementation}</span>{" "}
+                      {managed ? (
+                        <ManagedBadge entityLabel={`${singular} ${f.name || "(unnamed)"}`} />
+                      ) : null}
                     </span>
                     <span style={{ display: "inline-flex", gap: "0.5ch" }}>
                       <Button
                         theme="SECONDARY"
                         aria-label={`Edit ${f.name || singular}`}
-                        onClick={() => edit(raw)}
+                        isDisabled={managed}
+                        onClick={managed ? undefined : () => edit(raw)}
                       >
                         Edit
                       </Button>
                       <Button
                         theme="DANGER"
                         aria-label={`Remove ${f.name || singular}`}
-                        onClick={() => setPendingDelete(f)}
+                        isDisabled={managed}
+                        onClick={managed ? undefined : () => setPendingDelete(f)}
                       >
                         Remove
                       </Button>

@@ -75,17 +75,67 @@ downloadClients:
     settings:
       host: localhost
       port: 8080
+releaseProfiles:
+  - name: no-x265
+    tags: [anime]
+    ignored: [x265]
+    preferred:
+      - term: PROPER
+        score: 5
+delayProfiles:
+  - name: default
+    usenetDelay: 30
+    torrentDelay: 60
+    preferredProtocol: usenet
+importLists:
+  - name: my-trakt
+    kind: trakt
+    mediaType: movie
+    qualityProfile: HD
+    settings:
+      list: my-list
+      apiKey: ${TRAKT_ID}
+notifications:
+  - name: discord
+    kind: discord
+    tags: [anime]
+    onEvents: [grab, import]
+    settings:
+      webhookUrl: ${DISCORD_WEBHOOK}
+remotePathMappings:
+  - name: dl
+    host: qbit.local
+    remotePath: /downloads
+    localPath: /data/downloads
+naming:
+  movieFileFormat: "{Movie Title}/movie.{Extension}"
+mediaManagement:
+  recycleBinPath: /recycle
+  writeNfo: false
+auth:
+  method: forms
+  username: admin
+  passwordHash: ${AUTH_HASH}
 "#;
+
+/// The full env the [`FULL`] config references (all `${ENV}` secrets).
+const FULL_ENV: &[(&str, &str)] = &[
+    ("NZBGEEK_KEY", "secret-key"),
+    ("TRAKT_ID", "trakt-client-id"),
+    ("DISCORD_WEBHOOK", "https://discord/webhook"),
+    ("AUTH_HASH", "$argon2id$v=19$m=4096$abc$def"),
+];
 
 #[tokio::test]
 async fn apply_creates_all_declared_entities() {
     let (db, _dir) = temp_db().await;
-    let cfg = load(FULL, &[("NZBGEEK_KEY", "secret-key")]);
+    let cfg = load(FULL, FULL_ENV);
 
     let report = reconcile::apply(&db, &cfg).await.unwrap();
     let totals = report.totals();
-    // Eight kinds, one item each, all created.
-    assert_eq!(totals.created, 8, "{report:?}");
+    // 13 name-keyed kinds (one item each) + 3 singletons (naming, media-management,
+    // auth), all created on first apply.
+    assert_eq!(totals.created, 16, "{report:?}");
     assert_eq!(totals.pruned, 0);
 
     // Spot-check each kind landed in the DB.
@@ -109,13 +159,64 @@ async fn apply_creates_all_declared_entities() {
     assert_eq!(lib.default_quality_profile, profile.id);
     assert_eq!(lib.root_folders.len(), 1);
 
+    // --- the operational-surface kinds (Pack 2) landed too --------------------
+    let release_profiles = db.profiles().list_release_profiles().await.unwrap();
+    assert_eq!(release_profiles.len(), 1);
+    // The release profile's tag scoping resolved the tag NAME to its integer id.
+    assert_eq!(release_profiles[0].tags, vec![anime_id]);
+    assert_eq!(release_profiles[0].ignored, vec!["x265".to_string()]);
+
+    let delay_profiles = db.profiles().list_delay_profiles().await.unwrap();
+    assert_eq!(delay_profiles.len(), 1);
+    assert_eq!(delay_profiles[0].usenet_delay, 30);
+
+    use cellarr_core::importlist::ImportListRepository;
+    let import_lists = db.import_lists().list().await.unwrap();
+    assert_eq!(import_lists.len(), 1);
+    // The import list resolved its quality-profile reference by name → id, and the
+    // ${ENV} secret in its settings was interpolated.
+    assert_eq!(
+        import_lists[0].quality_profile_id.as_deref(),
+        Some(profile.id.to_string().as_str())
+    );
+    assert_eq!(import_lists[0].settings["apiKey"], "trakt-client-id");
+
+    let notifications = db.config().list_notifications().await.unwrap();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].tags, vec![anime_id]);
+    assert_eq!(
+        notifications[0].settings["webhookUrl"],
+        "https://discord/webhook"
+    );
+
+    let mappings = db.config().list_remote_path_mappings().await.unwrap();
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(mappings[0].remote_path, "/downloads");
+
+    // The singletons were set as whole documents.
+    let mm = db.config().get_media_management().await.unwrap();
+    assert_eq!(
+        mm.naming.movie_file_format,
+        "{Movie Title}/movie.{Extension}"
+    );
+    assert_eq!(mm.recycle_bin_path.as_deref(), Some("/recycle"));
+    assert!(!mm.write_nfo);
+
+    let auth = db.auth().get_config().await.unwrap();
+    assert_eq!(auth.method, cellarr_core::AuthMethod::Forms);
+    assert_eq!(auth.username.as_deref(), Some("admin"));
+    assert_eq!(
+        auth.password_hash.as_deref(),
+        Some("$argon2id$v=19$m=4096$abc$def")
+    );
+
     db.shutdown().await;
 }
 
 #[tokio::test]
 async fn applying_twice_is_idempotent() {
     let (db, _dir) = temp_db().await;
-    let cfg = load(FULL, &[("NZBGEEK_KEY", "secret-key")]);
+    let cfg = load(FULL, FULL_ENV);
 
     reconcile::apply(&db, &cfg).await.unwrap();
     // Second apply: the plan must be all-unchanged, zero writes.
@@ -130,7 +231,7 @@ async fn applying_twice_is_idempotent() {
         "second apply updated something: {report:?}"
     );
     assert_eq!(totals.pruned, 0);
-    assert_eq!(totals.unchanged, 8);
+    assert_eq!(totals.unchanged, 16);
     assert!(!report.has_changes());
 
     db.shutdown().await;
@@ -139,19 +240,17 @@ async fn applying_twice_is_idempotent() {
 #[tokio::test]
 async fn editing_an_item_plans_an_update() {
     let (db, _dir) = temp_db().await;
-    reconcile::apply(&db, &load(FULL, &[("NZBGEEK_KEY", "k")]))
-        .await
-        .unwrap();
+    reconcile::apply(&db, &load(FULL, FULL_ENV)).await.unwrap();
 
     // Change the download client's port — same name, different content.
     let edited = FULL.replace("port: 8080", "port: 9090");
-    let report = reconcile::apply(&db, &load(&edited, &[("NZBGEEK_KEY", "k")]))
+    let report = reconcile::apply(&db, &load(&edited, FULL_ENV))
         .await
         .unwrap();
     let totals = report.totals();
     assert_eq!(totals.updated, 1, "{report:?}");
     assert_eq!(totals.created, 0);
-    assert_eq!(totals.unchanged, 7);
+    assert_eq!(totals.unchanged, 15);
 
     let dc = &db.config().list_download_clients().await.unwrap()[0];
     assert_eq!(dc.settings["port"], 9090);
@@ -235,33 +334,49 @@ indexers:
 #[tokio::test]
 async fn export_then_reimport_is_an_empty_plan() {
     let (db, _dir) = temp_db().await;
-    reconcile::apply(&db, &load(FULL, &[("NZBGEEK_KEY", "secret")]))
-        .await
-        .unwrap();
+    reconcile::apply(&db, &load(FULL, FULL_ENV)).await.unwrap();
 
     // Export the current state to YAML.
     let exported = managed::export::export(&db).await.unwrap();
     let yaml = managed::export::to_yaml(&exported).unwrap();
 
-    // The export must redact the secret (no literal key in the committed file) and
-    // emit a `${ENV}` placeholder in its place — the documented behaviour that lets
-    // the file be committed safely.
-    assert!(
-        !yaml.contains("secret"),
-        "exported YAML leaked a secret:\n{yaml}"
-    );
+    // The export must redact every secret (indexer key, notification webhook, the
+    // auth password hash) to a `${ENV}` placeholder — never a literal — so the file
+    // is safe to commit.
+    for leaked in [
+        "secret-key",
+        "https://discord/webhook",
+        "$argon2id",
+        "trakt-client-id",
+    ] {
+        assert!(
+            !yaml.contains(leaked),
+            "exported YAML leaked a secret `{leaked}`:\n{yaml}"
+        );
+    }
     assert!(
         yaml.contains("${NZBGEEK_APIKEY}"),
-        "export should emit an env placeholder for the secret:\n{yaml}"
+        "export should emit an env placeholder for the indexer key:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("${AUTH_PASSWORD_HASH}"),
+        "export should emit an env placeholder for the auth password hash:\n{yaml}"
     );
 
-    // Re-import the exported YAML, supplying the original secret via the env var the
-    // placeholder names. The round-trip is then exact: re-planning against the same
-    // DB is empty (zero create/update/prune).
-    let reimported = loader::load_str(&yaml, |k| {
-        (k == "NZBGEEK_APIKEY").then(|| "secret".to_string())
-    })
-    .expect("re-imported export is valid");
+    // Re-import the exported YAML, supplying every redacted secret via the env var
+    // its placeholder names. The round-trip is then exact: re-planning against the
+    // same DB is empty (zero create/update/prune) — over the FULL set, singletons
+    // included.
+    let env: std::collections::HashMap<&str, &str> = [
+        ("NZBGEEK_APIKEY", "secret-key"),
+        ("DISCORD_WEBHOOKURL", "https://discord/webhook"),
+        ("MY_TRAKT_APIKEY", "trakt-client-id"),
+        ("AUTH_PASSWORD_HASH", "$argon2id$v=19$m=4096$abc$def"),
+    ]
+    .into_iter()
+    .collect();
+    let reimported = loader::load_str(&yaml, |k| env.get(k).map(|s| (*s).to_string()))
+        .expect("re-imported export is valid");
     let report = reconcile::plan(&db, &reimported).await.unwrap();
     assert!(
         !report.has_changes(),
@@ -275,13 +390,19 @@ async fn export_then_reimport_is_an_empty_plan() {
 #[tokio::test]
 async fn plan_is_read_only() {
     let (db, _dir) = temp_db().await;
-    let cfg = load(FULL, &[("NZBGEEK_KEY", "k")]);
+    let cfg = load(FULL, FULL_ENV);
 
     // A dry-run plan must not write anything.
     let report = reconcile::plan(&db, &cfg).await.unwrap();
-    assert_eq!(report.totals().created, 8);
+    assert_eq!(report.totals().created, 16);
     assert!(db.config().list_indexers().await.unwrap().is_empty());
     assert!(db.tags().list().await.unwrap().is_empty());
+    // Singletons were not written by the dry run either (still defaults).
+    assert!(db.config().list_notifications().await.unwrap().is_empty());
+    assert_eq!(
+        db.auth().get_config().await.unwrap().method,
+        cellarr_core::AuthMethod::None
+    );
 
     db.shutdown().await;
 }
@@ -389,6 +510,218 @@ libraries: []
     assert!(db.config().list_libraries().await.unwrap().is_empty());
 
     db.shutdown().await;
+}
+
+#[tokio::test]
+async fn prune_removes_only_config_managed_notifications() {
+    // The safe-prune guarantee holds for the new name-keyed kinds too: a UI-created
+    // notification (no ledger row) survives when config stops declaring its own.
+    let (db, _dir) = temp_db().await;
+
+    let ui = cellarr_core::NotificationConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "ui-notify".into(),
+        kind: "webhook".into(),
+        enabled: true,
+        on_events: vec![],
+        tags: vec![],
+        settings: serde_json::json!({ "webhookUrl": "https://ui" }),
+    };
+    db.config().upsert_notification(&ui).await.unwrap();
+
+    let with = r#"
+apiVersion: cellarr/v1
+notifications:
+  - name: config-notify
+    kind: discord
+    settings: { webhookUrl: https://config }
+"#;
+    reconcile::apply(&db, &load(with, &[])).await.unwrap();
+    assert_eq!(db.config().list_notifications().await.unwrap().len(), 2);
+
+    // Stop declaring any notification (empty section = manage none) → prune the
+    // config one only.
+    let empty = "apiVersion: cellarr/v1\nnotifications: []\n";
+    let report = reconcile::apply(&db, &load(empty, &[])).await.unwrap();
+    assert_eq!(report.totals().pruned, 1, "{report:?}");
+    let remaining = db.config().list_notifications().await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].name, "ui-notify");
+
+    db.shutdown().await;
+}
+
+#[tokio::test]
+async fn delay_and_remote_path_mapping_round_trip_by_config_name() {
+    // The two name-less core models (delay profile, remote-path mapping) are keyed
+    // by a config name in the ledger; create → idempotent re-apply → edit → prune.
+    let (db, _dir) = temp_db().await;
+
+    let cfg = r#"
+apiVersion: cellarr/v1
+delayProfiles:
+  - name: anime-delay
+    usenetDelay: 15
+    tags: [anime]
+remotePathMappings:
+  - name: dl
+    remotePath: /downloads
+    localPath: /data/downloads
+"#;
+    let report = reconcile::apply(&db, &load(cfg, &[])).await.unwrap();
+    assert_eq!(report.totals().created, 2, "{report:?}");
+    assert_eq!(db.profiles().list_delay_profiles().await.unwrap().len(), 1);
+    assert_eq!(
+        db.config().list_remote_path_mappings().await.unwrap().len(),
+        1
+    );
+
+    // Idempotent.
+    let again = reconcile::apply(&db, &load(cfg, &[])).await.unwrap();
+    assert!(!again.has_changes(), "{again:?}");
+
+    // Edit the delay window → an in-place UPDATE (same config name → same id).
+    let edited = cfg.replace("usenetDelay: 15", "usenetDelay: 45");
+    let dp_before = db.profiles().list_delay_profiles().await.unwrap()[0].id;
+    let upd = reconcile::apply(&db, &load(&edited, &[])).await.unwrap();
+    assert_eq!(upd.totals().updated, 1, "{upd:?}");
+    let dps = db.profiles().list_delay_profiles().await.unwrap();
+    assert_eq!(dps[0].id, dp_before, "update must preserve the id");
+    assert_eq!(dps[0].usenet_delay, 45);
+
+    // Prune both by declaring them empty.
+    let pruned = reconcile::apply(
+        &db,
+        &load(
+            "apiVersion: cellarr/v1\ndelayProfiles: []\nremotePathMappings: []\n",
+            &[],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pruned.totals().pruned, 2, "{pruned:?}");
+    assert!(db
+        .profiles()
+        .list_delay_profiles()
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(db
+        .config()
+        .list_remote_path_mappings()
+        .await
+        .unwrap()
+        .is_empty());
+
+    db.shutdown().await;
+}
+
+#[tokio::test]
+async fn singletons_update_and_are_idempotent() {
+    // Naming / media-management / auth are whole-document singletons: first apply
+    // creates, an unchanged re-apply is a no-op, an edit updates, and omitting the
+    // section leaves the live document untouched.
+    let (db, _dir) = temp_db().await;
+
+    let cfg = r#"
+apiVersion: cellarr/v1
+naming:
+  movieFileFormat: "{Movie Title}.{Extension}"
+mediaManagement:
+  recycleBinPath: /recycle
+auth:
+  method: basic
+  username: admin
+  passwordHash: hash-1
+"#;
+    let report = reconcile::apply(&db, &load(cfg, &[])).await.unwrap();
+    assert_eq!(report.totals().created, 3, "{report:?}");
+
+    // Idempotent: an identical re-apply changes nothing.
+    let again = reconcile::apply(&db, &load(cfg, &[])).await.unwrap();
+    assert!(!again.has_changes(), "{again:?}");
+
+    // Editing one singleton (the recycle bin) is a single UPDATE; the others stay
+    // unchanged.
+    let edited = cfg.replace("/recycle", "/trash");
+    let upd = reconcile::apply(&db, &load(&edited, &[])).await.unwrap();
+    assert_eq!(upd.totals().updated, 1, "{upd:?}");
+    assert_eq!(upd.totals().unchanged, 2, "{upd:?}");
+    assert_eq!(
+        db.config()
+            .get_media_management()
+            .await
+            .unwrap()
+            .recycle_bin_path
+            .as_deref(),
+        Some("/trash")
+    );
+    // The independently-declared naming singleton was preserved (not clobbered by
+    // the media-management write, and vice-versa).
+    assert_eq!(
+        db.config()
+            .get_media_management()
+            .await
+            .unwrap()
+            .naming
+            .movie_file_format,
+        "{Movie Title}.{Extension}"
+    );
+
+    // Omitting the auth section entirely leaves the live auth config untouched.
+    let no_auth = "apiVersion: cellarr/v1\nmediaManagement:\n  recycleBinPath: /trash\n";
+    reconcile::apply(&db, &load(no_auth, &[])).await.unwrap();
+    assert_eq!(
+        db.auth().get_config().await.unwrap().method,
+        cellarr_core::AuthMethod::Basic
+    );
+
+    db.shutdown().await;
+}
+
+#[tokio::test]
+async fn auth_enforcing_without_credential_fails_validation() {
+    // The lock-out guard: selecting forms/basic with no credential is rejected at
+    // load time (it would lock the operator out).
+    let text = r#"
+apiVersion: cellarr/v1
+auth:
+  method: forms
+"#;
+    let err = loader::load_str(text, |_| None).unwrap_err();
+    assert!(
+        err.to_string().contains("lock the operator out") || err.to_string().contains("credential"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn import_list_missing_profile_fails_validation() {
+    let text = r#"
+apiVersion: cellarr/v1
+importLists:
+  - name: l
+    kind: trakt
+    mediaType: movie
+    qualityProfile: ghost
+    settings: {}
+"#;
+    let err = loader::load_str(text, |_| None).unwrap_err();
+    assert!(err.to_string().contains("ghost"), "{err}");
+}
+
+#[tokio::test]
+async fn notification_scoped_to_undeclared_tag_fails_validation() {
+    let text = r#"
+apiVersion: cellarr/v1
+notifications:
+  - name: n
+    kind: discord
+    tags: [missing]
+    settings: {}
+"#;
+    let err = loader::load_str(text, |_| None).unwrap_err();
+    assert!(err.to_string().contains("missing"), "{err}");
 }
 
 #[tokio::test]

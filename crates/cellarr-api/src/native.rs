@@ -126,8 +126,43 @@ async fn system_status(State(state): State<AppState>) -> ApiResult<Json<SystemSt
 
 // --- libraries -------------------------------------------------------------
 
-async fn list_libraries(State(state): State<AppState>) -> ApiResult<Json<Vec<Library>>> {
-    Ok(Json(state.db.config().list_libraries().await?))
+/// The ledger `kind` the managed-config reconciler tracks libraries under. Kept in
+/// step with the reconciler's `kind::LIBRARY` (cellarr-api does not depend on
+/// cellarr-cli); see the `/api/v3` shim's `managed_kind` for the full set.
+const MANAGED_LIBRARY_KIND: &str = "library";
+
+/// The set of library ids (as text) the reconciler currently manages. A read
+/// failure degrades to "none managed": the flag is an advisory UI signal, never
+/// load-bearing.
+async fn managed_library_ids(state: &AppState) -> std::collections::HashSet<String> {
+    state
+        .db
+        .managed_config()
+        .list_kind(MANAGED_LIBRARY_KIND)
+        .await
+        .map(|rows| rows.into_iter().map(|e| e.entity_id).collect())
+        .unwrap_or_default()
+}
+
+/// Serialize a [`Library`] and splice in the additive read-only `managed` flag (so
+/// the UI can badge + lock config-managed libraries), keeping every existing field.
+fn library_with_managed(lib: &Library, managed: bool) -> serde_json::Value {
+    let mut value = serde_json::to_value(lib).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("managed".to_string(), serde_json::Value::Bool(managed));
+    }
+    value
+}
+
+async fn list_libraries(State(state): State<AppState>) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let managed = managed_library_ids(&state).await;
+    let libraries = state.db.config().list_libraries().await?;
+    Ok(Json(
+        libraries
+            .iter()
+            .map(|lib| library_with_managed(lib, managed.contains(&lib.id.to_string())))
+            .collect(),
+    ))
 }
 
 /// Parse a UUID path segment into a typed id, mapping a bad id to a structured
@@ -141,15 +176,18 @@ fn parse_uuid(raw: &str, what: &str) -> ApiResult<uuid::Uuid> {
 async fn get_library(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<Library>> {
+) -> ApiResult<Json<serde_json::Value>> {
     let lib_id = LibraryId::from_uuid(parse_uuid(&id, "library")?);
-    state
+    let lib = state
         .db
         .config()
         .get_library(lib_id)
         .await?
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("library {id} not found")))
+        .ok_or_else(|| ApiError::NotFound(format!("library {id} not found")))?;
+    let managed = managed_library_ids(&state)
+        .await
+        .contains(&lib.id.to_string());
+    Ok(Json(library_with_managed(&lib, managed)))
 }
 
 /// Body for creating a library.

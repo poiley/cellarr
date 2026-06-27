@@ -42,6 +42,22 @@ pub mod kind {
     pub const INDEXER: &str = "indexer";
     /// Download clients.
     pub const DOWNLOAD_CLIENT: &str = "download_client";
+    /// Release profiles.
+    pub const RELEASE_PROFILE: &str = "release_profile";
+    /// Delay profiles.
+    pub const DELAY_PROFILE: &str = "delay_profile";
+    /// Import lists.
+    pub const IMPORT_LIST: &str = "import_list";
+    /// Notifications.
+    pub const NOTIFICATION: &str = "notification";
+    /// Remote-path mappings.
+    pub const REMOTE_PATH_MAPPING: &str = "remote_path_mapping";
+    /// The naming-formats singleton.
+    pub const NAMING: &str = "naming";
+    /// The media-management singleton.
+    pub const MEDIA_MANAGEMENT: &str = "media_management";
+    /// The single-admin auth singleton.
+    pub const AUTH: &str = "auth";
 }
 
 /// What reconciliation will do with one item of a kind.

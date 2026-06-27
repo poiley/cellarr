@@ -36,6 +36,12 @@ export interface Library {
   name: string;
   root_folders: string[];
   default_quality_profile: string;
+  /**
+   * Additive read-only flag spliced in by the native library endpoint
+   * (crates/cellarr-api/src/native.rs `library_with_managed`): `true` when the
+   * config-as-code reconciler owns this library. Advisory UI signal only.
+   */
+  managed?: boolean;
 }
 
 export interface ContentRef {
@@ -242,6 +248,8 @@ export interface QualityProfile {
   items: QualityProfileItem[];
   formatItems: ProfileFormatItem[];
   language?: Language;
+  /** Read-only: `true` when the config-as-code reconciler owns this profile. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -265,6 +273,8 @@ export interface CustomFormatV3 {
   name: string;
   includeCustomFormatWhenRenaming?: boolean;
   specifications: CustomFormatSpecification[];
+  /** Read-only: `true` when the config-as-code reconciler owns this format. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -349,6 +359,8 @@ export interface DelayProfile {
   bypassIfHighestQuality: boolean;
   tags: string[];
   order: number;
+  /** Read-only: `true` when the config-as-code reconciler owns this profile. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -392,6 +404,8 @@ export interface ReleaseProfile {
   includePreferredWhenRenaming: boolean;
   indexerId: number;
   tags: number[];
+  /** Read-only: `true` when the config-as-code reconciler owns this profile. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -453,6 +467,8 @@ export interface IndexerConfigV3 {
   supportsSearch: boolean;
   fields: ProviderField[];
   tags: number[];
+  /** Read-only: `true` when the config-as-code reconciler owns this indexer. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -468,6 +484,8 @@ export interface DownloadClientConfigV3 {
   enable: boolean;
   fields: ProviderField[];
   tags: number[];
+  /** Read-only: `true` when the config-as-code reconciler owns this client. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -478,6 +496,8 @@ export interface RootFolder {
   accessible: boolean;
   freeSpace: number;
   unmappedFolders: Array<{ name?: string; path?: string }>;
+  /** Read-only: `true` when the config-as-code reconciler owns this root folder. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -518,6 +538,8 @@ export interface NotificationConfigV3 {
   onHealthRestored: boolean;
   fields: NotificationField[];
   tags: number[];
+  /** Read-only: `true` when the config-as-code reconciler owns this connector. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 
@@ -727,6 +749,8 @@ export interface ImportListConfigV3 {
   lastSuccessfulSync: number | null;
   fields: ImportListField[];
   tags: number[];
+  /** Read-only: `true` when the config-as-code reconciler owns this import list. */
+  managed?: boolean;
   [key: string]: unknown;
 }
 

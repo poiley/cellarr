@@ -39,6 +39,35 @@ pub fn interpolate<F>(input: &str, mut lookup: F) -> Result<String, ManagedError
 where
     F: FnMut(&str) -> Option<String>,
 {
+    // Interpolation runs on the raw text before YAML parsing, so we must not treat
+    // a `${...}` that appears inside a `#` comment as a secret reference — a
+    // heavily commented config (including this repo's own example file) routinely
+    // mentions the `${VAR}` syntax in prose. Process line by line: interpolate only
+    // the code portion (before any comment) and pass the comment through verbatim.
+    let mut out = String::with_capacity(input.len());
+    for segment in input.split_inclusive('\n') {
+        let (line, newline) = match segment.strip_suffix('\n') {
+            Some(line) => (line, "\n"),
+            None => (segment, ""),
+        };
+        match find_comment_start(line) {
+            Some(idx) => {
+                out.push_str(&interpolate_segment(&line[..idx], &mut lookup)?);
+                out.push_str(&line[idx..]); // the comment passes through untouched
+            }
+            None => out.push_str(&interpolate_segment(line, &mut lookup)?),
+        }
+        out.push_str(newline);
+    }
+    Ok(out)
+}
+
+/// Interpolate every `${...}` / `$$` reference in a single non-comment text
+/// segment (one line, up to any comment).
+fn interpolate_segment<F>(input: &str, lookup: &mut F) -> Result<String, ManagedError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
@@ -67,7 +96,7 @@ where
                     ))
                 })?;
                 let expr = &input[start..start + end];
-                let value = resolve_reference(expr, &mut lookup)?;
+                let value = resolve_reference(expr, lookup)?;
                 out.push_str(&value);
                 i = start + end + 1; // skip past the '}'
             }
@@ -79,6 +108,42 @@ where
         }
     }
     Ok(out)
+}
+
+/// Find the byte index where a YAML comment begins on `line`, if any.
+///
+/// A `#` starts a comment when it is at the start of the line (after optional
+/// whitespace) or is preceded by whitespace, **and** is not inside a quoted
+/// scalar. This lets [`interpolate`] leave `${...}` written in comment prose
+/// untouched while still substituting a `#` that sits inside a quoted value.
+fn find_comment_start(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev_ws = true; // line start behaves like "preceded by whitespace"
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // A backslash escapes the next char inside a double-quoted scalar.
+            b'\\' if in_double => {
+                i += 1;
+                prev_ws = false;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                prev_ws = false;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                prev_ws = false;
+            }
+            b'#' if !in_single && !in_double && prev_ws => return Some(i),
+            b' ' | b'\t' => prev_ws = true,
+            _ => prev_ws = false,
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Resolve one `${...}` body — either `VAR` or `VAR:-default`.
@@ -210,5 +275,38 @@ mod tests {
     fn empty_reference_is_an_error() {
         let err = interpolate("x: ${}", env(&[])).unwrap_err();
         assert!(matches!(err, ManagedError::Interpolation(_)));
+    }
+
+    #[test]
+    fn full_line_comment_placeholder_is_not_interpolated() {
+        // `${VAR}` mentioned in comment prose must NOT be treated as a secret ref
+        // (so a commented example file validates without those vars being set).
+        let out = interpolate("# secrets use ${ENV} syntax, e.g. ${VAR}", env(&[])).unwrap();
+        assert_eq!(out, "# secrets use ${ENV} syntax, e.g. ${VAR}");
+    }
+
+    #[test]
+    fn trailing_comment_placeholder_is_ignored_but_value_interpolates() {
+        let out = interpolate(
+            "apiKey: ${KEY} # set this to your ${NZBGEEK_KEY}",
+            env(&[("KEY", "secret")]),
+        )
+        .unwrap();
+        assert_eq!(out, "apiKey: secret # set this to your ${NZBGEEK_KEY}");
+    }
+
+    #[test]
+    fn hash_inside_quotes_is_not_a_comment() {
+        // A `#` inside a quoted scalar is part of the value, so its `${...}` still
+        // interpolates and the `#` is not mistaken for a comment.
+        let out = interpolate(r#"name: "a # ${B}""#, env(&[("B", "x")])).unwrap();
+        assert_eq!(out, r#"name: "a # x""#);
+    }
+
+    #[test]
+    fn comment_lines_interleaved_with_values() {
+        let input = "a: ${A}\n# note: ${UNSET_OK}\nb: ${B}";
+        let out = interpolate(input, env(&[("A", "1"), ("B", "2")])).unwrap();
+        assert_eq!(out, "a: 1\n# note: ${UNSET_OK}\nb: 2");
     }
 }

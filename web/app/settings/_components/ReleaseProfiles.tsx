@@ -39,6 +39,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 import TagInput from '@app/settings/_components/TagInput';
 
 // A single editable preferred row: a match term and the score it adds. Score is
@@ -298,43 +299,50 @@ const ReleaseProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
 
       {profiles.length ? (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1ch 0' }}>
-          {profiles.map((rp) => (
-            <li
-              key={rp.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '1ch',
-                padding: '0.5ch 0',
-              }}
-            >
-              <span>
-                <strong>{rp.name || `Profile #${rp.id}`}</strong>{' '}
-                <Badge>{rp.enabled === false ? 'disabled' : 'enabled'}</Badge>{' '}
-                <Badge>
-                  {(rp.required?.length ?? 0)}R · {(rp.ignored?.length ?? 0)}I ·{' '}
-                  {(rp.preferred?.length ?? 0)}P
-                </Badge>
-              </span>
-              <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                <Button
-                  theme="SECONDARY"
-                  aria-label={`Edit ${rp.name || `release profile ${rp.id}`}`}
-                  onClick={() => openEdit(rp)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  theme="DANGER"
-                  aria-label={`Delete ${rp.name || `release profile ${rp.id}`}`}
-                  onClick={() => setPendingDelete(rp)}
-                >
-                  Delete
-                </Button>
-              </span>
-            </li>
-          ))}
+          {profiles.map((rp) => {
+            const managed = isManaged(rp);
+            const rpName = rp.name || `release profile ${rp.id}`;
+            return (
+              <li
+                key={rp.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '1ch',
+                  padding: '0.5ch 0',
+                }}
+              >
+                <span>
+                  <strong>{rp.name || `Profile #${rp.id}`}</strong>{' '}
+                  <Badge>{rp.enabled === false ? 'disabled' : 'enabled'}</Badge>{' '}
+                  <Badge>
+                    {(rp.required?.length ?? 0)}R · {(rp.ignored?.length ?? 0)}I ·{' '}
+                    {(rp.preferred?.length ?? 0)}P
+                  </Badge>{' '}
+                  {managed ? <ManagedBadge entityLabel={`Release profile ${rpName}`} /> : null}
+                </span>
+                <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
+                  <Button
+                    theme="SECONDARY"
+                    aria-label={`Edit ${rpName}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => openEdit(rp)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    theme="DANGER"
+                    aria-label={`Delete ${rpName}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => setPendingDelete(rp)}
+                  >
+                    Delete
+                  </Button>
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <EmptyState>No release profiles yet. Add one to steer grabs by release term.</EmptyState>

@@ -44,6 +44,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 
 // A single editable specification row. `value` covers the common single-`value`
 // field (regex / token / select); `sizeMin`/`sizeMax` cover the two-field Size
@@ -387,38 +388,48 @@ const CustomFormats: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
 
       {filtered.length ? (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1ch 0' }}>
-          {filtered.map((cf) => (
-            <li
-              key={cf.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '1ch',
-                padding: '0.5ch 0',
-              }}
-            >
-              <span>
-                <strong>{cf.name}</strong>{' '}
-                <Badge>
-                  {cf.specifications?.length ?? 0} spec
-                  {(cf.specifications?.length ?? 0) === 1 ? '' : 's'}
-                </Badge>
-              </span>
-              <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                <Button theme="SECONDARY" aria-label={`Edit ${cf.name}`} onClick={() => openEdit(cf)}>
-                  Edit
-                </Button>
-                <Button
-                  theme="DANGER"
-                  aria-label={`Delete ${cf.name}`}
-                  onClick={() => setPendingDelete(cf)}
-                >
-                  Delete
-                </Button>
-              </span>
-            </li>
-          ))}
+          {filtered.map((cf) => {
+            const managed = isManaged(cf);
+            return (
+              <li
+                key={cf.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '1ch',
+                  padding: '0.5ch 0',
+                }}
+              >
+                <span>
+                  <strong>{cf.name}</strong>{' '}
+                  <Badge>
+                    {cf.specifications?.length ?? 0} spec
+                    {(cf.specifications?.length ?? 0) === 1 ? '' : 's'}
+                  </Badge>{' '}
+                  {managed ? <ManagedBadge entityLabel={`Custom format ${cf.name}`} /> : null}
+                </span>
+                <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
+                  <Button
+                    theme="SECONDARY"
+                    aria-label={`Edit ${cf.name}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => openEdit(cf)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    theme="DANGER"
+                    aria-label={`Delete ${cf.name}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => setPendingDelete(cf)}
+                  >
+                    Delete
+                  </Button>
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : formats.length ? (
         <EmptyState>No custom formats match “{filter}”.</EmptyState>

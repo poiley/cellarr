@@ -66,6 +66,21 @@ pub fn validate(config: &ManagedConfig) -> Result<(), ManagedError> {
     if let Some(dcs) = &config.download_clients {
         unique_names("downloadClient", dcs.iter().map(|d| &d.name))?;
     }
+    if let Some(rps) = &config.release_profiles {
+        unique_names("releaseProfile", rps.iter().map(|r| &r.name))?;
+    }
+    if let Some(dps) = &config.delay_profiles {
+        unique_names("delayProfile", dps.iter().map(|d| &d.name))?;
+    }
+    if let Some(lists) = &config.import_lists {
+        unique_names("importList", lists.iter().map(|l| &l.name))?;
+    }
+    if let Some(notifs) = &config.notifications {
+        unique_names("notification", notifs.iter().map(|n| &n.name))?;
+    }
+    if let Some(maps) = &config.remote_path_mappings {
+        unique_names("remotePathMapping", maps.iter().map(|m| &m.name))?;
+    }
 
     // --- Declared name sets for cross-reference resolution ----------------
     let declared_profiles = name_set(config.quality_profiles.as_deref(), |p| &p.name);
@@ -202,6 +217,83 @@ pub fn validate(config: &ManagedConfig) -> Result<(), ManagedError> {
                     )));
                 }
             }
+        }
+    }
+
+    // --- Release-profile tag scoping references tags ----------------------
+    if let Some(rps) = &config.release_profiles {
+        for rp in rps {
+            for tag in &rp.tags {
+                if !contains_ci(&declared_tags, tag) {
+                    return Err(ManagedError::Validation(format!(
+                        "releaseProfile `{}` is scoped to tag `{}`, which is not declared in tags",
+                        rp.name, tag
+                    )));
+                }
+            }
+        }
+    }
+
+    // --- Notification tag scoping references tags -------------------------
+    if let Some(notifs) = &config.notifications {
+        for n in notifs {
+            for tag in &n.tags {
+                if !contains_ci(&declared_tags, tag) {
+                    return Err(ManagedError::Validation(format!(
+                        "notification `{}` is scoped to tag `{}`, which is not declared in tags",
+                        n.name, tag
+                    )));
+                }
+            }
+        }
+    }
+
+    // Note: delay-profile `tags` are opaque label strings on the core model (not
+    // resolved against the tag vocabulary), so they are intentionally NOT
+    // cross-checked against `tags` — declaring a delay profile scoped to a label is
+    // valid whether or not a matching tag entity is declared.
+
+    // --- Import lists reference a quality profile -------------------------
+    if let Some(lists) = &config.import_lists {
+        for list in lists {
+            if let Some(profile) = &list.quality_profile {
+                if !contains_ci(&declared_profiles, profile) {
+                    return Err(ManagedError::Validation(format!(
+                        "importList `{}` references quality profile `{}`, which is not \
+                         declared in qualityProfiles",
+                        list.name, profile
+                    )));
+                }
+            }
+        }
+    }
+
+    // --- Remote-path mappings need a non-empty remote/local path ----------
+    if let Some(maps) = &config.remote_path_mappings {
+        for m in maps {
+            if m.remote_path.trim().is_empty() || m.local_path.trim().is_empty() {
+                return Err(ManagedError::Validation(format!(
+                    "remotePathMapping `{}` must declare a non-empty remotePath and localPath",
+                    m.name
+                )));
+            }
+        }
+    }
+
+    // --- Auth must not lock the operator out ------------------------------
+    if let Some(auth) = &config.auth {
+        let cfg = cellarr_core::AuthConfig {
+            method: auth.method,
+            username: auth.username.clone(),
+            password_hash: auth.password_hash.clone(),
+        };
+        if cfg.needs_setup() {
+            return Err(ManagedError::Validation(format!(
+                "auth selects the enforcing method `{}` but declares no credential \
+                 (username + passwordHash); that would lock the operator out — declare \
+                 a credential or use method `none`",
+                auth.method.as_str()
+            )));
         }
     }
 

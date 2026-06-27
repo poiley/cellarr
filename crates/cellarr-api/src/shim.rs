@@ -370,6 +370,68 @@ struct FaceState {
     face: Face,
 }
 
+// --- cross-cutting: config-managed signal ----------------------------------
+//
+// Every resource kind the config-as-code reconciler (`cellarr managed-config`)
+// owns records a tracking-ledger row keyed by `(kind, entity_id)`. Surfacing a
+// read-only `managed: true` on the v3 resource — derived purely from the ledger —
+// lets the UI badge + lock config-managed entities (editing them in the UI would
+// be reverted on the next reconcile). The field is **additive**: a UI-created
+// entity (no ledger row) carries `managed: false`, and no existing field changes,
+// so the *arr ecosystem clients that ignore the extra key are unaffected.
+//
+// The ledger `kind` strings are the stable contract owned by the reconciler; they
+// are mirrored here as constants (cellarr-api does not depend on cellarr-cli). A
+// resource's `entity_id` in the ledger is its concrete repo id as text — the uuid
+// for indexers/clients/profiles/lists/notifications/release+delay profiles, the
+// canonical name for a quality definition, the string id for a root folder /
+// remote-path mapping, the integer for a tag, and the fixed `_singleton` marker for
+// the naming / media-management / auth singletons.
+mod managed_kind {
+    pub const TAG: &str = "tag";
+    pub const QUALITY_DEFINITION: &str = "quality_definition";
+    pub const CUSTOM_FORMAT: &str = "custom_format";
+    pub const QUALITY_PROFILE: &str = "quality_profile";
+    pub const ROOT_FOLDER: &str = "root_folder";
+    // Libraries are surfaced (with their managed flag) on the native `/api/v1`
+    // library endpoint, not the v3 shim, so their kind constant lives there.
+    pub const INDEXER: &str = "indexer";
+    pub const DOWNLOAD_CLIENT: &str = "download_client";
+    pub const RELEASE_PROFILE: &str = "release_profile";
+    pub const DELAY_PROFILE: &str = "delay_profile";
+    pub const IMPORT_LIST: &str = "import_list";
+    pub const NOTIFICATION: &str = "notification";
+    pub const REMOTE_PATH_MAPPING: &str = "remote_path_mapping";
+}
+
+/// The set of `entity_id`s the reconciler currently manages for one ledger `kind`,
+/// as text (matching the entity's `.id.to_string()` / canonical-name form). A read
+/// failure degrades to "nothing managed" rather than failing the request: the
+/// managed flag is an advisory UI signal, never load-bearing for correctness.
+async fn managed_ids(db: &cellarr_db::Database, kind: &str) -> std::collections::HashSet<String> {
+    db.managed_config()
+        .list_kind(kind)
+        .await
+        .map(|rows| rows.into_iter().map(|e| e.entity_id).collect())
+        .unwrap_or_default()
+}
+
+/// Whether a single entity (by its text id) is currently config-managed for a
+/// ledger `kind`. The single-resource counterpart of [`managed_ids`].
+async fn is_managed(db: &cellarr_db::Database, kind: &str, entity_id: &str) -> bool {
+    managed_ids(db, kind).await.contains(entity_id)
+}
+
+/// Insert the additive read-only `managed` boolean into a v3 resource object. A
+/// non-object value (it should always be an object) is returned unchanged.
+#[must_use]
+fn with_managed(mut value: Value, managed: bool) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("managed".to_string(), Value::Bool(managed));
+    }
+    value
+}
+
 // --- cross-cutting: version header -----------------------------------------
 
 /// Middleware adding `X-Application-Version` to every API response. The value is
@@ -874,6 +936,9 @@ async fn root_folders(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>
                 "accessible": true,
                 "freeSpace": 0,
                 "unmappedFolders": [],
+                // A library-derived root-folder projection has no standalone id, so
+                // it is never config-managed in its own right.
+                "managed": false,
             }));
             idx += 1;
         }
@@ -882,9 +947,10 @@ async fn root_folders(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>
     // carry their real id projection (not the library-derived sequential index)
     // so a folder created via POST round-trips through DELETE/{id}.
     let _ = idx;
+    let managed = managed_ids(&fs.state.db, managed_kind::ROOT_FOLDER).await;
     for rf in cfg.list_root_folders().await? {
         if seen.insert(rf.path.clone()) {
-            out.push(v3_root_folder(&rf));
+            out.push(with_managed(v3_root_folder(&rf), managed.contains(&rf.id)));
         }
     }
     Ok(Json(out))
@@ -931,7 +997,8 @@ async fn create_root_folder(
         enabled: true,
     };
     fs.state.db.config().upsert_root_folder(&folder).await?;
-    Ok(Json(v3_root_folder(&folder)))
+    let managed = is_managed(&fs.state.db, managed_kind::ROOT_FOLDER, &folder.id).await;
+    Ok(Json(with_managed(v3_root_folder(&folder), managed)))
 }
 
 /// v3 `DELETE /rootfolder/{id}` — remove a standalone root folder by its
@@ -965,17 +1032,23 @@ fn v3_tag(tag: &cellarr_core::Tag) -> Value {
 
 async fn list_tags(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let tags = fs.state.db.tags().list().await?;
-    Ok(Json(tags.iter().map(v3_tag).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::TAG).await;
+    Ok(Json(
+        tags.iter()
+            .map(|t| with_managed(v3_tag(t), managed.contains(&t.id.to_string())))
+            .collect(),
+    ))
 }
 
 async fn get_tag(State(fs): State<FaceState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let id = parse_u32(&id, "tag")?;
+    let managed = is_managed(&fs.state.db, managed_kind::TAG, &id.to_string()).await;
     fs.state
         .db
         .tags()
         .get(id)
         .await?
-        .map(|t| Json(v3_tag(&t)))
+        .map(|t| Json(with_managed(v3_tag(&t), managed)))
         .ok_or_else(|| ApiError::NotFound(format!("tag {id} not found")))
 }
 
@@ -1032,9 +1105,15 @@ async fn quality_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Val
     // created via the shim/UI shows up here without first being attached to a
     // library — the round-trip the management UI relies on.
     let profiles = repo.list_profiles().await?;
+    let managed = managed_ids(&fs.state.db, managed_kind::QUALITY_PROFILE).await;
     let out = profiles
         .iter()
-        .map(|profile| v3_quality_profile(profile, &formats, fs.face))
+        .map(|profile| {
+            with_managed(
+                v3_quality_profile(profile, &formats, fs.face),
+                managed.contains(&profile.id.to_string()),
+            )
+        })
         .collect();
     Ok(Json(out))
 }
@@ -1228,7 +1307,11 @@ async fn create_quality_profile(
     let profile = profile_from_body(&body, cellarr_core::QualityProfileId::new(), Vec::new());
     repo.upsert_profile(&profile).await?;
     let formats = repo.custom_formats().await?;
-    Ok(Json(v3_quality_profile(&profile, &formats, fs.face)))
+    let managed = managed_ids(&fs.state.db, managed_kind::QUALITY_PROFILE).await;
+    Ok(Json(with_managed(
+        v3_quality_profile(&profile, &formats, fs.face),
+        managed.contains(&profile.id.to_string()),
+    )))
 }
 
 async fn update_quality_profile(
@@ -1247,7 +1330,11 @@ async fn update_quality_profile(
     let profile = profile_from_body(&body, existing.id, existing.required_languages);
     repo.upsert_profile(&profile).await?;
     let formats = repo.custom_formats().await?;
-    Ok(Json(v3_quality_profile(&profile, &formats, fs.face)))
+    let managed = managed_ids(&fs.state.db, managed_kind::QUALITY_PROFILE).await;
+    Ok(Json(with_managed(
+        v3_quality_profile(&profile, &formats, fs.face),
+        managed.contains(&profile.id.to_string()),
+    )))
 }
 
 async fn delete_quality_profile(
@@ -1299,6 +1386,9 @@ fn face_quality_name<'a>(canonical: &'a str, face: Face) -> std::borrow::Cow<'a,
 /// editable display title, which defaults to that name until overridden.
 async fn quality_definitions(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let ranking = fs.state.db.profiles().quality_ranking().await?;
+    // A quality definition's ledger id is its canonical name (the override key), so
+    // a quality whose size/title edit is config-managed carries `managed: true`.
+    let managed = managed_ids(&fs.state.db, managed_kind::QUALITY_DEFINITION).await;
     let out: Vec<Value> = ranking
         .qualities
         .iter()
@@ -1313,6 +1403,7 @@ async fn quality_definitions(State(fs): State<FaceState>) -> ApiResult<Json<Vec<
                 "minSize": q.min_size_per_min.unwrap_or(0),
                 "maxSize": q.max_size_per_min,
                 "preferredSize": q.preferred_size_per_min,
+                "managed": managed.contains(&q.name),
             })
         })
         .collect();
@@ -1600,7 +1691,13 @@ fn v3_custom_format(cf: &cellarr_core::CustomFormat) -> Value {
 
 async fn list_custom_formats(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let formats = fs.state.db.profiles().custom_formats().await?;
-    Ok(Json(formats.iter().map(v3_custom_format).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::CUSTOM_FORMAT).await;
+    Ok(Json(
+        formats
+            .iter()
+            .map(|cf| with_managed(v3_custom_format(cf), managed.contains(&cf.id.to_string())))
+            .collect(),
+    ))
 }
 
 /// v3 `customformat/schema` — the catalogue of specification templates a custom
@@ -1827,7 +1924,13 @@ async fn create_custom_format(
         score: 0,
     };
     fs.state.db.profiles().upsert_custom_format(&cf).await?;
-    Ok(Json(v3_custom_format(&cf)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::CUSTOM_FORMAT,
+        &cf.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_custom_format(&cf), managed)))
 }
 
 async fn update_custom_format(
@@ -1858,7 +1961,13 @@ async fn update_custom_format(
         score: existing.score,
     };
     fs.state.db.profiles().upsert_custom_format(&cf).await?;
-    Ok(Json(v3_custom_format(&cf)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::CUSTOM_FORMAT,
+        &cf.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_custom_format(&cf), managed)))
 }
 
 /// `GET /customformat/{id}` — one custom format in the v3 shape.
@@ -1867,7 +1976,13 @@ async fn get_custom_format(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let cf = find_custom_format_by_numeric(&fs, &id).await?;
-    Ok(Json(v3_custom_format(&cf)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::CUSTOM_FORMAT,
+        &cf.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_custom_format(&cf), managed)))
 }
 
 async fn delete_custom_format(
@@ -2104,7 +2219,13 @@ fn delay_profile_from_body(
 
 async fn list_delay_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let profiles = fs.state.db.profiles().list_delay_profiles().await?;
-    Ok(Json(profiles.iter().map(v3_delay_profile).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::DELAY_PROFILE).await;
+    Ok(Json(
+        profiles
+            .iter()
+            .map(|dp| with_managed(v3_delay_profile(dp), managed.contains(&dp.id.to_string())))
+            .collect(),
+    ))
 }
 
 async fn get_delay_profile(
@@ -2112,7 +2233,13 @@ async fn get_delay_profile(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let dp = find_delay_profile_by_numeric(&fs, &id).await?;
-    Ok(Json(v3_delay_profile(&dp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::DELAY_PROFILE,
+        &dp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_delay_profile(&dp), managed)))
 }
 
 async fn create_delay_profile(
@@ -2121,7 +2248,13 @@ async fn create_delay_profile(
 ) -> ApiResult<Json<Value>> {
     let dp = delay_profile_from_body(cellarr_core::DelayProfileId::new(), &body);
     fs.state.db.profiles().upsert_delay_profile(&dp).await?;
-    Ok(Json(v3_delay_profile(&dp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::DELAY_PROFILE,
+        &dp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_delay_profile(&dp), managed)))
 }
 
 async fn update_delay_profile(
@@ -2132,7 +2265,13 @@ async fn update_delay_profile(
     let existing = find_delay_profile_by_numeric(&fs, &id).await?;
     let dp = delay_profile_from_body(existing.id, &body);
     fs.state.db.profiles().upsert_delay_profile(&dp).await?;
-    Ok(Json(v3_delay_profile(&dp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::DELAY_PROFILE,
+        &dp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_delay_profile(&dp), managed)))
 }
 
 async fn delete_delay_profile(
@@ -2253,7 +2392,13 @@ fn release_profile_from_body(
 
 async fn list_release_profiles(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let profiles = fs.state.db.profiles().list_release_profiles().await?;
-    Ok(Json(profiles.iter().map(v3_release_profile).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::RELEASE_PROFILE).await;
+    Ok(Json(
+        profiles
+            .iter()
+            .map(|rp| with_managed(v3_release_profile(rp), managed.contains(&rp.id.to_string())))
+            .collect(),
+    ))
 }
 
 async fn get_release_profile(
@@ -2261,7 +2406,13 @@ async fn get_release_profile(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let rp = find_release_profile_by_numeric(&fs, &id).await?;
-    Ok(Json(v3_release_profile(&rp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::RELEASE_PROFILE,
+        &rp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_release_profile(&rp), managed)))
 }
 
 async fn create_release_profile(
@@ -2270,7 +2421,13 @@ async fn create_release_profile(
 ) -> ApiResult<Json<Value>> {
     let rp = release_profile_from_body(cellarr_core::ReleaseProfileId::new(), &body);
     fs.state.db.profiles().upsert_release_profile(&rp).await?;
-    Ok(Json(v3_release_profile(&rp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::RELEASE_PROFILE,
+        &rp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_release_profile(&rp), managed)))
 }
 
 async fn update_release_profile(
@@ -2281,7 +2438,13 @@ async fn update_release_profile(
     let existing = find_release_profile_by_numeric(&fs, &id).await?;
     let rp = release_profile_from_body(existing.id, &body);
     fs.state.db.profiles().upsert_release_profile(&rp).await?;
-    Ok(Json(v3_release_profile(&rp)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::RELEASE_PROFILE,
+        &rp.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_release_profile(&rp), managed)))
 }
 
 async fn delete_release_profile(
@@ -2406,7 +2569,13 @@ fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
 
 async fn list_indexers(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let indexers = fs.state.db.config().list_indexers().await?;
-    Ok(Json(indexers.iter().map(v3_indexer).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::INDEXER).await;
+    Ok(Json(
+        indexers
+            .iter()
+            .map(|ix| with_managed(v3_indexer(ix), managed.contains(&ix.id.to_string())))
+            .collect(),
+    ))
 }
 
 /// v3 `indexer/schema` — the Torznab and Newznab templates Prowlarr round-trips
@@ -2629,7 +2798,11 @@ async fn create_indexer(
     }
     let ix = indexer_from_body(&body, cellarr_core::IndexerId::new());
     fs.state.db.config().upsert_indexer(&ix).await?;
-    Ok(Json(v3_indexer(&ix)))
+    let managed = managed_ids(&fs.state.db, managed_kind::INDEXER).await;
+    Ok(Json(with_managed(
+        v3_indexer(&ix),
+        managed.contains(&ix.id.to_string()),
+    )))
 }
 
 async fn update_indexer(
@@ -2653,7 +2826,11 @@ async fn update_indexer(
         .ok_or_else(|| ApiError::NotFound(format!("indexer {id} not found")))?;
     let ix = indexer_from_body(&body, existing.id);
     fs.state.db.config().upsert_indexer(&ix).await?;
-    Ok(Json(v3_indexer(&ix)))
+    let managed = managed_ids(&fs.state.db, managed_kind::INDEXER).await;
+    Ok(Json(with_managed(
+        v3_indexer(&ix),
+        managed.contains(&ix.id.to_string()),
+    )))
 }
 
 async fn delete_indexer(
@@ -2747,7 +2924,13 @@ fn dc_implementation(kind: &str, protocol: cellarr_core::Protocol) -> &'static s
 
 async fn list_download_clients(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let clients = fs.state.db.config().list_download_clients().await?;
-    Ok(Json(clients.iter().map(v3_download_client).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::DOWNLOAD_CLIENT).await;
+    Ok(Json(
+        clients
+            .iter()
+            .map(|dc| with_managed(v3_download_client(dc), managed.contains(&dc.id.to_string())))
+            .collect(),
+    ))
 }
 
 /// v3 `downloadclient/schema` — the implementation templates the ecosystem
@@ -2939,7 +3122,13 @@ async fn create_download_client(
     }
     let dc = download_client_from_body(&body, cellarr_core::DownloadClientId::new());
     fs.state.db.config().upsert_download_client(&dc).await?;
-    Ok(Json(v3_download_client(&dc)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::DOWNLOAD_CLIENT,
+        &dc.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_download_client(&dc), managed)))
 }
 
 async fn update_download_client(
@@ -2963,7 +3152,13 @@ async fn update_download_client(
         .ok_or_else(|| ApiError::NotFound(format!("download client {id} not found")))?;
     let dc = download_client_from_body(&body, existing.id);
     fs.state.db.config().upsert_download_client(&dc).await?;
-    Ok(Json(v3_download_client(&dc)))
+    let managed = is_managed(
+        &fs.state.db,
+        managed_kind::DOWNLOAD_CLIENT,
+        &dc.id.to_string(),
+    )
+    .await;
+    Ok(Json(with_managed(v3_download_client(&dc), managed)))
 }
 
 async fn delete_download_client(
@@ -3023,7 +3218,13 @@ fn v3_remote_path_mapping(m: &cellarr_core::RemotePathMapping) -> Value {
 
 async fn list_remote_path_mappings(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let mappings = fs.state.db.config().list_remote_path_mappings().await?;
-    Ok(Json(mappings.iter().map(v3_remote_path_mapping).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::REMOTE_PATH_MAPPING).await;
+    Ok(Json(
+        mappings
+            .iter()
+            .map(|m| with_managed(v3_remote_path_mapping(m), managed.contains(&m.id)))
+            .collect(),
+    ))
 }
 
 /// v3 remote-path-mapping write body (`host`/`remotePath`/`localPath`).
@@ -3062,7 +3263,11 @@ async fn create_remote_path_mapping(
         .config()
         .upsert_remote_path_mapping(&mapping)
         .await?;
-    Ok(Json(v3_remote_path_mapping(&mapping)))
+    let managed = is_managed(&fs.state.db, managed_kind::REMOTE_PATH_MAPPING, &mapping.id).await;
+    Ok(Json(with_managed(
+        v3_remote_path_mapping(&mapping),
+        managed,
+    )))
 }
 
 async fn update_remote_path_mapping(
@@ -3099,7 +3304,11 @@ async fn update_remote_path_mapping(
         .config()
         .upsert_remote_path_mapping(&mapping)
         .await?;
-    Ok(Json(v3_remote_path_mapping(&mapping)))
+    let managed = is_managed(&fs.state.db, managed_kind::REMOTE_PATH_MAPPING, &mapping.id).await;
+    Ok(Json(with_managed(
+        v3_remote_path_mapping(&mapping),
+        managed,
+    )))
 }
 
 async fn delete_remote_path_mapping(
@@ -3460,7 +3669,13 @@ fn notification_kind_for_implementation(implementation: &str) -> String {
 
 async fn list_notifications(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let notifications = fs.state.db.config().list_notifications().await?;
-    Ok(Json(notifications.iter().map(v3_notification).collect()))
+    let managed = managed_ids(&fs.state.db, managed_kind::NOTIFICATION).await;
+    Ok(Json(
+        notifications
+            .iter()
+            .map(|n| with_managed(v3_notification(n), managed.contains(&n.id)))
+            .collect(),
+    ))
 }
 
 async fn get_notification(
@@ -3468,6 +3683,7 @@ async fn get_notification(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let numeric = parse_i64(&id, "notification")?;
+    let managed = managed_ids(&fs.state.db, managed_kind::NOTIFICATION).await;
     fs.state
         .db
         .config()
@@ -3475,7 +3691,7 @@ async fn get_notification(
         .await?
         .iter()
         .find(|n| notif_numeric_id(&n.id) == numeric)
-        .map(|n| Json(v3_notification(n)))
+        .map(|n| Json(with_managed(v3_notification(n), managed.contains(&n.id))))
         .ok_or_else(|| ApiError::NotFound(format!("notification {id} not found")))
 }
 
@@ -3654,7 +3870,8 @@ async fn create_notification(
 ) -> ApiResult<Json<Value>> {
     let n = notification_from_body(&body, uuid::Uuid::new_v4().to_string());
     fs.state.db.config().upsert_notification(&n).await?;
-    Ok(Json(v3_notification(&n)))
+    let managed = is_managed(&fs.state.db, managed_kind::NOTIFICATION, &n.id).await;
+    Ok(Json(with_managed(v3_notification(&n), managed)))
 }
 
 async fn update_notification(
@@ -3674,7 +3891,8 @@ async fn update_notification(
         .ok_or_else(|| ApiError::NotFound(format!("notification {id} not found")))?;
     let n = notification_from_body(&body, existing.id);
     fs.state.db.config().upsert_notification(&n).await?;
-    Ok(Json(v3_notification(&n)))
+    let managed = is_managed(&fs.state.db, managed_kind::NOTIFICATION, &n.id).await;
+    Ok(Json(with_managed(v3_notification(&n), managed)))
 }
 
 async fn delete_notification(
@@ -3847,10 +4065,11 @@ async fn list_import_lists(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Va
     use cellarr_core::ImportListRepository;
     let surface = fs.face.fixed_media();
     let lists = ImportListRepository::list(&fs.state.db.import_lists()).await?;
+    let managed = managed_ids(&fs.state.db, managed_kind::IMPORT_LIST).await;
     let out: Vec<Value> = lists
         .iter()
         .filter(|l| surface.is_none_or(|m| l.media_type == m))
-        .map(v3_import_list)
+        .map(|l| with_managed(v3_import_list(l), managed.contains(&l.id)))
         .collect();
     Ok(Json(out))
 }
@@ -3861,11 +4080,12 @@ async fn get_import_list(
 ) -> ApiResult<Json<Value>> {
     use cellarr_core::ImportListRepository;
     let numeric = parse_i64(&id, "importlist")?;
+    let managed = managed_ids(&fs.state.db, managed_kind::IMPORT_LIST).await;
     ImportListRepository::list(&fs.state.db.import_lists())
         .await?
         .iter()
         .find(|l| il_numeric_id(&l.id) == numeric)
-        .map(|l| Json(v3_import_list(l)))
+        .map(|l| Json(with_managed(v3_import_list(l), managed.contains(&l.id))))
         .ok_or_else(|| ApiError::NotFound(format!("import list {id} not found")))
 }
 
@@ -4025,7 +4245,8 @@ async fn create_import_list(
     use cellarr_core::ImportListRepository;
     let l = import_list_from_body(&fs, &body, uuid::Uuid::new_v4().to_string(), None);
     ImportListRepository::upsert(&fs.state.db.import_lists(), &l).await?;
-    Ok(Json(v3_import_list(&l)))
+    let managed = is_managed(&fs.state.db, managed_kind::IMPORT_LIST, &l.id).await;
+    Ok(Json(with_managed(v3_import_list(&l), managed)))
 }
 
 async fn update_import_list(
@@ -4042,7 +4263,8 @@ async fn update_import_list(
         .ok_or_else(|| ApiError::NotFound(format!("import list {id} not found")))?;
     let l = import_list_from_body(&fs, &body, existing.id.clone(), Some(&existing));
     ImportListRepository::upsert(&fs.state.db.import_lists(), &l).await?;
-    Ok(Json(v3_import_list(&l)))
+    let managed = is_managed(&fs.state.db, managed_kind::IMPORT_LIST, &l.id).await;
+    Ok(Json(with_managed(v3_import_list(&l), managed)))
 }
 
 async fn delete_import_list(

@@ -44,6 +44,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 
 // The clean-library options the shim accepts; "disabled" is the safe default and
 // the only one that can never remove a library item.
@@ -393,46 +394,54 @@ const ImportLists: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
             <TableColumn>Last sync</TableColumn>
             <TableColumn> </TableColumn>
           </TableRow>
-          {lists.map((cfg) => (
-            <TableRow key={cfg.id}>
-              <TableColumn>
-                <Badge>{cfg.enabled ? 'enabled' : 'disabled'}</Badge> {cfg.name || '(unnamed)'}
-              </TableColumn>
-              <TableColumn>{IMPL_LABELS[cfg.implementation] ?? cfg.implementation}</TableColumn>
-              <TableColumn>{cfg.shouldMonitor ? 'monitored' : 'not monitored'}</TableColumn>
-              <TableColumn style={{ whiteSpace: 'nowrap' }}>
-                {cfg.lastSuccessfulSync
-                  ? new Date(cfg.lastSuccessfulSync * 1000).toLocaleString()
-                  : 'never'}
-              </TableColumn>
-              <TableColumn>
-                <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                  <Button
-                    theme="SECONDARY"
-                    aria-label={`Sync ${cfg.name || 'list'} now`}
-                    isDisabled={syncing === cfg.id}
-                    onClick={() => syncNow(cfg)}
-                  >
-                    {syncing === cfg.id ? 'Syncing…' : 'Sync now'}
-                  </Button>
-                  <Button
-                    theme="SECONDARY"
-                    aria-label={`Edit ${cfg.name || 'import list'}`}
-                    onClick={() => edit(cfg)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    theme="DANGER"
-                    aria-label={`Remove ${cfg.name || 'import list'}`}
-                    onClick={() => setPendingDelete(cfg)}
-                  >
-                    Remove
-                  </Button>
-                </span>
-              </TableColumn>
-            </TableRow>
-          ))}
+          {lists.map((cfg) => {
+            const managed = isManaged(cfg);
+            return (
+              <TableRow key={cfg.id}>
+                <TableColumn>
+                  <Badge>{cfg.enabled ? 'enabled' : 'disabled'}</Badge> {cfg.name || '(unnamed)'}{' '}
+                  {managed ? (
+                    <ManagedBadge entityLabel={`Import list ${cfg.name || '(unnamed)'}`} />
+                  ) : null}
+                </TableColumn>
+                <TableColumn>{IMPL_LABELS[cfg.implementation] ?? cfg.implementation}</TableColumn>
+                <TableColumn>{cfg.shouldMonitor ? 'monitored' : 'not monitored'}</TableColumn>
+                <TableColumn style={{ whiteSpace: 'nowrap' }}>
+                  {cfg.lastSuccessfulSync
+                    ? new Date(cfg.lastSuccessfulSync * 1000).toLocaleString()
+                    : 'never'}
+                </TableColumn>
+                <TableColumn>
+                  <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
+                    <Button
+                      theme="SECONDARY"
+                      aria-label={`Sync ${cfg.name || 'list'} now`}
+                      isDisabled={syncing === cfg.id}
+                      onClick={() => syncNow(cfg)}
+                    >
+                      {syncing === cfg.id ? 'Syncing…' : 'Sync now'}
+                    </Button>
+                    <Button
+                      theme="SECONDARY"
+                      aria-label={`Edit ${cfg.name || 'import list'}`}
+                      isDisabled={managed}
+                      onClick={managed ? undefined : () => edit(cfg)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      theme="DANGER"
+                      aria-label={`Remove ${cfg.name || 'import list'}`}
+                      isDisabled={managed}
+                      onClick={managed ? undefined : () => setPendingDelete(cfg)}
+                    >
+                      Remove
+                    </Button>
+                  </span>
+                </TableColumn>
+              </TableRow>
+            );
+          })}
         </Table>
       ) : (
         <EmptyState>No import lists configured yet.</EmptyState>

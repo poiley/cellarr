@@ -38,6 +38,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 import TagInput from '@app/settings/_components/TagInput';
 
 // A friendly label for each advertised implementation. The schema keys the *arr
@@ -382,6 +383,7 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
             <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1ch 0' }}>
               {configs.map((raw) => {
                 const events = enabledEventLabels(raw);
+                const managed = isManaged(raw);
                 return (
                   <li
                     key={raw.id ?? raw.name}
@@ -399,20 +401,25 @@ const Notifications: React.FC<NotificationsProps> = ({ client = defaultApi }) =>
                       <span style={{ opacity: 0.5 }}>{implLabel(raw.implementation)}</span>{' '}
                       <span style={{ opacity: 0.4 }}>
                         {events.length ? events.join(', ') : 'no events'}
-                      </span>
+                      </span>{' '}
+                      {managed ? (
+                        <ManagedBadge entityLabel={`Notification ${raw.name || '(unnamed)'}`} />
+                      ) : null}
                     </span>
                     <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
                       <Button
                         theme="SECONDARY"
                         aria-label={`Edit ${raw.name || 'notification'}`}
-                        onClick={() => edit(raw)}
+                        isDisabled={managed}
+                        onClick={managed ? undefined : () => edit(raw)}
                       >
                         Edit
                       </Button>
                       <Button
                         theme="DANGER"
                         aria-label={`Remove ${raw.name || 'notification'}`}
-                        onClick={() => setPendingDelete(raw)}
+                        isDisabled={managed}
+                        onClick={managed ? undefined : () => setPendingDelete(raw)}
                       >
                         Remove
                       </Button>

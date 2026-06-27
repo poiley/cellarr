@@ -40,6 +40,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge from '@app/settings/_components/ManagedBadge';
 
 interface QualityItem {
   id: string;
@@ -56,6 +57,8 @@ interface ProfileForm {
   cutoff: string;
   minScore: number;
   qualities: QualityItem[];
+  /** Whether the config-as-code reconciler owns this profile (read-only). */
+  managed: boolean;
 }
 
 // Flatten the v3 `items[]` ladder (each row carries a `quality` or is a group)
@@ -80,6 +83,7 @@ function toForm(p: QualityProfile, names: QualityNameMap): ProfileForm {
     cutoff: p.cutoff !== undefined && p.cutoff !== null ? String(p.cutoff) : '',
     minScore: typeof p.minFormatScore === 'number' ? p.minFormatScore : 0,
     qualities: asQualities(p.items, names),
+    managed: p.managed === true,
   };
 }
 
@@ -103,6 +107,7 @@ function blankForm(defs: QualityDefinition[] | undefined, names: QualityNameMap)
     cutoff: qualities.length ? qualities[qualities.length - 1].id : '',
     minScore: 0,
     qualities,
+    managed: false,
   };
 }
 
@@ -315,6 +320,12 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
         <>
           <Divider type="GRADIENT" />
 
+          {form.managed ? (
+            <div style={{ margin: '1ch 0' }}>
+              <ManagedBadge entityLabel={`Quality profile ${form.name || form.id}`} />
+            </div>
+          ) : null}
+
           <div style={{ margin: '1ch 0' }}>
             <Text style={{ opacity: 0.6 }}>Name</Text>
             <Input
@@ -322,6 +333,7 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
               aria-label="Profile name"
               placeholder="My profile"
               value={form.name}
+              disabled={form.managed}
               onChange={(e) => update({ name: e.target.value })}
             />
           </div>
@@ -462,7 +474,11 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
             {/* Primary Save is the inverse full-width affordance shared across
                 every settings tab; Cancel sits beside it as a SECONDARY. */}
             <div style={{ display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
-              <Button theme="PRIMARY" isDisabled={saving} onClick={saving ? undefined : save}>
+              <Button
+                theme="PRIMARY"
+                isDisabled={saving || form.managed}
+                onClick={saving || form.managed ? undefined : save}
+              >
                 {saving ? 'Saving…' : creating ? 'Create profile' : 'Save profile'}
               </Button>
               {creating ? (
@@ -473,9 +489,15 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
             </div>
             {/* Delete is the shared DANGER affordance (red outline, solid red on
                 hover) — distinct from a benign action yet subordinate to Save. It
-                opens a confirm dialog rather than mutating inline. */}
+                opens a confirm dialog rather than mutating inline. A config-managed
+                profile is read-only, so its Delete is disabled too. */}
             {!creating && form.id ? (
-              <Button theme="DANGER" aria-label="Delete profile" onClick={() => setConfirmDelete(true)}>
+              <Button
+                theme="DANGER"
+                aria-label="Delete profile"
+                isDisabled={form.managed}
+                onClick={form.managed ? undefined : () => setConfirmDelete(true)}
+              >
                 ✗ Delete profile
               </Button>
             ) : null}

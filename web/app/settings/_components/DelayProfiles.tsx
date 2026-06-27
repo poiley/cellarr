@@ -32,6 +32,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 
 type Preferred = 'usenet' | 'torrent' | 'either';
 
@@ -195,34 +196,44 @@ const DelayProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaultA
 
       {profiles.length ? (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1ch 0' }}>
-          {profiles.map((dp) => (
-            <li
-              key={dp.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '1ch',
-                padding: '0.5ch 0',
-              }}
-            >
-              <span>
-                <Badge>#{dp.order ?? 0}</Badge> {describe(dp)}
-              </span>
-              <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                <Button theme="SECONDARY" aria-label={`Edit delay profile ${dp.order ?? 0}`} onClick={() => openEdit(dp)}>
-                  Edit
-                </Button>
-                <Button
-                  theme="DANGER"
-                  aria-label={`Delete delay profile ${dp.order ?? 0}`}
-                  onClick={() => setPendingDelete(dp)}
-                >
-                  Delete
-                </Button>
-              </span>
-            </li>
-          ))}
+          {profiles.map((dp) => {
+            const managed = isManaged(dp);
+            return (
+              <li
+                key={dp.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '1ch',
+                  padding: '0.5ch 0',
+                }}
+              >
+                <span>
+                  <Badge>#{dp.order ?? 0}</Badge> {describe(dp)}{' '}
+                  {managed ? <ManagedBadge entityLabel={`Delay profile ${dp.order ?? 0}`} /> : null}
+                </span>
+                <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
+                  <Button
+                    theme="SECONDARY"
+                    aria-label={`Edit delay profile ${dp.order ?? 0}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => openEdit(dp)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    theme="DANGER"
+                    aria-label={`Delete delay profile ${dp.order ?? 0}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => setPendingDelete(dp)}
+                  >
+                    Delete
+                  </Button>
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <EmptyState>No delay profiles yet. Add one to stagger grabs.</EmptyState>

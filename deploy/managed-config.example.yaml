@@ -1,0 +1,287 @@
+# cellarr — managed configuration (config-as-code) example.
+#
+# This is a COMPLETE, valid example with every section populated. Point cellarr at
+# a file like this with CELLARR_MANAGED_CONFIG_PATH (or the `managed_config_path`
+# config key) and the daemon reconciles its database to match on boot — creating
+# what is declared, updating drift, pruning what config previously managed but no
+# longer declares, and leaving UI-created entities untouched.
+#
+# Full documentation: docs/17-config-as-code.md
+# Schema (the field-name source of truth): crates/cellarr-cli/src/managed/schema.rs
+#
+# Validate it (without booting the daemon) — export the referenced secret env vars
+# first (see below), or validate will report them as unresolved:
+#   cellarr managed-config validate --file deploy/managed-config.example.yaml
+#
+# Secrets MUST NOT be committed literally. Any string value can carry an env
+# reference, resolved before the YAML is parsed:
+#   ${VAR}            -> value of VAR; FAILS BOOT (naming VAR) if unset.
+#   ${VAR:-default}   -> value of VAR, or `default` if VAR is unset/empty.
+#   $$                -> a literal `$`.
+# In Kubernetes the real values arrive via env: valueFrom: secretKeyRef.
+
+# The schema version this build understands. Required; a mismatch fails boot.
+apiVersion: cellarr/v1
+# Optional operator-facing label, surfaced in logs/diagnostics. Informational only.
+version: "2026-06-26.1"
+
+# --- tags -------------------------------------------------------------------
+# The tag vocabulary. The `name` IS the label (deduplicated case-insensitively).
+# Other sections (indexers, clients, release/notification profiles) scope by name.
+tags:
+  - name: anime
+  - name: 4k
+  - name: remux
+
+# --- quality definitions ----------------------------------------------------
+# Per-quality title + size-bound edits, keyed by canonical quality name (which
+# must exist in the catalogue). Sizes are bytes-per-minute. The catalogue and the
+# quality ranks themselves stay code-owned — only these editable knobs are managed.
+qualityDefinitions:
+  - name: Bluray-1080p
+    title: HD Bluray            # optional display override
+    minSizePerMin: 10
+    maxSizePerMin: 2000
+    preferredSizePerMin: 1500   # advisory only — never gates
+  - name: WEBDL-1080p
+    minSizePerMin: 8
+    maxSizePerMin: 1500
+
+# --- custom formats ---------------------------------------------------------
+# Named, scored bundles of conditions (TRaSH-style; transcribe directly). The
+# `conditions` use core's `kind`-tagged shape — the same one the v3 shim speaks.
+customFormats:
+  - name: x265
+    score: -50
+    conditions:
+      - kind: codec
+        codec: x265
+  - name: Remux Tier
+    score: 100
+    conditions:
+      - kind: source
+        source: bluray
+        required: true
+      - kind: release_title
+        pattern: "\\bREMUX\\b"
+  - name: Bad Release Groups
+    score: -10000
+    conditions:
+      - kind: release_group
+        name: YIFY
+
+# --- quality profiles -------------------------------------------------------
+# Allowed qualities (by canonical name) + cutoff + custom-format score thresholds.
+# `customFormatScores` references custom formats BY NAME, and each referenced score
+# must AGREE with that custom format's own `score` (one source of truth; validated).
+qualityProfiles:
+  - name: HD-1080p
+    qualities: [WEBDL-1080p, Bluray-1080p]
+    upgradesAllowed: true
+    cutoff: Bluray-1080p           # upgrading stops here; omit = best allowed
+    minCustomFormatScore: 0        # reject below this total CF score
+    upgradeUntilCustomFormatScore: 100
+    requiredLanguages: [en]        # empty = no language requirement
+    customFormatScores:
+      x265: -50
+      Remux Tier: 100
+      Bad Release Groups: -10000
+  - name: UHD-2160p
+    qualities: [Bluray-2160p, WEBDL-2160p]
+    cutoff: Bluray-2160p
+    customFormatScores:
+      Remux Tier: 100
+
+# --- root folders -----------------------------------------------------------
+# Where libraries import to. `name` is the reconcile identity + the human label.
+rootFolders:
+  - name: movies
+    path: /media/movies
+    enabled: true
+  - name: tv
+    path: /media/tv
+
+# --- libraries --------------------------------------------------------------
+# Reference root folders and a quality profile BY NAME (cross-checked at load).
+libraries:
+  - name: Movies
+    mediaType: movie               # movie | tv | music | book
+    rootFolders: [movies]
+    qualityProfile: HD-1080p
+  - name: TV
+    mediaType: tv
+    rootFolders: [tv]
+    qualityProfile: HD-1080p
+
+# --- indexers ---------------------------------------------------------------
+# `settings` is a native nested map using the familiar v3 field names. String
+# values support ${ENV}. `protocol` is torrent | usenet. Tags scope by name.
+indexers:
+  - name: nzbgeek
+    kind: newznab
+    protocol: usenet
+    enabled: true
+    priority: 1                    # lower is preferred (the *arr convention)
+    criteria:
+      minimumSeeders: 0            # usenet: no seeders
+    settings:
+      baseUrl: https://api.nzbgeek.info
+      apiKey: ${NZBGEEK_API_KEY}
+      categories: [5030, 5040]
+  - name: private-torznab
+    kind: torznab
+    protocol: torrent
+    priority: 5
+    tags: [remux]
+    criteria:
+      minimumSeeders: 5
+      seedRatio: 1.0
+      seedTimeMinutes: 4320
+      requiredFlags: [freeleech]   # release must carry these flags
+    settings:
+      baseUrl: https://tracker.example.org/torznab
+      apiKey: ${TORZNAB_API_KEY}
+      categories: [2040, 2060]
+
+# --- download clients -------------------------------------------------------
+# `settings` is a native nested map (host/port/credentials/paths). Tags by name.
+downloadClients:
+  - name: qbittorrent
+    kind: qbittorrent
+    protocol: torrent
+    enabled: true
+    priority: 1
+    category: cellarr-tv           # the label cellarr files downloads under
+    settings:
+      host: qbittorrent.media.svc
+      port: 8080
+      username: ${QBIT_USER:-admin}
+      password: ${QBIT_PASS}
+      useSsl: false
+  - name: sabnzbd
+    kind: sabnzbd
+    protocol: usenet
+    priority: 1
+    category: cellarr-movies
+    settings:
+      host: sabnzbd.media.svc
+      port: 8080
+      apiKey: ${SAB_API_KEY}
+
+# --- release profiles -------------------------------------------------------
+# Required / ignored / preferred terms (plain substring or /regex/), tag-scoped.
+releaseProfiles:
+  - name: no-x265-1080p
+    enabled: true
+    tags: [4k]                     # by tag name; empty = global
+    required: []
+    ignored: [x265, h265]
+    preferred:
+      - term: PROPER
+        score: 5
+      - term: REPACK
+        score: 5
+      - term: /\bAMZN\b/
+        score: 3
+
+# --- delay profiles ---------------------------------------------------------
+# Per-protocol grab delays + preference. NOTE: delay-profile `tags` are OPAQUE
+# label strings (the core model stores them as strings), not references resolved
+# against the `tags` vocabulary. `name` is the config reconcile identity only.
+delayProfiles:
+  - name: default
+    enabled: true
+    preferredProtocol: usenet      # either | usenet | torrent
+    usenetDelay: 0                 # minutes to hold a usenet release
+    torrentDelay: 60               # minutes to hold a torrent release
+    bypassIfHighestQuality: true
+    tags: []                       # empty = the catch-all default profile
+    order: 0                       # lower applies first
+  - name: anime-fast
+    preferredProtocol: torrent
+    torrentDelay: 10
+    tags: [anime]
+    order: 1
+
+# --- import lists -----------------------------------------------------------
+# Trakt/TMDb/Plex/IMDb. `settings` is source-specific (with ${ENV}). References a
+# quality profile BY NAME (optional; falls back to the target library's default).
+importLists:
+  - name: trakt-trending-movies
+    kind: trakt
+    enabled: true
+    mediaType: movie
+    monitored: true
+    cleanAction: none              # none | unmonitor | remove
+    qualityProfile: HD-1080p
+    settings:
+      listType: trending
+      accessToken: ${TRAKT_ACCESS_TOKEN}
+  - name: tmdb-popular-tv
+    kind: tmdb
+    mediaType: tv
+    monitored: true
+    cleanAction: unmonitor
+    settings:
+      listId: "popular"
+      apiKey: ${TMDB_API_KEY}
+
+# --- notifications ----------------------------------------------------------
+# Discord/webhook/... targets. `onEvents` keys: grab | download | upgrade | health
+# | test (empty = all). The webhook URL is itself a credential -> ${ENV}. Tags by name.
+notifications:
+  - name: discord-grabs
+    kind: discord
+    enabled: true
+    onEvents: [grab, download, upgrade]
+    tags: []
+    settings:
+      webhookUrl: ${DISCORD_WEBHOOK_URL}
+      username: cellarr
+  - name: ops-webhook
+    kind: webhook
+    onEvents: [health]
+    settings:
+      url: ${OPS_WEBHOOK_URL}
+      method: POST
+
+# --- remote path mappings ---------------------------------------------------
+# download-client path -> cellarr-visible path. `name` is the reconcile identity.
+remotePathMappings:
+  - name: qbit-downloads
+    host: qbittorrent.media.svc    # empty = any host
+    remotePath: /downloads         # as the download client reports it
+    localPath: /downloads          # as cellarr sees the same location
+
+# --- naming (singleton) -----------------------------------------------------
+# Library-wide naming templates. Whole document is set when declared; every field
+# defaults to the built-in *arr-conventional template, so partial is fine.
+naming:
+  seriesFolderFormat: "{Series Title}"
+  seasonFolderFormat: "Season {Season}"
+  episodeFileFormat: "{Series Title} - S{Season:00}E{Episode:00} - {Episode Title}"
+  animeEpisodeFileFormat: "{Series Title} - {Absolute Episode:000} - {Episode Title}"
+  movieFileFormat: "{Movie Title} ({Year})"
+
+# --- media management (singleton) -------------------------------------------
+# Recycle-bin / permissions / extra-files (naming has its own section above).
+mediaManagement:
+  recycleBinPath: /media/.recycle  # omit = deletes unlink instead of moving
+  permissions:                     # Unix-only, best-effort, applied AFTER commit
+    chmodFolder: "755"
+    chmodFile: "644"
+    chown: "1000:1000"
+  extraFiles:
+    enabled: true
+    extensions: [srt, sub, idx, ass, ssa, vtt, nfo]
+  writeNfo: true                   # write the Kodi/Jellyfin .nfo sidecar
+
+# --- auth (singleton) -------------------------------------------------------
+# The single-admin web-UI auth row. The password is supplied ALREADY HASHED as an
+# Argon2 PHC string (cellarr never hashes inside the managed engine) — typically a
+# ${ENV} secret. Selecting an enforcing method with no credential is rejected (it
+# would lock you out). `/api/v3` continues to use its own apikey regardless.
+auth:
+  method: forms                    # none | forms | basic
+  username: admin
+  passwordHash: ${CELLARR_ADMIN_PASSWORD_HASH}

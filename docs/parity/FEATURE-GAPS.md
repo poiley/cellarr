@@ -88,3 +88,30 @@ mapping come from TheTVDB + the anime-lists/TheXEM scene-mapping data layer (the
 remap requires a TheTVDB key + external mapping data (degrades offline-safe to standard numbering when
 absent). **Fansub release-group preferences** are expressed via Release Profiles (preferred/required/
 ignored terms), not a dedicated group-whitelist UI.
+
+## Beyond parity — config-as-code (managed config)
+
+A native **declarative managed-config** layer that **Sonarr/Radarr have no first-party equivalent for**
+(the closest upstream analogue is the third-party Recyclarr, and only for custom formats / quality
+profiles). A single git-committed YAML file, pointed at by `CELLARR_MANAGED_CONFIG_PATH`, reconciles
+the DB on boot across the **entire** management surface: tags, quality definitions, custom formats,
+quality profiles, root folders, libraries, indexers, download clients, release + delay profiles,
+import lists, notifications, remote-path mappings, naming, media-management, and single-admin auth.
+
+- **Strict + fail-loud:** every section is `deny_unknown_fields`; an unknown key, an unsupported
+  `apiVersion`, an unresolved secret, or a dangling cross-reference **fails boot** rather than serving
+  a half-applied config. The same checks run offline via `cellarr managed-config validate` (distinct
+  exit code on drift) so a config change is gated in CI.
+- **Secrets via `${ENV}` / `${ENV:-default}`** interpolation (resolved before parse), so the file is
+  safe to commit; real values arrive from the environment (k8s `Secret`s).
+- **Safe prune:** reconciliation is scoped to a ledger of config-created entities. Declared sections
+  are authoritative; an omitted section is left untouched; an empty section prunes that kind.
+  **UI-created entities are never pruned**, and a read-only additive `managed` flag on the `/api/v3`
+  resource lets the UI badge + lock managed entities.
+- **`cellarr managed-config export`** captures a UI-configured instance into a YAML file (secrets
+  redacted to `${ENV}` placeholders), for the configure-in-UI-then-commit workflow.
+
+Docs: [`../17-config-as-code.md`](../17-config-as-code.md). Sample:
+[`../../deploy/managed-config.example.yaml`](../../deploy/managed-config.example.yaml). k8s
+ConfigMap/Secret wiring: [`../../deploy/k8s/cellarr.yaml`](../../deploy/k8s/cellarr.yaml). Engine:
+`crates/cellarr-cli/src/managed/`.

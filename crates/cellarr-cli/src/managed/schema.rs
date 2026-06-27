@@ -68,6 +68,36 @@ pub struct ManagedConfig {
     /// Download clients (qBittorrent/Transmission/SABnzbd/blackhole/…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_clients: Option<Vec<DownloadClientSpec>>,
+    /// Release profiles (required / ignored / preferred terms), tag-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_profiles: Option<Vec<ReleaseProfileSpec>>,
+    /// Delay profiles (per-protocol grab delays + preference), tag-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_profiles: Option<Vec<DelayProfileSpec>>,
+    /// Import lists (Trakt/TMDb/Plex/…), referencing a quality profile by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_lists: Option<Vec<ImportListSpec>>,
+    /// Notification targets (Discord/webhook/…), tag-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<Vec<NotificationSpec>>,
+    /// Remote-path mappings (download-client path → cellarr-visible path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_path_mappings: Option<Vec<RemotePathMappingSpec>>,
+    /// The library-wide naming formats (a singleton settings document). When
+    /// declared, reconciliation sets the whole document; when absent it is left
+    /// untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming: Option<NamingSpec>,
+    /// The library-wide media-management settings (a singleton settings document,
+    /// minus naming — naming has its own section). Whole-document set when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_management: Option<MediaManagementSpec>,
+    /// The single-admin web-UI auth configuration (a singleton). Operational DB
+    /// state (method + username + a pre-hashed password), so it is managed here;
+    /// the password is supplied as an already-hashed PHC string via `${ENV}`
+    /// (cellarr never hashes inside the managed engine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthSpec>,
 }
 
 /// A managed tag: just its label (the reconcile name *is* the label).
@@ -250,6 +280,224 @@ pub struct DownloadClientSpec {
     pub settings: serde_json::Value,
 }
 
+/// A managed release profile, mirroring [`cellarr_core::ReleaseProfile`]. `name`
+/// is the reconcile identity; tags are named (resolved to ids), and the term lists
+/// transcribe directly (plain substring or `/regex/`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReleaseProfileSpec {
+    /// The profile's stable human name (the reconcile identity).
+    pub name: String,
+    /// Whether this profile is active.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The tag **names** this profile is scoped to (resolved to ids; empty = global).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Required terms (the "must contain" list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    /// Ignored terms (the "must not contain" list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored: Vec<String>,
+    /// Preferred terms, each with a score added on match.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferred: Vec<cellarr_core::PreferredTerm>,
+}
+
+/// A managed delay profile, mirroring [`cellarr_core::DelayProfile`].
+///
+/// The core [`cellarr_core::DelayProfile`] has no human name (its runtime identity
+/// is tags + order). config-as-code keys it by a declared `name` instead — the
+/// reconcile identity that the ledger maps to the minted profile id — so an
+/// operator can rename/edit a specific delay profile deterministically. The delay
+/// profile's own `tags` are opaque label strings (the core model stores them as
+/// strings), so they need no cross-reference resolution against the tag vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DelayProfileSpec {
+    /// The profile's stable config name (the reconcile identity; not stored on the
+    /// core model, which is name-less — it is the ledger key only).
+    pub name: String,
+    /// Whether this profile is active.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Which protocol wins ties when both are available.
+    #[serde(default)]
+    pub preferred_protocol: cellarr_core::PreferredProtocol,
+    /// Minutes to hold a usenet release after it is first seen.
+    #[serde(default)]
+    pub usenet_delay: u32,
+    /// Minutes to hold a torrent release after it is first seen.
+    #[serde(default)]
+    pub torrent_delay: u32,
+    /// Grab a release already at the highest allowed quality immediately.
+    #[serde(default)]
+    pub bypass_if_highest_quality: bool,
+    /// The tag **labels** this profile applies to (opaque strings; empty = the
+    /// catch-all default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Ordering among profiles; lower applies first.
+    #[serde(default)]
+    pub order: i32,
+}
+
+/// A managed import list, mirroring [`cellarr_core::ImportListConfig`]. `name` is
+/// the reconcile identity; it references a quality profile **by name** (optional)
+/// resolved to an id, and carries source-specific `settings` (with `${ENV}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ImportListSpec {
+    /// The list's stable human name (the reconcile identity).
+    pub name: String,
+    /// The source kind (e.g. `trakt`, `tmdb`, `plex`, `imdb`).
+    pub kind: String,
+    /// Whether the list is enabled for periodic sync.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The media type items from this list are added as.
+    pub media_type: MediaType,
+    /// Whether newly-added items are monitored.
+    #[serde(default = "default_true")]
+    pub monitored: bool,
+    /// The clean-library action for items no longer on the list (default `none`).
+    #[serde(default)]
+    pub clean_action: cellarr_core::importlist::CleanAction,
+    /// The quality profile new items are added with, by profile **name** (optional;
+    /// falls back to the target library's default). Cross-checked in validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_profile: Option<String>,
+    /// Source-specific settings (Trakt list slug, TMDb list id, Plex token, …). A
+    /// string value supports `${ENV}` interpolation for secrets.
+    #[serde(default)]
+    pub settings: serde_json::Value,
+}
+
+/// A managed notification target, mirroring [`cellarr_core::NotificationConfig`].
+/// `name` is the reconcile identity; tags are named (resolved to ids), and the
+/// adapter `settings` carry the webhook URL/credentials (with `${ENV}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotificationSpec {
+    /// The notification's stable human name (the reconcile identity).
+    pub name: String,
+    /// The adapter kind (e.g. `discord`, `webhook`).
+    pub kind: String,
+    /// Whether the notification is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The lifecycle events this target fires on (empty = all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_events: Vec<String>,
+    /// The tag **names** this notification is scoped to (resolved to ids; empty =
+    /// global).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Adapter-specific settings (webhook URL, channel, credentials, …). String
+    /// values support `${ENV}`.
+    #[serde(default)]
+    pub settings: serde_json::Value,
+}
+
+/// A managed remote-path mapping, mirroring [`cellarr_core::RemotePathMapping`].
+///
+/// The core model is keyed by an opaque id, with no human name; config-as-code
+/// keys it by a declared `name` (the ledger maps it to the minted id) so the
+/// mapping can be edited deterministically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RemotePathMappingSpec {
+    /// The mapping's stable config name (the reconcile identity; the ledger key).
+    pub name: String,
+    /// The download-client host this mapping applies to (empty = any host).
+    #[serde(default)]
+    pub host: String,
+    /// The path prefix as the download client reports it.
+    pub remote_path: String,
+    /// The path prefix as cellarr sees the same location.
+    pub local_path: String,
+}
+
+/// The managed naming-formats singleton, mirroring [`cellarr_core::NamingFormats`].
+/// Every field defaults to the daemon's built-in *arr-conventional template, so a
+/// partial declaration keeps the rest at its default.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NamingSpec {
+    /// The TV series folder name (default `{Series Title}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_folder_format: Option<String>,
+    /// The TV season folder name (default `Season {Season}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season_folder_format: Option<String>,
+    /// The TV episode file name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_file_format: Option<String>,
+    /// The TV anime episode file name (carries `{Absolute Episode}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anime_episode_file_format: Option<String>,
+    /// The movie file name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movie_file_format: Option<String>,
+}
+
+/// The managed media-management singleton, mirroring [`cellarr_core::MediaManagement`]
+/// minus naming (which has its own [`NamingSpec`] section). Whole-document set when
+/// declared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MediaManagementSpec {
+    /// The recycle-bin directory deleted media is moved into (absent = unlink).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycle_bin_path: Option<String>,
+    /// The Unix permission policy applied to imported media after commit.
+    #[serde(default)]
+    pub permissions: cellarr_core::ImportPermissions,
+    /// Whether (and which) sibling extra files are imported alongside media.
+    #[serde(default)]
+    pub extra_files: cellarr_core::ExtraFileImport,
+    /// Whether the Kodi/Jellyfin `.nfo` sidecar is written next to imported media.
+    #[serde(default = "default_true")]
+    pub write_nfo: bool,
+}
+
+impl Default for MediaManagementSpec {
+    fn default() -> Self {
+        let mm = cellarr_core::MediaManagement::default();
+        Self {
+            recycle_bin_path: mm.recycle_bin_path,
+            permissions: mm.permissions,
+            extra_files: mm.extra_files,
+            write_nfo: mm.write_nfo,
+        }
+    }
+}
+
+/// The managed single-admin auth singleton, mirroring [`cellarr_core::AuthConfig`].
+///
+/// This is operational DB state (the persisted auth-config row), not figment/env
+/// bootstrap config, so it is reconcilable here. The password is **never** hashed
+/// inside the managed engine — it is supplied as an already-hashed Argon2 PHC
+/// string (typically via a `${ENV}` secret), exactly as the API crate would have
+/// stored it. A bare `username` with no `passwordHash` (or vice-versa) leaves the
+/// credential unset; validation rejects selecting an enforcing method with no
+/// credential (it would lock the operator out).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AuthSpec {
+    /// The enforced method (`none`, `forms`, `basic`). Default `none` (open).
+    #[serde(default)]
+    pub method: cellarr_core::AuthMethod,
+    /// The single admin's username (`None` = no credential).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// The admin password **hash** (an Argon2 PHC string), typically a `${ENV}`
+    /// secret. Never a plaintext password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_hash: Option<String>,
+}
+
 /// The serde default for an `enabled`/`upgradesAllowed` flag: on unless turned off.
 const fn default_true() -> bool {
     true
@@ -359,6 +607,87 @@ downloadClients:
             err.to_string().contains("unknown field"),
             "expected unknown-field error, got: {err}"
         );
+    }
+
+    const PACK2: &str = r#"
+apiVersion: cellarr/v1
+releaseProfiles:
+  - name: no-x265
+    ignored: [x265]
+    preferred:
+      - term: PROPER
+        score: 5
+delayProfiles:
+  - name: default
+    usenetDelay: 30
+    preferredProtocol: usenet
+importLists:
+  - name: trakt
+    kind: trakt
+    mediaType: movie
+    qualityProfile: HD
+    settings:
+      apiKey: ${K}
+notifications:
+  - name: discord
+    kind: discord
+    onEvents: [grab]
+    settings:
+      webhookUrl: ${W}
+remotePathMappings:
+  - name: dl
+    remotePath: /downloads
+    localPath: /data/downloads
+naming:
+  movieFileFormat: "{Movie Title}.{Extension}"
+mediaManagement:
+  recycleBinPath: /recycle
+  writeNfo: false
+auth:
+  method: forms
+  username: admin
+  passwordHash: ${H}
+"#;
+
+    #[test]
+    fn pack2_sections_round_trip_through_yaml() {
+        let cfg: ManagedConfig = serde_yaml::from_str(PACK2).expect("deserialize");
+        assert_eq!(cfg.release_profiles.as_ref().unwrap()[0].name, "no-x265");
+        assert_eq!(cfg.delay_profiles.as_ref().unwrap()[0].usenet_delay, 30);
+        assert_eq!(
+            cfg.import_lists.as_ref().unwrap()[0]
+                .quality_profile
+                .as_deref(),
+            Some("HD")
+        );
+        assert_eq!(cfg.notifications.as_ref().unwrap()[0].kind, "discord");
+        assert_eq!(
+            cfg.remote_path_mappings.as_ref().unwrap()[0].remote_path,
+            "/downloads"
+        );
+        assert_eq!(
+            cfg.naming.as_ref().unwrap().movie_file_format.as_deref(),
+            Some("{Movie Title}.{Extension}")
+        );
+        assert!(!cfg.media_management.as_ref().unwrap().write_nfo);
+        assert_eq!(
+            cfg.auth.as_ref().unwrap().method,
+            cellarr_core::AuthMethod::Forms
+        );
+
+        // Structural round-trip.
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        let back: ManagedConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn pack2_unknown_nested_field_is_rejected() {
+        let err = serde_yaml::from_str::<ManagedConfig>(
+            "apiVersion: cellarr/v1\nnotifications:\n  - name: n\n    kind: discord\n    bogus: 1\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 
     #[test]

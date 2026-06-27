@@ -363,6 +363,20 @@ CF-matching + CF-score parity 100% (corpus) vs live Sonarr.
 - **Parser long tail** — 90% on a 131-title corpus; widening toward the originals' ~1,500–2,000
   fixtures is the never-finished tail.
 
+### Beyond parity — native config-as-code (no first-party equivalent in Sonarr/Radarr)
+cellarr ships a native **declarative managed-config** layer the originals don't have (the closest
+upstream analogue is the third-party Recyclarr, and only for custom formats / quality profiles).
+A single YAML file committed to git, pointed at by `CELLARR_MANAGED_CONFIG_PATH`, reconciles the DB
+on boot across the **whole** management surface — tags, root folders, libraries, quality definitions
++ profiles, custom formats, indexers, download clients, release + delay profiles, import lists,
+notifications, remote-path mappings, naming, media-management, and single-admin auth. Strict
+(`deny_unknown_fields`) validation with fail-loud boot, `${ENV}` / `${ENV:-default}` secret
+interpolation, ledger-scoped **safe prune** (UI-created entities untouched; a read-only `managed`
+flag badges/locks managed entities in the UI), and a `cellarr managed-config validate|export` CLI
+(export captures a UI-configured instance, secrets redacted to `${ENV}`). See
+[`../17-config-as-code.md`](../17-config-as-code.md), [`../../deploy/managed-config.example.yaml`](../../deploy/managed-config.example.yaml),
+and the k8s ConfigMap/Secret wiring in [`../../deploy/k8s/cellarr.yaml`](../../deploy/k8s/cellarr.yaml).
+
 ### Net
 cellarr is a **functionally complete Sonarr+Radarr drop-in for the common path**, verified against
 the live originals where feasible. What remains is credential-gated live validation (TMDb, private

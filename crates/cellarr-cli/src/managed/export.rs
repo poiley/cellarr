@@ -12,19 +12,29 @@
 //! the exported file is safe to commit and the operator wires the real secret into
 //! the environment. This is documented behavior, not a silent redaction.
 
+use cellarr_core::importlist::ImportListRepository;
 use cellarr_core::repo::ProfileRepository;
 use cellarr_core::QualityRanking;
 use cellarr_db::Database;
 
 use crate::managed::error::ManagedError;
 use crate::managed::schema::{
-    CustomFormatSpec, DownloadClientSpec, IndexerSpec, LibrarySpec, ManagedConfig,
-    QualityDefinitionSpec, QualityProfileSpec, RootFolderSpec, TagSpec, SUPPORTED_API_VERSION,
+    AuthSpec, CustomFormatSpec, DelayProfileSpec, DownloadClientSpec, ImportListSpec, IndexerSpec,
+    LibrarySpec, ManagedConfig, MediaManagementSpec, NamingSpec, NotificationSpec,
+    QualityDefinitionSpec, QualityProfileSpec, ReleaseProfileSpec, RemotePathMappingSpec,
+    RootFolderSpec, TagSpec, SUPPORTED_API_VERSION,
 };
 
 /// The substring markers (case-insensitive) that identify a settings key as
 /// secret-bearing, so its value is emitted as a `${ENV}` placeholder.
-const SECRET_KEY_MARKERS: &[&str] = &["apikey", "password", "passkey", "secret", "token"];
+///
+/// `webhook` is included because a notification webhook URL is itself the
+/// credential (anyone holding it can post as the integration), so it must never be
+/// committed in cleartext. `url` is deliberately **not** a marker: an indexer's
+/// `baseUrl` is public configuration that must round-trip verbatim.
+const SECRET_KEY_MARKERS: &[&str] = &[
+    "apikey", "password", "passkey", "secret", "token", "webhook",
+];
 
 /// Read the whole managed surface out of `db` and render it as a [`ManagedConfig`].
 ///
@@ -77,6 +87,15 @@ pub async fn export(db: &Database) -> Result<ManagedConfig, ManagedError> {
     let libraries = export_libraries(db).await?;
     let indexers = export_indexers(db).await?;
     let download_clients = export_download_clients(db).await?;
+    let release_profiles = export_release_profiles(db).await?;
+    let delay_profiles = export_delay_profiles(db).await?;
+    let import_lists = export_import_lists(db).await?;
+    let notifications = export_notifications(db).await?;
+    let remote_path_mappings = export_remote_path_mappings(db).await?;
+    let media = db.config().get_media_management().await?;
+    let naming = export_naming(&media.naming);
+    let media_management = export_media_management(&media);
+    let auth = export_auth(db).await?;
 
     Ok(ManagedConfig {
         api_version: SUPPORTED_API_VERSION.to_string(),
@@ -89,6 +108,14 @@ pub async fn export(db: &Database) -> Result<ManagedConfig, ManagedError> {
         libraries: Some(libraries),
         indexers: Some(indexers),
         download_clients: Some(download_clients),
+        release_profiles: Some(release_profiles),
+        delay_profiles: Some(delay_profiles),
+        import_lists: Some(import_lists),
+        notifications: Some(notifications),
+        remote_path_mappings: Some(remote_path_mappings),
+        naming: Some(naming),
+        media_management: Some(media_management),
+        auth: Some(auth),
     })
 }
 
@@ -238,6 +265,172 @@ async fn export_download_clients(db: &Database) -> Result<Vec<DownloadClientSpec
                 settings,
             }
         })
+        .collect())
+}
+
+// === Release profiles =====================================================
+
+async fn export_release_profiles(db: &Database) -> Result<Vec<ReleaseProfileSpec>, ManagedError> {
+    let profiles = db.profiles().list_release_profiles().await?;
+    let tags = db.tags().list().await?;
+    Ok(profiles
+        .into_iter()
+        .map(|rp| ReleaseProfileSpec {
+            name: rp.name,
+            enabled: rp.enabled,
+            tags: tag_names_for(&rp.tags, &tags),
+            required: rp.required,
+            ignored: rp.ignored,
+            preferred: rp.preferred,
+        })
+        .collect())
+}
+
+// === Delay profiles =======================================================
+
+async fn export_delay_profiles(db: &Database) -> Result<Vec<DelayProfileSpec>, ManagedError> {
+    let profiles = db.profiles().list_delay_profiles().await?;
+    // The core delay profile has no name; recover the config name from the ledger
+    // (by entity id), falling back to the id when it is UI-created (no ledger row).
+    let names = ledger_names(db, crate::managed::plan::kind::DELAY_PROFILE).await?;
+    Ok(profiles
+        .into_iter()
+        .map(|dp| {
+            let id = dp.id.to_string();
+            DelayProfileSpec {
+                name: names.get(&id).cloned().unwrap_or(id),
+                enabled: dp.enabled,
+                preferred_protocol: dp.preferred_protocol,
+                usenet_delay: dp.usenet_delay,
+                torrent_delay: dp.torrent_delay,
+                bypass_if_highest_quality: dp.bypass_if_highest_quality,
+                tags: dp.tags,
+                order: dp.order,
+            }
+        })
+        .collect())
+}
+
+// === Import lists =========================================================
+
+async fn export_import_lists(db: &Database) -> Result<Vec<ImportListSpec>, ManagedError> {
+    let lists = db.import_lists().list().await?;
+    let profiles = db.profiles().list_profiles().await?;
+    Ok(lists
+        .into_iter()
+        .map(|l| {
+            // Map the stored profile id back to its name (the schema references by
+            // name); drop it if the profile is gone.
+            let quality_profile = l.quality_profile_id.as_ref().and_then(|id| {
+                profiles
+                    .iter()
+                    .find(|p| p.id.to_string() == *id)
+                    .map(|p| p.name.clone())
+            });
+            let settings = redact_secrets(&l.name, l.settings);
+            ImportListSpec {
+                name: l.name,
+                kind: l.kind,
+                enabled: l.enabled,
+                media_type: l.media_type,
+                monitored: l.monitored,
+                clean_action: l.clean_action,
+                quality_profile,
+                settings,
+            }
+        })
+        .collect())
+}
+
+// === Notifications ========================================================
+
+async fn export_notifications(db: &Database) -> Result<Vec<NotificationSpec>, ManagedError> {
+    let notifs = db.config().list_notifications().await?;
+    let tags = db.tags().list().await?;
+    Ok(notifs
+        .into_iter()
+        .map(|n| {
+            let settings = redact_secrets(&n.name, n.settings);
+            NotificationSpec {
+                name: n.name,
+                kind: n.kind,
+                enabled: n.enabled,
+                on_events: n.on_events,
+                tags: tag_names_for(&n.tags, &tags),
+                settings,
+            }
+        })
+        .collect())
+}
+
+// === Remote-path mappings =================================================
+
+async fn export_remote_path_mappings(
+    db: &Database,
+) -> Result<Vec<RemotePathMappingSpec>, ManagedError> {
+    let maps = db.config().list_remote_path_mappings().await?;
+    let names = ledger_names(db, crate::managed::plan::kind::REMOTE_PATH_MAPPING).await?;
+    Ok(maps
+        .into_iter()
+        .map(|m| RemotePathMappingSpec {
+            name: names.get(&m.id).cloned().unwrap_or_else(|| m.id.clone()),
+            host: m.host,
+            remote_path: m.remote_path,
+            local_path: m.local_path,
+        })
+        .collect())
+}
+
+// === Singletons ===========================================================
+
+fn export_naming(naming: &cellarr_core::NamingFormats) -> NamingSpec {
+    NamingSpec {
+        series_folder_format: Some(naming.series_folder_format.clone()),
+        season_folder_format: Some(naming.season_folder_format.clone()),
+        episode_file_format: Some(naming.episode_file_format.clone()),
+        anime_episode_file_format: Some(naming.anime_episode_file_format.clone()),
+        movie_file_format: Some(naming.movie_file_format.clone()),
+    }
+}
+
+fn export_media_management(mm: &cellarr_core::MediaManagement) -> MediaManagementSpec {
+    MediaManagementSpec {
+        recycle_bin_path: mm.recycle_bin_path.clone(),
+        permissions: mm.permissions.clone(),
+        extra_files: mm.extra_files.clone(),
+        write_nfo: mm.write_nfo,
+    }
+}
+
+async fn export_auth(db: &Database) -> Result<AuthSpec, ManagedError> {
+    let cfg = db.auth().get_config().await?;
+    // The password hash is a secret: never emit it verbatim. Emit a `${ENV}`
+    // placeholder when a hash exists (it round-trips when the operator wires the
+    // hash into AUTH_PASSWORD_HASH), and `None` when no credential is set.
+    let password_hash = cfg
+        .password_hash
+        .as_ref()
+        .map(|_| "${AUTH_PASSWORD_HASH}".to_string());
+    Ok(AuthSpec {
+        method: cfg.method,
+        username: cfg.username,
+        password_hash,
+    })
+}
+
+/// Build an `entity_id -> config name` map from the ledger for a kind, so an export
+/// of a nameless core model (delay profile, remote-path mapping) recovers the
+/// config name reconcile keyed it under.
+async fn ledger_names(
+    db: &Database,
+    kind: &str,
+) -> Result<std::collections::HashMap<String, String>, ManagedError> {
+    Ok(db
+        .managed_config()
+        .list_kind(kind)
+        .await?
+        .into_iter()
+        .map(|e| (e.entity_id, e.name))
         .collect())
 }
 

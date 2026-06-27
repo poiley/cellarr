@@ -26,6 +26,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import { useAsync, toApiError } from '@app/settings/_components/useAsync';
 import { Loading, ErrorBanner, EmptyState } from '@app/settings/_components/StatusBanners';
 import ConfirmDialog from '@app/settings/_components/ConfirmDialog';
+import ManagedBadge, { isManaged } from '@app/settings/_components/ManagedBadge';
 import { createRootFolder, deleteRootFolder } from '@app/settings/_lib/settings';
 
 // Bytes -> a compact human size for the free-space column.
@@ -115,26 +116,31 @@ const RootFolders: React.FC<{ client?: CellarrClient }> = ({ client = defaultApi
             <TableColumn>Free space</TableColumn>
             <TableColumn> </TableColumn>
           </TableRow>
-          {folders.map((f) => (
-            <TableRow key={f.id}>
-              <TableColumn>
-                <code>{f.path}</code>
-              </TableColumn>
-              <TableColumn>
-                <Badge>{f.accessible ? '● accessible' : '✗ unavailable'}</Badge>
-              </TableColumn>
-              <TableColumn>{humanSize(f.freeSpace)}</TableColumn>
-              <TableColumn>
-                <Button
-                  theme="DANGER"
-                  aria-label={`Remove root folder ${f.path}`}
-                  onClick={() => setPendingDelete(f)}
-                >
-                  Remove
-                </Button>
-              </TableColumn>
-            </TableRow>
-          ))}
+          {folders.map((f) => {
+            const managed = isManaged(f);
+            return (
+              <TableRow key={f.id}>
+                <TableColumn>
+                  <code>{f.path}</code>{' '}
+                  {managed ? <ManagedBadge entityLabel={`Root folder ${f.path}`} /> : null}
+                </TableColumn>
+                <TableColumn>
+                  <Badge>{f.accessible ? '● accessible' : '✗ unavailable'}</Badge>
+                </TableColumn>
+                <TableColumn>{humanSize(f.freeSpace)}</TableColumn>
+                <TableColumn>
+                  <Button
+                    theme="DANGER"
+                    aria-label={`Remove root folder ${f.path}`}
+                    isDisabled={managed}
+                    onClick={managed ? undefined : () => setPendingDelete(f)}
+                  >
+                    Remove
+                  </Button>
+                </TableColumn>
+              </TableRow>
+            );
+          })}
         </Table>
       ) : (
         <EmptyState>No root folders yet. Add one to tell cellarr where your media lives.</EmptyState>
