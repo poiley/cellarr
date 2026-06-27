@@ -63,6 +63,28 @@ impl Daemon {
         .with_context(|| format!("opening database at {}", db_path.display()))?;
         info!(path = %db_path.display(), "database open; migrations applied");
 
+        // 1b. Managed config (config-as-code). If a path is configured, reconcile
+        //     the DB to match the declarative file now — after migrations, before
+        //     anything serves — so the daemon never serves a half-applied or stale
+        //     config. A managed-config error FAILS boot loudly (we propagate it);
+        //     with no path configured this is a no-op and behaviour is unchanged
+        //     (zero-config startup still works). Pruning only ever removes entities
+        //     config previously managed, never UI-created ones.
+        if let Some(path) = &config.managed_config_path {
+            info!(path = %path.display(), "reconciling managed config");
+            let report = crate::managed::reconcile_on_boot(&db, path)
+                .await
+                .with_context(|| format!("reconciling managed config from {}", path.display()))?;
+            let total = report.totals();
+            info!(
+                created = total.created,
+                updated = total.updated,
+                pruned = total.pruned,
+                unchanged = total.unchanged,
+                "managed config reconciled"
+            );
+        }
+
         // 2. Registries: the media-type modules the daemon serves. Held by the
         //    pipeline; built here because the CLI is the only wiring crate. The
         //    indexer/download/metadata adapters are constructed per-config from

@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use cellarr_cli::{boot, config::Config};
+use cellarr_db::Database;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -43,14 +44,47 @@ enum Command {
     /// Validate the effective (layered) configuration and print it.
     #[command(name = "config")]
     ConfigCheck,
+    /// Managed-config (config-as-code) operations: validate a declarative file
+    /// against the live DB, or export the current DB state as a file.
+    #[command(subcommand)]
+    ManagedConfig(ManagedConfigCommand),
     /// Print version information.
     Version,
 }
 
+/// The `cellarr managed-config` subcommand group (config-as-code).
+#[derive(Subcommand)]
+enum ManagedConfigCommand {
+    /// Load + interpolate + validate a managed-config file and compute its plan
+    /// against the configured DB, printing a human diff.
+    ///
+    /// Exit codes: `0` clean (no drift), `2` validation/load error, `3` valid but
+    /// pending drift (the file would change the DB). The distinct drift code lets
+    /// CI gate on "the live config matches git".
+    Validate {
+        /// The managed-config file. Defaults to the configured `managed_config_path`.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
+    /// Dump the current DB state of the managed-able kinds as a managed-config
+    /// YAML document (round-trippable; secrets emitted as `${ENV}` placeholders).
+    Export {
+        /// Write the YAML here instead of stdout.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
+}
+
+/// The exit code `config validate` returns when the file is valid but the DB has
+/// pending drift (a reconcile would change something). Distinct from a hard error.
+const EXIT_DRIFT: u8 = 3;
+/// The exit code `config validate` returns on a load/validation error.
+const EXIT_CONFIG_ERROR: u8 = 2;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match real_main().await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             // One line per cause so the chain is readable; tracing may not be up
             // yet (config errors happen before logging init), so go to stderr.
@@ -60,7 +94,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn real_main() -> Result<()> {
+async fn real_main() -> Result<ExitCode> {
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref()).context("loading configuration")?;
 
@@ -69,16 +103,19 @@ async fn real_main() -> Result<()> {
             // Hold the appender guard for the whole daemon lifetime so the
             // non-blocking writer flushes buffered log lines on shutdown.
             let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
-            boot::run(config).await
+            boot::run(config).await.map(|()| ExitCode::SUCCESS)
         }
         Command::Migrate { sources } => {
             let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
-            run_migrate(&config, &sources).await
+            run_migrate(&config, &sources)
+                .await
+                .map(|()| ExitCode::SUCCESS)
         }
-        Command::ConfigCheck => run_config_check(&config),
+        Command::ConfigCheck => run_config_check(&config).map(|()| ExitCode::SUCCESS),
+        Command::ManagedConfig(cmd) => run_managed_config(&config, cmd).await,
         Command::Version => {
             println!("cellarr {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
@@ -212,5 +249,87 @@ fn run_config_check(config: &Config) -> Result<()> {
     );
     println!("  log.filter = {}", config.log.filter);
     println!("  metrics    = {}", config.metrics.enabled);
+    println!(
+        "  managed    = {}",
+        config
+            .managed_config_path
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |p| p.display().to_string())
+    );
     Ok(())
+}
+
+/// Drive the `cellarr managed-config` subcommand group (config-as-code).
+///
+/// `validate` loads + interpolates + validates the file, computes the reconcile
+/// plan against the live DB (read-only), prints the diff, and exits with a
+/// distinct code on drift. `export` dumps the current DB state as a managed-config
+/// YAML document. Both open the configured database under the data dir.
+async fn run_managed_config(config: &Config, cmd: ManagedConfigCommand) -> Result<ExitCode> {
+    use cellarr_cli::managed;
+
+    // Resolve the target file: the explicit `--file`, else the configured path.
+    let resolve_file = |explicit: Option<PathBuf>| -> Result<PathBuf> {
+        explicit
+            .or_else(|| config.managed_config_path.clone())
+            .context(
+                "no managed-config file given: pass --file PATH or set \
+                 CELLARR_MANAGED_CONFIG_PATH / config `managed_config_path`",
+            )
+    };
+
+    // Open the configured DB (migrations run on open).
+    let open_db = || async {
+        std::fs::create_dir_all(&config.data_dir)
+            .with_context(|| format!("creating data dir {}", config.data_dir.display()))?;
+        let db_path = config.database_path();
+        let db = Database::open(
+            db_path
+                .to_str()
+                .context("database path is not valid UTF-8")?,
+        )
+        .await
+        .with_context(|| format!("opening database at {}", db_path.display()))?;
+        anyhow::Ok(db)
+    };
+
+    match cmd {
+        ManagedConfigCommand::Validate { file } => {
+            let path = resolve_file(file)?;
+            // Load + validate. A load/validation error is the config-error exit.
+            let managed_config = match managed::loader::load(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("managed config invalid: {e}");
+                    return Ok(ExitCode::from(EXIT_CONFIG_ERROR));
+                }
+            };
+            let db = open_db().await?;
+            let report = managed::reconcile::plan(&db, &managed_config).await?;
+            print!("{}", managed::render_diff(&report));
+            db.shutdown().await;
+            if report.has_changes() {
+                println!("pending drift: the live config does not match the file");
+                Ok(ExitCode::from(EXIT_DRIFT))
+            } else {
+                println!("clean: the live config matches the file");
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        ManagedConfigCommand::Export { file } => {
+            let db = open_db().await?;
+            let exported = managed::export::export(&db).await?;
+            db.shutdown().await;
+            let yaml = managed::export::to_yaml(&exported)?;
+            match file {
+                Some(path) => {
+                    std::fs::write(&path, yaml)
+                        .with_context(|| format!("writing export to {}", path.display()))?;
+                    println!("exported managed config to {}", path.display());
+                }
+                None => print!("{yaml}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }

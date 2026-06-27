@@ -46,6 +46,16 @@ pub struct Config {
     /// Media-management file-handling settings (the recycle-bin path a delete
     /// moves removed media into instead of unlinking).
     pub media_management: MediaManagementConfig,
+    /// Optional path to a declarative **managed-config** file (config-as-code).
+    /// When set, the daemon reconciles its DB from this file on boot (after
+    /// migrations, before serving): tags/root folders/libraries/quality
+    /// definitions/custom formats/quality profiles/indexers/download clients are
+    /// brought to match the file, with config-managed entities pruned when no
+    /// longer declared and UI-created ones left untouched. Unset (the default)
+    /// leaves behaviour unchanged — zero-config startup still works. From
+    /// `CELLARR_MANAGED_CONFIG_PATH` (or the config file's `managed_config_path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_config_path: Option<PathBuf>,
 }
 
 /// Media-management file-handling configuration.
@@ -149,6 +159,7 @@ impl Default for Config {
             tvdb: TvdbConfig::default(),
             tmdb: TmdbConfig::default(),
             media_management: MediaManagementConfig::default(),
+            managed_config_path: None,
         }
     }
 }

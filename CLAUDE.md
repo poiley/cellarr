@@ -65,6 +65,20 @@ and a `just test` can fail if it collides with another build's lock). Separate w
 separate `target/` dirs and build in parallel; sccache still shares the compiled-artifact cache
 across them. So: never run concurrent agents in one checkout — give each its own worktree.
 
+**New-worktree onboarding: `mise trust` first.** A fresh worktree's `.mise.toml` is untrusted, and
+*every* `just` recipe shells out through the mise shims — so all of them fail instantly (not just
+`setup`) with `Config files in <path>/.mise.toml are not trusted` until you run
+`mise trust <worktree>/.mise.toml` once. Do this right after `git worktree add`, before `just setup`.
+
+**Watch host memory, not just `target/` locks.** Rust builds are bursty — cargo runs one `rustc`
+per core (18 here) and heavy crates hold hundreds of MB each at peak, so N concurrent builds can
+spike well past free RAM and the kernel SIGKILLs `rustc` (cargo then kills the sibling jobs, giving
+a wall of `signal: 9` on unrelated crates — not a real compile error). Worktrees + shared sccache
+are the main mitigation (cache hits skip the memory-heavy codegen). If you knowingly run a fleet,
+cap per-build parallelism with `CARGO_BUILD_JOBS` rather than letting every build grab all cores,
+and quit memory-heavy background apps (e.g. OrbStack's VM is only needed for the Docker-gated
+`oracle`/`test-pg`/`e2e` recipes — quit it for plain `just test`, which is SQLite-only/no-Docker).
+
 ## Conventions
 
 Code/comment/commit/test conventions live in [`docs/agents/conventions.md`](docs/agents/conventions.md).

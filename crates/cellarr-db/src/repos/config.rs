@@ -99,6 +99,34 @@ impl ConfigRepo {
         rows.into_iter().map(row_to_library).collect()
     }
 
+    /// Delete a library by id. Idempotent: returns `true` if a row was removed,
+    /// `false` if no such library existed. Used by managed-config reconciliation
+    /// to prune a config-created library that is no longer declared.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_library(&self, id: LibraryId) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let id = id.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM library WHERE id = ?1")
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     // --- Root folders -------------------------------------------------------
 
     /// Insert or replace a root folder.

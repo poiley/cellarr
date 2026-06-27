@@ -11,6 +11,7 @@
 pub mod boot;
 pub mod clients;
 pub mod config;
+pub mod managed;
 pub mod metadata;
 pub mod pipeline;
 pub mod registry;

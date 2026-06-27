@@ -260,6 +260,34 @@ impl ProfileRepo {
             .await
     }
 
+    /// Delete a per-quality edit by its canonical name, reverting that quality to
+    /// the code-owned default knobs. Idempotent: returns `true` if a row was
+    /// removed, `false` if no override existed for that name.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn delete_quality_definition(&self, name: &str) -> Result<bool> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let name = name.to_string();
+        let removed = Arc::new(AtomicBool::new(false));
+        let removed_inner = Arc::clone(&removed);
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    let result = sqlx::query("DELETE FROM quality_definition WHERE name = ?1")
+                        .bind(name)
+                        .execute(&mut *conn)
+                        .await?;
+                    removed_inner.store(result.rows_affected() > 0, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(removed.load(Ordering::SeqCst))
+    }
+
     /// The persisted per-quality edits, keyed by canonical name.
     ///
     /// # Errors

@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 use crate::error::Result;
 use crate::repos::{
     AuthRepo, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo,
-    HistoryRepo, ImportListRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo, TagRepo,
+    HistoryRepo, ImportListRepo, ManagedConfigRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
+    TagRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -262,6 +263,12 @@ impl Database {
     #[must_use]
     pub fn tags(&self) -> TagRepo {
         TagRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The managed-config tracking ledger (config-as-code reconciliation).
+    #[must_use]
+    pub fn managed_config(&self) -> ManagedConfigRepo {
+        ManagedConfigRepo::new(self.pool.clone(), self.writer.clone())
     }
 
     /// The failed-download blocklist repository.

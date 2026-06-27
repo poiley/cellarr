@@ -34,7 +34,7 @@ pub use db::Database;
 pub use error::{DbError, Result};
 pub use repos::{
     AuthRepo, AuthSession, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo,
-    GrabRepo, HistoryRepo, ImportListRepo, MediaFileRepo, PendingRelease, PendingReleaseRepo,
-    ProfileRepo, TagRepo,
+    GrabRepo, HistoryRepo, ImportListRepo, ManagedConfigRepo, ManagedEntity, MediaFileRepo,
+    PendingRelease, PendingReleaseRepo, ProfileRepo, TagRepo,
 };
 pub use writer::WriterHandle;
