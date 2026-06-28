@@ -27,6 +27,24 @@ web/out/
 *.sqlite-wal
 *.sqlite-shm
 
+# Real deployment config + secrets — NEVER commit (this is a public repo).
+# The committed templates are deploy/managed-config.example.yaml and the
+# placeholder Secret in deploy/k8s/cellarr.yaml; the real, value-filled copies
+# live only here and on the cluster.
+# (gitignore has no trailing-comment support — keep patterns on their own lines.)
+/deploy/managed-config.yaml
+/deploy/k8s/cellarr-secret.yaml
+# any k8s Secret manifest with real values, but keep *-secret.example.yaml templates
+*-secret.yaml
+!*-secret.example.yaml
+*.secret.yaml
+# local-only manifest overlays
+*.local.yaml
+secrets/
+*.key
+*.pem
+kubeconfig*
+
 # Per-run scratch dirs for `just dev` (namespaced by RUN_ID) — see docs/16
 /.run/
 
