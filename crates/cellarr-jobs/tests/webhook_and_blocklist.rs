@@ -533,6 +533,7 @@ fn runner_config(library_root: PathBuf) -> RunnerConfig {
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),
         max_track_polls: 5,
+        stall_grace_polls: 0,
         track_poll_interval: std::time::Duration::ZERO,
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
@@ -1019,5 +1020,103 @@ async fn a_near_complete_download_is_not_killed_by_the_stall_detector() {
             .await
             .unwrap(),
         "a successful near-complete download must not be blocklisted"
+    );
+}
+
+/// A fake whose download reports zero peers at 0% for the first few polls — a magnet
+/// fetching metadata + bootstrapping DHT/tracker peers — before peers connect and it
+/// completes. Without the startup stall grace ([`RunnerConfig::stall_grace_polls`])
+/// this looks exactly like a dead torrent and is killed before it can ever start (the
+/// live bug this guards: peers connected only after ~40s).
+struct BootstrappingClient {
+    completed_path: String,
+    polls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for BootstrappingClient {
+    type Error = FakeClientError;
+    fn name(&self) -> &str {
+        "bootstrapping-client"
+    }
+    async fn add(&self, _grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        Ok("dl-bootstrap".to_string())
+    }
+    async fn status(
+        &self,
+        _download_id: &str,
+    ) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        let n = self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n < 4 {
+            // Bootstrap: 0%, zero peers — indistinguishable from a stall by the
+            // stall signal, but the grace window must let it ride.
+            return Ok(cellarr_core::DownloadStatus {
+                state: cellarr_core::DownloadState::Downloading,
+                progress: 0.0,
+                content_path: None,
+                ratio: Some(0.0),
+                seeding_time_secs: Some(0),
+                peers: Some(0),
+                error_string: None,
+            });
+        }
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Completed,
+            progress: 1.0,
+            content_path: Some(self.completed_path.clone()),
+            ratio: Some(1.0),
+            seeding_time_secs: Some(10),
+            peers: Some(8),
+            error_string: None,
+        })
+    }
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// Regression: a magnet that sits at 0%/zero-peers during its metadata+DHT bootstrap
+/// must NOT be stall-failed within the startup grace window — it imports once peers
+/// connect. (The default 3-poll stall detector would otherwise kill it at poll 3.)
+#[tokio::test]
+async fn a_bootstrapping_magnet_survives_the_startup_grace_then_imports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let mut config = runner_config(library_root.clone());
+    config.max_track_polls = 12;
+    // Grace longer than the 4-poll bootstrap, so the no-peer startup is not a stall.
+    config.stall_grace_polls = 6;
+
+    let release = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![release.clone()],
+    };
+    let client = BootstrappingClient {
+        completed_path: file.to_string_lossy().into_owned(),
+        polls: std::sync::atomic::AtomicU32::new(0),
+    };
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Imported { .. }),
+        "a magnet that bootstraps within the grace window must import, not stall-fail: {outcome:?}"
+    );
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &release)
+            .await
+            .unwrap(),
+        "a bootstrapping download that imports must not be blocklisted"
     );
 }

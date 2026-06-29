@@ -74,7 +74,9 @@ use cellarr_core::{
 /// The signal is conservative: a stall requires the client to *report* zero peers
 /// (`Some(0)`); an unknown peer count (`None`, e.g. Usenet) never trips it, and
 /// any forward progress resets the counter. A **near-complete** download
-/// ([`NEAR_COMPLETE_PROGRESS`]) is also exempt — see that constant. Default 3 cycles.
+/// ([`NEAR_COMPLETE_PROGRESS`]) is also exempt — see that constant. The first
+/// [`RunnerConfig::stall_grace_polls`] cycles are also exempt (magnet bootstrap).
+/// Default 3 cycles.
 const STALL_MAX_STAGNANT_POLLS: u32 = 3;
 
 /// A download at or above this fraction is treated as **near-complete** and is
@@ -317,6 +319,16 @@ pub struct RunnerConfig {
     /// [`Duration::ZERO`](std::time::Duration::ZERO) so they never sleep (the
     /// logical clock still advances per poll for retry/stall accounting).
     pub track_poll_interval: std::time::Duration,
+    /// Startup grace: the number of initial Track polls during which a "no progress,
+    /// no peers" state does **not** count toward a stall (see
+    /// [`STALL_MAX_STAGNANT_POLLS`]). A magnet link legitimately reports zero peers
+    /// at 0% for the first ~30-60s while the client fetches torrent metadata and
+    /// bootstraps DHT/tracker peers — indistinguishable from a dead torrent by the
+    /// stall signal alone — so without this grace a healthy magnet (verified live:
+    /// peers connected only after ~40s) is killed before it can start. Real
+    /// deployments set ~12 (≈60s at the 5s poll interval); tests set 0 so the stall
+    /// detector trips immediately under the logical (zero-interval) clock.
+    pub stall_grace_polls: u32,
     /// The download client's host, used to scope which [remote-path
     /// mappings](RunnerConfig::remote_path_mappings) apply (the Sonarr/Radarr
     /// convention: a mapping names the client host it rewrites paths for). Empty
@@ -1644,7 +1656,7 @@ where
     async fn track(&self, download_id: &str) -> TrackOutcome {
         let mut last_progress = f32::NEG_INFINITY;
         let mut stagnant_no_peer_polls: u32 = 0;
-        for _ in 0..self.config.max_track_polls {
+        for poll_index in 0..self.config.max_track_polls {
             let status = match self.client.status(download_id).await {
                 Ok(s) => s,
                 Err(e) => return TrackOutcome::Failed(format!("status poll failed: {e}")),
@@ -1667,7 +1679,14 @@ where
                     let advanced = status.progress > last_progress;
                     let no_peers = status.peers == Some(0);
                     let near_complete = status.progress >= NEAR_COMPLETE_PROGRESS;
-                    if !advanced && no_peers && !near_complete {
+                    // During the startup grace window a magnet legitimately sits at
+                    // 0%/no-peers while fetching metadata + bootstrapping peers; do
+                    // not count that as a stall.
+                    if !advanced
+                        && no_peers
+                        && !near_complete
+                        && poll_index >= self.config.stall_grace_polls
+                    {
                         stagnant_no_peer_polls += 1;
                         if stagnant_no_peer_polls >= STALL_MAX_STAGNANT_POLLS {
                             return TrackOutcome::Failed(format!(

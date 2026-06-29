@@ -408,6 +408,8 @@ pub struct LivePipelineEnv {
     rate_limiter: Arc<HostRateLimiter>,
     /// How many times Track polls the download client before giving up.
     max_track_polls: u32,
+    /// Startup grace polls before stall detection (magnet metadata/DHT bootstrap).
+    stall_grace_polls: u32,
     /// How long to wait between Track polls so the poll budget spans a real,
     /// multi-minute download.
     track_poll_interval: std::time::Duration,
@@ -424,6 +426,9 @@ impl LivePipelineEnv {
             // that spans it rather than burning instant polls.
             max_track_polls: 240,
             track_poll_interval: std::time::Duration::from_secs(5),
+            // ~60s grace for a magnet to fetch metadata + bootstrap peers before the
+            // stall detector can fire (verified live: peers connect only after ~40s).
+            stall_grace_polls: 12,
         }
     }
 
@@ -675,6 +680,7 @@ impl LivePipelineEnv {
             category: client_category,
             max_track_polls: self.max_track_polls,
             track_poll_interval: self.track_poll_interval,
+            stall_grace_polls: self.stall_grace_polls,
             // The client host scopes which remote-path mappings apply; cellarr runs
             // alongside the client in the default deployment (no rewrite needed),
             // so it is left empty and the mappings list is a no-op unless a mapping

@@ -290,6 +290,7 @@ fn runner_config(library_root: PathBuf, profile: QualityProfile, naming: &str) -
         client_id: cellarr_core::DownloadClientId::new(),
         category: "cellarr".into(),
         max_track_polls: 5,
+        stall_grace_polls: 0,
         track_poll_interval: std::time::Duration::ZERO,
         client_host: String::new(),
         remote_path_mappings: Vec::new(),
