@@ -312,6 +312,91 @@ async fn root_folder_create_list_delete_round_trips() {
     assert_eq!(again.status(), 200);
 }
 
+/// Regression: a library that imports into the SAME path as a standalone root
+/// folder must NOT shadow it with a phantom, undeletable library-derived entry.
+/// The standalone folder (real id projection) is surfaced and DELETE removes it.
+#[tokio::test]
+async fn library_root_folder_does_not_shadow_standalone() {
+    let server = start_authed().await;
+    let path = "/data/shared-root";
+
+    // A standalone root folder at `path`.
+    let rf = cellarr_core::RootFolder {
+        id: "shared-root-id".to_string(),
+        path: path.to_string(),
+        name: Some("shared".to_string()),
+        enabled: true,
+    };
+    server
+        .state
+        .db
+        .config()
+        .upsert_root_folder(&rf)
+        .await
+        .unwrap();
+
+    // A library that imports into the SAME path (library.root_folders hold paths).
+    let profile = common::seed_profile(&server.state, "shadow-prof").await;
+    let lib = cellarr_core::Library {
+        id: cellarr_core::LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Shadow".to_string(),
+        root_folders: vec![path.to_string()],
+        default_quality_profile: profile,
+    };
+    server.state.db.config().upsert_library(&lib).await.unwrap();
+
+    // Exactly one root-folder entry for the path (no phantom duplicate).
+    let list: Value = server
+        .client()
+        .get(server.url("/api/v3/rootfolder"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let matches: Vec<&Value> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["path"] == path)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "one entry for the path, not a phantom dup: {list}"
+    );
+    let id = matches[0]["id"].as_i64().expect("numeric id");
+
+    // The listed entry is the real standalone folder (real id projection), so
+    // DELETE/{id} removes the standalone row. (A phantom library-derived entry
+    // would carry a sequential index that resolves to nothing — the bug.) The
+    // path may still appear afterward as a library-derived projection since the
+    // library keeps referencing it; what matters is the standalone row is gone.
+    let resp = server
+        .client()
+        .delete(server.url(&format!("/api/v3/rootfolder/{id}")))
+        .header("x-api-key", TEST_API_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let standalone_gone = !server
+        .state
+        .db
+        .config()
+        .list_root_folders()
+        .await
+        .unwrap()
+        .iter()
+        .any(|rf| rf.path == path);
+    assert!(
+        standalone_gone,
+        "DELETE removed the real standalone root folder (it was not a phantom)"
+    );
+}
+
 // --- interactive grab (no pipeline wired) ----------------------------------
 
 #[tokio::test]

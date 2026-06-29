@@ -1316,8 +1316,12 @@ fn resolve_library(
                 s.name, s.quality_profile
             ))
         })?;
-    // Resolve root-folder names to their stored ids.
-    let folder_ids: Vec<String> = s
+    // Resolve root-folder names to their stored PATHS. Every consumer of
+    // `Library.root_folders` (the import pipeline, health checks, the /api/v3
+    // root-folder projection) treats each entry as a filesystem path, so storing
+    // ids here made managed libraries import to an id-named path and surfaced
+    // phantom, undeletable root folders. Resolve to the path instead.
+    let folder_paths: Vec<String> = s
         .root_folders
         .iter()
         .map(|rf_name| {
@@ -1328,7 +1332,7 @@ fn resolve_library(
                         .as_deref()
                         .is_some_and(|n| n.eq_ignore_ascii_case(rf_name))
                 })
-                .map(|rf| rf.id.clone())
+                .map(|rf| rf.path.clone())
                 .ok_or_else(|| {
                     ManagedError::Validation(format!(
                         "library `{}` references root folder `{}`, which is not present",
@@ -1341,7 +1345,7 @@ fn resolve_library(
         id,
         media_type: s.media_type,
         name: s.name.clone(),
-        root_folders: folder_ids,
+        root_folders: folder_paths,
         default_quality_profile: profile.id,
     })
 }

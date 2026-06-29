@@ -918,6 +918,18 @@ async fn root_folders(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>
     let surface = fs.face.fixed_media();
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
+    // Standalone root folders FIRST, so each carries its real id projection (which
+    // DELETE/{id} resolves) and its config-managed flag — rather than being shadowed
+    // by a library-derived sequential index that can't be deleted.
+    let managed = managed_ids(&fs.state.db, managed_kind::ROOT_FOLDER).await;
+    for rf in cfg.list_root_folders().await? {
+        if seen.insert(rf.path.clone()) {
+            out.push(with_managed(v3_root_folder(&rf), managed.contains(&rf.id)));
+        }
+    }
+    // Then surface any library root folders (filesystem paths) not already covered
+    // by a standalone folder — for libraries that reference a path with no
+    // standalone row. These have no standalone id and are never config-managed.
     let mut idx = 1u32;
     for lib in cfg.list_libraries().await? {
         // A dedicated face only advertises root folders of its own media type.
@@ -936,21 +948,9 @@ async fn root_folders(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>
                 "accessible": true,
                 "freeSpace": 0,
                 "unmappedFolders": [],
-                // A library-derived root-folder projection has no standalone id, so
-                // it is never config-managed in its own right.
                 "managed": false,
             }));
             idx += 1;
-        }
-    }
-    // Also include any standalone root folders the config layer holds. These
-    // carry their real id projection (not the library-derived sequential index)
-    // so a folder created via POST round-trips through DELETE/{id}.
-    let _ = idx;
-    let managed = managed_ids(&fs.state.db, managed_kind::ROOT_FOLDER).await;
-    for rf in cfg.list_root_folders().await? {
-        if seen.insert(rf.path.clone()) {
-            out.push(with_managed(v3_root_folder(&rf), managed.contains(&rf.id)));
         }
     }
     Ok(Json(out))

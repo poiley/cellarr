@@ -203,15 +203,17 @@ async fn export_libraries(db: &Database) -> Result<Vec<LibrarySpec>, ManagedErro
                 .unwrap_or_else(|| lib.default_quality_profile.to_string());
             // Map stored root-folder ids back to their names so the export
             // references by name (the schema's contract).
+            // library.root_folders holds filesystem PATHS, so match on path to
+            // recover the configured name (the schema references roots by name).
             let root_folder_names = lib
                 .root_folders
                 .iter()
-                .map(|id| {
+                .map(|path| {
                     root_folders
                         .iter()
-                        .find(|rf| &rf.id == id)
+                        .find(|rf| &rf.path == path)
                         .and_then(|rf| rf.name.clone())
-                        .unwrap_or_else(|| id.clone())
+                        .unwrap_or_else(|| path.clone())
                 })
                 .collect();
             LibrarySpec {

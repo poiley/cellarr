@@ -157,7 +157,15 @@ async fn apply_creates_all_declared_entities() {
     let lib = &db.config().list_libraries().await.unwrap()[0];
     let profile = &db.profiles().list_profiles().await.unwrap()[0];
     assert_eq!(lib.default_quality_profile, profile.id);
-    assert_eq!(lib.root_folders.len(), 1);
+    // library.root_folders must hold the root folder's PATH (every consumer treats
+    // these as filesystem paths), not its id/name — otherwise managed libraries
+    // import to the wrong location and surface phantom, undeletable root folders.
+    let rf = &db.config().list_root_folders().await.unwrap()[0];
+    assert_eq!(
+        lib.root_folders,
+        vec![rf.path.clone()],
+        "library.root_folders must store the root folder PATH, not its id/name"
+    );
 
     // --- the operational-surface kinds (Pack 2) landed too --------------------
     let release_profiles = db.profiles().list_release_profiles().await.unwrap();
