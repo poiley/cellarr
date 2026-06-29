@@ -2711,18 +2711,59 @@ fn created_folders(
 /// Collect importable source files: the file itself, or every file under a
 /// download directory (one level; download clients lay content out flat or in a
 /// single folder).
+/// Video container extensions cellarr imports as a content's own media file.
+/// Subtitles, `.nfo`, `.txt` and other sidecars are NOT main files — they ride
+/// along via the extra-files post-commit step, never as the content's own file.
+const VIDEO_EXTS: &[&str] = &[
+    "mkv", "mp4", "avi", "m4v", "mov", "wmv", "mpg", "mpeg", "ts", "m2ts", "flv", "webm", "ogm",
+    "divx",
+];
+
+/// Whether `path` is a video container we import.
+fn is_video_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| VIDEO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Whether `path` is a throwaway **sample** clip (e.g. `Sample.mkv`,
+/// `movie-sample.mp4`) — a `sample` token in the name. Excluded from import so a
+/// release's feature is never replaced by its tiny sample.
+fn is_sample_file(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_ascii_lowercase())
+        .is_some_and(|n| {
+            n.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|tok| tok == "sample")
+        })
+}
+
+/// Collect the importable media file(s) under `src`. A single-file download is the
+/// file itself; a directory is walked (one level) for its **video** files, with
+/// sample clips and obvious tiny extras excluded so the main feature is never
+/// shadowed by an 8 MB sample. Sidecars (subs/.nfo) are handled post-commit.
 fn collect_sources(src: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     if src.is_file() {
         return Ok(vec![src.to_path_buf()]);
     }
-    let mut out = Vec::new();
+    let mut videos: Vec<(std::path::PathBuf, u64)> = Vec::new();
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            out.push(path);
+        if path.is_file() && is_video_file(&path) && !is_sample_file(&path) {
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            videos.push((path, size));
         }
     }
+    // Drop tiny extras (an unnamed sample/featurette) relative to the largest video
+    // — anything under 10% of the biggest file. A real second feature/episode is
+    // never that small; this catches samples that lack a "sample" token in the name.
+    if let Some(max) = videos.iter().map(|(_, s)| *s).max() {
+        let floor = max / 10;
+        videos.retain(|(_, s)| *s >= floor);
+    }
+    let mut out: Vec<std::path::PathBuf> = videos.into_iter().map(|(p, _)| p).collect();
     out.sort();
     Ok(out)
 }
@@ -3143,6 +3184,29 @@ mod tests {
             names,
             vec!["a.mkv", "b.mkv", "c.mkv"],
             "only top-level files, sorted, no recursion into subdir"
+        );
+    }
+
+    #[test]
+    fn collect_sources_excludes_samples_sidecars_and_tiny_extras() {
+        let dir = tempfile::tempdir().unwrap();
+        // The feature, a named sample, a tiny unnamed extra, and sidecars.
+        std::fs::write(dir.path().join("Feature.1080p.mkv"), vec![0u8; 10_000]).unwrap();
+        std::fs::write(dir.path().join("Sample.mkv"), vec![0u8; 9_000]).unwrap(); // sample by NAME
+        std::fs::write(dir.path().join("extra-clip.mkv"), vec![0u8; 200]).unwrap(); // <10% -> tiny
+        std::fs::write(dir.path().join("movie.nfo"), b"nfo").unwrap(); // non-video sidecar
+        std::fs::write(dir.path().join("subs.srt"), b"srt").unwrap(); // non-video sidecar
+        std::fs::write(dir.path().join("readme.txt"), b"txt").unwrap();
+
+        let names: Vec<String> = collect_sources(dir.path())
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Feature.1080p.mkv"],
+            "import only the main feature — no sample, tiny extra, or sidecars; got {names:?}"
         );
     }
 }
