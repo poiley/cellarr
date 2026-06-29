@@ -205,6 +205,31 @@ pub fn validate(config: &ManagedConfig) -> Result<(), ManagedError> {
                     )));
                 }
             }
+            // A Cardigann indexer's definition must parse now, so a broken YAML is
+            // caught at config-apply time rather than at the first search.
+            if ix.kind.eq_ignore_ascii_case("cardigann") {
+                let yaml = ix
+                    .settings
+                    .get("definition")
+                    .or_else(|| ix.settings.get("definitionYaml"))
+                    .and_then(|v| v.as_str());
+                match yaml {
+                    None => {
+                        return Err(ManagedError::Validation(format!(
+                            "indexer `{}` is kind `cardigann` but has no `settings.definition`",
+                            ix.name
+                        )))
+                    }
+                    Some(y) => {
+                        if let Err(e) = cellarr_indexers::Definition::from_yaml(y) {
+                            return Err(ManagedError::Validation(format!(
+                                "indexer `{}` has an invalid cardigann definition: {e}",
+                                ix.name
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(dcs) = &config.download_clients {
@@ -498,5 +523,62 @@ qualityProfiles:
 "#;
         let err = load_str(text, no_env).unwrap_err();
         assert!(err.to_string().contains("cutoff"), "got {err}");
+    }
+
+    #[test]
+    fn cardigann_indexer_without_definition_rejected() {
+        let text = r#"
+apiVersion: cellarr/v1
+indexers:
+  - name: ct
+    kind: cardigann
+    protocol: torrent
+    settings: {}
+"#;
+        let err = load_str(text, no_env).unwrap_err();
+        assert!(err.to_string().contains("definition"), "got {err}");
+    }
+
+    #[test]
+    fn cardigann_indexer_with_invalid_definition_rejected() {
+        // Valid YAML, but not a valid Cardigann definition (missing `name`/`search`).
+        let text = r#"
+apiVersion: cellarr/v1
+indexers:
+  - name: ct
+    kind: cardigann
+    protocol: torrent
+    settings:
+      definition: |
+        id: only-id
+"#;
+        let err = load_str(text, no_env).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid cardigann definition"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn cardigann_indexer_with_valid_definition_passes() {
+        let text = r#"
+apiVersion: cellarr/v1
+indexers:
+  - name: ct
+    kind: cardigann
+    protocol: torrent
+    settings:
+      definition: |
+        id: ct
+        name: Cardigann Tracker
+        links: [https://ct.example/]
+        search:
+          paths: [{ path: /s }]
+          rows: { selector: tr }
+          fields:
+            title: { selector: a }
+            download: { selector: a, attribute: href }
+"#;
+        load_str(text, no_env).unwrap();
     }
 }
