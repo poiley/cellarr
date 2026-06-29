@@ -256,12 +256,17 @@ remotePathMappings:
 # --- naming (singleton) -----------------------------------------------------
 # Library-wide naming templates. Whole document is set when declared; every field
 # defaults to the built-in *arr-conventional template, so partial is fine.
+# Use the real tokens from the rename vocabulary (crates/cellarr-fs/src/rename.rs):
+# movies -> {Movie Title} {Release Year} {Edition} {Release Group} {Extension};
+# episodes -> {Series Title} {Season} {Episode} {Episodes} {Episode Block}
+# {Absolute Episode} {Release Group} {Extension}. {Extension} is REQUIRED on a file
+# format (a file without it is unplayable); a "/" nests the file under a folder.
 naming:
-  seriesFolderFormat: "{Series Title}"
+  seriesFolderFormat: "{Series Title} ({Release Year})"
   seasonFolderFormat: "Season {Season}"
-  episodeFileFormat: "{Series Title} - S{Season:00}E{Episode:00} - {Episode Title}"
-  animeEpisodeFileFormat: "{Series Title} - {Absolute Episode:000} - {Episode Title}"
-  movieFileFormat: "{Movie Title} ({Year})"
+  episodeFileFormat: "{Series Title} - {Episode Block}.{Extension}"
+  animeEpisodeFileFormat: "{Series Title} - {Absolute Episode}.{Extension}"
+  movieFileFormat: "{Movie Title} ({Release Year})/{Movie Title} ({Release Year}).{Extension}"
 
 # --- media management (singleton) -------------------------------------------
 # Recycle-bin / permissions / extra-files (naming has its own section above).
