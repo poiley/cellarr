@@ -60,6 +60,10 @@ spec:
             - { name: TZ, value: "America/Los_Angeles" }
             # Config-as-code: reconcile the DB from this file on boot.
             - { name: CELLARR_MANAGED_CONFIG_PATH, value: "/config/managed-config.yaml" }
+            # API key for /api/v3 (the API is reachable via the ingress, so it must
+            # be set). Used by Prowlarr's app sync and any external client.
+            - name: CELLARR_API__API_KEY
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: CELLARR_API__API_KEY, optional: true } }
             # Metadata API keys (bootstrap config) + the ${ENV} secrets the managed
             # config references — all from the cellarr-secrets Secret. optional:true so
             # a missing key degrades gracefully instead of crash-looping the pod.
