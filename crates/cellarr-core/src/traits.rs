@@ -20,7 +20,7 @@ use crate::parsed::ParsedRelease;
 use crate::release::{ContentMatch, Release};
 
 /// Search parameters a media module produces for querying indexers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchTerms {
     /// Title/alias queries to try, most specific first.
     pub queries: Vec<String>,
@@ -29,6 +29,11 @@ pub struct SearchTerms {
     pub ids: Vec<(String, String)>,
     /// Season/episode (or equivalent) query parameters, as `(key, value)` pairs.
     pub numbering: Vec<(String, String)>,
+    /// The Torznab categories the search targets (thousands-based scheme: `2000`
+    /// Movies, `5000` TV). A Cardigann indexer maps these to the tracker's own
+    /// category ids; native Torznab/Newznab adapters pass advertised ones through.
+    /// Empty means "no category filter" (search everything).
+    pub categories: Vec<u32>,
 }
 
 /// Naming tokens a media module exposes for the rename engine.

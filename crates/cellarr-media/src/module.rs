@@ -148,6 +148,8 @@ where
             queries,
             ids: meta.external_ids,
             numbering: Vec::new(),
+            // Movies live under the Torznab 2000 range.
+            categories: vec![2000],
         })
     }
 
@@ -241,6 +243,8 @@ where
             queries,
             ids: meta.external_ids,
             numbering,
+            // TV lives under the Torznab 5000 range.
+            categories: vec![5000],
         })
     }
 

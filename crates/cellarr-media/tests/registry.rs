@@ -89,6 +89,7 @@ impl MediaModule for StubMusicModule {
             queries: vec!["An Album".to_string()],
             ids: vec![("mbid".to_string(), "abc-123".to_string())],
             numbering: vec![],
+            categories: vec![],
         })
     }
 

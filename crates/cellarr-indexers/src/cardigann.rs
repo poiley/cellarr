@@ -15,19 +15,22 @@
 //! the great majority of *public* trackers:
 //!
 //! - `links` → the site base, used to resolve relative download/details URLs.
-//! - `search.paths[].path` + `inputs` → the request, with templating for
-//!   `{{ .Keywords }}` / `{{ .Query.Keywords }}` / `{{ .Config.<key> }}` and quoted
-//!   literals.
+//! - `search.paths[].path` + `inputs` → the request, with a Go-template subset:
+//!   value expressions (`{{ .Keywords }}`, `{{ .Query.<Name> }}` typed fields like
+//!   `Season`/`Episode`/`IMDBID`, `{{ .Config.<key> }}`, `{{ . }}`, quoted literals,
+//!   `{{ join .Categories "," }}`), `{{ if … }}…{{ else }}…{{ end }}`, and
+//!   `{{ range .Categories }}…{{ end }}`. Empty-rendering inputs are dropped.
 //! - `search.rows.selector` + `search.fields` → **CSS** row/field extraction, each
 //!   field reading element text or an `attribute`, then running a **filter chain**
 //!   (`regexp`, `re_replace`, `replace`, `split`, `querystring`, `append`,
 //!   `prepend`, `trim`, `tolower`, `toupper`).
-//! - `caps.categorymappings` → tracker-category ↔ Torznab-category mapping.
+//! - `caps.categorymappings` → translates the search's requested Torznab categories
+//!   into this tracker's own category ids (parent categories expand to their range).
 //!
-//! Unsupported constructs (XPath selectors, `range`/`if` template control flow, an
-//! unknown filter) are rejected as a [`IndexerError::Definition`] at extract time
-//! rather than silently producing wrong data — the integration layer must never be
-//! quietly incorrect.
+//! Unsupported constructs (XPath selectors, template control flow beyond `if`/`range`,
+//! an unknown filter) are rejected as a [`IndexerError::Definition`] rather than
+//! silently producing wrong data — the integration layer must never be quietly
+//! incorrect.
 //!
 //! **Record/replay.** The HTTP seam is the [`Fetcher`] trait, so [`Indexer::search`]
 //! is exercised against recorded responses; a live tracker is never a test
@@ -203,54 +206,276 @@ impl Definition {
 }
 
 // ---------------------------------------------------------------------------
-// Templating: the `{{ .Keywords }}` / `{{ .Config.<key> }}` subset.
+// Templating: the Cardigann template subset (Go text/template-style).
 // ---------------------------------------------------------------------------
 
 /// The values a template can reference.
+#[derive(Clone, Copy)]
 struct TemplateContext<'a> {
+    /// `.Keywords` / `.Query.Keywords` — the free-text query.
     keywords: &'a str,
+    /// `.Query.<Name>` lookups (`Season`, `Episode`, `IMDBID`, …) derived from the
+    /// search's ids/numbering.
+    query: &'a BTreeMap<String, String>,
+    /// `.Config.<key>` lookups (user settings: passkey, sitelink override, …).
     config: &'a BTreeMap<String, String>,
+    /// `.Categories` — the tracker category ids selected for this search.
+    categories: &'a [String],
+    /// The current item inside a `range` body (`.`), if any.
+    dot: Option<&'a str>,
 }
 
-/// Render a Cardigann template string, substituting `{{ … }}` expressions.
+/// One parsed template node.
+enum TmplNode {
+    /// Literal text.
+    Text(String),
+    /// A value expression (`.Keywords`, `.Query.X`, `.Config.X`, `.`, `join …`, "lit").
+    Expr(String),
+    /// `{{ if COND }}then{{ else }}els{{ end }}`.
+    If {
+        /// The truthiness expression.
+        cond: String,
+        /// Rendered when `cond` is non-empty/true.
+        then: Vec<TmplNode>,
+        /// Rendered otherwise (empty when there is no `else`).
+        els: Vec<TmplNode>,
+    },
+    /// `{{ range EXPR }}body{{ end }}` — repeats `body` per item, binding `.`.
+    Range {
+        /// The list expression (only `.Categories` is supported).
+        expr: String,
+        /// The body rendered once per item.
+        body: Vec<TmplNode>,
+    },
+}
+
+/// Render a Cardigann template string against `ctx`.
 ///
-/// Supports `{{ .Keywords }}`, `{{ .Query.Keywords }}`, `{{ .Config.<key> }}` and
-/// quoted literals. Any other expression is an unsupported-construct error, so a
-/// definition that needs template control flow fails loudly instead of silently
-/// rendering wrong.
+/// Supports value expressions (`{{ .Keywords }}`, `{{ .Query.<Name> }}`,
+/// `{{ .Config.<key> }}`, `{{ . }}`, `{{ join .Categories "," }}`, quoted literals),
+/// `{{ if … }}…{{ else }}…{{ end }}`, and `{{ range .Categories }}…{{ end }}`. An
+/// unrecognized expression or unbalanced block is a hard [`IndexerError::Definition`]
+/// — a definition is never silently mis-rendered.
 fn render_template(tmpl: &str, ctx: &TemplateContext) -> Result<String> {
-    let mut out = String::with_capacity(tmpl.len());
+    let tokens = tokenize_template(tmpl)?;
+    let mut pos = 0;
+    let (nodes, terminator) = parse_nodes(&tokens, &mut pos)?;
+    if let Some(t) = terminator {
+        return Err(IndexerError::Definition(format!(
+            "template has a stray '{{{{ {t} }}}}'"
+        )));
+    }
+    eval_nodes(&nodes, ctx)
+}
+
+/// A lexical token: literal text or the trimmed body of a `{{ … }}` action.
+enum Tok {
+    Text(String),
+    Action(String),
+}
+
+/// Split a template into text/action tokens.
+fn tokenize_template(tmpl: &str) -> Result<Vec<Tok>> {
+    let mut toks = Vec::new();
     let mut rest = tmpl;
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
+        if start > 0 {
+            toks.push(Tok::Text(rest[..start].to_string()));
+        }
         let after = &rest[start + 2..];
         let end = after.find("}}").ok_or_else(|| {
-            IndexerError::Definition(format!("unterminated template expression in '{tmpl}'"))
+            IndexerError::Definition(format!("unterminated template action in '{tmpl}'"))
         })?;
-        let expr = after[..end].trim();
-        out.push_str(&resolve_expr(expr, ctx)?);
+        toks.push(Tok::Action(after[..end].trim().to_string()));
         rest = &after[end + 2..];
     }
-    out.push_str(rest);
+    if !rest.is_empty() {
+        toks.push(Tok::Text(rest.to_string()));
+    }
+    Ok(toks)
+}
+
+/// Parse a node sequence until a block terminator (`end`/`else`), which is returned
+/// so the caller (an `if`/`range`) can branch. `None` means end-of-input.
+fn parse_nodes(toks: &[Tok], pos: &mut usize) -> Result<(Vec<TmplNode>, Option<String>)> {
+    let mut nodes = Vec::new();
+    while *pos < toks.len() {
+        match &toks[*pos] {
+            Tok::Text(t) => {
+                nodes.push(TmplNode::Text(t.clone()));
+                *pos += 1;
+            }
+            Tok::Action(a) => {
+                let a = a.clone();
+                *pos += 1;
+                if a == "end" || a == "else" {
+                    return Ok((nodes, Some(a)));
+                } else if let Some(cond) = a.strip_prefix("if ") {
+                    let (then, term) = parse_nodes(toks, pos)?;
+                    let els = if term.as_deref() == Some("else") {
+                        let (els, term2) = parse_nodes(toks, pos)?;
+                        expect_end(term2)?;
+                        els
+                    } else {
+                        expect_end(term)?;
+                        Vec::new()
+                    };
+                    nodes.push(TmplNode::If {
+                        cond: cond.trim().to_string(),
+                        then,
+                        els,
+                    });
+                } else if let Some(expr) = a.strip_prefix("range ") {
+                    let (body, term) = parse_nodes(toks, pos)?;
+                    expect_end(term)?;
+                    nodes.push(TmplNode::Range {
+                        expr: expr.trim().to_string(),
+                        body,
+                    });
+                } else {
+                    nodes.push(TmplNode::Expr(a));
+                }
+            }
+        }
+    }
+    Ok((nodes, None))
+}
+
+/// Require that a block closed with `{{ end }}`.
+fn expect_end(terminator: Option<String>) -> Result<()> {
+    match terminator.as_deref() {
+        Some("end") => Ok(()),
+        _ => Err(IndexerError::Definition(
+            "template block is missing its '{{ end }}'".into(),
+        )),
+    }
+}
+
+/// Evaluate a parsed node sequence.
+fn eval_nodes(nodes: &[TmplNode], ctx: &TemplateContext) -> Result<String> {
+    let mut out = String::new();
+    for node in nodes {
+        match node {
+            TmplNode::Text(t) => out.push_str(t),
+            TmplNode::Expr(e) => out.push_str(&eval_expr(e, ctx)?),
+            TmplNode::If { cond, then, els } => {
+                if eval_truthy(cond, ctx)? {
+                    out.push_str(&eval_nodes(then, ctx)?);
+                } else {
+                    out.push_str(&eval_nodes(els, ctx)?);
+                }
+            }
+            TmplNode::Range { expr, body } => {
+                let items = eval_list(expr, ctx)?;
+                for item in items {
+                    let inner = TemplateContext {
+                        dot: Some(&item),
+                        ..*ctx
+                    };
+                    out.push_str(&eval_nodes(body, &inner)?);
+                }
+            }
+        }
+    }
     Ok(out)
 }
 
-/// Resolve a single trimmed `{{ … }}` expression.
-fn resolve_expr(expr: &str, ctx: &TemplateContext) -> Result<String> {
+/// Evaluate a value expression to a string.
+fn eval_expr(expr: &str, ctx: &TemplateContext) -> Result<String> {
+    if let Some(rest) = expr.strip_prefix("join ") {
+        // `join .Categories "sep"` → the list joined by the literal separator.
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let list_expr = parts.next().unwrap_or("").trim();
+        let sep_lit = parts.next().unwrap_or("").trim();
+        let sep = strip_quotes(sep_lit).ok_or_else(|| {
+            IndexerError::Definition(format!(
+                "join separator must be a quoted literal: {sep_lit}"
+            ))
+        })?;
+        return Ok(eval_list(list_expr, ctx)?.join(sep));
+    }
     match expr {
+        "." => Ok(ctx.dot.unwrap_or_default().to_string()),
         ".Keywords" | ".Query.Keywords" | ".Query.q" => Ok(ctx.keywords.to_string()),
+        ".Categories" => Ok(ctx.categories.join(",")),
+        e if e.starts_with(".Query.") => Ok(ctx
+            .query
+            .get(&e[".Query.".len()..])
+            .cloned()
+            .unwrap_or_default()),
         e if e.starts_with(".Config.") => Ok(ctx
             .config
             .get(&e[".Config.".len()..])
             .cloned()
             .unwrap_or_default()),
-        // A quoted literal: `{{ "x" }}`.
-        e if e.len() >= 2 && e.starts_with('"') && e.ends_with('"') => {
-            Ok(e[1..e.len() - 1].to_string())
-        }
+        e if strip_quotes(e).is_some() => Ok(strip_quotes(e).unwrap().to_string()),
         other => Err(IndexerError::Definition(format!(
             "unsupported template expression: {{{{ {other} }}}}"
         ))),
+    }
+}
+
+/// Evaluate a truthiness condition (non-empty value / non-empty list = true).
+fn eval_truthy(cond: &str, ctx: &TemplateContext) -> Result<bool> {
+    if cond == ".Categories" {
+        return Ok(!ctx.categories.is_empty());
+    }
+    Ok(!eval_expr(cond, ctx)?.is_empty())
+}
+
+/// Evaluate a list expression (only `.Categories` yields a list).
+fn eval_list(expr: &str, ctx: &TemplateContext) -> Result<Vec<String>> {
+    match expr {
+        ".Categories" => Ok(ctx.categories.to_vec()),
+        other => Err(IndexerError::Definition(format!(
+            "unsupported list expression: {{{{ range {other} }}}} (only .Categories)"
+        ))),
+    }
+}
+
+/// If `s` is a `"…"`-quoted literal, return its contents.
+fn strip_quotes(s: &str) -> Option<&str> {
+    (s.len() >= 2 && s.starts_with('"') && s.ends_with('"')).then(|| &s[1..s.len() - 1])
+}
+
+/// Build the `.Query.<Name>` map from a search's ids and numbering, using the
+/// Cardigann-conventional capitalized keys (`Season`, `Episode`, `IMDBID`, …).
+fn query_fields(terms: &SearchTerms) -> BTreeMap<String, String> {
+    let mut q = BTreeMap::new();
+    for (k, v) in &terms.numbering {
+        match k.as_str() {
+            "season" => {
+                q.insert("Season".to_string(), v.clone());
+            }
+            "ep" | "episode" => {
+                q.insert("Episode".to_string(), v.clone());
+                q.insert("Ep".to_string(), v.clone());
+            }
+            other => {
+                q.insert(capitalize(other), v.clone());
+            }
+        }
+    }
+    for (k, v) in &terms.ids {
+        let key = match k.as_str() {
+            "imdbid" => "IMDBID".to_string(),
+            "tmdbid" => "TMDBID".to_string(),
+            "tvdbid" => "TVDBID".to_string(),
+            "tvmazeid" => "TVMazeID".to_string(),
+            "rid" => "RageID".to_string(),
+            other => other.to_uppercase(),
+        };
+        q.insert(key, v.clone());
+    }
+    q
+}
+
+/// Capitalize the first character (ASCII).
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + c.as_str(),
+        None => String::new(),
     }
 }
 
@@ -461,20 +686,49 @@ impl CardigannIndexer {
         &self.definition
     }
 
-    /// Build the search request URLs for the given keywords, by rendering each
-    /// configured path + its inputs against the query.
-    fn search_urls(&self, keywords: &str) -> Result<Vec<Url>> {
+    /// Resolve the requested Torznab categories to this tracker's own category ids
+    /// via `categorymappings`. A requested parent category (e.g. `2000` Movies)
+    /// selects every mapping under it (`20xx`); a specific one (`5040`) matches
+    /// exactly. Empty when nothing was requested.
+    fn tracker_categories(&self, requested: &[u32]) -> Vec<String> {
+        if requested.is_empty() {
+            return Vec::new();
+        }
+        self.definition
+            .caps
+            .categorymappings
+            .iter()
+            .filter(|m| {
+                m.cat
+                    .parse::<u32>()
+                    .is_ok_and(|c| requested.contains(&c) || requested.contains(&(c / 1000 * 1000)))
+            })
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// Build the search request URLs from `terms`, rendering each configured path +
+    /// its inputs against the query (keywords, `.Query.*` fields, `.Categories`).
+    /// Inputs that render empty are omitted, so a movie search never sends a stray
+    /// `season=`.
+    fn search_urls(&self, terms: &SearchTerms) -> Result<Vec<Url>> {
         let base = self
             .base
             .as_ref()
             .ok_or_else(|| IndexerError::Definition("definition has no usable site link".into()))?;
-        let ctx = TemplateContext {
-            keywords,
-            config: &self.config,
-        };
         if self.definition.search.paths.is_empty() {
             return Err(IndexerError::Definition("search has no paths".into()));
         }
+        let keywords = terms.queries.first().map(String::as_str).unwrap_or("");
+        let query = query_fields(terms);
+        let categories = self.tracker_categories(&terms.categories);
+        let ctx = TemplateContext {
+            keywords,
+            query: &query,
+            config: &self.config,
+            categories: &categories,
+            dot: None,
+        };
         let mut urls = Vec::with_capacity(self.definition.search.paths.len());
         for path in &self.definition.search.paths {
             let rendered = render_template(&path.path, &ctx)?;
@@ -484,7 +738,10 @@ impl CardigannIndexer {
             {
                 let mut qp = url.query_pairs_mut();
                 for (name, template) in &path.inputs {
-                    qp.append_pair(name, &render_template(template, &ctx)?);
+                    let value = render_template(template, &ctx)?;
+                    if !value.is_empty() {
+                        qp.append_pair(name, &value);
+                    }
                 }
             }
             urls.push(url);
@@ -600,19 +857,18 @@ impl Indexer for CardigannIndexer {
     }
 
     async fn search(&self, terms: &SearchTerms) -> Result<Vec<Release>> {
-        let keywords = terms.queries.first().map(String::as_str).unwrap_or("");
         let mut releases = Vec::new();
-        for url in self.search_urls(keywords)? {
+        for url in self.search_urls(terms)? {
             releases.extend(self.fetch_and_extract(&url).await?);
         }
         Ok(releases)
     }
 
     async fn latest(&self) -> Result<Vec<Release>> {
-        // RSS-style discovery: an empty-keyword search returns the newest rows on
-        // the trackers that support it.
+        // RSS-style discovery: an empty search (no keywords/ids/categories) returns
+        // the newest rows on the trackers that support it.
         let mut releases = Vec::new();
-        for url in self.search_urls("")? {
+        for url in self.search_urls(&SearchTerms::default())? {
             releases.extend(self.fetch_and_extract(&url).await?);
         }
         Ok(releases)
@@ -680,15 +936,27 @@ fn parse_size(raw: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn ctx<'a>(keywords: &'a str, config: &'a BTreeMap<String, String>) -> TemplateContext<'a> {
-        TemplateContext { keywords, config }
+    fn ctx<'a>(
+        keywords: &'a str,
+        query: &'a BTreeMap<String, String>,
+        config: &'a BTreeMap<String, String>,
+        categories: &'a [String],
+    ) -> TemplateContext<'a> {
+        TemplateContext {
+            keywords,
+            query,
+            config,
+            categories,
+            dot: None,
+        }
     }
 
     #[test]
     fn template_substitutes_keywords_and_config() {
         let mut cfg = BTreeMap::new();
         cfg.insert("passkey".to_string(), "SECRET".to_string());
-        let c = ctx("the matrix", &cfg);
+        let empty = BTreeMap::new();
+        let c = ctx("the matrix", &empty, &cfg, &[]);
         assert_eq!(
             render_template("/search?q={{ .Keywords }}&pk={{ .Config.passkey }}", &c).unwrap(),
             "/search?q=the matrix&pk=SECRET"
@@ -700,10 +968,105 @@ mod tests {
         );
         // A quoted literal.
         assert_eq!(render_template(r#"{{ "x" }}"#, &c).unwrap(), "x");
-        // An unknown/unsupported expression fails loudly.
-        assert!(render_template("{{ range .Categories }}", &c).is_err());
         // A missing config key renders empty, not an error.
         assert_eq!(render_template("{{ .Config.missing }}", &c).unwrap(), "");
+        // An unterminated block fails loudly.
+        assert!(render_template("{{ range .Categories }}", &c).is_err());
+        assert!(render_template("{{ if .Keywords }}x", &c).is_err());
+    }
+
+    #[test]
+    fn template_typed_query_fields_and_control_flow() {
+        let mut query = BTreeMap::new();
+        query.insert("Season".to_string(), "2".to_string());
+        query.insert("IMDBID".to_string(), "tt0133093".to_string());
+        let cfg = BTreeMap::new();
+        let cats = ["100".to_string(), "101".to_string()];
+        let c = ctx("the matrix", &query, &cfg, &cats);
+
+        // .Query.<Name> typed fields.
+        assert_eq!(
+            render_template("&imdb={{ .Query.IMDBID }}", &c).unwrap(),
+            "&imdb=tt0133093"
+        );
+        // if/else on a present vs absent field.
+        assert_eq!(
+            render_template(
+                "{{ if .Query.Season }}s={{ .Query.Season }}{{ else }}none{{ end }}",
+                &c
+            )
+            .unwrap(),
+            "s=2"
+        );
+        assert_eq!(
+            render_template("{{ if .Query.Episode }}e{{ else }}no-ep{{ end }}", &c).unwrap(),
+            "no-ep"
+        );
+        // range over categories binds `.`.
+        assert_eq!(
+            render_template("{{ range .Categories }}&cat={{ . }}{{ end }}", &c).unwrap(),
+            "&cat=100&cat=101"
+        );
+        // join builtin.
+        assert_eq!(
+            render_template(r#"cats={{ join .Categories "," }}"#, &c).unwrap(),
+            "cats=100,101"
+        );
+        // Nested: if guarding a range.
+        assert_eq!(
+            render_template(
+                "{{ if .Categories }}{{ range .Categories }}{{ . }};{{ end }}{{ end }}",
+                &c
+            )
+            .unwrap(),
+            "100;101;"
+        );
+    }
+
+    #[test]
+    fn query_fields_maps_ids_and_numbering() {
+        let terms = SearchTerms {
+            queries: vec!["x".into()],
+            ids: vec![
+                ("imdbid".into(), "tt1".into()),
+                ("tvdbid".into(), "42".into()),
+            ],
+            numbering: vec![("season".into(), "3".into()), ("ep".into(), "7".into())],
+            categories: vec![5000],
+        };
+        let q = query_fields(&terms);
+        assert_eq!(q.get("IMDBID").map(String::as_str), Some("tt1"));
+        assert_eq!(q.get("TVDBID").map(String::as_str), Some("42"));
+        assert_eq!(q.get("Season").map(String::as_str), Some("3"));
+        assert_eq!(q.get("Episode").map(String::as_str), Some("7"));
+        assert_eq!(q.get("Ep").map(String::as_str), Some("7"));
+    }
+
+    #[test]
+    fn tracker_categories_maps_requested_torznab_to_tracker_ids() {
+        const DEF: &str = r#"
+id: t
+name: T
+links: [https://t.example/]
+caps:
+  categorymappings:
+    - { id: "10", cat: "5040" }
+    - { id: "11", cat: "5070" }
+    - { id: "20", cat: "2040" }
+search:
+  paths: [{ path: /s }]
+  rows: { selector: tr }
+  fields: { title: { selector: a }, download: { selector: a, attribute: href } }
+"#;
+        let eng = CardigannIndexer::new(IndexerId::new(), Definition::from_yaml(DEF).unwrap());
+        // The TV parent (5000) selects every 5xxx mapping, not the movie one.
+        let mut tv = eng.tracker_categories(&[5000]);
+        tv.sort();
+        assert_eq!(tv, vec!["10".to_string(), "11".to_string()]);
+        // A specific subcategory selects exactly its mapping.
+        assert_eq!(eng.tracker_categories(&[2040]), vec!["20".to_string()]);
+        // Nothing requested -> nothing mapped.
+        assert!(eng.tracker_categories(&[]).is_empty());
     }
 
     fn filter(name: &str, args: serde_yaml::Value) -> Filter {

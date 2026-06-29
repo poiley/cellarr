@@ -81,6 +81,7 @@ async fn torznab_calls_caps_first_then_normalizes_search() {
             ("season".to_string(), "2".to_string()),
             ("ep".to_string(), "5".to_string()),
         ],
+        categories: vec![5000],
     };
 
     let releases = indexer.search(&terms).await.expect("search");
@@ -156,6 +157,7 @@ async fn caps_is_cached_across_searches() {
         queries: vec!["q".to_string()],
         ids: vec![],
         numbering: vec![],
+        categories: vec![],
     };
     indexer.search(&terms).await.expect("search 1");
     indexer.search(&terms).await.expect("search 2");
@@ -187,6 +189,7 @@ async fn newznab_normalizes_usenet_results() {
         queries: vec!["Example Movie".to_string()],
         ids: vec![("imdbid".to_string(), "tt1234567".to_string())],
         numbering: vec![],
+        categories: vec![2000],
     };
     let releases = indexer.search(&terms).await.expect("search");
 

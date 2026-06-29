@@ -106,6 +106,7 @@ async fn search_builds_request_and_extracts() {
         queries: vec!["Example Show".to_string()],
         ids: vec![],
         numbering: vec![],
+        categories: vec![],
     };
     let releases = engine.search(&terms).await.expect("search");
 
