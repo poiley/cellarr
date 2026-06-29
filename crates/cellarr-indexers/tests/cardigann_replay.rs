@@ -17,11 +17,12 @@ use cellarr_indexers::{Definition, HostRateLimiter, Result};
 const DEFINITION: &str = include_str!("fixtures/cardigann_mytracker.yml");
 const RESULTS_HTML: &str = include_str!("fixtures/cardigann_mytracker.html");
 
-/// A fetcher that replays the recorded results page for any URL and records the
-/// URLs it was asked for, so a test can assert the request the engine built.
+/// A fetcher that replays the recorded results page for any request and records the
+/// GET URLs and POST `(url, body)` pairs, so a test can assert what the engine built.
 struct ReplayFetcher {
     body: &'static str,
     requested: std::sync::Mutex<Vec<String>>,
+    posted: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl ReplayFetcher {
@@ -29,6 +30,7 @@ impl ReplayFetcher {
         Self {
             body,
             requested: std::sync::Mutex::new(Vec::new()),
+            posted: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -37,6 +39,14 @@ impl ReplayFetcher {
 impl Fetcher for ReplayFetcher {
     async fn get(&self, url: &str) -> Result<String> {
         self.requested.lock().expect("lock").push(url.to_string());
+        Ok(self.body.to_string())
+    }
+
+    async fn post(&self, url: &str, body: &str, _content_type: &str) -> Result<String> {
+        self.posted
+            .lock()
+            .expect("lock")
+            .push((url.to_string(), body.to_string()));
         Ok(self.body.to_string())
     }
 }
@@ -130,4 +140,57 @@ async fn search_builds_request_and_extracts() {
     assert!(releases[0]
         .download_url
         .starts_with("https://mytracker.example/"));
+}
+
+#[tokio::test]
+async fn search_via_post_sends_a_form_body() {
+    const POST_DEF: &str = r#"
+id: postt
+name: Post Tracker
+links: [https://post.example/]
+search:
+  paths:
+    - path: /search.php
+      method: post
+      inputs:
+        q: "{{ .Keywords }}"
+        cat: "tv"
+  rows:
+    selector: "table.torrents > tbody > tr.torrent"
+  fields:
+    title: { selector: "a.title" }
+    download: { selector: "a.download", attribute: href }
+"#;
+    let def = Definition::from_yaml(POST_DEF).expect("parse");
+    let fetcher = Arc::new(ReplayFetcher::new(RESULTS_HTML));
+    let engine = CardigannIndexer::with_deps(
+        IndexerId::new(),
+        def,
+        std::collections::BTreeMap::new(),
+        fetcher.clone(),
+        Arc::new(HostRateLimiter::conservative_default()),
+    );
+    let terms = SearchTerms {
+        queries: vec!["Example Show".into()],
+        ..Default::default()
+    };
+    let releases = engine.search(&terms).await.expect("search");
+
+    // A POST path issues no GET; one POST with the inputs as a urlencoded form body
+    // carried in the body (not the URL).
+    assert!(
+        fetcher.requested.lock().unwrap().is_empty(),
+        "a POST path issues no GET"
+    );
+    let posted = fetcher.posted.lock().unwrap().clone();
+    assert_eq!(posted.len(), 1, "one configured path -> one POST");
+    let (url, body) = &posted[0];
+    assert_eq!(url, "https://post.example/search.php");
+    assert!(body.contains("q=Example+Show"), "form body: {body}");
+    assert!(body.contains("cat=tv"), "form body: {body}");
+    assert_eq!(
+        releases.len(),
+        2,
+        "recorded page still normalizes to releases"
+    );
 }

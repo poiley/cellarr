@@ -43,6 +43,11 @@ pub enum IndexerError {
     /// for. Per spec we never assume an unadvertised mode is supported.
     #[error("indexer does not advertise search mode '{0}'")]
     UnsupportedMode(String),
+
+    /// An operation the fetcher does not support (e.g. a POST-method search issued
+    /// against a GET-only fetcher).
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
 }
 
 /// Convenience alias for indexer results.

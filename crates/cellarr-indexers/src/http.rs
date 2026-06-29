@@ -14,6 +14,17 @@ use crate::error::{IndexerError, Result};
 pub trait Fetcher: Send + Sync {
     /// GET `url` and return the response body as a string.
     async fn get(&self, url: &str) -> Result<String>;
+
+    /// POST `body` (with `content_type`) to `url` and return the response body.
+    ///
+    /// Defaults to unsupported: only a fetcher that needs form-POST search (some
+    /// Cardigann trackers) implements it. Record/replay test fetchers override it
+    /// when a test exercises a POST-method definition.
+    async fn post(&self, url: &str, _body: &str, _content_type: &str) -> Result<String> {
+        Err(IndexerError::Unsupported(format!(
+            "POST to {url} (this fetcher is GET-only)"
+        )))
+    }
 }
 
 /// A `reqwest`-backed fetcher for production use.
@@ -36,14 +47,12 @@ impl Default for ReqwestFetcher {
     }
 }
 
-#[async_trait]
-impl Fetcher for ReqwestFetcher {
-    async fn get(&self, url: &str) -> Result<String> {
-        let resp = self.client.get(url).send().await?;
+impl ReqwestFetcher {
+    /// Read a response body, turning a non-success status into [`IndexerError::Status`]
+    /// (a 403/429 here is the canonical "banned / rate-limited" signal).
+    async fn read_body(resp: reqwest::Response) -> Result<String> {
         let status = resp.status();
         if !status.is_success() {
-            // Keep a short body prefix for diagnostics; a 403/429 here is the
-            // canonical "banned / rate-limited" signal the caller must act on.
             let body = resp.text().await.unwrap_or_default();
             let snippet: String = body.chars().take(200).collect();
             return Err(IndexerError::Status {
@@ -52,5 +61,24 @@ impl Fetcher for ReqwestFetcher {
             });
         }
         Ok(resp.text().await?)
+    }
+}
+
+#[async_trait]
+impl Fetcher for ReqwestFetcher {
+    async fn get(&self, url: &str) -> Result<String> {
+        let resp = self.client.get(url).send().await?;
+        Self::read_body(resp).await
+    }
+
+    async fn post(&self, url: &str, body: &str, content_type: &str) -> Result<String> {
+        let resp = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body.to_string())
+            .send()
+            .await?;
+        Self::read_body(resp).await
     }
 }

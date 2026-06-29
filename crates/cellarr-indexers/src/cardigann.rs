@@ -19,11 +19,15 @@
 //!   value expressions (`{{ .Keywords }}`, `{{ .Query.<Name> }}` typed fields like
 //!   `Season`/`Episode`/`IMDBID`, `{{ .Config.<key> }}`, `{{ . }}`, quoted literals,
 //!   `{{ join .Categories "," }}`), `{{ if … }}…{{ else }}…{{ end }}`, and
-//!   `{{ range .Categories }}…{{ end }}`. Empty-rendering inputs are dropped.
+//!   `{{ range .Categories }}…{{ end }}`. Empty-rendering inputs are dropped. A
+//!   `method: post` path carries its inputs as a urlencoded form body.
 //! - `search.rows.selector` + `search.fields` → **CSS** row/field extraction, each
 //!   field reading element text or an `attribute`, then running a **filter chain**
 //!   (`regexp`, `re_replace`, `replace`, `split`, `querystring`, `append`,
-//!   `prepend`, `trim`, `tolower`, `toupper`).
+//!   `prepend`, `trim`, `tolower`, `toupper`, `urldecode`, `htmldecode`,
+//!   `validfilename`). Recognized fields: `title`, `download`/`magnet`/`infohash`
+//!   (a bare infohash becomes a magnet), `details`/`guid`, `size`, `seeders`,
+//!   `downloadvolumefactor` (`0` → a `freeleech` flag).
 //! - `caps.categorymappings` → translates the search's requested Torznab categories
 //!   into this tracker's own category ids (parent categories expand to their range).
 //!
@@ -506,6 +510,12 @@ enum CompiledFilter {
     ToLower,
     /// Uppercase.
     ToUpper,
+    /// Percent-decode (`%20` → space).
+    UrlDecode,
+    /// Decode common HTML entities (`&amp;` → `&`).
+    HtmlDecode,
+    /// Replace filesystem-invalid characters with `_`.
+    ValidFilename,
 }
 
 impl CompiledFilter {
@@ -535,6 +545,9 @@ impl CompiledFilter {
             "trim" => Ok(Self::Trim(arg_one(filter).ok())),
             "tolower" => Ok(Self::ToLower),
             "toupper" => Ok(Self::ToUpper),
+            "urldecode" => Ok(Self::UrlDecode),
+            "htmldecode" | "unescape" => Ok(Self::HtmlDecode),
+            "validfilename" => Ok(Self::ValidFilename),
             other => Err(IndexerError::Definition(format!(
                 "unsupported field filter: '{other}'"
             ))),
@@ -565,8 +578,73 @@ impl CompiledFilter {
             },
             Self::ToLower => value.to_lowercase(),
             Self::ToUpper => value.to_uppercase(),
+            Self::UrlDecode => url_decode(&value),
+            Self::HtmlDecode => html_decode(&value),
+            Self::ValidFilename => value
+                .chars()
+                .map(|c| {
+                    if "<>:\"/\\|?*".contains(c) || c.is_control() {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
         }
     }
+}
+
+/// Percent-decode a string (`%20` → space, `+` left as-is; lossy on bad UTF-8).
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Decode the common HTML entities (named + numeric) that appear in scraped values.
+fn html_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        if let Some(semi) = after.find(';').filter(|&p| p <= 10) {
+            let entity = &after[1..semi];
+            let decoded = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" | "#39" => Some('\''),
+                "nbsp" => Some(' '),
+                num if num.starts_with('#') => {
+                    num[1..].parse::<u32>().ok().and_then(char::from_u32)
+                }
+                _ => None,
+            };
+            if let Some(c) = decoded {
+                out.push(c);
+                rest = &after[semi + 1..];
+                continue;
+            }
+        }
+        out.push('&');
+        rest = &after[1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Compile a regex, mapping the error to a definition error.
@@ -707,11 +785,12 @@ impl CardigannIndexer {
             .collect()
     }
 
-    /// Build the search request URLs from `terms`, rendering each configured path +
-    /// its inputs against the query (keywords, `.Query.*` fields, `.Categories`).
-    /// Inputs that render empty are omitted, so a movie search never sends a stray
-    /// `season=`.
-    fn search_urls(&self, terms: &SearchTerms) -> Result<Vec<Url>> {
+    /// Build the search requests from `terms`, rendering each configured path + its
+    /// inputs against the query (keywords, `.Query.*` fields, `.Categories`). Inputs
+    /// that render empty are omitted, so a movie search never sends a stray `season=`.
+    /// A `method: post` path carries its inputs as a form body; otherwise they are
+    /// query parameters.
+    fn search_requests(&self, terms: &SearchTerms) -> Result<Vec<SearchRequest>> {
         let base = self
             .base
             .as_ref()
@@ -729,24 +808,38 @@ impl CardigannIndexer {
             categories: &categories,
             dot: None,
         };
-        let mut urls = Vec::with_capacity(self.definition.search.paths.len());
+        let mut requests = Vec::with_capacity(self.definition.search.paths.len());
         for path in &self.definition.search.paths {
             let rendered = render_template(&path.path, &ctx)?;
             let mut url = base.join(&rendered).map_err(|e| {
                 IndexerError::Definition(format!("bad search path '{rendered}': {e}"))
             })?;
-            {
-                let mut qp = url.query_pairs_mut();
-                for (name, template) in &path.inputs {
-                    let value = render_template(template, &ctx)?;
-                    if !value.is_empty() {
-                        qp.append_pair(name, &value);
-                    }
+            // Render the non-empty inputs once.
+            let mut inputs = Vec::new();
+            for (name, template) in &path.inputs {
+                let value = render_template(template, &ctx)?;
+                if !value.is_empty() {
+                    inputs.push((name.clone(), value));
                 }
             }
-            urls.push(url);
+            let is_post = path
+                .method
+                .as_deref()
+                .is_some_and(|m| m.eq_ignore_ascii_case("post"));
+            let body = if is_post {
+                // POST: inputs go in a form body, not the query string.
+                Some(
+                    url::form_urlencoded::Serializer::new(String::new())
+                        .extend_pairs(&inputs)
+                        .finish(),
+                )
+            } else {
+                url.query_pairs_mut().extend_pairs(&inputs);
+                None
+            };
+            requests.push(SearchRequest { url, body });
         }
-        Ok(urls)
+        Ok(requests)
     }
 
     /// Resolve a possibly-relative URL against the site base. An absolute URL (a
@@ -800,9 +893,12 @@ impl CardigannIndexer {
         for row in document.select(&row_selector) {
             let mut title = None;
             let mut download_url = None;
+            let mut magnet = None;
+            let mut infohash = None;
             let mut guid = None;
             let mut size = None;
             let mut seeders = None;
+            let mut flags = Vec::new();
 
             for (name, field, selector, filters) in &fields {
                 let Some(raw) = extract_field(&row, field, selector.as_ref()) else {
@@ -811,26 +907,46 @@ impl CardigannIndexer {
                 let value = filters.iter().fold(raw, |acc, f| f.apply(acc));
                 match name.as_str() {
                     "title" => title = Some(value),
-                    // `download` is the magnet/.torrent/.nzb link; `details` is the
-                    // human page used as a stable guid when present.
+                    // `download` is the .torrent/.nzb link; `magnet` an explicit
+                    // magnet; `infohash` builds one when no link is given. `details`
+                    // is the human page used as a stable guid.
                     "download" => download_url = Some(self.resolve_url(&value)),
+                    "magnet" => magnet = Some(value),
+                    "infohash" => infohash = Some(value),
                     "details" | "guid" => guid = Some(self.resolve_url(&value)),
                     "size" => size = parse_size(&value),
                     "seeders" => seeders = value.replace(',', "").trim().parse().ok(),
+                    // A download-volume factor of 0 marks a freeleech release.
+                    "downloadvolumefactor"
+                        if value.trim().parse::<f64>().is_ok_and(|f| f == 0.0) =>
+                    {
+                        flags.push("freeleech".to_string());
+                    }
                     _ => {}
                 }
             }
 
-            if let (Some(title), Some(download_url)) = (title, download_url) {
+            // Resolve the download link: an explicit magnet wins; otherwise a bare
+            // infohash (from the `download` or `infohash` field) becomes a magnet.
+            let link = if let Some(m) = magnet {
+                Some(m)
+            } else if let Some(dl) = download_url {
+                Some(infohash_to_magnet(&dl).unwrap_or(dl))
+            } else {
+                infohash.as_deref().and_then(infohash_to_magnet)
+            };
+
+            if let (Some(title), Some(link)) = (title, link) {
+                let link = finalize_magnet(link, &title);
                 releases.push(Release {
                     indexer_id: self.indexer_id,
                     title,
-                    download_url,
+                    download_url: link,
                     guid,
                     protocol,
                     size,
                     seeders,
-                    indexer_flags: Vec::new(),
+                    indexer_flags: flags,
                 });
             }
         }
@@ -838,14 +954,29 @@ impl CardigannIndexer {
         Ok(releases)
     }
 
-    /// Fetch one search URL (rate-limited) and extract its releases.
-    async fn fetch_and_extract(&self, url: &Url) -> Result<Vec<Release>> {
-        if let Some(host) = url.host_str() {
+    /// Issue one search request (rate-limited; GET or form-POST) and extract its
+    /// releases.
+    async fn fetch_request(&self, req: &SearchRequest) -> Result<Vec<Release>> {
+        if let Some(host) = req.url.host_str() {
             self.rate_limiter.until_ready(host).await;
         }
-        let body = self.fetcher.get(url.as_str()).await?;
+        let body = match &req.body {
+            Some(form) => {
+                self.fetcher
+                    .post(req.url.as_str(), form, "application/x-www-form-urlencoded")
+                    .await?
+            }
+            None => self.fetcher.get(req.url.as_str()).await?,
+        };
         self.extract(&body)
     }
+}
+
+/// One built search request: a URL plus, for a `method: post` path, the form body.
+struct SearchRequest {
+    url: Url,
+    /// `Some(form)` issues a POST with this body; `None` is a GET.
+    body: Option<String>,
 }
 
 #[async_trait]
@@ -858,8 +989,8 @@ impl Indexer for CardigannIndexer {
 
     async fn search(&self, terms: &SearchTerms) -> Result<Vec<Release>> {
         let mut releases = Vec::new();
-        for url in self.search_urls(terms)? {
-            releases.extend(self.fetch_and_extract(&url).await?);
+        for req in self.search_requests(terms)? {
+            releases.extend(self.fetch_request(&req).await?);
         }
         Ok(releases)
     }
@@ -868,8 +999,8 @@ impl Indexer for CardigannIndexer {
         // RSS-style discovery: an empty search (no keywords/ids/categories) returns
         // the newest rows on the trackers that support it.
         let mut releases = Vec::new();
-        for url in self.search_urls(&SearchTerms::default())? {
-            releases.extend(self.fetch_and_extract(&url).await?);
+        for req in self.search_requests(&SearchTerms::default())? {
+            releases.extend(self.fetch_request(&req).await?);
         }
         Ok(releases)
     }
@@ -903,6 +1034,24 @@ fn extract_field(
 /// the row, not its children, still resolve).
 fn matches_self(row: &scraper::ElementRef, selector: &Selector) -> bool {
     row.value().name() != "html" && selector.matches(row)
+}
+
+/// If `s` is a bare 40-character hex infohash, return a magnet URI for it.
+fn infohash_to_magnet(s: &str) -> Option<String> {
+    let h = s.trim();
+    (h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("magnet:?xt=urn:btih:{}", h.to_ascii_lowercase()))
+}
+
+/// Ensure a magnet link carries a `dn=` display name; non-magnet links are returned
+/// unchanged.
+fn finalize_magnet(link: String, title: &str) -> String {
+    if link.starts_with("magnet:") && !link.contains("dn=") {
+        let dn: String = url::form_urlencoded::byte_serialize(title.as_bytes()).collect();
+        format!("{link}&dn={dn}")
+    } else {
+        link
+    }
 }
 
 /// Parse a human size string (`"1.5 GB"`, `"700 MB"`, `"1234567"`) into bytes.
@@ -1161,6 +1310,54 @@ search:
             ),
             "01-02"
         );
+        // urldecode / htmldecode / validfilename.
+        let null = serde_yaml::Value::Null;
+        assert_eq!(
+            apply_chain("The%20Matrix%201999", &[filter("urldecode", null.clone())]),
+            "The Matrix 1999"
+        );
+        assert_eq!(
+            apply_chain(
+                "Tom &amp; Jerry &#39;48",
+                &[filter("htmldecode", null.clone())]
+            ),
+            "Tom & Jerry '48"
+        );
+        assert_eq!(
+            apply_chain("a/b:c?d", &[filter("validfilename", null)]),
+            "a_b_c_d"
+        );
+    }
+
+    #[test]
+    fn enrichment_builds_magnet_from_infohash_and_flags_freeleech() {
+        const DEF: &str = r#"
+id: t
+name: T
+links: [https://t.example/]
+protocol: torrent
+search:
+  paths: [{ path: /s }]
+  rows: { selector: tr.r }
+  fields:
+    title: { selector: td.t }
+    infohash: { selector: td.h }
+    downloadvolumefactor: { selector: td.dvf }
+"#;
+        const HTML: &str = r#"<table><tr class="r">
+            <td class="t">Cool.Release.1080p</td>
+            <td class="h">CAFEBABEDEADBEEF0000111122223333AAAABBBB</td>
+            <td class="dvf">0</td>
+        </tr></table>"#;
+        let eng = CardigannIndexer::new(IndexerId::new(), Definition::from_yaml(DEF).unwrap());
+        let rel = &eng.extract(HTML).unwrap()[0];
+        // A bare infohash field becomes a magnet carrying the title as dn.
+        assert!(rel
+            .download_url
+            .starts_with("magnet:?xt=urn:btih:cafebabedeadbeef0000111122223333aaaabbbb&dn="));
+        assert!(rel.download_url.contains("Cool.Release.1080p"));
+        // downloadvolumefactor=0 marks freeleech.
+        assert_eq!(rel.indexer_flags, vec!["freeleech".to_string()]);
     }
 
     #[test]
