@@ -21,7 +21,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cellarr_core::{Indexer, IndexerConfig, Protocol, Release, SearchTerms};
 use cellarr_db::Database;
-use cellarr_indexers::{HostRateLimiter, IndexerError, NewznabIndexer, TorznabIndexer};
+use cellarr_indexers::{
+    CardigannIndexer, Definition, HostRateLimiter, IndexerError, NewznabIndexer, TorznabIndexer,
+};
 
 /// A failure building or fanning out the configured indexer set.
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +167,13 @@ impl DbIndexerSet {
     /// Construct the native adapter for one config, reading `baseUrl`/`apiKey`
     /// from its open-ended `settings` JSON (the shape the API shim persists).
     fn build_adapter(&self, config: &IndexerConfig) -> Result<NabAdapter, IndexerSetError> {
+        // A Cardigann indexer carries a YAML definition rather than a Torznab
+        // `baseUrl`; it is built from the definition's own `links`, so branch before
+        // the `baseUrl` requirement below.
+        if config.kind.eq_ignore_ascii_case("cardigann") {
+            return self.build_cardigann(config);
+        }
+
         let raw_base =
             setting_str(config, "baseUrl").ok_or_else(|| IndexerSetError::Misconfigured {
                 name: config.name.clone(),
@@ -209,6 +218,30 @@ impl DbIndexerSet {
         })
     }
 
+    /// Build a Cardigann adapter: the YAML definition comes from
+    /// `settings.definition`, and the remaining string settings become the
+    /// `{{ .Config.* }}` template context (a passkey, a sitelink override, …).
+    fn build_cardigann(&self, config: &IndexerConfig) -> Result<NabAdapter, IndexerSetError> {
+        let yaml = setting_str(config, "definition")
+            .or_else(|| setting_str(config, "definitionYaml"))
+            .ok_or_else(|| IndexerSetError::Misconfigured {
+                name: config.name.clone(),
+                reason: "missing cardigann 'definition' in settings".into(),
+            })?;
+        let definition =
+            Definition::from_yaml(&yaml).map_err(|e| IndexerSetError::Misconfigured {
+                name: config.name.clone(),
+                reason: format!("invalid cardigann definition: {e}"),
+            })?;
+        Ok(NabAdapter::Cardigann(CardigannIndexer::with_deps(
+            config.id,
+            definition,
+            settings_string_map(config),
+            self.db_fetcher(),
+            Arc::clone(&self.rate_limiter),
+        )))
+    }
+
     /// The HTTP fetcher used by built adapters: a real `reqwest` fetcher, so the
     /// fan-out makes genuine HTTP requests to each indexer's `baseUrl`. Tests
     /// exercise it against a local HTTP server bound to `127.0.0.1`.
@@ -223,6 +256,8 @@ pub enum NabAdapter {
     Torznab(TorznabIndexer),
     /// A Newznab (usenet) adapter.
     Newznab(NewznabIndexer),
+    /// A Cardigann-definition tracker (HTML-scrape, interpreted from YAML).
+    Cardigann(CardigannIndexer),
 }
 
 impl NabAdapter {
@@ -230,6 +265,7 @@ impl NabAdapter {
         match self {
             NabAdapter::Torznab(a) => a.search(terms).await,
             NabAdapter::Newznab(a) => a.search(terms).await,
+            NabAdapter::Cardigann(a) => a.search(terms).await,
         }
     }
 
@@ -237,6 +273,7 @@ impl NabAdapter {
         match self {
             NabAdapter::Torznab(a) => a.latest().await,
             NabAdapter::Newznab(a) => a.latest().await,
+            NabAdapter::Cardigann(a) => a.latest().await,
         }
     }
 }
@@ -249,6 +286,20 @@ fn setting_str(config: &IndexerConfig, key: &str) -> Option<String> {
         .and_then(|o| o.get(key))
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
+}
+
+/// Collect an indexer's string-valued settings into a `{key: value}` map — the
+/// `{{ .Config.* }}` context a Cardigann definition templates against.
+fn settings_string_map(config: &IndexerConfig) -> std::collections::BTreeMap<String, String> {
+    config
+        .settings
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Combine an indexer's `baseUrl` with its `apiPath` into the full Torznab/Newznab
@@ -394,5 +445,59 @@ mod tests {
             .map(|c| c.name)
             .collect();
         assert_eq!(names, vec!["global".to_string()]);
+    }
+
+    /// A minimal but complete Cardigann definition for the wiring test.
+    const CARDIGANN_DEF: &str = r#"
+id: wiring
+name: Wiring Tracker
+links: [https://wiring.example/]
+search:
+  paths:
+    - path: /s
+      inputs: { q: "{{ .Keywords }}" }
+  rows:
+    selector: tr
+  fields:
+    title:
+      selector: a
+    download:
+      selector: a
+      attribute: href
+"#;
+
+    #[tokio::test]
+    async fn build_adapter_builds_a_cardigann_indexer_from_its_definition() {
+        let (_dir, db) = temp_db().await;
+        let set = DbIndexerSet::new(db);
+        let config = IndexerConfig {
+            id: IndexerId::new(),
+            name: "configured name".into(),
+            kind: "cardigann".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags: vec![],
+            settings: json!({ "definition": CARDIGANN_DEF }),
+        };
+
+        // kind=cardigann -> a Cardigann adapter whose name comes from the parsed
+        // definition (not the config), proving the YAML was interpreted.
+        match set.build_adapter(&config).expect("build cardigann adapter") {
+            NabAdapter::Cardigann(a) => assert_eq!(a.name(), "Wiring Tracker"),
+            _ => panic!("expected a Cardigann adapter"),
+        }
+
+        // A cardigann indexer without a definition is a clear misconfiguration,
+        // surfaced (and skipped) rather than panicking.
+        let missing = IndexerConfig {
+            settings: json!({}),
+            ..config
+        };
+        assert!(matches!(
+            set.build_adapter(&missing),
+            Err(IndexerSetError::Misconfigured { .. })
+        ));
     }
 }

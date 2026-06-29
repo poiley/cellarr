@@ -23,6 +23,8 @@ search:
   paths:
     - path: /torrents.php
       method: get
+      inputs:
+        q: "{{ .Keywords }}"
   rows:
     selector: "table.torrents > tbody > tr.torrent"
   fields:
@@ -38,3 +40,7 @@ search:
       selector: "td.size"
     seeders:
       selector: "td.seeders"
+      # The cell reads "Seeders: 88"; pull the number out with a filter.
+      filters:
+        - name: regexp
+          args: "(\\d+)"

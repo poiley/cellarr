@@ -1,9 +1,10 @@
 //! cellarr-indexers — indexer integrations.
 //!
 //! [`cellarr_core::Indexer`] implementations for the **Torznab** and **Newznab**
-//! protocols, plus a skeleton **Cardigann** YAML engine that interprets community
-//! tracker definitions at runtime. Every adapter normalizes results into
-//! [`cellarr_core::Release`] so downstream stages stay indexer-agnostic.
+//! protocols, plus a **Cardigann** YAML engine that interprets community tracker
+//! definitions at runtime (templated requests, CSS row/field extraction, and a
+//! filter chain). Every adapter normalizes results into [`cellarr_core::Release`]
+//! so downstream stages stay indexer-agnostic.
 //!
 //! Design follows `docs/specs/cellarr-indexers.md` and `docs/06-integrations.md`:
 //!

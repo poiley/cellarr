@@ -28,8 +28,15 @@ definition format:
 - `cardigann_mytracker.html` — a synthetic search-results page matching the
   definition's CSS `rows`/`fields` selectors.
 
-## Known follow-ups (skeleton scope)
+## Implemented vs. follow-ups
 
-The Cardigann engine here interprets **CSS** selectors only. XPath selectors,
-`filters` (regex replace/append/dateparse), templated paths/inputs, and the
-login/download flows are explicit follow-ups, called out in `cardigann.rs`.
+The Cardigann engine interprets **CSS** selectors, templated `paths`/`inputs`
+(`{{ .Keywords }}` / `{{ .Config.<key> }}` / quoted literals), a field **filter
+chain** (`regexp`, `re_replace`, `replace`, `split`, `querystring`, `append`,
+`prepend`, `trim`, `tolower`, `toupper`), relative-URL resolution against the site
+`links`, and `categorymappings`. It is wired into the live indexer set as a
+`kind: cardigann` adapter (definition supplied via `settings.definition`).
+
+Explicit follow-ups, rejected loudly rather than mis-handled: **XPath** selectors,
+template control flow (`range`/`if`), and the **login/auth** flow for private
+trackers (phase c) — called out in `cardigann.rs`.

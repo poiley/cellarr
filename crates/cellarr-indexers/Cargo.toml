@@ -19,6 +19,7 @@ url = "2.5"
 quick-xml = { version = "0.37", features = ["serialize"] }
 scraper = "0.21"
 serde_yaml = "0.9"
+regex.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
