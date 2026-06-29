@@ -5,114 +5,28 @@
 # nodeSelector is needed on the mixed arm64/amd64 cluster.
 #
 # NAS mounts mirror radarr/sonarr exactly (hostPath to /mnt/unas-* — present on all
-# nodes, which is why those apps need no nodeSelector): config (the SQLite DB) on
-# the NAS, plus the shared media + downloads trees. Runs as UID/GID 1000 like the
-# linuxserver *arr apps so it can read/write the NAS dirs.
+# nodes): config (the SQLite DB) on the NAS, plus the shared media + downloads
+# trees. Runs as UID/GID 1000 like the linuxserver *arr apps.
 #
-#   KUBECONFIG=~/.kube/program-cluster.yaml kubectl apply -f deploy/k8s/cellarr.yaml
+# CONFIG-AS-CODE: cellarr reconciles its DB on boot from a managed-config.yaml
+# mounted (read-only) from the `cellarr-managed-config` ConfigMap at
+# CELLARR_MANAGED_CONFIG_PATH; ${ENV} secrets in it resolve from the
+# `cellarr-secrets` Secret via env: valueFrom: secretKeyRef (docs/17-config-as-code.md).
 #
-# Service is ClusterIP — reach the UI with:
-#   kubectl -n cellarr port-forward svc/cellarr 9494:9494
-# Then point cellarr's root folder at /media and download-client path at /downloads
-# (the mounted NAS trees) from the UI, same as radarr/sonarr.
+# The ConfigMap and Secret are applied SEPARATELY from gitignored real files so this
+# public manifest carries no real config/secrets. Apply order:
+#   kubectl -n cellarr create configmap cellarr-managed-config \
+#       --from-file=managed-config.yaml=deploy/managed-config.yaml \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n cellarr apply -f deploy/k8s/cellarr-secret.yaml
+#   kubectl apply -f deploy/k8s/cellarr.yaml
+# Templates: deploy/managed-config.example.yaml + deploy/k8s/cellarr-secret.example.yaml.
 #
-# Config-as-code: operational config now lives in git. The `cellarr-managed-config`
-# ConfigMap below carries a managed-config.yaml, mounted read-only at
-# /config/managed-config.yaml, and CELLARR_MANAGED_CONFIG_PATH points cellarr at it
-# so the DB is reconciled to match on every boot (docs/17-config-as-code.md). Secrets
-# referenced as ${ENV} in that file are injected from the `cellarr-secrets` Secret via
-# env: valueFrom: secretKeyRef. To capture an existing hand-configured instance into the
-# ConfigMap, run `cellarr managed-config export` and paste the result below.
+# Reach the UI at https://cellarr.rinzler.cloud (Traefik ingress below).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: cellarr
----
-# Managed config (config-as-code), mounted read-only into the pod. This is the
-# declarative source of truth for tags / root folders / libraries / quality
-# definitions + profiles / custom formats / indexers / download clients / release +
-# delay profiles / import lists / notifications / remote-path mappings / naming /
-# media-management / auth. cellarr reconciles its DB to match this on boot.
-#
-# Secrets MUST stay as ${ENV} placeholders here (this ConfigMap is plaintext / git):
-# the real values come from the `cellarr-secrets` Secret, wired into the container
-# env below. See deploy/managed-config.example.yaml for a fully-populated example.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cellarr-managed-config
-  namespace: cellarr
-  labels: { app: cellarr }
-data:
-  managed-config.yaml: |
-    apiVersion: cellarr/v1
-    version: "k8s-managed"
-
-    tags:
-      - name: 4k
-
-    rootFolders:
-      - name: movies
-        path: /media/movies
-      - name: tv
-        path: /media/tv
-
-    qualityProfiles:
-      - name: HD-1080p
-        qualities: [WEBDL-1080p, Bluray-1080p]
-        cutoff: Bluray-1080p
-
-    libraries:
-      - name: Movies
-        mediaType: movie
-        rootFolders: [movies]
-        qualityProfile: HD-1080p
-      - name: TV
-        mediaType: tv
-        rootFolders: [tv]
-        qualityProfile: HD-1080p
-
-    indexers:
-      - name: nzbgeek
-        kind: newznab
-        protocol: usenet
-        priority: 1
-        settings:
-          baseUrl: https://api.nzbgeek.info
-          apiKey: ${NZBGEEK_API_KEY}
-          categories: [5030, 5040]
-
-    downloadClients:
-      - name: qbittorrent
-        kind: qbittorrent
-        protocol: torrent
-        category: cellarr
-        settings:
-          host: qbittorrent.media.svc
-          port: 8080
-          username: ${QBIT_USER:-admin}
-          password: ${QBIT_PASS}
-
-    remotePathMappings:
-      - name: downloads
-        remotePath: /downloads
-        localPath: /downloads
----
-# Secret backing the ${ENV} references in the ConfigMap above. PLACEHOLDER VALUES —
-# REPLACE before applying (e.g. `kubectl -n cellarr create secret generic
-# cellarr-secrets --from-literal=NZBGEEK_API_KEY=... --from-literal=QBIT_PASS=...`,
-# or seal/SOPS it). `stringData` so values are written as-is (not base64).
-apiVersion: v1
-kind: Secret
-metadata:
-  name: cellarr-secrets
-  namespace: cellarr
-  labels: { app: cellarr }
-type: Opaque
-stringData:
-  NZBGEEK_API_KEY: "REPLACE_ME"
-  QBIT_USER: "admin"
-  QBIT_PASS: "REPLACE_ME"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -146,14 +60,17 @@ spec:
             - { name: TZ, value: "America/Los_Angeles" }
             # Config-as-code: reconcile the DB from this file on boot.
             - { name: CELLARR_MANAGED_CONFIG_PATH, value: "/config/managed-config.yaml" }
-            # Secrets the managed-config ${ENV} references resolve against, from the
-            # cellarr-secrets Secret. Add one entry per ${VAR} used in the ConfigMap.
-            - name: NZBGEEK_API_KEY
-              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: NZBGEEK_API_KEY } }
-            - name: QBIT_USER
-              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: QBIT_USER } }
-            - name: QBIT_PASS
-              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: QBIT_PASS } }
+            # Metadata API keys (bootstrap config) + the ${ENV} secrets the managed
+            # config references — all from the cellarr-secrets Secret. optional:true so
+            # a missing key degrades gracefully instead of crash-looping the pod.
+            - name: CELLARR_TVDB__API_KEY
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: CELLARR_TVDB__API_KEY, optional: true } }
+            - name: CELLARR_TMDB__API_KEY
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: CELLARR_TMDB__API_KEY, optional: true } }
+            - name: TRANSMISSION_USER
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: TRANSMISSION_USER, optional: true } }
+            - name: TRANSMISSION_PASS
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: TRANSMISSION_PASS, optional: true } }
           volumeMounts:
             - { name: config, mountPath: /data } # cellarr's SQLite DB + config, on NAS
             - { name: managed-config, mountPath: /config, readOnly: true } # config-as-code, from ConfigMap
