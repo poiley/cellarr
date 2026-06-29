@@ -543,6 +543,7 @@ dependencies = [
  "cellarr-core",
  "governor",
  "quick-xml",
+ "regex",
  "reqwest",
  "scraper",
  "serde",
