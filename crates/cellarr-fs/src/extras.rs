@@ -157,15 +157,23 @@ fn siblings_for(
     Ok(pairs)
 }
 
+/// The characters that may delimit the stem from a sibling's language/format tag.
+/// A release writes subtitles as `Movie.en.srt`, `Movie - ENG.srt`, `Movie-eng.srt`
+/// or `Movie_en.srt`; all are the same movie's subtitle. The boundary must be one of
+/// these (not an alphanumeric) so `Show.S01E01` never matches `Show.S01E011.srt`
+/// (a different episode).
+const EXTRA_BOUNDARY: [char; 4] = ['.', '-', '_', ' '];
+
 /// If `name` is an extra sibling of `stem` with a configured extension, return the
 /// portion of the name *after* the stem (the language/format tag plus the
-/// extension, e.g. `.en.srt`); otherwise `None`.
+/// extension, e.g. `.en.srt` or ` - ENG.srt`); otherwise `None`.
 ///
-/// The boundary after the stem must be a `.` so `Show.S01E01` does not match
-/// `Show.S01E011.srt` (a different episode).
+/// The boundary after the stem must be a separator (see [`EXTRA_BOUNDARY`]) so a
+/// common ` - ENG.srt`/`-eng.srt` naming is matched while `Show.S01E011.srt` (a
+/// different episode) is not.
 fn matching_suffix(name: &str, stem: &str, policy: &ExtraFileImport) -> Option<String> {
     let rest = name.strip_prefix(stem)?;
-    if !rest.starts_with('.') {
+    if !rest.starts_with(EXTRA_BOUNDARY) {
         return None;
     }
     // The matched extension is everything after the final dot.
@@ -201,14 +209,39 @@ mod tests {
     }
 
     #[test]
+    fn matching_suffix_accepts_dash_space_underscore_separators() {
+        let p = policy();
+        let stem = "Carnival.of.Souls.1962.BRRip.x264-Classics";
+        // The common " - ENG.srt" form many releases use (the live Carnival case).
+        assert_eq!(
+            matching_suffix(&format!("{stem} - ENG.srt"), stem, &p),
+            Some(" - ENG.srt".to_string())
+        );
+        // Dash- and underscore-delimited language tags.
+        assert_eq!(
+            matching_suffix(&format!("{stem}-eng.srt"), stem, &p),
+            Some("-eng.srt".to_string())
+        );
+        assert_eq!(
+            matching_suffix(&format!("{stem}_en.srt"), stem, &p),
+            Some("_en.srt".to_string())
+        );
+    }
+
+    #[test]
     fn matching_suffix_rejects_non_extras_and_episode_bleed() {
         let p = policy();
-        // Different episode (no dot boundary after the stem).
+        // Different episode: the boundary after the stem is a digit, not a separator.
         assert_eq!(matching_suffix("Show.S01E011.srt", "Show.S01E01", &p), None);
+        // A broadened separator must not let a different episode bleed in either.
+        assert_eq!(matching_suffix("Show.S01E01x.srt", "Show.S01E01", &p), None);
         // The media file itself.
         assert_eq!(matching_suffix("Show.S01E01.mkv", "Show.S01E01", &p), None);
-        // Unconfigured extension.
-        assert_eq!(matching_suffix("Show.S01E01.txt", "Show.S01E01", &p), None);
+        // Unconfigured extension (even with a valid separator).
+        assert_eq!(
+            matching_suffix("Show.S01E01 - notes.txt", "Show.S01E01", &p),
+            None
+        );
     }
 
     #[tokio::test]
@@ -217,12 +250,11 @@ mod tests {
         let src = dir.path().join("Movie.2021.mkv");
         std::fs::write(&src, b"x").unwrap();
         std::fs::write(dir.path().join("Movie.2021.en.srt"), b"s").unwrap();
-        let out = import_extras(
-            &src,
-            dir.path().join("dest/Movie (2021).mkv"),
-            &ExtraFileImport::default(),
-        )
-        .await;
+        let disabled = ExtraFileImport {
+            enabled: false,
+            ..Default::default()
+        };
+        let out = import_extras(&src, dir.path().join("dest/Movie (2021).mkv"), &disabled).await;
         assert!(out.is_empty());
     }
 

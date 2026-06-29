@@ -345,9 +345,10 @@ pub struct ImportPermissions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtraFileImport {
-    /// Whether sibling extra files are imported at all. Default `false` (the *arr
-    /// default of not importing extras unless asked).
-    #[serde(default)]
+    /// Whether sibling extra files are imported at all. Default `true`: a release's
+    /// subtitles (and `.nfo`) should follow the movie into the library by default —
+    /// leaving them behind in the download is a silent loss once it is cleaned up.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// The lowercase extensions (without the dot) treated as importable extras.
     #[serde(default = "default_extra_extensions")]
@@ -364,7 +365,7 @@ fn default_extra_extensions() -> Vec<String> {
 impl Default for ExtraFileImport {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             extensions: default_extra_extensions(),
         }
     }
@@ -841,8 +842,18 @@ mod tests {
         let mm: MediaManagement = serde_json::from_str(r#"{"recycleBinPath":"/recycle"}"#).unwrap();
         assert_eq!(mm.recycle_bin_path.as_deref(), Some("/recycle"));
         assert_eq!(mm.naming, NamingFormats::default());
-        assert!(!mm.extra_files.enabled);
+        // Extra-file import is on by default, so subtitles follow the movie.
+        assert!(mm.extra_files.enabled);
         assert!(mm.permissions.chmod_file.is_none());
+    }
+
+    #[test]
+    fn extra_files_enabled_defaults_true_when_omitted() {
+        // An `extraFiles` block that customizes only the extension list still leaves
+        // importing ON — the field-level default is `true`, not the bool default.
+        let x: ExtraFileImport = serde_json::from_str(r#"{"extensions":["srt"]}"#).unwrap();
+        assert!(x.enabled);
+        assert_eq!(x.extensions, vec!["srt".to_string()]);
     }
 
     #[test]
