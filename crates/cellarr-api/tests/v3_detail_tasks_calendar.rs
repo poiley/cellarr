@@ -117,6 +117,47 @@ async fn monitor_toggle_flips_and_persists() {
     assert!(!node.monitored);
 }
 
+/// Regression: adding a movie must persist its identity (tmdbId + year) from the
+/// add payload — otherwise it has no identity and the release search finds nothing.
+#[tokio::test]
+async fn add_movie_persists_identity_tmdbid_and_year() {
+    let server = start_authed().await;
+    seed_library(&server.state, MediaType::Movie, "Movies").await;
+
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/movie"))
+        .header("x-api-key", TEST_API_KEY)
+        .json(&json!({
+            "title": "Big Buck Bunny",
+            "tmdbId": 10378,
+            "year": 2008,
+            "monitored": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["tmdbId"], 10378, "add persists tmdbId: {created}");
+    assert_eq!(created["year"], 2008, "add persists year: {created}");
+
+    // And it round-trips on a fresh GET (identity is durable, not just echoed).
+    let id = created["id"].as_str().expect("movie id");
+    let got: Value = server
+        .client()
+        .get(server.url(&format!("/api/v3/movie/{id}")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["tmdbId"], 10378, "tmdbId is durable: {got}");
+    assert_eq!(got["year"], 2008, "year is durable: {got}");
+}
+
 // --- system/task -----------------------------------------------------------
 
 #[tokio::test]

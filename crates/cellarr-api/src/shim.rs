@@ -4704,6 +4704,15 @@ async fn v3_resource_item(
         .content()
         .external_id_for(node.id, node.media_type)
         .await?;
+    // Release/first-air year from the node's identified metadata (0 when not yet
+    // identified) — surfaced on the add/list projection just like the detail one.
+    let meta_year = state
+        .db
+        .content()
+        .metadata(node.id)
+        .await?
+        .and_then(|m| m.year)
+        .unwrap_or(0);
     let base = json!({
         "title": title,
         "monitored": node.monitored,
@@ -4736,7 +4745,7 @@ async fn v3_resource_item(
         MediaType::Tv => {
             let mut v = merge(
                 base,
-                json!({ "tvdbId": numeric_external_id("tvdb"), "seriesType": series_type_str(node.series_type), "status": "continuing" }),
+                json!({ "tvdbId": numeric_external_id("tvdb"), "year": meta_year, "seriesType": series_type_str(node.series_type), "status": "continuing" }),
             );
             if let Some(imdb) = imdb_external() {
                 merge_into(&mut v, json!({ "imdbId": imdb }));
@@ -4753,7 +4762,7 @@ async fn v3_resource_item(
         _ => {
             let mut v = merge(
                 base,
-                json!({ "tmdbId": numeric_external_id("tmdb"), "year": 0, "status": "released", "hasFile": file.is_some() }),
+                json!({ "tmdbId": numeric_external_id("tmdb"), "year": meta_year, "status": "released", "hasFile": file.is_some() }),
             );
             if let Some(imdb) = imdb_external() {
                 merge_into(&mut v, json!({ "imdbId": imdb }));
@@ -5360,6 +5369,19 @@ struct AddBody {
     /// (the per-episode monitoring policy applied as episodes are populated).
     #[serde(rename = "addOptions", default)]
     add_options: Option<AddOptions>,
+    /// External ids from the lookup payload, persisted as the node's identity so
+    /// search builds a real query and the v3 projection surfaces tmdbId/tvdbId/
+    /// imdbId instead of 0. Accept a number or a string (the ecosystem sends both).
+    #[serde(rename = "tmdbId", default)]
+    tmdb_id: Option<Value>,
+    #[serde(rename = "tvdbId", default)]
+    tvdb_id: Option<Value>,
+    #[serde(rename = "imdbId", default)]
+    imdb_id: Option<Value>,
+    /// Release/first-air year from the lookup, stored in content metadata so the
+    /// search query includes it and the detail screen shows it.
+    #[serde(default)]
+    year: Option<Value>,
 }
 
 /// The v3 `addOptions` block carried on an add. cellarr reads the Sonarr-style
@@ -5453,6 +5475,62 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
     content.index_title(node.id, &title).await?;
     // Persist the tag association (the node row carries no tags column).
     content.set_tags(node.id, &body.tags).await?;
+
+    // Persist the node's identity from the add payload, the way the import-list
+    // path does: link the external id — so the release search builds a real query
+    // and the v3 projection surfaces tmdbId/tvdbId/imdbId instead of 0 — and store
+    // the year (+ title) in content metadata for the search query + detail screen.
+    // Without this an added title has no identity and search returns nothing.
+    let external = match surface {
+        MediaType::Tv => body
+            .tvdb_id
+            .as_ref()
+            .and_then(id_value_str)
+            .map(|v| ("tvdb", v))
+            .or_else(|| {
+                body.tmdb_id
+                    .as_ref()
+                    .and_then(id_value_str)
+                    .map(|v| ("tmdb", v))
+            })
+            .or_else(|| {
+                body.imdb_id
+                    .as_ref()
+                    .and_then(id_value_str)
+                    .map(|v| ("imdb", v))
+            }),
+        _ => body
+            .tmdb_id
+            .as_ref()
+            .and_then(id_value_str)
+            .map(|v| ("tmdb", v))
+            .or_else(|| {
+                body.imdb_id
+                    .as_ref()
+                    .and_then(id_value_str)
+                    .map(|v| ("imdb", v))
+            }),
+    };
+    if let Some((id_type, id_value)) = external {
+        content
+            .link_external_id(node.id, surface, id_type, &id_value, &title)
+            .await?;
+    }
+    let year = body.year.as_ref().and_then(|v| {
+        v.as_u64()
+            .map(|n| n as u16)
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u16>().ok()))
+    });
+    let meta = cellarr_core::ContentMetadata {
+        title: Some(title.clone()),
+        year,
+        ..Default::default()
+    };
+    if !meta.is_empty() {
+        content.set_metadata(node.id, &meta).await?;
+    }
+    // Re-read the node so the response reflects the linked title_id/identity.
+    let node = content.get_node(node.id).await?.unwrap_or(node);
 
     Ok(Json(merge(
         v3_resource_item(state, &node, &title).await?,
