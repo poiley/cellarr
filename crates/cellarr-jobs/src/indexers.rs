@@ -165,11 +165,17 @@ impl DbIndexerSet {
     /// Construct the native adapter for one config, reading `baseUrl`/`apiKey`
     /// from its open-ended `settings` JSON (the shape the API shim persists).
     fn build_adapter(&self, config: &IndexerConfig) -> Result<NabAdapter, IndexerSetError> {
-        let base_url =
+        let raw_base =
             setting_str(config, "baseUrl").ok_or_else(|| IndexerSetError::Misconfigured {
                 name: config.name.clone(),
                 reason: "missing baseUrl in settings".into(),
             })?;
+        // Torznab/Newznab endpoints are `baseUrl` + `apiPath` (apiPath defaults to
+        // "/api", the *arr convention). Prowlarr's app-sync stores baseUrl as
+        // ".../{indexerId}/" with apiPath "/api"; without combining them we'd request
+        // the bare ".../{indexerId}/" — Prowlarr's web UI — and get HTML back instead
+        // of the caps XML, so every search fails.
+        let base_url = combine_endpoint(&raw_base, setting_str(config, "apiPath").as_deref());
         let api_key = setting_str(config, "apiKey").filter(|k| !k.is_empty());
 
         let is_newznab =
@@ -245,6 +251,28 @@ fn setting_str(config: &IndexerConfig, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// Combine an indexer's `baseUrl` with its `apiPath` into the full Torznab/Newznab
+/// endpoint. `apiPath` defaults to `/api` (the *arr convention) and is appended to
+/// the base unless the base already ends with it. Slashes are normalized so
+/// `http://prowlarr/3/` + `/api` -> `http://prowlarr/3/api` (Prowlarr's app-sync
+/// shape) and a host-only base `https://api.nzbgeek.info` -> `.../api`.
+fn combine_endpoint(base_url: &str, api_path: Option<&str>) -> String {
+    let base = base_url.trim_end_matches('/');
+    let path = api_path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/api");
+    let path = format!("/{}", path.trim_start_matches('/').trim_end_matches('/'));
+    if base
+        .to_ascii_lowercase()
+        .ends_with(&path.to_ascii_lowercase())
+    {
+        base.to_string()
+    } else {
+        format!("{base}{path}")
+    }
+}
+
 #[async_trait]
 impl Indexer for DbIndexerSet {
     type Error = IndexerSetError;
@@ -272,6 +300,31 @@ mod tests {
     use super::*;
     use cellarr_core::IndexerId;
     use serde_json::json;
+
+    #[test]
+    fn combine_endpoint_joins_base_and_api_path() {
+        // Prowlarr app-sync shape: base ".../{id}/" + apiPath "/api" -> ".../{id}/api"
+        // (the bug was hitting the bare ".../{id}/", Prowlarr's UI, returning HTML).
+        assert_eq!(
+            combine_endpoint(
+                "http://prowlarr.arr-stack.svc.cluster.local:9696/3/",
+                Some("/api")
+            ),
+            "http://prowlarr.arr-stack.svc.cluster.local:9696/3/api"
+        );
+        // Host-only base + default apiPath.
+        assert_eq!(
+            combine_endpoint("https://api.nzbgeek.info", None),
+            "https://api.nzbgeek.info/api"
+        );
+        // A base that already ends with the api path is not doubled.
+        assert_eq!(
+            combine_endpoint("https://tracker.example/torznab/api", Some("/api")),
+            "https://tracker.example/torznab/api"
+        );
+        // Empty apiPath falls back to the default.
+        assert_eq!(combine_endpoint("http://x/2/", Some("")), "http://x/2/api");
+    }
 
     fn indexer(name: &str, tags: Vec<u32>) -> IndexerConfig {
         IndexerConfig {
