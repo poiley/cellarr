@@ -28,6 +28,9 @@
 //!   `validfilename`). Recognized fields: `title`, `download`/`magnet`/`infohash`
 //!   (a bare infohash becomes a magnet), `details`/`guid`, `size`, `seeders`,
 //!   `downloadvolumefactor` (`0` → a `freeleech` flag).
+//! - `search.response.type: json` → parse a JSON body instead: `rows.selector` and
+//!   each field `selector` are dotted paths (`data.torrents[0].name`); filter chains
+//!   and field semantics are shared with the HTML path.
 //! - `caps.categorymappings` → translates the search's requested Torznab categories
 //!   into this tracker's own category ids (parent categories expand to their range).
 //!
@@ -126,10 +129,34 @@ pub struct SearchBlock {
     /// Request paths the search hits.
     #[serde(default)]
     pub paths: Vec<SearchPath>,
-    /// The selector that yields one element per result row.
+    /// How to parse the response body (`html`, the default, or `json`).
+    #[serde(default)]
+    pub response: ResponseBlock,
+    /// For HTML, the CSS selector yielding one element per result row; for JSON, a
+    /// dotted path to the array of rows (e.g. `data.torrents`).
     pub rows: RowsBlock,
-    /// Per-field selectors keyed by field name (`title`, `download`, `size`, …).
+    /// Per-field rules keyed by field name (`title`, `download`, `size`, …). For
+    /// JSON the field `selector` is a dotted path into the row object.
     pub fields: BTreeMap<String, Field>,
+}
+
+/// The `response` block: how the search response is parsed.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ResponseBlock {
+    /// The response body type.
+    #[serde(rename = "type", default)]
+    pub kind: ResponseType,
+}
+
+/// A search response's body format.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ResponseType {
+    /// An HTML document parsed with CSS selectors (the default).
+    #[default]
+    Html,
+    /// A JSON document navigated with dotted paths.
+    Json,
 }
 
 /// One configured search path.
@@ -853,13 +880,20 @@ impl CardigannIndexer {
         }
     }
 
-    /// Extract releases from an already-fetched HTML document by running the
-    /// definition's `rows`/`fields` selectors + filter chains over it, resolving
-    /// download/details URLs against the site base.
+    /// Extract releases from an already-fetched response body, dispatching on the
+    /// definition's declared response type (HTML by default, or JSON).
     ///
-    /// This is the heart of the engine and is deliberately I/O-free so it can be
-    /// exercised against recorded HTML in the record/replay tests.
-    pub fn extract(&self, html: &str) -> Result<Vec<Release>> {
+    /// Deliberately I/O-free so it can be exercised against recorded bodies in the
+    /// record/replay tests.
+    pub fn extract(&self, body: &str) -> Result<Vec<Release>> {
+        match self.definition.search.response.kind {
+            ResponseType::Html => self.extract_html(body),
+            ResponseType::Json => self.extract_json(body),
+        }
+    }
+
+    /// Extract releases from an HTML document via the `rows`/`fields` CSS selectors.
+    fn extract_html(&self, html: &str) -> Result<Vec<Release>> {
         let document = Html::parse_document(html);
         let search = &self.definition.search;
 
@@ -889,69 +923,117 @@ impl CardigannIndexer {
 
         let protocol: Protocol = self.definition.protocol.into();
         let mut releases = Vec::new();
-
         for row in document.select(&row_selector) {
-            let mut title = None;
-            let mut download_url = None;
-            let mut magnet = None;
-            let mut infohash = None;
-            let mut guid = None;
-            let mut size = None;
-            let mut seeders = None;
-            let mut flags = Vec::new();
-
+            let mut pairs = Vec::with_capacity(fields.len());
             for (name, field, selector, filters) in &fields {
                 let Some(raw) = extract_field(&row, field, selector.as_ref()) else {
                     continue;
                 };
                 let value = filters.iter().fold(raw, |acc, f| f.apply(acc));
-                match name.as_str() {
-                    "title" => title = Some(value),
-                    // `download` is the .torrent/.nzb link; `magnet` an explicit
-                    // magnet; `infohash` builds one when no link is given. `details`
-                    // is the human page used as a stable guid.
-                    "download" => download_url = Some(self.resolve_url(&value)),
-                    "magnet" => magnet = Some(value),
-                    "infohash" => infohash = Some(value),
-                    "details" | "guid" => guid = Some(self.resolve_url(&value)),
-                    "size" => size = parse_size(&value),
-                    "seeders" => seeders = value.replace(',', "").trim().parse().ok(),
-                    // A download-volume factor of 0 marks a freeleech release.
-                    "downloadvolumefactor"
-                        if value.trim().parse::<f64>().is_ok_and(|f| f == 0.0) =>
-                    {
-                        flags.push("freeleech".to_string());
-                    }
-                    _ => {}
+                pairs.push((name.clone(), value));
+            }
+            if let Some(rel) = self.assemble_release(&pairs, protocol) {
+                releases.push(rel);
+            }
+        }
+        Ok(releases)
+    }
+
+    /// Extract releases from a JSON document: `rows.selector` is a dotted path to the
+    /// array of rows; each field's `selector` is a dotted path into the row object.
+    fn extract_json(&self, body: &str) -> Result<Vec<Release>> {
+        let root: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| IndexerError::Parse(format!("json response: {e}")))?;
+        let search = &self.definition.search;
+
+        // Pre-compile each field's filter chain once; the JSON path is the selector.
+        let mut fields = Vec::with_capacity(search.fields.len());
+        for (name, field) in &search.fields {
+            let filters = field
+                .filters
+                .iter()
+                .map(CompiledFilter::compile)
+                .collect::<Result<Vec<_>>>()?;
+            fields.push((name.clone(), field.clone(), filters));
+        }
+
+        let rows = match json_pointer(&root, &search.rows.selector) {
+            Some(serde_json::Value::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        let protocol: Protocol = self.definition.protocol.into();
+        let mut releases = Vec::new();
+        for row in &rows {
+            let mut pairs = Vec::with_capacity(fields.len());
+            for (name, field, filters) in &fields {
+                let raw = match &field.selector {
+                    Some(path) => json_pointer(row, path).and_then(json_scalar),
+                    None => field.text.clone(),
+                };
+                if let Some(raw) = raw {
+                    let value = filters.iter().fold(raw, |acc, f| f.apply(acc));
+                    pairs.push((name.clone(), value));
                 }
             }
+            if let Some(rel) = self.assemble_release(&pairs, protocol) {
+                releases.push(rel);
+            }
+        }
+        Ok(releases)
+    }
 
-            // Resolve the download link: an explicit magnet wins; otherwise a bare
-            // infohash (from the `download` or `infohash` field) becomes a magnet.
-            let link = if let Some(m) = magnet {
-                Some(m)
-            } else if let Some(dl) = download_url {
-                Some(infohash_to_magnet(&dl).unwrap_or(dl))
-            } else {
-                infohash.as_deref().and_then(infohash_to_magnet)
-            };
+    /// Assemble a [`Release`] from one row's resolved `(field-name, value)` pairs,
+    /// applying field semantics: `download`/`magnet`/`infohash` resolve the link (a
+    /// bare infohash becomes a magnet), `downloadvolumefactor: 0` flags freeleech.
+    /// Returns `None` when the row lacks a title or any usable link.
+    fn assemble_release(&self, pairs: &[(String, String)], protocol: Protocol) -> Option<Release> {
+        let mut title = None;
+        let mut download_url = None;
+        let mut magnet = None;
+        let mut infohash = None;
+        let mut guid = None;
+        let mut size = None;
+        let mut seeders = None;
+        let mut flags = Vec::new();
 
-            if let (Some(title), Some(link)) = (title, link) {
-                let link = finalize_magnet(link, &title);
-                releases.push(Release {
-                    indexer_id: self.indexer_id,
-                    title,
-                    download_url: link,
-                    guid,
-                    protocol,
-                    size,
-                    seeders,
-                    indexer_flags: flags,
-                });
+        for (name, value) in pairs {
+            match name.as_str() {
+                "title" => title = Some(value.clone()),
+                "download" => download_url = Some(self.resolve_url(value)),
+                "magnet" => magnet = Some(value.clone()),
+                "infohash" => infohash = Some(value.clone()),
+                "details" | "guid" => guid = Some(self.resolve_url(value)),
+                "size" => size = parse_size(value),
+                "seeders" => seeders = value.replace(',', "").trim().parse().ok(),
+                "downloadvolumefactor" if value.trim().parse::<f64>().is_ok_and(|f| f == 0.0) => {
+                    flags.push("freeleech".to_string());
+                }
+                _ => {}
             }
         }
 
-        Ok(releases)
+        // An explicit magnet wins; otherwise a bare infohash (from `download` or
+        // `infohash`) becomes a magnet.
+        let link = if let Some(m) = magnet {
+            Some(m)
+        } else if let Some(dl) = download_url {
+            Some(infohash_to_magnet(&dl).unwrap_or(dl))
+        } else {
+            infohash.as_deref().and_then(infohash_to_magnet)
+        };
+
+        let title = title?;
+        let link = finalize_magnet(link?, &title);
+        Some(Release {
+            indexer_id: self.indexer_id,
+            title,
+            download_url: link,
+            guid,
+            protocol,
+            size,
+            seeders,
+            indexer_flags: flags,
+        })
     }
 
     /// Issue one search request (rate-limited; GET or form-POST) and extract its
@@ -1034,6 +1116,48 @@ fn extract_field(
 /// the row, not its children, still resolve).
 fn matches_self(row: &scraper::ElementRef, selector: &Selector) -> bool {
     row.value().name() != "html" && selector.matches(row)
+}
+
+/// Navigate a JSON value by a dotted path: object keys and `[index]` array access,
+/// with an optional leading `$`/`$.`. E.g. `data.torrents[0].name`. Returns `None`
+/// if any segment is absent.
+fn json_pointer<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let path = path.trim().trim_start_matches('$').trim_start_matches('.');
+    if path.is_empty() {
+        return Some(value);
+    }
+    let mut cur = value;
+    for seg in path.split('.') {
+        let (key, index) = parse_path_segment(seg);
+        if !key.is_empty() {
+            cur = cur.get(key)?;
+        }
+        if let Some(i) = index {
+            cur = cur.get(i)?;
+        }
+    }
+    Some(cur)
+}
+
+/// Split a path segment into its object key and optional trailing `[index]`.
+fn parse_path_segment(seg: &str) -> (&str, Option<usize>) {
+    match seg.split_once('[') {
+        Some((key, rest)) => {
+            let index = rest.trim_end_matches(']').parse::<usize>().ok();
+            (key, index)
+        }
+        None => (seg, None),
+    }
+}
+
+/// Read a JSON scalar (string/number/bool) as a string; `None` for objects/arrays/null.
+fn json_scalar(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 /// If `s` is a bare 40-character hex infohash, return a magnet URI for it.
@@ -1361,6 +1485,54 @@ search:
     }
 
     #[test]
+    fn json_pointer_navigates_keys_and_indices() {
+        let v = serde_json::json!({"a": {"b": [{"c": "x"}, {"c": "y"}]}});
+        assert_eq!(
+            json_pointer(&v, "a.b[1].c").and_then(json_scalar),
+            Some("y".to_string())
+        );
+        assert_eq!(
+            json_pointer(&v, "$.a.b[0].c").and_then(json_scalar),
+            Some("x".to_string())
+        );
+        assert!(json_pointer(&v, "a.missing").is_none());
+    }
+
+    #[test]
+    fn extract_json_navigates_rows_and_fields() {
+        const DEF: &str = r#"
+id: t
+name: T
+links: [https://t.example/]
+search:
+  response: { type: json }
+  paths: [{ path: /api }]
+  rows: { selector: "data.results" }
+  fields:
+    title: { selector: name }
+    infohash: { selector: hash }
+    size: { selector: sizeBytes }
+    seeders: { selector: "peers.seed" }
+"#;
+        const JSON: &str = r#"{ "data": { "results": [
+            { "name": "Movie.2024.1080p", "hash": "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555",
+              "sizeBytes": 1572864000, "peers": { "seed": 42 } },
+            { "name": "Other.2024.720p", "hash": "0000111122223333444455556666777788889999",
+              "sizeBytes": 734003200, "peers": { "seed": 5 } }
+        ] } }"#;
+        let eng = CardigannIndexer::new(IndexerId::new(), Definition::from_yaml(DEF).unwrap());
+        let rels = eng.extract(JSON).unwrap();
+        assert_eq!(rels.len(), 2);
+        assert_eq!(rels[0].title, "Movie.2024.1080p");
+        assert_eq!(rels[0].size, Some(1_572_864_000));
+        assert_eq!(rels[0].seeders, Some(42));
+        // The numeric infohash field is turned into a magnet.
+        assert!(rels[0]
+            .download_url
+            .starts_with("magnet:?xt=urn:btih:aaaa1111bbbb2222cccc3333dddd4444eeee5555&dn="));
+    }
+
+    #[test]
     fn unknown_filter_is_a_definition_error() {
         let err = CompiledFilter::compile(&filter("teleport", serde_yaml::Value::Null));
         assert!(matches!(err, Err(IndexerError::Definition(_))));
@@ -1375,6 +1547,7 @@ search:
             caps: DefinitionCaps::default(),
             search: SearchBlock {
                 paths: vec![],
+                response: ResponseBlock::default(),
                 rows: RowsBlock {
                     selector: "tr".into(),
                 },

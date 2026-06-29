@@ -40,6 +40,50 @@ each as a normal Torznab source. This turns 500+ indexers into a folder of YAML.
 - Build the engine against a **corpus of recorded HTTP responses** so it's testable offline without
   hitting live trackers (see Testing below).
 
+**Supported today** (`cellarr-indexers/src/cardigann.rs`, all offline-tested):
+
+- **Requests** — `links` (site base for relative-URL resolution); `search.paths[].path` + `inputs`
+  rendered through a Go-template subset: value expressions (`{{ .Keywords }}`, `{{ .Query.<Name> }}`
+  typed fields like `Season`/`Episode`/`IMDBID`/`TMDBID`/`TVDBID`, `{{ .Config.<key> }}`, `{{ . }}`,
+  quoted literals, `{{ join .Categories "," }}`), `{{ if … }}…{{ else }}…{{ end }}`, and
+  `{{ range .Categories }}…{{ end }}`. `method: post` sends inputs as a urlencoded form body; empty
+  inputs are dropped.
+- **Extraction** — `search.rows.selector` + `search.fields` via **CSS** selectors, each field reading
+  text or an `attribute` then running a **filter chain**: `regexp`, `re_replace`, `replace`, `split`,
+  `querystring`, `append`, `prepend`, `trim`, `tolower`, `toupper`, `urldecode`, `htmldecode`,
+  `validfilename`. Recognized fields: `title`, `download`/`magnet`/`infohash` (a bare infohash
+  becomes a magnet), `details`/`guid`, `size`, `seeders`, `downloadvolumefactor` (`0` ⇒ a
+  `freeleech` flag).
+- **Responses** — HTML (CSS selectors, the default) or **JSON** (`search.response.type: json`, with
+  `rows.selector`/field `selector` as dotted paths like `data.torrents[0].name`).
+- **Categories** — `caps.categorymappings` translate the search's requested Torznab categories (movies
+  2000, TV 5000) into the tracker's own ids (a parent expands to its whole range).
+
+**Configuring one** (config-as-code, `managed-config.yaml`): add an indexer with `kind: cardigann`
+and put the definition YAML in `settings.definition`; any other string settings become the
+`{{ .Config.* }}` context (e.g. a passkey):
+
+```yaml
+indexers:
+  - name: My Tracker
+    kind: cardigann
+    settings:
+      definition: |
+        id: mytracker
+        name: My Tracker
+        links: [https://mytracker.example/]
+        search:
+          paths: [{ path: /torrents.php, inputs: { q: "{{ .Keywords }}" } }]
+          rows: { selector: "tr.torrent" }
+          fields:
+            title: { selector: a.title }
+            download: { selector: a.download, attribute: href }
+```
+
+**Not yet** (rejected loudly, never mis-handled): **XPath** selectors, non-UTF-8 `encoding`,
+template control flow beyond `if`/`range`, and the **login/auth** flow for private trackers. These
+are the documented follow-ups.
+
 ### Prowlarr-style centralization (built in)
 Because cellarr is one app, the Prowlarr role (configure an indexer once, use it everywhere) is
 *internal* — there's no separate app to sync to. Indexers are configured once and available to all
