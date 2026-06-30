@@ -1,10 +1,11 @@
 'use client';
 
 // Manual / interactive-search screen (docs/10-ui.md §screen-mapping): pick a release,
-// see scores. A Table of candidate releases with quality + CF-score Badges, a Popover
-// (via HoverComponentTrigger) explaining how a score was reached, and an ActionButton
-// to grab. Built only from vendored SRCL components + the API client + relative glue;
-// all color comes from --theme-* tokens so both SRCL themes render correctly.
+// see scores. A Table of candidate releases with quality + CF-score Badges, a native
+// title tooltip explaining how a score was reached / why a release was rejected, and
+// an ActionButton to grab. Built only from vendored SRCL components + the API client +
+// relative glue; all color comes from --theme-* tokens so both SRCL themes render
+// correctly.
 
 import * as React from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -24,7 +25,6 @@ import Divider from '@components/Divider';
 import AlertBanner from '@components/AlertBanner';
 import BlockLoader from '@components/BlockLoader';
 import RowSpaceBetween from '@components/RowSpaceBetween';
-import HoverComponentTrigger from '@components/HoverComponentTrigger';
 
 import { ApiError } from '@lib/api/client';
 
@@ -218,20 +218,21 @@ const ReleaseTable: React.FC<{
             {r.rejected ? (
               <>
                 {' '}
-                <HoverComponentTrigger
-                  component="tooltip"
-                  text={r.rejection_reason || 'Rejected by the current quality profile.'}
-                >
-                  <StatusBadge status="rejected" />
-                </HoverComponentTrigger>
+                {/* Native title tooltip — auto-dismisses and never overlaps. A
+                    portaled SRCL popover/tooltip here opened on hover but only
+                    closed on an outside click, so dragging across the dense table
+                    stacked dozens of mispositioned boxes over the columns. */}
+                <StatusBadge
+                  status="rejected"
+                  title={r.rejection_reason || 'Rejected by the current quality profile.'}
+                />
               </>
             ) : null}
           </TableColumn>
           <TableColumn>{r.quality ? <Badge>{r.quality}</Badge> : <Badge>unknown</Badge>}</TableColumn>
           <TableColumn>
-            <HoverComponentTrigger component="popover" text={scoreReason(r)}>
-              <Badge>{formatScore(r.cf_score)}</Badge>
-            </HoverComponentTrigger>
+            {/* Score breakdown as a native title tooltip (see the rejection note). */}
+            <Badge title={scoreReason(r)}>{formatScore(r.cf_score)}</Badge>
           </TableColumn>
           <TableColumn>{formatSize(r.size)}</TableColumn>
           <TableColumn>{r.protocol === 'usenet' ? '—' : r.seeders ?? '—'}</TableColumn>
