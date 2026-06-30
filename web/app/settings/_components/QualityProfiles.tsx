@@ -544,6 +544,12 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                 isDisabled={form.managed}
                 onClick={form.managed ? undefined : () => setConfirmDelete(true)}
                 style={{
+                  // SRCL Button is block/width:100%; without overriding the width
+                  // a direct flex child grows to full width and wraps below Save.
+                  // Shrink it to its content so Delete reads as a small, subordinate
+                  // danger affordance beside the primary Save.
+                  width: 'auto',
+                  flex: '0 0 auto',
                   fontSize: '0.85em',
                   padding: '0 1.25ch',
                   minHeight: 'auto',

@@ -7,6 +7,11 @@
   padding-left: 1ch;
   font-size: var(--font-size);
   flex-shrink: 0;
+  /* Center cell content vertically. A global reset sets `vertical-align: baseline`,
+     which drops single-line cells to the baseline while a cell with taller content
+     (e.g. a library poster thumbnail) centers — staggering the row. Middle keeps
+     every cell on one line. */
+  vertical-align: middle;
   -webkit-text-size-adjust: 100%;
 
   &:first-child {
