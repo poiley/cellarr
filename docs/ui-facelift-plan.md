@@ -267,10 +267,14 @@ Shipped + gated (typecheck + SRCL-lint + 363 web tests) + deployed + verified on
 - **Organization:** Settings 15-tab wall → 4 labelled bands (Profiles/Connections/Media/General). — `0ba191e`
 - **Logs:** in-log substring Filter input. — `cf794d8`
 - **Responsive:** AppShell collapses the sidebar behind a hamburger below 768px (was desktop-only). — `e635375`
+- **Content-detail enrichment:** coloured status + Path + TMDB link (`tmdbId` added to `DetailView`). — `7f49d70`, `d76ceb6`
+- **Broadened colour:** History event chips + Activity self-heal blocklist chip; System health table coloured (carries per-row tone). — `d76ceb6`, `deaee1e`
+- **Table overflow:** every SRCL `Table` wrapped in an `overflow-x:auto` container (one fix, app-wide). — `b261464`
+- **Activity ETA:** download `timeleft` surfaced next to status. — `13edd63`
+- **Overlay a11y:** command palette restores focus to its trigger on close + traps Tab within the dialog. — `3e125bd`
 
-Remaining (larger / backend / higher-risk), in priority order:
-1. **Content-detail rich metadata** — needs a backend TMDB-enrichment feature (the v3 API returns `overview:''`/`runtime:0`/no images/genres; cellarr stores only identity), then the UI renders poster/overview/genres/runtime/ratings.
-2. Activity Downloads ETA/timeleft + status taxonomy; table horizontal-scroll wrappers.
-3. Broaden colour to System health (`SimpleTable` status contract) + History event types.
-4. Library parity columns + per-row `DropdownMenu`; overlay focus-trap (palette + ModalProvider).
-5. Per-screen density passes; routed Settings sub-sections + breadcrumbs.
+**UI facelift punch-list: COMPLETE.** The only remaining item is a backend feature, not a UI change:
+
+- **Content-detail rich metadata (poster / overview / genres / runtime / ratings)** — requires a backend TMDB-enrichment pass: the v3 API returns `overview:''`/`runtime:0`/no images/genres because cellarr stores only catalogue identity. Needs new fields in the content/movie model + an enrichment job in `cellarr-meta` + the v3 projection to populate them; the existing UI ("No poster"/"No overview" placeholders) then renders them. Scope is a discrete feature on the order of the Cardigann engine, tracked separately.
+
+Possible future polish (not blocking): Library parity columns + per-row `DropdownMenu`; routed Settings sub-sections + breadcrumbs; per-screen density passes.
