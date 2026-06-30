@@ -404,6 +404,7 @@ dependencies = [
  "cellarr-db",
  "cellarr-decide",
  "cellarr-fs",
+ "cellarr-indexers",
  "cellarr-jobs",
  "cellarr-parse",
  "futures",
@@ -541,6 +542,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "cellarr-core",
+ "encoding_rs",
  "governor",
  "quick-xml",
  "regex",

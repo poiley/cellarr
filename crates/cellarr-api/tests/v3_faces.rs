@@ -1185,3 +1185,85 @@ async fn indexers_visible_on_both_faces() {
         );
     }
 }
+
+// --- Cardigann indexer: schema, create round-trip --------------------------
+
+#[tokio::test]
+async fn cardigann_indexer_schema_and_create_round_trip() {
+    let server = start_authed().await;
+
+    // The schema advertises a Cardigann implementation with a `definition` field.
+    let schema: Value = server
+        .client()
+        .get(server.url("/api/v3/indexer/schema"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    let cardigann = schema
+        .as_array()
+        .expect("schema array")
+        .iter()
+        .find(|e| e["implementation"] == "Cardigann")
+        .expect("schema includes a Cardigann template");
+    assert!(
+        cardigann["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "definition"),
+        "Cardigann schema exposes a definition field"
+    );
+
+    // Creating a Cardigann indexer persists kind=cardigann with the definition in
+    // its fields, and it round-trips through the list.
+    let body = serde_json::json!({
+        "name": "My Cardigann",
+        "implementation": "Cardigann",
+        "protocol": "torrent",
+        "enableRss": true,
+        "fields": [
+            { "name": "definition", "value": "id: mt\nname: My Tracker\nlinks: [https://mt.example/]\nsearch:\n  paths: [{ path: /s }]\n  rows: { selector: tr }\n  fields:\n    title: { selector: a }\n    download: { selector: a, attribute: href }\n" }
+        ]
+    });
+    let created: Value = server
+        .client()
+        .post(server.url("/api/v3/indexer"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .json(&body)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(created["implementation"], "Cardigann");
+    assert_eq!(created["name"], "My Cardigann");
+
+    let list: Value = server
+        .client()
+        .get(server.url("/api/v3/indexer"))
+        .header("X-Api-Key", TEST_API_KEY)
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    let ours = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "My Cardigann")
+        .expect("created Cardigann indexer is listed");
+    assert_eq!(ours["implementation"], "Cardigann");
+    let has_def = ours["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["name"] == "definition");
+    assert!(has_def, "the definition field round-trips in the listing");
+}

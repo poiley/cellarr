@@ -55,7 +55,8 @@ each as a normal Torznab source. This turns 500+ indexers into a folder of YAML.
   becomes a magnet), `details`/`guid`, `size`, `seeders`, `downloadvolumefactor` (`0` ⇒ a
   `freeleech` flag).
 - **Responses** — HTML (CSS selectors, the default) or **JSON** (`search.response.type: json`, with
-  `rows.selector`/field `selector` as dotted paths like `data.torrents[0].name`).
+  `rows.selector`/field `selector` as dotted paths like `data.torrents[0].name`). Non-UTF-8 bodies are
+  decoded with the definition's `encoding` (e.g. `windows-1251`).
 - **Categories** — `caps.categorymappings` translate the search's requested Torznab categories (movies
   2000, TV 5000) into the tracker's own ids (a parent expands to its whole range).
 
@@ -82,9 +83,9 @@ indexers:
             download: { selector: a.download, attribute: href }
 ```
 
-**Not yet** (rejected loudly, never mis-handled): **XPath** selectors, non-UTF-8 `encoding`,
-template control flow beyond `if`/`range`, and the **login/auth** flow for private trackers. These
-are the documented follow-ups.
+**Not yet** (rejected loudly, never mis-handled): **XPath** selectors (pure-Rust XPath-over-HTML
+needs a C library, which would break the single-static-binary rule), template control flow beyond
+`if`/`range`, and the **login/auth** flow for private trackers. These are the documented follow-ups.
 
 ### Prowlarr-style centralization (built in)
 Because cellarr is one app, the Prowlarr role (configure an indexer once, use it everywhere) is

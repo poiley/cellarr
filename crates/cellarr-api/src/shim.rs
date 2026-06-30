@@ -2546,6 +2546,8 @@ fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
     }
     let implementation = if ix.kind.eq_ignore_ascii_case("newznab") {
         "Newznab"
+    } else if ix.kind.eq_ignore_ascii_case("cardigann") {
+        "Cardigann"
     } else {
         "Torznab"
     };
@@ -2653,9 +2655,38 @@ async fn indexer_schema(State(fs): State<FaceState>) -> Json<Vec<Value>> {
             "tags": [],
         })
     };
+    // The Cardigann template: instead of baseUrl/apiKey, it carries the YAML
+    // definition (inline or a path) — the engine reads the tracker's links/auth from
+    // the definition. Torrent torrent-criteria fields still apply.
+    let cardigann = || -> Value {
+        let mut fields = vec![
+            json!({ "order": 0, "name": "definition", "label": "Cardigann Definition (YAML)", "type": "textbox", "advanced": false, "helpText": "The tracker's Cardigann YAML definition. Leave blank to load from Definition File." }),
+            json!({ "order": 1, "name": "definitionFile", "label": "Definition File", "type": "textbox", "advanced": true, "helpText": "Path to a .yml definition on the host (used when the inline definition is blank)." }),
+        ];
+        fields.extend(face_fields());
+        fields.extend(torrent_fields());
+        json!({
+            "name": "",
+            "implementation": "Cardigann",
+            "implementationName": "Cardigann",
+            "configContract": "CardigannSettings",
+            "infoLink": "",
+            "protocol": "torrent",
+            "priority": 25,
+            "enableRss": true,
+            "enableAutomaticSearch": true,
+            "enableInteractiveSearch": true,
+            "supportsRss": true,
+            "supportsSearch": true,
+            "fields": fields,
+            "presets": [],
+            "tags": [],
+        })
+    };
     Json(vec![
         entry("Torznab", "torrent"),
         entry("Newznab", "usenet"),
+        cardigann(),
     ])
 }
 
@@ -2727,6 +2758,7 @@ fn indexer_from_body(
     }
     let kind = match body.implementation.as_deref() {
         Some(i) if i.eq_ignore_ascii_case("newznab") => "newznab",
+        Some(i) if i.eq_ignore_ascii_case("cardigann") => "cardigann",
         _ => "torznab",
     }
     .to_string();
@@ -2859,6 +2891,77 @@ async fn delete_indexer(
 /// accepts a well-formed body (the shim does no live connectivity check), which
 /// is the success contract Prowlarr needs to proceed with the push.
 async fn test_indexer(Json(body): Json<IndexerBody>) -> ApiResult<Json<Value>> {
+    use cellarr_core::Indexer as _;
+
+    let field_str = |name: &str| {
+        body.fields
+            .iter()
+            .find(|f| f.name.as_deref() == Some(name))
+            .and_then(|f| f.value.as_str())
+    };
+
+    // Cardigann: a genuine test — parse the definition, then run a live `latest()`
+    // search through the real engine (connectivity + selectors), reporting any
+    // failure as a v3 validation failure rather than a 4xx.
+    if body
+        .implementation
+        .as_deref()
+        .is_some_and(|i| i.eq_ignore_ascii_case("cardigann"))
+    {
+        let yaml = match field_str("definition").filter(|s| !s.trim().is_empty()) {
+            Some(y) => y.to_string(),
+            None => match field_str("definitionFile").filter(|s| !s.trim().is_empty()) {
+                Some(path) => match std::fs::read_to_string(path) {
+                    Ok(y) => y,
+                    Err(e) => {
+                        return Ok(Json(test_failure(format!(
+                            "cannot read definitionFile '{path}': {e}"
+                        ))))
+                    }
+                },
+                None => {
+                    return Ok(Json(test_failure(
+                        "a Cardigann indexer needs a definition or definitionFile".into(),
+                    )))
+                }
+            },
+        };
+        let def = match cellarr_indexers::Definition::from_yaml(&yaml) {
+            Ok(d) => d,
+            Err(e) => {
+                return Ok(Json(test_failure(format!(
+                    "invalid Cardigann definition: {e}"
+                ))))
+            }
+        };
+        // The `{{ .Config.* }}` context is the indexer's string fields (passkey, …).
+        let mut config = std::collections::BTreeMap::new();
+        for f in &body.fields {
+            if let (Some(n), Some(v)) = (f.name.as_deref(), f.value.as_str()) {
+                config.insert(n.to_string(), v.to_string());
+            }
+        }
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return Ok(Json(test_failure(format!("http client: {e}")))),
+        };
+        let engine = cellarr_indexers::CardigannIndexer::with_deps(
+            cellarr_core::IndexerId::new(),
+            def,
+            config,
+            std::sync::Arc::new(cellarr_indexers::ReqwestFetcher::new(client)),
+            std::sync::Arc::new(cellarr_indexers::HostRateLimiter::conservative_default()),
+        );
+        return match engine.latest().await {
+            Ok(_) => Ok(Json(json!({ "isValid": true, "validationFailures": [] }))),
+            Err(e) => Ok(Json(test_failure(format!("test search failed: {e}")))),
+        };
+    }
+
+    // Torznab/Newznab: a baseUrl must be present (the shim does no live check here).
     let has_base_url = body
         .fields
         .iter()
@@ -2867,6 +2970,12 @@ async fn test_indexer(Json(body): Json<IndexerBody>) -> ApiResult<Json<Value>> {
         return Err(ApiError::BadRequest("indexer baseUrl is required".into()));
     }
     Ok(Json(json!({ "isValid": true, "validationFailures": [] })))
+}
+
+/// A v3 indexer-test failure result carrying a human-readable message (the shape
+/// Radarr/Prowlarr render in the "Test" dialog).
+fn test_failure(message: String) -> Value {
+    json!({ "isValid": false, "validationFailures": [{ "errorMessage": message }] })
 }
 
 // --- download client -------------------------------------------------------

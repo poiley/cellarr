@@ -11,6 +11,7 @@ cellarr-core.workspace = true
 cellarr-db.workspace = true
 cellarr-decide.workspace = true
 cellarr-fs.workspace = true
+cellarr-indexers.workspace = true
 cellarr-jobs.workspace = true
 cellarr-parse.workspace = true
 axum = { workspace = true }

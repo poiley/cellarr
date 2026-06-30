@@ -31,6 +31,8 @@
 //! - `search.response.type: json` → parse a JSON body instead: `rows.selector` and
 //!   each field `selector` are dotted paths (`data.torrents[0].name`); filter chains
 //!   and field semantics are shared with the HTML path.
+//! - `encoding` → decode non-UTF-8 response bytes (e.g. `windows-1251`) before
+//!   parsing, for trackers that send no/incorrect charset header.
 //! - `caps.categorymappings` → translates the search's requested Torznab categories
 //!   into this tracker's own category ids (parent categories expand to their range).
 //!
@@ -68,6 +70,11 @@ pub struct Definition {
     /// for building the search request.
     #[serde(default)]
     pub links: Vec<String>,
+    /// The response character encoding (e.g. `UTF-8`, `windows-1251`). Used to
+    /// decode raw response bytes when the server sends no/incorrect charset header;
+    /// defaults to UTF-8.
+    #[serde(default)]
+    pub encoding: Option<String>,
     /// Declared capabilities (category mappings + modes).
     #[serde(default)]
     pub caps: DefinitionCaps,
@@ -1042,16 +1049,32 @@ impl CardigannIndexer {
         if let Some(host) = req.url.host_str() {
             self.rate_limiter.until_ready(host).await;
         }
-        let body = match &req.body {
+        // Fetch raw bytes and decode with the definition's declared encoding, so a
+        // non-UTF-8 tracker (e.g. windows-1251) that sends no/incorrect charset
+        // header is read correctly rather than mojibake.
+        let bytes = match &req.body {
             Some(form) => {
                 self.fetcher
-                    .post(req.url.as_str(), form, "application/x-www-form-urlencoded")
+                    .post_bytes(req.url.as_str(), form, "application/x-www-form-urlencoded")
                     .await?
             }
-            None => self.fetcher.get(req.url.as_str()).await?,
+            None => self.fetcher.get_bytes(req.url.as_str()).await?,
         };
+        let body = decode_body(&bytes, self.definition.encoding.as_deref());
         self.extract(&body)
     }
+}
+
+/// Decode response bytes using the named encoding (Cardigann's `encoding` field),
+/// defaulting to UTF-8. An unknown label falls back to UTF-8; decoding is lossy
+/// rather than failing, since a stray bad byte must not lose a whole page.
+fn decode_body(bytes: &[u8], encoding: Option<&str>) -> String {
+    let enc = encoding
+        .filter(|e| !e.is_empty())
+        .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
+    let (text, _, _) = enc.decode(bytes);
+    text.into_owned()
 }
 
 /// One built search request: a URL plus, for a `method: post` path, the form body.
@@ -1544,6 +1567,7 @@ search:
             id: "t".into(),
             name: "T".into(),
             links: vec!["https://tracker.example/".into()],
+            encoding: None,
             caps: DefinitionCaps::default(),
             search: SearchBlock {
                 paths: vec![],
@@ -1575,5 +1599,15 @@ search:
         assert_eq!(parse_size("1,234"), Some(1234));
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("garbage"), None);
+    }
+
+    #[test]
+    fn decode_body_honors_declared_encoding() {
+        // 0xC0,0xC1 are 'А','Б' (U+0410/U+0411) in windows-1251.
+        assert_eq!(decode_body(&[0xC0, 0xC1], Some("windows-1251")), "АБ");
+        // UTF-8 is the default and the fallback for an unknown/empty label.
+        assert_eq!(decode_body("héllo".as_bytes(), None), "héllo");
+        assert_eq!(decode_body("x".as_bytes(), Some("bogus-enc")), "x");
+        assert_eq!(decode_body("y".as_bytes(), Some("")), "y");
     }
 }

@@ -25,6 +25,25 @@ pub trait Fetcher: Send + Sync {
             "POST to {url} (this fetcher is GET-only)"
         )))
     }
+
+    /// GET `url` and return the **raw, undecoded** response bytes.
+    ///
+    /// Needed by the Cardigann engine to honor a definition's declared `encoding`
+    /// (e.g. `windows-1251`) when the server sends no/incorrect charset header. The
+    /// default decodes nothing — it returns [`Fetcher::get`]'s UTF-8 bytes, which is
+    /// correct for the UTF-8 case and for the string-replay test fetchers.
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        self.get(url).await.map(String::into_bytes)
+    }
+
+    /// POST and return the **raw, undecoded** response bytes (see [`get_bytes`]).
+    ///
+    /// [`get_bytes`]: Fetcher::get_bytes
+    async fn post_bytes(&self, url: &str, body: &str, content_type: &str) -> Result<Vec<u8>> {
+        self.post(url, body, content_type)
+            .await
+            .map(String::into_bytes)
+    }
 }
 
 /// A `reqwest`-backed fetcher for production use.
@@ -62,6 +81,21 @@ impl ReqwestFetcher {
         }
         Ok(resp.text().await?)
     }
+
+    /// Read a response as raw bytes, with the same non-success → [`IndexerError::Status`]
+    /// handling as [`read_body`](Self::read_body).
+    async fn read_raw(resp: reqwest::Response) -> Result<Vec<u8>> {
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(200).collect();
+            return Err(IndexerError::Status {
+                status: status.as_u16(),
+                body_snippet: (!snippet.is_empty()).then_some(snippet),
+            });
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
 }
 
 #[async_trait]
@@ -80,5 +114,21 @@ impl Fetcher for ReqwestFetcher {
             .send()
             .await?;
         Self::read_body(resp).await
+    }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let resp = self.client.get(url).send().await?;
+        Self::read_raw(resp).await
+    }
+
+    async fn post_bytes(&self, url: &str, body: &str, content_type: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body.to_string())
+            .send()
+            .await?;
+        Self::read_raw(resp).await
     }
 }

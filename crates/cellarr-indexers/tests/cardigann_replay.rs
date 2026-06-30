@@ -194,3 +194,63 @@ search:
         "recorded page still normalizes to releases"
     );
 }
+
+/// A fetcher returning fixed raw bytes (no charset decoding), to exercise the
+/// engine's own decoding of a non-UTF-8 response.
+struct RawBytesFetcher {
+    bytes: Vec<u8>,
+}
+
+#[async_trait]
+impl Fetcher for RawBytesFetcher {
+    async fn get(&self, _url: &str) -> Result<String> {
+        Ok(String::from_utf8_lossy(&self.bytes).into_owned())
+    }
+    async fn get_bytes(&self, _url: &str) -> Result<Vec<u8>> {
+        Ok(self.bytes.clone())
+    }
+}
+
+#[tokio::test]
+async fn search_decodes_a_non_utf8_response() {
+    // A results page whose title is Cyrillic, served as windows-1251 bytes.
+    const HTML: &str = r#"<table class="t"><tr class="r">
+        <td><a class="ttl" href="/d?id=1">Москва.2024.1080p.BluRay</a></td>
+    </tr></table>"#;
+    let (win1251, _, _) = encoding_rs::WINDOWS_1251.encode(HTML);
+
+    const DEF: &str = r#"
+id: ru
+name: RU Tracker
+encoding: windows-1251
+links: [https://ru.example/]
+search:
+  paths: [{ path: /s, inputs: { q: "{{ .Keywords }}" } }]
+  rows: { selector: "table.t tr.r" }
+  fields:
+    title: { selector: a.ttl }
+    download: { selector: a.ttl, attribute: href }
+"#;
+    let def = Definition::from_yaml(DEF).expect("parse");
+    let fetcher = Arc::new(RawBytesFetcher {
+        bytes: win1251.into_owned(),
+    });
+    let engine = CardigannIndexer::with_deps(
+        IndexerId::new(),
+        def,
+        std::collections::BTreeMap::new(),
+        fetcher,
+        Arc::new(HostRateLimiter::conservative_default()),
+    );
+    let releases = engine
+        .search(&SearchTerms {
+            queries: vec!["Москва".into()],
+            ..Default::default()
+        })
+        .await
+        .expect("search");
+
+    assert_eq!(releases.len(), 1);
+    // The windows-1251 bytes round-tripped back to the original Cyrillic title.
+    assert_eq!(releases[0].title, "Москва.2024.1080p.BluRay");
+}
