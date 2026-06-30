@@ -17,7 +17,11 @@ import Text from '@components/Text';
 import Badge from '@components/Badge';
 import RowSpaceBetween from '@components/RowSpaceBetween';
 import Divider from '@components/Divider';
-import SimpleTable from '@components/SimpleTable';
+import Table from '@components/Table';
+import TableColumn from '@components/TableColumn';
+import TableRow from '@components/TableRow';
+
+import { TONE_COLOR, type Tone } from '@app/_lib/status';
 import AlertBanner from '@components/AlertBanner';
 import Message from '@components/Message';
 import CodeBlock from '@components/CodeBlock';
@@ -100,17 +104,29 @@ export default function SystemPage() {
       ? 'No indexers configured — searches will return nothing until you add one.'
       : null;
 
-  const healthData: string[][] = status
+  const healthRows: { label: string; value: string; tone: Tone }[] = status
     ? [
-        ['Check', 'Status'],
-        ['Application', 'ACTIVE'],
-        ['Authentication', status.auth_enabled ? 'enabled' : 'open'],
-        ['Indexers', status.indexer_count > 0 ? 'ACTIVE' : 'none configured'],
-        [
-          'Download clients',
-          status.download_client_count > 0 ? 'ACTIVE' : 'none configured',
-        ],
-        ['Libraries', String(status.library_count)],
+        { label: 'Application', value: 'ACTIVE', tone: 'ok' },
+        {
+          label: 'Authentication',
+          value: status.auth_enabled ? 'enabled' : 'open',
+          tone: status.auth_enabled ? 'ok' : 'warn',
+        },
+        {
+          label: 'Indexers',
+          value: status.indexer_count > 0 ? 'ACTIVE' : 'none configured',
+          tone: status.indexer_count > 0 ? 'ok' : 'warn',
+        },
+        {
+          label: 'Download clients',
+          value: status.download_client_count > 0 ? 'ACTIVE' : 'none configured',
+          tone: status.download_client_count > 0 ? 'ok' : 'warn',
+        },
+        {
+          label: 'Libraries',
+          value: String(status.library_count),
+          tone: status.library_count > 0 ? 'ok' : 'neutral',
+        },
       ]
     : [];
 
@@ -199,7 +215,20 @@ export default function SystemPage() {
             <Text style={{ marginTop: '1ch', opacity: 0.6, marginBottom: '0.5ch' }}>
               Health
             </Text>
-            <SimpleTable data={healthData} />
+            <Table>
+              <TableRow>
+                <TableColumn style={{ opacity: 0.6 }}>Check</TableColumn>
+                <TableColumn style={{ opacity: 0.6 }}>Status</TableColumn>
+              </TableRow>
+              {healthRows.map((r) => (
+                <TableRow key={r.label}>
+                  <TableColumn>{r.label}</TableColumn>
+                  <TableColumn>
+                    <span style={{ color: TONE_COLOR[r.tone] }}>{r.value}</span>
+                  </TableColumn>
+                </TableRow>
+              ))}
+            </Table>
           </>
         ) : null}
 
