@@ -282,6 +282,10 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
     );
   }
 
+  // The resolved name of the current cutoff quality (the API ships "rank-N"
+  // placeholders that resolve async via the definitions map).
+  const cutoffName = form ? (form.qualities.find((q) => q.id === form.cutoff)?.name ?? '') : '';
+
   return (
     <Card title="Quality Profiles">
       {!creating ? (
@@ -290,6 +294,9 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
           <div style={{ display: 'flex', gap: '1ch', alignItems: 'flex-end' }}>
             <div style={{ flex: 1 }}>
               <Select
+                // Key on the loaded profile so this uncontrolled Select reflects the
+                // fetched profile instead of a stale default once data arrives.
+                key={`profile-${form?.id ?? 'new'}-${form?.name ?? ''}`}
                 name="quality-profile"
                 aria-label="Quality profile"
                 options={[...profiles.map(profileName), NEW_OPTION]}
@@ -416,11 +423,14 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                 all-quality profile). `key` re-mounts it when switching profiles so
                 the uncontrolled Select shows the new profile's cutoff. */}
             <Select
-              key={`cutoff-${selectedId}`}
+              // Key on the resolved cutoff name so the uncontrolled Select re-mounts
+              // once the quality-definition names load (the API ships "rank-N"
+              // placeholders that resolve async), instead of showing a stale label.
+              key={`cutoff-${selectedId}-${cutoffName}`}
               name="cutoff-quality"
               aria-label="Cutoff quality"
               options={form.qualities.filter((q) => q.allowed).map((q) => q.name)}
-              defaultValue={form.qualities.find((q) => q.id === form.cutoff)?.name ?? ''}
+              defaultValue={cutoffName}
               onChange={(name) => {
                 const q = form.qualities.find((x) => x.name === name);
                 if (q) update({ cutoff: q.id });
