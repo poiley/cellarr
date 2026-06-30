@@ -94,6 +94,29 @@ describe('Interactive / manual-search screen', () => {
     expect(screen.getByText('42')).toBeTruthy();
   });
 
+  it('renders the quality name when the API returns the structured QualityModel', async () => {
+    // The real v3 `/release` shim returns `quality` as the Radarr/Sonarr
+    // QualityModel object ({ quality: { name }, revision: { version } }), not a
+    // bare string. Rendering that object directly threw React #31 and crashed the
+    // screen; the boundary now flattens it to the name (with a `vN` repack tag).
+    searchValue = 'id=c1';
+    requestV3.mockResolvedValue([
+      {
+        guid: 'g1',
+        title: 'Some.Movie.2024.REPACK.Bluray-1080p',
+        indexer: 'demo',
+        protocol: 'torrent',
+        quality: { quality: { id: 7, name: 'Bluray-1080p' }, revision: { version: 2 } },
+        cf_score: 0,
+      },
+    ]);
+    renderPage();
+
+    // Renders the flattened name + repack revision — no crash, no "[object Object]".
+    await waitFor(() => expect(screen.getByText('Bluray-1080p v2')).toBeTruthy());
+    expect(screen.queryByText(/object Object/)).toBeNull();
+  });
+
   it('still honours the legacy ?content= alias', async () => {
     searchValue = 'content=legacy1';
     requestV3.mockResolvedValue([]);

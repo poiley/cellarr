@@ -308,18 +308,50 @@ export async function addContent(
 }
 
 /**
+ * Reduce a v3 release `quality` field to a display string.
+ *
+ * The `/release` shim mirrors Radarr/Sonarr, whose `quality` is the structured
+ * `QualityModel` — `{ quality: { id, name, … }, revision: { version, … } }` —
+ * NOT the bare string the `CandidateRelease.quality` type implies. Rendering that
+ * object as a React child throws (React #31: "objects are not valid as a child"),
+ * which is what crashed the interactive-search screen. Normalise either shape (a
+ * legacy string OR the model object) to the quality name, appending `vN` for a
+ * repack/proper revision so the table still shows text — never an object.
+ */
+function qualityToString(q: unknown): string | undefined {
+  if (typeof q === 'string') return q || undefined;
+  if (!q || typeof q !== 'object') return undefined;
+  const obj = q as Record<string, unknown>;
+  const inner = obj.quality;
+  const name =
+    inner && typeof inner === 'object'
+      ? (inner as Record<string, unknown>).name
+      : obj.name;
+  if (typeof name !== 'string' || !name) return undefined;
+  const rev = obj.revision as Record<string, unknown> | undefined;
+  const ver = rev && typeof rev.version === 'number' ? rev.version : 1;
+  return ver > 1 ? `${name} v${ver}` : name;
+}
+
+/**
  * Interactive/manual release search for a content node
  * (`GET /api/v3/release?contentId=…`). The shim returns ranked candidates with
  * parsed quality, custom-format score, a human score reason, and rejection state.
+ * The raw `quality` is the structured QualityModel, so it is flattened to a name
+ * here (the boundary) to honour the string-typed `CandidateRelease.quality`.
  */
-export function searchReleases(
+export async function searchReleases(
   contentId: string,
   signal?: AbortSignal
 ): Promise<CandidateRelease[]> {
-  return api.requestV3<CandidateRelease[]>('/release', {
+  const raw = await api.requestV3<Array<Record<string, unknown>>>('/release', {
     query: { contentId },
     signal,
   });
+  return (raw ?? []).map((r) => ({
+    ...(r as unknown as CandidateRelease),
+    quality: qualityToString(r.quality),
+  }));
 }
 
 /** Hand a chosen release to a download client (the manual grab). */
