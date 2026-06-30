@@ -33,9 +33,12 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   // queue / download lifecycle
   DOWNLOADING: 'info',
   QUEUED: 'info',
+  SCHEDULED: 'info',
   PENDING: 'info',
+  IMPORTING: 'info',
   COMPLETED: 'ok',
   GRABBED: 'ok',
+  SENT: 'ok',
   FAILED: 'error',
   STALLED: 'error',
   BLOCKLISTED: 'error',

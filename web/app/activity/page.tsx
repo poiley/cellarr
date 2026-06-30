@@ -30,6 +30,8 @@ import * as React from 'react';
 import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
 import BarLoader from '@components/BarLoader';
+
+import StatusBadge from '@app/_components/StatusBadge';
 import BarProgress from '@components/BarProgress';
 import Button from '@components/Button';
 import Card from '@components/Card';
@@ -378,7 +380,7 @@ export default function ActivityPage() {
                   <RowSpaceBetween>
                     <Text>{row.title}</Text>
                     <span style={{ display: 'inline-flex', gap: '1ch', alignItems: 'center' }}>
-                      <Badge>{lifecycleLabel(row.status)}</Badge>
+                      <StatusBadge status={lifecycleLabel(row.status)} />
                       {row.record ? (
                         <QueueActions record={row.record} onChanged={refreshQueue} />
                       ) : null}

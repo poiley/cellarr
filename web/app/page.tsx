@@ -17,6 +17,8 @@ import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
 import BarProgress from '@components/BarProgress';
 import BlockLoader from '@components/BlockLoader';
+
+import { statusColor } from '@app/_lib/status';
 import Card from '@components/Card';
 import Divider from '@components/Divider';
 import Grid from '@components/Grid';
@@ -236,13 +238,12 @@ export default function HomePage() {
           <StatTile
             label="Health"
             value={
-              <span>
+              <span style={{ color: statusColor(health.word) }}>
                 <span aria-hidden="true">{health.glyph}</span>{' '}
                 {health.word}
               </span>
             }
             href="/system"
-            emphasis={health.hasWarnings}
             hint={
               health.hasWarnings
                 ? `${health.count} health ${health.count === 1 ? 'warning' : 'warnings'} — open System`
