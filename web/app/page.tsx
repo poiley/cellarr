@@ -102,7 +102,7 @@ const StatTile: React.FC<{
         style={{
           fontSize: '2ch',
           fontWeight: 600,
-          color: emphasis ? 'var(--theme-error, inherit)' : 'inherit',
+          color: emphasis ? 'var(--ansi-9-red)' : 'inherit',
         }}
       >
         {value}

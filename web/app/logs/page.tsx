@@ -38,10 +38,10 @@ const DEFAULT_LINES = 500;
 
 // Per-level tint from SRCL's own ansi tokens, so both themes stay correct.
 const LEVEL_COLOR: Record<LogLevel, string> = {
-  TRACE: 'var(--ansi-8-bright-black, #888)',
-  DEBUG: 'var(--ansi-6-cyan)',
+  TRACE: 'var(--ansi-8-gray)',
+  DEBUG: 'var(--ansi-6-teal)',
   INFO: 'var(--ansi-2-green)',
-  WARN: 'var(--ansi-3-yellow)',
+  WARN: 'var(--ansi-11-yellow)',
   ERROR: 'var(--ansi-9-red)',
 };
 
@@ -255,7 +255,7 @@ export default function LogsPage() {
                   style={{
                     margin: 0,
                     padding: '1ch',
-                    background: 'var(--theme-background-subdued, rgba(0,0,0,0.2))',
+                    background: 'var(--theme-window-background)',
                     border: '1px solid var(--theme-border)',
                     fontFamily: 'var(--font-family-mono, monospace)',
                     fontSize: 'var(--font-size, 0.875rem)',

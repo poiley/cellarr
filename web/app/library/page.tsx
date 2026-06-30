@@ -23,6 +23,9 @@ import Input from '@components/Input';
 import Select from '@components/Select';
 import Badge from '@components/Badge';
 import Text from '@components/Text';
+
+import StatusBadge from '@app/_components/StatusBadge';
+import { statusColor } from '@app/_lib/status';
 import Row from '@components/Row';
 import RowSpaceBetween from '@components/RowSpaceBetween';
 import Divider from '@components/Divider';
@@ -696,18 +699,16 @@ function LibraryBrowser() {
                         <TableColumn>{item.sizeOnDisk ? formatSize(item.sizeOnDisk) : '—'}</TableColumn>
                         <TableColumn>
                           <Row style={{ gap: '0.5ch', flexWrap: 'wrap', alignItems: 'center' }}>
-                            {/* Glyph + emphasis so MISSING stands out beyond colour
+                            {/* Glyph + colour so MISSING stands out beyond colour
                                 alone (#17): ✓ downloaded, ✗ missing. */}
                             <span
                               aria-hidden="true"
-                              style={{ fontWeight: 700, opacity: downloaded ? 0.7 : 1 }}
+                              style={{ fontWeight: 700, color: statusColor(fileLabel(item)) }}
                             >
                               {fileGlyph(item)}
                             </span>
-                            <Badge>{item.monitored ? 'MONITORED' : 'UNMONITORED'}</Badge>
-                            <span style={{ fontWeight: downloaded ? 400 : 700 }}>
-                              <Badge>{fileLabel(item)}</Badge>
-                            </span>
+                            <StatusBadge status={item.monitored ? 'MONITORED' : 'UNMONITORED'} />
+                            <StatusBadge status={fileLabel(item)} />
                           </Row>
                         </TableColumn>
                       </TableRow>
