@@ -285,7 +285,11 @@ describe('Library browse screen', () => {
 
     await waitFor(() => expect(screen.getByText('Synthetic Movie One')).toBeTruthy());
 
-    const yearHeader = screen.getByRole('columnheader', { name: /Year/ });
+    // The default view is the poster grid (no column headers); switch to the
+    // sortable table to exercise header-click sorting.
+    fireEvent.click(screen.getByRole('button', { name: /List/ }));
+
+    const yearHeader = await screen.findByRole('columnheader', { name: /Year/ });
     // Default sort is title-asc, so year header starts unsorted.
     expect(yearHeader.getAttribute('aria-sort')).toBe('none');
 

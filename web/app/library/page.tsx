@@ -56,6 +56,18 @@ import { mediaCoverUrl } from '@app/content/_lib/detail';
 
 const STATUS_OPTIONS = ['All', 'Monitored', 'Unmonitored'];
 
+// Grid-view sort choices (the table sorts by clicking a header; the grid has no
+// headers, so it offers the same keys as an explicit Select).
+const SORT_OPTIONS: ReadonlyArray<{ label: string; key: SortKey }> = [
+  { label: 'Title', key: 'title' },
+  { label: 'Year', key: 'year' },
+  { label: 'Quality', key: 'quality' },
+  { label: 'Size', key: 'size' },
+  { label: 'Status', key: 'status' },
+];
+
+const VIEW_STORAGE_KEY = 'cellarr.library.view';
+
 type LoadState<T> =
   | { phase: 'idle' }
   | { phase: 'loading' }
@@ -123,6 +135,148 @@ const PosterThumb: React.FC<{ id: string; title: string }> = ({ id, title }) => 
         }}
       />
     </span>
+  );
+};
+
+/**
+ * A full-bleed poster for a grid card: the cached-artwork endpoint at a 2:3
+ * aspect, with an ASCII placeholder (▦, the terminal/OLED aesthetic) while it
+ * loads or when no artwork is cached. Mirrors the detail screen's <Poster>
+ * load-state reconcile (a *cached* image can already be `complete` before React
+ * attaches onLoad), scaled to fill the card width.
+ */
+const PosterCardImage: React.FC<{ id: string; title: string }> = ({ id, title }) => {
+  const [state, setState] = React.useState<'loading' | 'ok' | 'error'>('loading');
+  const imgRef = React.useRef<HTMLImageElement | null>(null);
+  React.useEffect(() => {
+    setState('loading');
+    const img = imgRef.current;
+    if (img && img.complete) setState(img.naturalWidth > 0 ? 'ok' : 'error');
+  }, [id]);
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: '100%',
+        aspectRatio: '2 / 3',
+        borderBottom: '1px solid var(--theme-border, var(--theme-text))',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+        background: 'var(--theme-background)',
+      }}
+    >
+      <img
+        ref={imgRef}
+        src={mediaCoverUrl('poster', id)}
+        alt={`${title} poster`}
+        onLoad={() => setState('ok')}
+        onError={() => setState('error')}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: state === 'ok' ? 'block' : 'none',
+        }}
+      />
+      {state !== 'ok' ? (
+        <Text style={{ fontSize: '3ch', opacity: 0.4 }} aria-hidden="true">
+          ▦
+        </Text>
+      ) : null}
+    </div>
+  );
+};
+
+/**
+ * One poster card in the grid view: a bordered cell with the poster on top and a
+ * compact meta footer (title, year · quality, monitored + on-disk status with a
+ * ✓/✗ glyph) below, plus a select checkbox overlaid top-left. The poster and the
+ * title both drill into the item; the checkbox stops propagation so selecting a
+ * card never opens it. Same selection/status semantics as a table row — only the
+ * shape differs.
+ */
+const LibraryGridCard: React.FC<{
+  item: LibraryItem;
+  selected: boolean;
+  onToggle: (id: string) => void;
+  onOpen: (id: string) => void;
+}> = ({ item, selected, onToggle, onOpen }) => {
+  const open = () => onOpen(item.id);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  };
+  return (
+    <div
+      style={{
+        position: 'relative',
+        border: '1px solid var(--theme-border, var(--theme-text))',
+        outline: selected ? '1px solid var(--theme-text)' : undefined,
+        background: selected ? 'var(--theme-focused-foreground)' : undefined,
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {/* Select checkbox — overlaid on the poster, on its own opaque chip so it
+          stays legible over any artwork; stops propagation so it never opens. */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute',
+          top: '0.5ch',
+          left: '0.5ch',
+          zIndex: 1,
+          background: 'var(--theme-background)',
+          border: '1px solid var(--theme-border, var(--theme-text))',
+          padding: '0 0.25ch',
+          lineHeight: 1,
+        }}
+      >
+        <Checkbox
+          name={`select-${item.id}`}
+          aria-label={`Select ${item.title}`}
+          defaultChecked={selected}
+          key={`grid-${item.id}-${selected}`}
+          onChange={() => onToggle(item.id)}
+        >
+          <span style={{ position: 'absolute', left: '-9999px' }}>Select {item.title}</span>
+        </Checkbox>
+      </div>
+
+      <div role="link" tabIndex={0} onClick={open} onKeyDown={onKey} style={{ cursor: 'pointer' }} title={`Open ${item.title}`}>
+        <PosterCardImage id={item.id} title={item.title} />
+      </div>
+
+      <div style={{ padding: '0.75ch', display: 'flex', flexDirection: 'column', gap: '0.5ch', flex: '1 1 auto' }}>
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={open}
+          onKeyDown={onKey}
+          title={`Open ${item.title}`}
+          style={{ cursor: 'pointer', fontWeight: 600, lineHeight: 1.2 }}
+        >
+          {item.title}
+        </span>
+        <Row style={{ gap: '0.75ch', alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ opacity: 0.6, fontVariantNumeric: 'tabular-nums' }}>
+            {item.year ? String(item.year) : '—'}
+          </span>
+          {item.quality ? <Badge>{item.quality}</Badge> : null}
+        </Row>
+        <Row style={{ gap: '0.5ch', alignItems: 'center', flexWrap: 'wrap', marginTop: 'auto' }}>
+          <span aria-hidden="true" style={{ fontWeight: 700, color: statusColor(fileLabel(item)) }}>
+            {fileGlyph(item)}
+          </span>
+          <StatusBadge status={item.monitored ? 'MONITORED' : 'UNMONITORED'} />
+          <StatusBadge status={fileLabel(item)} />
+        </Row>
+      </div>
+    </div>
   );
 };
 
@@ -285,7 +439,30 @@ function LibraryBrowser() {
   const [status, setStatus] = React.useState<string>('All');
   const [typeFilter, setTypeFilter] = React.useState<string>('All');
   const [sort, setSort] = React.useState<SortState>({ key: 'title', dir: 'asc' });
+  // Grid is the default — the library reads as a wall of posters (a media app),
+  // with the dense sortable table one click away. The choice persists per browser.
+  const [view, setView] = React.useState<'grid' | 'list'>('grid');
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+
+  // Restore the saved view once on mount (localStorage is client-only; the
+  // initial render stays 'grid' on both server and client so hydration matches).
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(VIEW_STORAGE_KEY);
+      if (saved === 'grid' || saved === 'list') setView(saved);
+    } catch {
+      /* ignore unavailable storage */
+    }
+  }, []);
+
+  const changeView = (next: 'grid' | 'list') => {
+    setView(next);
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      /* ignore unavailable storage */
+    }
+  };
   const [busy, setBusy] = React.useState(false);
   // Bulk-delete confirm dialog: null when closed, otherwise the rows it targets.
   // The dialog is the only path to a delete — the library-destroying action is
@@ -590,6 +767,34 @@ function LibraryBrowser() {
                 />
               </div>
             ) : null}
+
+            {/* Pushed to the right edge: a grid-only Sort select (the table sorts
+                via its headers), then the Grid|List view toggle. */}
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '1ch', alignItems: 'flex-end' }}>
+              {view === 'grid' ? (
+                <div style={{ flex: '0 0 16ch', minWidth: '14ch' }}>
+                  <Select
+                    name="grid-sort"
+                    aria-label="Sort by"
+                    options={SORT_OPTIONS.map((o) => o.label)}
+                    defaultValue={SORT_OPTIONS.find((o) => o.key === sort.key)?.label ?? 'Title'}
+                    placeholder="Sort by"
+                    onChange={(label) => {
+                      const opt = SORT_OPTIONS.find((o) => o.label === label);
+                      if (opt) setSort({ key: opt.key, dir: 'asc' });
+                    }}
+                  />
+                </div>
+              ) : null}
+              <Row role="group" aria-label="View" style={{ gap: '0.5ch', flexWrap: 'nowrap' }}>
+                <ActionButton isSelected={view === 'grid'} onClick={() => changeView('grid')}>
+                  ▦ Grid
+                </ActionButton>
+                <ActionButton isSelected={view === 'list'} onClick={() => changeView('list')}>
+                  ≡ List
+                </ActionButton>
+              </Row>
+            </div>
           </div>
 
           <Divider type="GRADIENT" />
@@ -602,9 +807,23 @@ function LibraryBrowser() {
           {content.phase === 'ready' && items.length > 0 ? (
             <>
               <RowSpaceBetween>
-                <Text>
-                  {filtered.length} of {items.length} item{items.length === 1 ? '' : 's'}
-                </Text>
+                <Row style={{ gap: '1ch', alignItems: 'center' }}>
+                  {/* Grid view has no table header, so the select-all lives here. */}
+                  {view === 'grid' && filtered.length > 0 ? (
+                    <Checkbox
+                      name="select-all-visible"
+                      aria-label="Select all"
+                      defaultChecked={allVisibleSelected}
+                      key={`gall-${activeLib}-${allVisibleSelected}-${filtered.length}`}
+                      onChange={toggleAllVisible}
+                    >
+                      <span style={{ position: 'absolute', left: '-9999px' }}>Select all</span>
+                    </Checkbox>
+                  ) : null}
+                  <Text>
+                    {filtered.length} of {items.length} item{items.length === 1 ? '' : 's'}
+                  </Text>
+                </Row>
               </RowSpaceBetween>
 
               {/* Bulk action bar — appears when rows are selected (#19). */}
@@ -639,7 +858,28 @@ function LibraryBrowser() {
                 </Row>
               ) : null}
 
-              {filtered.length > 0 ? (
+              {filtered.length === 0 ? (
+                <Text>No items match the current filter.</Text>
+              ) : view === 'grid' ? (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(20ch, 1fr))',
+                    gap: '1.5ch',
+                    marginTop: '1ch',
+                  }}
+                >
+                  {filtered.map((item) => (
+                    <LibraryGridCard
+                      key={item.id}
+                      item={item}
+                      selected={selected.has(item.id)}
+                      onToggle={toggleRow}
+                      onOpen={onOpen}
+                    />
+                  ))}
+                </div>
+              ) : (
                 <Table>
                   <TableRow>
                     <TableColumn role="columnheader">
@@ -740,8 +980,6 @@ function LibraryBrowser() {
                     );
                   })}
                 </Table>
-              ) : (
-                <Text>No items match the current filter.</Text>
               )}
             </>
           ) : null}

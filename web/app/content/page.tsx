@@ -330,7 +330,7 @@ function formatRuntime(minutes: number | undefined): string | undefined {
  * ASCII placeholder card (the terminal/OLED aesthetic) on error or while there is
  * no id. The frame keeps a 2:3 poster aspect so the layout doesn't jump.
  */
-function Poster({ id, title }: { id: string; title: string }) {
+function Poster({ id, title, widthCh = 30 }: { id: string; title: string; widthCh?: number }) {
   // 'loading' until the image resolves; 'error' when the endpoint 404s / fails.
   const [state, setState] = React.useState<'loading' | 'ok' | 'error'>('loading');
   const imgRef = React.useRef<HTMLImageElement | null>(null);
@@ -348,7 +348,7 @@ function Poster({ id, title }: { id: string; title: string }) {
   }, [id]);
 
   const frame: React.CSSProperties = {
-    width: '30ch',
+    width: `${widthCh}ch`,
     aspectRatio: '2 / 3',
     flex: '0 0 auto',
     border: '1px solid var(--theme-border, var(--theme-text))',
@@ -406,16 +406,17 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /**
- * The metadata block above Files (#20): title / year / overview / quality
- * profile / total size / status, plus the actionable Monitored toggle (#21).
- * All values come from the rich v3 detail resource with structural fallbacks;
- * absent fields (e.g. the backend-deferred year/overview) simply don't render.
+ * The metadata fact block beside the poster (#20): year / runtime / quality
+ * profile / total size / status / path / TMDB, plus the actionable Monitored
+ * toggle (#21). Rating, genres and the overview render outside it (a prominent
+ * hero strip and a full-width section respectively). All values come from the
+ * rich v3 detail resource with structural fallbacks; absent fields simply don't
+ * render.
  */
 function MetadataBlock({
   detail,
   year,
   runtime,
-  overview,
   profileName,
   monitored,
   toggling,
@@ -424,7 +425,6 @@ function MetadataBlock({
   detail: DetailView | undefined;
   year: number | undefined;
   runtime: string | undefined;
-  overview: string | undefined;
   profileName: string | undefined;
   monitored: boolean;
   toggling: boolean;
@@ -438,31 +438,6 @@ function MetadataBlock({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
       {year !== undefined ? <MetaRow label="Year" value={year} /> : null}
       {runtime ? <MetaRow label="Runtime" value={runtime} /> : null}
-      {detail?.genres && detail.genres.length > 0 ? (
-        <MetaRow
-          label="Genres"
-          value={
-            <span style={{ display: 'inline-flex', gap: '0.5ch', flexWrap: 'wrap' }}>
-              {detail.genres.map((g) => (
-                <Badge key={g}>{g}</Badge>
-              ))}
-            </span>
-          }
-        />
-      ) : null}
-      {detail?.rating !== undefined ? (
-        <MetaRow
-          label="Rating"
-          value={
-            <span>
-              <span style={{ color: 'var(--ansi-11-yellow)' }}>★</span> {detail.rating.toFixed(1)}/10
-              {detail.ratingVotes ? (
-                <span style={{ opacity: 0.6 }}> ({detail.ratingVotes.toLocaleString()} votes)</span>
-              ) : null}
-            </span>
-          }
-        />
-      ) : null}
       <MetaRow
         label="Quality profile"
         value={profileName ?? (detail?.qualityProfileId ? '—' : 'Unassigned')}
@@ -516,16 +491,48 @@ function MetadataBlock({
           </Button>
         </span>
       </RowSpaceBetween>
-      <div style={{ marginTop: '1ch' }}>
-        <Text style={{ opacity: 0.6 }}>Overview</Text>
-        {overview ? (
-          <Text>{overview}</Text>
-        ) : (
-          // A subtle placeholder rather than an empty gap, so an absent overview
-          // doesn't leave the card looking broken.
-          <Text style={{ opacity: 0.4, fontStyle: 'italic' }}>No overview available.</Text>
-        )}
-      </div>
+    </div>
+  );
+}
+
+/**
+ * The cinematic hero strip leading the right column: a large star rating and the
+ * genre chips, shown above the fact rows so the two things a person scans first
+ * (is it good, what is it) read at a glance. Renders nothing when neither is
+ * known, so a metadata-less item doesn't show an empty band.
+ */
+function RatingGenres({
+  rating,
+  ratingVotes,
+  genres,
+}: {
+  rating: number | undefined;
+  ratingVotes: number | undefined;
+  genres: string[] | undefined;
+}) {
+  const hasRating = rating !== undefined;
+  const hasGenres = genres !== undefined && genres.length > 0;
+  if (!hasRating && !hasGenres) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75ch' }}>
+      {hasRating ? (
+        <Row style={{ gap: '1ch', alignItems: 'baseline' }}>
+          <Text style={{ fontSize: '1.6rem', fontWeight: 700 }}>
+            <span style={{ color: 'var(--ansi-11-yellow)' }}>★</span> {rating!.toFixed(1)}
+            <span style={{ opacity: 0.5, fontSize: '0.9rem', fontWeight: 400 }}>/10</span>
+          </Text>
+          {ratingVotes ? (
+            <Text style={{ opacity: 0.55 }}>{ratingVotes.toLocaleString()} votes</Text>
+          ) : null}
+        </Row>
+      ) : null}
+      {hasGenres ? (
+        <Row style={{ gap: '0.5ch', flexWrap: 'wrap' }}>
+          {genres!.map((g) => (
+            <Badge key={g}>{g}</Badge>
+          ))}
+        </Row>
+      ) : null}
     </div>
   );
 }
@@ -1026,57 +1033,73 @@ function ItemDetail() {
 
             <Divider type="GRADIENT" />
 
-            {/* Metadata block (#20): a two-column layout — the cached poster in
-                a fixed ~30ch LEFT column, the rich detail + Monitored toggle +
-                Overview in a RIGHT column that fills the rest and wraps below the
-                poster on a narrow viewport (flex-wrap). */}
-            <div style={{ display: 'flex', gap: '2ch', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              {/* Left column: fixed-width poster column. */}
-              <div style={{ flex: '0 0 30ch' }}>
-                <Poster id={id} title={title} />
+            {/* Cinematic hero (#20): a big poster on the LEFT, and on the RIGHT a
+                rating/genres strip, the fact rows + Monitored toggle, and the
+                action hierarchy — one cohesive unit. The whole right column wraps
+                below the poster on a narrow viewport (flex-wrap). */}
+            <div style={{ display: 'flex', gap: '3ch', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              {/* Left column: the poster, larger here than the library thumb. */}
+              <div style={{ flex: '0 0 34ch' }}>
+                <Poster id={id} title={title} widthCh={34} />
               </div>
-              {/* Right column: metadata, the Monitored toggle, and the Overview.
-                  Fills the space beside the poster and wraps below it when the
-                  viewport is too narrow to fit both. */}
-              <div style={{ flex: '1 1 32ch' }}>
+              {/* Right column: rating + genres up top, then the facts, then the
+                  primary actions — all beside the poster. */}
+              <div style={{ flex: '1 1 38ch', display: 'flex', flexDirection: 'column', gap: '1.5ch' }}>
+                <RatingGenres
+                  rating={detail?.rating}
+                  ratingVotes={detail?.ratingVotes}
+                  genres={detail?.genres}
+                />
                 <MetadataBlock
                   detail={detail}
                   year={year}
                   runtime={runtime}
-                  overview={overview}
                   profileName={profileName}
                   monitored={isMonitored}
                   toggling={toggling}
                   onToggleMonitored={toggleMonitored}
                 />
+
+                {/* Action hierarchy (#22): Search (find & grab) is the primary CTA;
+                    Refresh + History are secondary. Pulled up beside the poster so
+                    the hero is self-contained. */}
+                <Row style={{ gap: '1ch', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <Button
+                    theme="PRIMARY"
+                    onClick={() =>
+                      router.push(
+                        `/interactive?id=${encodeURIComponent(id)}&content=${encodeURIComponent(id)}`
+                      )
+                    }
+                  >
+                    Search ▸
+                  </Button>
+                  <ActionButton hotkey="⌘R" onClick={() => runCommand(refreshCommandFor(loose))}>
+                    Refresh
+                  </ActionButton>
+                  <ActionButton
+                    hotkey="⌘H"
+                    onClick={() => router.push(`/history?id=${encodeURIComponent(id)}`)}
+                  >
+                    History
+                  </ActionButton>
+                </Row>
               </div>
             </div>
 
             <Divider type="GRADIENT" />
 
-            {/* Action hierarchy (#22): Search (find & grab) is the primary CTA;
-                Refresh + History are secondary. */}
-            <Row style={{ gap: '1ch', flexWrap: 'wrap', alignItems: 'center' }}>
-              <Button
-                theme="PRIMARY"
-                onClick={() =>
-                  router.push(
-                    `/interactive?id=${encodeURIComponent(id)}&content=${encodeURIComponent(id)}`
-                  )
-                }
-              >
-                Search ▸
-              </Button>
-              <ActionButton hotkey="⌘R" onClick={() => runCommand(refreshCommandFor(loose))}>
-                Refresh
-              </ActionButton>
-              <ActionButton
-                hotkey="⌘H"
-                onClick={() => router.push(`/history?id=${encodeURIComponent(id)}`)}
-              >
-                History
-              </ActionButton>
-            </Row>
+            {/* Overview promoted to a full-width section at a readable measure —
+                prose reads far better across the card than squeezed into the
+                narrow right column. */}
+            <div style={{ maxWidth: '78ch' }}>
+              <Text style={{ opacity: 0.6, marginBottom: '0.5ch' }}>Overview</Text>
+              {overview ? (
+                <Text style={{ lineHeight: 1.6 }}>{overview}</Text>
+              ) : (
+                <Text style={{ opacity: 0.4, fontStyle: 'italic' }}>No overview available.</Text>
+              )}
+            </div>
           </>
         ) : null}
       </CardDouble>

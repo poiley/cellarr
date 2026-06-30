@@ -102,14 +102,20 @@ const StatTile: React.FC<{
     >
       <Text
         style={{
-          fontSize: '1.6rem',
+          fontSize: '2.2rem',
           fontWeight: 700,
+          lineHeight: 1.1,
           color: emphasis ? 'var(--ansi-9-red)' : 'inherit',
         }}
       >
+        {emphasis ? (
+          <span aria-hidden="true" style={{ fontSize: '0.7em' }}>
+            ▲{' '}
+          </span>
+        ) : null}
         {value}
       </Text>
-      <Text style={{ opacity: 0.6, textTransform: 'uppercase', fontSize: '0.75em' }}>
+      <Text style={{ opacity: 0.6, textTransform: 'uppercase', fontSize: '0.75em', letterSpacing: '0.04em' }}>
         {label}
       </Text>
     </div>
