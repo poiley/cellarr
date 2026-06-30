@@ -372,10 +372,13 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         gap: '1ch',
+                        padding: '0.25ch 0',
+                        lineHeight: 1.1,
                       }}
                     >
-                      {/* The checkbox is the allow toggle and is explicitly
-                          labelled "Allow" so it never reads as a "remove" box. */}
+                      {/* The checkbox itself means "allow", so the visible label is
+                          just the quality name; the aria-label keeps the "Allow"
+                          phrasing for screen readers and tests. */}
                       <Checkbox
                         key={`${form.id || 'new'}-quality-${q.id}`}
                         name={`quality-${q.id}`}
@@ -383,25 +386,60 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                         defaultChecked={q.allowed}
                         onChange={(e) => toggleAllowed(q.id, e.target.checked)}
                       >
-                        Allow <strong>{q.name}</strong>
+                        <strong>{q.name}</strong>
                       </Checkbox>
-                      <span style={{ display: 'inline-flex', gap: '0.5ch' }}>
-                        <Button
-                          theme="SECONDARY"
-                          aria-label={`Move ${q.name} up`}
-                          isDisabled={i === 0}
-                          onClick={() => move(i, -1)}
-                        >
-                          ▲
-                        </Button>
-                        <Button
-                          theme="SECONDARY"
-                          aria-label={`Move ${q.name} down`}
-                          isDisabled={i === form.qualities.length - 1}
-                          onClick={() => move(i, 1)}
-                        >
-                          ▼
-                        </Button>
+                      {/* Reorder controls. The buttons' base CSS is full-width
+                          with a tall min-height; these fixed-size wrapper spans
+                          clamp every reorder button (including the disabled-first
+                          /last variant, which renders a <div> that ignores inline
+                          style) to a compact square so the list stays dense. The
+                          [&>*] override forces the inner button/div to fill the
+                          clamp regardless of its own min-width/min-height. */}
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          gap: '0.25ch',
+                          flex: '0 0 auto',
+                        }}
+                      >
+                        {(
+                          [
+                            { dir: -1 as const, glyph: '▲', label: `Move ${q.name} up`, off: i === 0 },
+                            {
+                              dir: 1 as const,
+                              glyph: '▼',
+                              label: `Move ${q.name} down`,
+                              off: i === form.qualities.length - 1,
+                            },
+                          ] as const
+                        ).map(({ dir, glyph, label, off }) => (
+                          <span
+                            key={glyph}
+                            style={{
+                              display: 'inline-block',
+                              width: '3ch',
+                              height: '2.4ch',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <Button
+                              theme="SECONDARY"
+                              aria-label={label}
+                              isDisabled={off}
+                              onClick={() => move(i, dir)}
+                              style={{
+                                width: '100%',
+                                minWidth: 0,
+                                minHeight: '2.4ch',
+                                lineHeight: '2.4ch',
+                                padding: 0,
+                                fontSize: '0.85em',
+                              }}
+                            >
+                              {glyph}
+                            </Button>
+                          </span>
+                        ))}
                       </span>
                     </span>
                   </ListItem>
@@ -505,6 +543,12 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
                 aria-label="Delete profile"
                 isDisabled={form.managed}
                 onClick={form.managed ? undefined : () => setConfirmDelete(true)}
+                style={{
+                  fontSize: '0.85em',
+                  padding: '0 1.25ch',
+                  minHeight: 'auto',
+                  lineHeight: 2,
+                }}
               >
                 ✗ Delete profile
               </Button>

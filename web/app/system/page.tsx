@@ -316,6 +316,9 @@ const TaskTable: React.FC<TaskTableProps> = ({ tasks, commands, running, onRunNo
 
   return (
     <div role="table" aria-label="Scheduled tasks">
+      {/* Group the last-run status and the Run-now action into one right-hand
+          'Status & action' cluster so the button reads as part of its task row
+          instead of floating across a wide gap in a far-right column. */}
       <RowSpaceBetween
         role="row"
         style={{ opacity: 0.6, borderBottom: '1px solid var(--theme-border)', paddingBottom: '0.25ch' }}
@@ -323,8 +326,18 @@ const TaskTable: React.FC<TaskTableProps> = ({ tasks, commands, running, onRunNo
         <span style={{ flex: 2 }}>Task</span>
         <span style={{ flex: 1 }}>Interval</span>
         <span style={{ flex: 1 }}>Next run</span>
-        <span style={{ flex: 1 }}>Last run</span>
-        <span style={{ flex: 1, textAlign: 'right' }}>Action</span>
+        <span
+          style={{
+            flex: '1 1 22ch',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '1ch',
+          }}
+        >
+          <span>Last run</span>
+          <span style={{ textAlign: 'right' }}>Action</span>
+        </span>
       </RowSpaceBetween>
       {rows.map((task) => {
         const isRunning = running === task.taskName;
@@ -352,10 +365,18 @@ const TaskTable: React.FC<TaskTableProps> = ({ tasks, commands, running, onRunNo
             <span style={{ flex: 1, opacity: 0.7 }} title={formatTimestamp(task.nextExecution)}>
               {task.nextExecution ? formatCountdown(task.nextExecution) : '—'}
             </span>
-            <span style={{ flex: 1, opacity: 0.7 }} title={formatTimestamp(task.lastExecution)}>
-              {formatTimestamp(task.lastExecution)}
-            </span>
-            <span style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <span
+              style={{
+                flex: '1 1 22ch',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '1ch',
+              }}
+            >
+              <span style={{ opacity: 0.7 }} title={formatTimestamp(task.lastExecution)}>
+                {formatTimestamp(task.lastExecution)}
+              </span>
               <ActionButton
                 onClick={isRunning ? undefined : () => onRunNow(task)}
                 hotkey={isRunning ? '●' : '▸'}

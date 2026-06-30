@@ -171,31 +171,40 @@ export default function LogsPage() {
             <Table>
               <TableRow>
                 <TableColumn>File</TableColumn>
-                <TableColumn>Last write</TableColumn>
-                <TableColumn> </TableColumn>
               </TableRow>
-              {files.map((f) => (
-                <TableRow key={String(f.id)}>
-                  <TableColumn>
-                    <code>{f.filename}</code>
-                    {selected === f.filename ? (
-                      <span style={{ marginLeft: '1ch' }}>
-                        <Badge>viewing</Badge>
-                      </span>
-                    ) : null}
-                  </TableColumn>
-                  <TableColumn>{formatTime(f.lastWriteTime)}</TableColumn>
-                  <TableColumn>
-                    <Button
-                      theme={selected === f.filename ? undefined : 'SECONDARY'}
-                      aria-label={`View log ${f.filename}`}
-                      onClick={() => setSelected(f.filename)}
-                    >
-                      View
-                    </Button>
-                  </TableColumn>
-                </TableRow>
-              ))}
+              {files.map((f) => {
+                const isActive = selected === f.filename;
+                return (
+                  <TableRow key={String(f.id)}>
+                    <TableColumn>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '1ch',
+                          flexWrap: 'wrap',
+                          background: isActive
+                            ? 'var(--theme-focused-foreground)'
+                            : undefined,
+                        }}
+                      >
+                        <Button
+                          theme={isActive ? undefined : 'SECONDARY'}
+                          aria-label={`View log ${f.filename}`}
+                          onClick={() => setSelected(f.filename)}
+                        >
+                          View
+                        </Button>
+                        <code style={{ flex: '1 1 24ch', minWidth: '24ch' }}>{f.filename}</code>
+                        {isActive ? <Badge>viewing</Badge> : null}
+                        <span style={{ opacity: 0.6, marginLeft: 'auto' }}>
+                          {formatTime(f.lastWriteTime)}
+                        </span>
+                      </div>
+                    </TableColumn>
+                  </TableRow>
+                );
+              })}
             </Table>
           </>
         ) : null}

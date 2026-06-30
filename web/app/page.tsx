@@ -202,12 +202,10 @@ export default function HomePage() {
           link into the screen that owns the detail. Health is a glyph + word. */}
       <Card title="Overview" style={{ marginTop: '1ch' }}>
         {data.status ? (
-          <Row style={{ marginBottom: '0.5ch' }}>
-            <Text style={{ opacity: 0.6, fontSize: '0.85em' }}>
-              version
-            </Text>
-            <Badge style={{ marginLeft: '1ch' }}>{data.status.version}</Badge>
-          </Row>
+          <RowSpaceBetween style={{ marginBottom: '0.5ch' }}>
+            <span />
+            <Badge>{data.status.version}</Badge>
+          </RowSpaceBetween>
         ) : null}
         <div
           style={{
@@ -371,8 +369,15 @@ export default function HomePage() {
                 >
                   <RowSpaceBetween>
                     <Text>
-                      <span aria-hidden="true">{item.hasFile ? '✓' : '▸'}</span>{' '}
-                      {item.title}
+                      {item.hasFile ? (
+                        <>
+                          <span aria-hidden="true">✓</span>{' '}
+                        </>
+                      ) : null}
+                      {item.title}{' '}
+                      <span aria-hidden="true" style={{ opacity: 0.6 }}>
+                        →
+                      </span>
                     </Text>
                     <Badge>{item.kind === 'movie' ? 'MOVIE' : 'SERIES'}</Badge>
                   </RowSpaceBetween>

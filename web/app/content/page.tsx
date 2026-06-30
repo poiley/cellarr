@@ -348,7 +348,7 @@ function Poster({ id, title }: { id: string; title: string }) {
   }, [id]);
 
   const frame: React.CSSProperties = {
-    width: '20ch',
+    width: '30ch',
     aspectRatio: '2 / 3',
     flex: '0 0 auto',
     border: '1px solid var(--theme-border, var(--theme-text))',
@@ -469,7 +469,7 @@ function MetadataBlock({
       />
       <MetaRow
         label="Total size"
-        value={sizeBytes !== undefined && sizeBytes > 0 ? formatSize(sizeBytes) : '—'}
+        value={sizeBytes !== undefined && sizeBytes > 0 ? formatSize(sizeBytes) : 'Not downloaded'}
       />
       {/* Status casing matches the header badge (both uppercased), now coloured by
           the shared severity tone. */}
@@ -502,15 +502,19 @@ function MetadataBlock({
         <Text style={{ opacity: 0.6 }}>Monitored</Text>
         {/* Actionable toggle (#21): a SECONDARY SRCL Button that flips the
             flag and surfaces a toast. The label is the CURRENT state with an
-            ASCII status glyph; clicking sets the opposite. */}
-        <Button
-          theme="SECONDARY"
-          isDisabled={toggling}
-          onClick={onToggleMonitored}
-          aria-pressed={monitored}
-        >
-          {monitored ? '● Monitored' : '○ Not monitored'}
-        </Button>
+            ASCII status glyph; clicking sets the opposite. Wrapped in an
+            inline-block span so the SRCL Button sizes to its label instead of
+            spanning the (now narrower) right column. */}
+        <span style={{ display: 'inline-block', maxWidth: 'max-content' }}>
+          <Button
+            theme="SECONDARY"
+            isDisabled={toggling}
+            onClick={onToggleMonitored}
+            aria-pressed={monitored}
+          >
+            {monitored ? '● Monitored' : '○ Not monitored'}
+          </Button>
+        </span>
       </RowSpaceBetween>
       <div style={{ marginTop: '1ch' }}>
         <Text style={{ opacity: 0.6 }}>Overview</Text>
@@ -1022,16 +1026,19 @@ function ItemDetail() {
 
             <Divider type="GRADIENT" />
 
-            {/* Metadata block (#20): the cached poster beside the rich detail.
-                The two stack on a narrow viewport (flex-wrap) and sit side by
-                side otherwise; the metadata column flexes to fill the rest. */}
-            <Row style={{ gap: '2ch', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-              <Poster id={id} title={title} />
-              {/* The info column grows to fill the row only when there's an
-                  overview to fill it; without one it sizes to its content so the
-                  metadata sits snug beside the poster instead of leaving a wide
-                  empty gap to the right. */}
-              <div style={{ flex: overview ? '1 1 32ch' : '0 1 auto', minWidth: '28ch', maxWidth: '60ch' }}>
+            {/* Metadata block (#20): a two-column layout — the cached poster in
+                a fixed ~30ch LEFT column, the rich detail + Monitored toggle +
+                Overview in a RIGHT column that fills the rest and wraps below the
+                poster on a narrow viewport (flex-wrap). */}
+            <div style={{ display: 'flex', gap: '2ch', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              {/* Left column: fixed-width poster column. */}
+              <div style={{ flex: '0 0 30ch' }}>
+                <Poster id={id} title={title} />
+              </div>
+              {/* Right column: metadata, the Monitored toggle, and the Overview.
+                  Fills the space beside the poster and wraps below it when the
+                  viewport is too narrow to fit both. */}
+              <div style={{ flex: '1 1 32ch' }}>
                 <MetadataBlock
                   detail={detail}
                   year={year}
@@ -1043,7 +1050,7 @@ function ItemDetail() {
                   onToggleMonitored={toggleMonitored}
                 />
               </div>
-            </Row>
+            </div>
 
             <Divider type="GRADIENT" />
 

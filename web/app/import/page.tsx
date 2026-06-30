@@ -214,7 +214,7 @@ export default function Page() {
       <ModalStack />
       <Card title="Manual import — map loose files to library content">
         <Text style={{ opacity: 0.6 }}>
-          Scan a folder of loose files. Nothing moves until you press Import.
+          Scan a folder of loose files; nothing moves until you press Import.
         </Text>
         <div style={{ height: '1ch' }} />
         <RowSpaceBetween>

@@ -145,13 +145,12 @@ function DecisionLogScreen() {
     <AppShell>
       <Card title="Decision log">
         <Text style={{ opacity: 0.7 }}>
-          Why cellarr grabbed, upgraded, or rejected each candidate in a pipeline run. Expand any
-          record to see the parsed fields, the custom-format score breakdown, and the on-disk
-          comparison behind the verdict. Open a decision log from a row in{' '}
+          Why cellarr grabbed, upgraded, or rejected each candidate in a run — expand a record for
+          its scores and on-disk comparison, or open one from a row in{' '}
           <Link href="/history" style={{ textDecoration: 'underline' }}>
             History
-          </Link>{' '}
-          — every event that came from a run carries a “why · …” link straight to its trail.
+          </Link>
+          .
         </Text>
 
         {/* Pasting a raw run uuid is a power-user path — the primary entry is the

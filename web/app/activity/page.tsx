@@ -332,6 +332,14 @@ export default function ActivityPage() {
     date: typeof b.date === 'number' ? b.date : undefined,
   }));
 
+  // The blocklist surface frequently carries no indexer, leaving the Indexer
+  // column a wall of "—". Only render that column when at least one row actually
+  // names an indexer; otherwise drop the header + cells entirely.
+  const hasIndexer = healRows.some((row) => {
+    const v = row.indexer?.trim();
+    return !!v && v !== '—';
+  });
+
   // The badge reflects the REAL SSE transport state — it only says "live" when
   // the socket is confirmed open, and switches to "disconnected" if it drops.
   const STREAM_LABEL: Record<StreamState, string> = {
@@ -418,7 +426,9 @@ export default function ActivityPage() {
                 <TableRow>
                   <TableColumn style={{ opacity: 0.6 }}>When</TableColumn>
                   <TableColumn style={{ opacity: 0.6 }}>Release</TableColumn>
-                  <TableColumn style={{ opacity: 0.6 }}>Indexer</TableColumn>
+                  {hasIndexer ? (
+                    <TableColumn style={{ opacity: 0.6 }}>Indexer</TableColumn>
+                  ) : null}
                   <TableColumn style={{ opacity: 0.6 }}>Reason</TableColumn>
                 </TableRow>
                 {healRows.map((row) => (
@@ -427,7 +437,9 @@ export default function ActivityPage() {
                       {formatUnix(row.date)}
                     </TableColumn>
                     <TableColumn>{row.title}</TableColumn>
-                    <TableColumn>{row.indexer || '—'}</TableColumn>
+                    {hasIndexer ? (
+                      <TableColumn>{row.indexer || '—'}</TableColumn>
+                    ) : null}
                     <TableColumn>
                       <StatusBadge status="blocklisted" /> {row.reason || ''}
                     </TableColumn>

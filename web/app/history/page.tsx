@@ -232,9 +232,8 @@ function HistoryScreen() {
     <AppShell>
       <Card title="History">
         <Text style={{ opacity: 0.7 }}>
-          The append-only record of everything that happened — grabs, downloads, imports, upgrades,
-          and deletions. The recent feed below spans every content node; each event links to the
-          decision log for the run that produced it. Open a node to see its full timeline.
+          Append-only feed of every grab, import, upgrade, and deletion across all nodes; each event
+          links to the decision log for its run.
         </Text>
 
         {activeNode ? (

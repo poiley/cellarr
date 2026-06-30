@@ -552,7 +552,11 @@ function LibraryBrowser() {
 
       {activeLib ? (
         <Card title={selectedLibrary ? selectedLibrary.name : 'Content'} style={{ marginTop: '2ch' }}>
-          <Row style={{ gap: '1ch', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {/* Filter input + status (and optional type) selects on ONE flex row,
+              side by side. The SRCL <Row> renders display:block, so an explicit
+              flex container is used here to keep the controls inline (wrapping on
+              narrow viewports via flexWrap + per-control flex-basis). */}
+          <div style={{ display: 'flex', gap: '1ch', alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 24ch', minWidth: '20ch' }}>
               <Input
                 name="content-filter"
@@ -586,7 +590,7 @@ function LibraryBrowser() {
                 />
               </div>
             ) : null}
-          </Row>
+          </div>
 
           <Divider type="GRADIENT" />
 
@@ -701,10 +705,14 @@ function LibraryBrowser() {
                           style={{ cursor: 'pointer' }}
                           title={`Open ${item.title}`}
                         >
-                          <Row style={{ gap: '1ch', alignItems: 'center' }}>
+                          {/* Thumbnail + title vertically centered. SRCL <Row>
+                              renders display:block (so alignItems is inert);
+                              an explicit flex container centers the title against
+                              the poster thumbnail. */}
+                          <div style={{ display: 'flex', gap: '1ch', alignItems: 'center' }}>
                             <PosterThumb id={item.id} title={item.title} />
                             <span>{item.title}</span>
-                          </Row>
+                          </div>
                         </TableColumn>
                         <TableColumn style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                           {item.year ? String(item.year) : '—'}

@@ -333,6 +333,11 @@ const ResultSection: React.FC<{
   const shown = expanded ? results : results.slice(0, SECTION_PAGE);
   const hiddenCount = results.length - shown.length;
 
+  // The lookup path often returns no popularity for any result, in which case the
+  // Popularity column is a wall of "—". Only render that column when at least one
+  // result in this section actually carries a popularity value.
+  const hasAnyPopularity = results.some((r) => r.popularity !== undefined);
+
   return (
     <section style={{ marginBottom: '1ch' }}>
       <Text style={{ fontWeight: 600, opacity: 0.85 }}>
@@ -343,7 +348,7 @@ const ResultSection: React.FC<{
         <TableRow>
           <TableColumn>Title</TableColumn>
           <TableColumn>Year</TableColumn>
-          <TableColumn>Popularity</TableColumn>
+          {hasAnyPopularity ? <TableColumn>Popularity</TableColumn> : null}
           <TableColumn>Overview</TableColumn>
           <TableColumn>Add</TableColumn>
         </TableRow>
@@ -353,9 +358,11 @@ const ResultSection: React.FC<{
             <TableRow key={r.foreign_id}>
               <TableColumn>{r.title}</TableColumn>
               <TableColumn>{r.year ?? '—'}</TableColumn>
-              <TableColumn>
-                <span style={{ opacity: 0.7 }}>{disambiguation(r)}</span>
-              </TableColumn>
+              {hasAnyPopularity ? (
+                <TableColumn>
+                  <span style={{ opacity: 0.7 }}>{disambiguation(r)}</span>
+                </TableColumn>
+              ) : null}
               <TableColumn>
                 <span style={{ opacity: 0.7 }}>{truncate(r.overview)}</span>
               </TableColumn>
