@@ -356,7 +356,7 @@ fn iso_date(value: Option<&serde_json::Value>) -> Option<String> {
 /// values in the API are host-relative); `original` is the always-valid full-size
 /// rendition. This base is stable and documented; we compose it rather than call
 /// the `/configuration` endpoint for a single fixed value.
-const TMDB_IMAGE_BASE: &str = "https://image.themoviedb.org/t/p/original";
+const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/original";
 
 fn collect_images(images: &serde_json::Value) -> Vec<Image> {
     let mut out = Vec::new();
@@ -455,12 +455,12 @@ mod normalize_movie_tests {
         let poster = meta.images.iter().find(|i| i.kind == "poster").unwrap();
         assert_eq!(
             poster.url,
-            "https://image.themoviedb.org/t/p/original/poster1.jpg"
+            "https://image.tmdb.org/t/p/original/poster1.jpg"
         );
         let fanart = meta.images.iter().find(|i| i.kind == "fanart").unwrap();
         assert_eq!(
             fanart.url,
-            "https://image.themoviedb.org/t/p/original/back1.jpg"
+            "https://image.tmdb.org/t/p/original/back1.jpg"
         );
     }
 
