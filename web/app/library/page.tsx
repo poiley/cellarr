@@ -132,7 +132,8 @@ const SortHeader: React.FC<{
   col: SortKey;
   sort: SortState;
   onSort: (key: SortKey) => void;
-}> = ({ label, col, sort, onSort }) => {
+  style?: React.CSSProperties;
+}> = ({ label, col, sort, onSort, style }) => {
   const active = sort.key === col;
   return (
     <TableColumn
@@ -146,7 +147,7 @@ const SortHeader: React.FC<{
           onSort(col);
         }
       }}
-      style={{ cursor: 'pointer', userSelect: 'none', fontWeight: active ? 700 : undefined }}
+      style={{ cursor: 'pointer', userSelect: 'none', fontWeight: active ? 700 : undefined, ...style }}
       title={`Sort by ${label}`}
     >
       {label}
@@ -649,10 +650,22 @@ function LibraryBrowser() {
                       </Checkbox>
                     </TableColumn>
                     <SortHeader label="Title" col="title" sort={sort} onSort={onSort} />
-                    <SortHeader label="Year" col="year" sort={sort} onSort={onSort} />
+                    <SortHeader
+                      label="Year"
+                      col="year"
+                      sort={sort}
+                      onSort={onSort}
+                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                    />
                     {showType ? <TableColumn role="columnheader">Type</TableColumn> : null}
                     <SortHeader label="Quality" col="quality" sort={sort} onSort={onSort} />
-                    <SortHeader label="Size" col="size" sort={sort} onSort={onSort} />
+                    <SortHeader
+                      label="Size"
+                      col="size"
+                      sort={sort}
+                      onSort={onSort}
+                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                    />
                     <SortHeader label="Status" col="status" sort={sort} onSort={onSort} />
                   </TableRow>
                   {filtered.map((item) => {
@@ -693,10 +706,14 @@ function LibraryBrowser() {
                             <span>{item.title}</span>
                           </Row>
                         </TableColumn>
-                        <TableColumn>{item.year ? String(item.year) : '—'}</TableColumn>
+                        <TableColumn style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                          {item.year ? String(item.year) : '—'}
+                        </TableColumn>
                         {showType ? <TableColumn>{item.kind}</TableColumn> : null}
                         <TableColumn>{item.quality ?? '—'}</TableColumn>
-                        <TableColumn>{item.sizeOnDisk ? formatSize(item.sizeOnDisk) : '—'}</TableColumn>
+                        <TableColumn style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                          {item.sizeOnDisk ? formatSize(item.sizeOnDisk) : '—'}
+                        </TableColumn>
                         <TableColumn>
                           <Row style={{ gap: '0.5ch', flexWrap: 'wrap', alignItems: 'center' }}>
                             {/* Glyph + colour so MISSING stands out beyond colour

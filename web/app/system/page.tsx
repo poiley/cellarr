@@ -215,20 +215,25 @@ export default function SystemPage() {
             <Text style={{ marginTop: '1ch', opacity: 0.6, marginBottom: '0.5ch' }}>
               Health
             </Text>
-            <Table>
-              <TableRow>
-                <TableColumn style={{ opacity: 0.6 }}>Check</TableColumn>
-                <TableColumn style={{ opacity: 0.6 }}>Status</TableColumn>
-              </TableRow>
-              {healthRows.map((r) => (
-                <TableRow key={r.label}>
-                  <TableColumn>{r.label}</TableColumn>
-                  <TableColumn>
-                    <span style={{ color: TONE_COLOR[r.tone] }}>{r.value}</span>
-                  </TableColumn>
+            {/* Constrain the health table so Status sits beside its Check rather
+                than pinned to the far right with a wide empty gap — each
+                check + its tinted status reads as one unit. */}
+            <div style={{ maxWidth: '48ch' }}>
+              <Table>
+                <TableRow>
+                  <TableColumn style={{ opacity: 0.6 }}>Check</TableColumn>
+                  <TableColumn style={{ opacity: 0.6 }}>Status</TableColumn>
                 </TableRow>
-              ))}
-            </Table>
+                {healthRows.map((r) => (
+                  <TableRow key={r.label}>
+                    <TableColumn>{r.label}</TableColumn>
+                    <TableColumn>
+                      <span style={{ color: TONE_COLOR[r.tone] }}>{r.value}</span>
+                    </TableColumn>
+                  </TableRow>
+                ))}
+              </Table>
+            </div>
           </>
         ) : null}
 
@@ -393,11 +398,13 @@ const HealthChecks: React.FC<HealthChecksProps> = ({ health }) => {
   }
 
   if (health.length === 0) {
+    // No issues: a single compact tinted line, not an oversized full-width
+    // AlertBanner. The warning/error case below stays prominent.
     return (
       <div role="status" aria-live="polite">
-        <AlertBanner style={{ background: 'var(--ansi-2-green)', color: 'var(--ansi-15-white)' }}>
+        <Text style={{ color: 'var(--ansi-2-green)' }}>
           ✓ All health checks passed — no warnings or errors.
-        </AlertBanner>
+        </Text>
       </div>
     );
   }

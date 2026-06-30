@@ -102,14 +102,14 @@ const StatTile: React.FC<{
     >
       <Text
         style={{
-          fontSize: '2ch',
-          fontWeight: 600,
+          fontSize: '1.6rem',
+          fontWeight: 700,
           color: emphasis ? 'var(--ansi-9-red)' : 'inherit',
         }}
       >
         {value}
       </Text>
-      <Text style={{ opacity: 0.6, textTransform: 'uppercase', fontSize: '0.85em' }}>
+      <Text style={{ opacity: 0.6, textTransform: 'uppercase', fontSize: '0.75em' }}>
         {label}
       </Text>
     </div>
@@ -185,13 +185,6 @@ export default function HomePage() {
 
   return (
     <AppShell>
-      <RowSpaceBetween>
-        <Text style={{ fontWeight: 600 }}>
-          {data.status?.app_name ?? 'cellarr'}
-        </Text>
-        {data.status ? <Badge>{data.status.version}</Badge> : null}
-      </RowSpaceBetween>
-
       {error ? (
         <AlertBanner style={{ marginTop: '1ch' }}>
           Some data could not be loaded: {error}
@@ -208,6 +201,14 @@ export default function HomePage() {
       {/* Compact bento stat strip — high density, no scroll. Each tile is a deep
           link into the screen that owns the detail. Health is a glyph + word. */}
       <Card title="Overview" style={{ marginTop: '1ch' }}>
+        {data.status ? (
+          <Row style={{ marginBottom: '0.5ch' }}>
+            <Text style={{ opacity: 0.6, fontSize: '0.85em' }}>
+              version
+            </Text>
+            <Badge style={{ marginLeft: '1ch' }}>{data.status.version}</Badge>
+          </Row>
+        ) : null}
         <div
           style={{
             display: 'grid',
@@ -289,9 +290,16 @@ export default function HomePage() {
         </Card>
       ) : null}
 
-      <Grid style={{ marginTop: '1ch' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '2ch',
+          marginTop: '1ch',
+        }}
+      >
         {/* What's downloading now. */}
-        <Card title="Downloading now">
+        <Card title="Downloading now" style={{ flex: '1 1 32ch' }}>
           {downloads.length === 0 ? (
             <Text style={{ opacity: 0.6 }}>Nothing in flight.</Text>
           ) : (
@@ -324,7 +332,7 @@ export default function HomePage() {
         </Card>
 
         {/* Recent grabs / imports. */}
-        <Card title="Recent activity">
+        <Card title="Recent activity" style={{ flex: '1 1 32ch' }}>
           {recent.length === 0 ? (
             <Text style={{ opacity: 0.6 }}>No recent history.</Text>
           ) : (
@@ -346,7 +354,7 @@ export default function HomePage() {
             <Text style={{ opacity: 0.6 }}>View history →</Text>
           </Link>
         </Card>
-      </Grid>
+      </div>
 
       <Grid style={{ marginTop: '1ch' }}>
         {/* Recently added monitored titles. */}

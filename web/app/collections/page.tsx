@@ -13,6 +13,8 @@
 
 import * as React from 'react';
 
+import Link from 'next/link';
+
 import Card from '@components/Card';
 import Table from '@components/Table';
 import TableRow from '@components/TableRow';
@@ -152,10 +154,15 @@ function CollectionsBrowser() {
           <Text>Could not load collections: {state.message}</Text>
         ) : null}
         {state.phase === 'ready' && collections.length === 0 ? (
-          <Text>
-            No collections. Collections come from Radarr-style TMDb collection
-            import lists — add one to a Movies library to populate this view.
-          </Text>
+          <>
+            <Text>
+              No collections. Collections come from Radarr-style TMDb collection
+              import lists — add one to a Movies library to populate this view.
+            </Text>
+            <Link href="/settings" style={{ textDecoration: 'none' }}>
+              <Text style={{ opacity: 0.6 }}>→ Add an import list in Settings</Text>
+            </Link>
+          </>
         ) : null}
 
         {state.phase === 'ready' && collections.length > 0 ? (

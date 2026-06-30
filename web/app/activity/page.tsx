@@ -52,6 +52,7 @@ import {
   runTaskNow,
   type SystemTaskV3,
 } from '@app/_lib/activity';
+import { toneFor } from '@app/_lib/status';
 import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
 import type {
@@ -464,8 +465,7 @@ export default function ActivityPage() {
                   <TableColumn style={{ opacity: 0.6 }}>Task</TableColumn>
                   <TableColumn style={{ opacity: 0.6 }}>Next run</TableColumn>
                   <TableColumn style={{ opacity: 0.6 }}>Last run</TableColumn>
-                  <TableColumn style={{ opacity: 0.6 }}>Last status</TableColumn>
-                  <TableColumn style={{ opacity: 0.6 }} />
+                  <TableColumn style={{ opacity: 0.6 }}>Status &amp; action</TableColumn>
                 </TableRow>
                 {tasks.map((task) => {
                   const key = String(task.id);
@@ -481,18 +481,29 @@ export default function ActivityPage() {
                         {formatIso(task.lastExecution)}
                       </TableColumn>
                       <TableColumn style={{ whiteSpace: 'nowrap' }}>
-                        <Badge>
-                          {last.glyph} {last.label}
-                        </Badge>
-                      </TableColumn>
-                      <TableColumn style={{ whiteSpace: 'nowrap' }}>
-                        <Button
-                          theme="SECONDARY"
-                          isDisabled={isRunning}
-                          onClick={() => onRunTask(task)}
+                        {/* Status chip + action read together so the button is
+                            adjacent to its row rather than stranded in a far
+                            column. The chip is tone-coloured (QUEUED → blue) via
+                            StatusBadge; the glyph + label text is preserved. */}
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            gap: '1ch',
+                            alignItems: 'center',
+                          }}
                         >
-                          {isRunning ? 'Running…' : 'Run now'}
-                        </Button>
+                          <StatusBadge
+                            status={`${last.glyph} ${last.label}`}
+                            tone={toneFor(task.lastStatus)}
+                          />
+                          <Button
+                            theme="SECONDARY"
+                            isDisabled={isRunning}
+                            onClick={() => onRunTask(task)}
+                          >
+                            {isRunning ? 'Running…' : 'Run now'}
+                          </Button>
+                        </span>
                       </TableColumn>
                     </TableRow>
                   );
