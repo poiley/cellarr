@@ -12,7 +12,7 @@ import Card from '@components/Card';
 import Table from '@components/Table';
 import TableRow from '@components/TableRow';
 import TableColumn from '@components/TableColumn';
-import Button from '@components/Button';
+import ActionButton from '@components/ActionButton';
 import ButtonGroup from '@components/ButtonGroup';
 import Input from '@components/Input';
 import Select from '@components/Select';
@@ -188,13 +188,13 @@ export default function LogsPage() {
                             : undefined,
                         }}
                       >
-                        <Button
-                          theme={isActive ? undefined : 'SECONDARY'}
+                        <ActionButton
+                          isSelected={isActive}
                           aria-label={`View log ${f.filename}`}
                           onClick={() => setSelected(f.filename)}
                         >
                           View
-                        </Button>
+                        </ActionButton>
                         <code style={{ flex: '1 1 24ch', minWidth: '24ch' }}>{f.filename}</code>
                         {isActive ? <Badge>viewing</Badge> : null}
                         <span style={{ opacity: 0.6, marginLeft: 'auto' }}>
