@@ -21,6 +21,8 @@ import Button from '@components/Button';
 import Select from '@components/Select';
 import Text from '@components/Text';
 import Row from '@components/Row';
+
+import { statusColor } from '@app/_lib/status';
 import RowSpaceBetween from '@components/RowSpaceBetween';
 import Divider from '@components/Divider';
 import ActionButton from '@components/ActionButton';
@@ -417,6 +419,9 @@ function MetadataBlock({
   onToggleMonitored: () => void;
 }) {
   const sizeBytes = detail?.sizeOnDisk;
+  const statusText = (detail?.status ?? (detail?.hasFile ? 'Downloaded' : 'Missing')).toUpperCase();
+  const path = (detail as { path?: string } | undefined)?.path;
+  const tmdbId = (detail as { tmdbId?: number } | undefined)?.tmdbId;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
       {year !== undefined ? <MetaRow label="Year" value={year} /> : null}
@@ -429,12 +434,33 @@ function MetadataBlock({
         label="Total size"
         value={sizeBytes !== undefined && sizeBytes > 0 ? formatSize(sizeBytes) : '—'}
       />
-      {/* Status casing matches the header badge (both uppercased) so a node
-          doesn't read "released" here but "RELEASED" above. */}
+      {/* Status casing matches the header badge (both uppercased), now coloured by
+          the shared severity tone. */}
       <MetaRow
         label="Status"
-        value={(detail?.status ?? (detail?.hasFile ? 'Downloaded' : 'Missing')).toUpperCase()}
+        value={<span style={{ color: statusColor(statusText) }}>{statusText}</span>}
       />
+      {path ? (
+        <MetaRow
+          label="Path"
+          value={<span style={{ opacity: 0.85, wordBreak: 'break-all' }}>{path}</span>}
+        />
+      ) : null}
+      {tmdbId ? (
+        <MetaRow
+          label="TMDB"
+          value={
+            <a
+              href={`https://www.themoviedb.org/movie/${tmdbId}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--ansi-12-blue)' }}
+            >
+              #{tmdbId} ↗
+            </a>
+          }
+        />
+      ) : null}
       <RowSpaceBetween style={{ gap: '2ch', alignItems: 'center' }}>
         <Text style={{ opacity: 0.6 }}>Monitored</Text>
         {/* Actionable toggle (#21): a SECONDARY SRCL Button that flips the
