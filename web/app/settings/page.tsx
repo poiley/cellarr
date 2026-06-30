@@ -9,6 +9,7 @@ import * as React from 'react';
 
 import ButtonGroup from '@components/ButtonGroup';
 import Divider from '@components/Divider';
+import Text from '@components/Text';
 
 import AppShell from '@app/_components/AppShell';
 import QualityProfiles from '@app/settings/_components/QualityProfiles';
@@ -61,6 +62,15 @@ const TABS: { id: Section; label: string }[] = [
   { id: 'security', label: 'Security' },
 ];
 
+// Group the 15 sections into labelled bands so the switcher reads as a small
+// number of scannable groups instead of one long wrapping tab wall.
+const GROUPS: { label: string; ids: Section[] }[] = [
+  { label: 'Profiles', ids: ['profiles', 'definitions', 'formats', 'delays', 'releaseprofiles'] },
+  { label: 'Connections', ids: ['indexers', 'clients', 'importlists', 'remotepaths', 'notifications'] },
+  { label: 'Media', ids: ['rootfolders', 'naming'] },
+  { label: 'General', ids: ['tags', 'backups', 'security'] },
+];
+
 const INDEXER_IMPLS = ['Torznab', 'Newznab', 'Prowlarr', 'Jackett'];
 const CLIENT_IMPLS = ['qBittorrent', 'Transmission', 'Deluge', 'SABnzbd', 'NZBGet'];
 
@@ -69,13 +79,35 @@ export default function Page() {
 
   return (
     <AppShell>
-      <ButtonGroup
-        items={TABS.map((t) => ({
-          body: t.label,
-          selected: section === t.id,
-          onClick: () => setSection(t.id),
-        }))}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
+        {GROUPS.map((g) => (
+          <div
+            key={g.label}
+            style={{ display: 'flex', gap: '1ch', alignItems: 'baseline', flexWrap: 'wrap' }}
+          >
+            <Text
+              style={{
+                opacity: 0.6,
+                minWidth: '14ch',
+                textTransform: 'uppercase',
+                fontSize: '0.85em',
+              }}
+            >
+              {g.label}
+            </Text>
+            <ButtonGroup
+              items={g.ids.map((id) => {
+                const t = TABS.find((x) => x.id === id);
+                return {
+                  body: t ? t.label : id,
+                  selected: section === id,
+                  onClick: () => setSection(id),
+                };
+              })}
+            />
+          </div>
+        ))}
+      </div>
       <Divider type="GRADIENT" />
       <div style={{ marginTop: '1ch' }}>
         {section === 'profiles' ? <QualityProfiles /> : null}
