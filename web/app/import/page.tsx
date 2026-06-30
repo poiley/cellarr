@@ -24,6 +24,8 @@ import Table from '@components/Table';
 import TableRow from '@components/TableRow';
 import TableColumn from '@components/TableColumn';
 import Badge from '@components/Badge';
+
+import StatusBadge from '@app/_components/StatusBadge';
 import Text from '@components/Text';
 import Divider from '@components/Divider';
 import AlertBanner from '@components/AlertBanner';
@@ -362,11 +364,11 @@ const ImportTable: React.FC<{
           <TableColumn>
             {r.rejected ? (
               <span title={r.rejections.join('; ')}>
-                <Badge>rejected</Badge>{' '}
+                <StatusBadge status="rejected" />{' '}
                 <span style={{ opacity: 0.7 }}>{r.rejections.join('; ') || 'rejected'}</span>
               </span>
             ) : (
-              <Badge>ok</Badge>
+              <StatusBadge status="ok" />
             )}
           </TableColumn>
           <TableColumn>{formatSize(r.size)}</TableColumn>

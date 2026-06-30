@@ -17,6 +17,8 @@ import Table from '@components/Table';
 import TableRow from '@components/TableRow';
 import TableColumn from '@components/TableColumn';
 import Badge from '@components/Badge';
+
+import StatusBadge from '@app/_components/StatusBadge';
 import Text from '@components/Text';
 import Divider from '@components/Divider';
 import AlertBanner from '@components/AlertBanner';
@@ -220,7 +222,7 @@ const ReleaseTable: React.FC<{
                   component="tooltip"
                   text={r.rejection_reason || 'Rejected by the current quality profile.'}
                 >
-                  <Badge>rejected</Badge>
+                  <StatusBadge status="rejected" />
                 </HoverComponentTrigger>
               </>
             ) : null}
