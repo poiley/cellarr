@@ -19,7 +19,6 @@ import Card from '@components/Card';
 import Select from '@components/Select';
 import Input from '@components/Input';
 import Checkbox from '@components/Checkbox';
-import RadioButton from '@components/RadioButton';
 import Button from '@components/Button';
 import ButtonGroup from '@components/ButtonGroup';
 import Badge from '@components/Badge';
@@ -412,22 +411,21 @@ const QualityProfiles: React.FC<{ client?: CellarrClient }> = ({ client = defaul
 
           <div style={{ margin: '1ch 0' }}>
             <Text style={{ opacity: 0.6 }}>Cutoff quality</Text>
-            <div role="radiogroup" aria-label="Cutoff quality">
-              {form.qualities
-                .filter((q) => q.allowed)
-                .map((q) => (
-                  <RadioButton
-                    key={q.id}
-                    name="cutoff-quality"
-                    value={q.id}
-                    aria-label={q.name}
-                    selected={form.cutoff === q.id}
-                    onSelect={(value) => update({ cutoff: value })}
-                  >
-                    {q.name}
-                  </RadioButton>
-                ))}
-            </div>
+            {/* The cutoff is a single choice — a compact Select instead of a
+                one-row-per-quality radio list (which ran to ~16 rows for an
+                all-quality profile). `key` re-mounts it when switching profiles so
+                the uncontrolled Select shows the new profile's cutoff. */}
+            <Select
+              key={`cutoff-${selectedId}`}
+              name="cutoff-quality"
+              aria-label="Cutoff quality"
+              options={form.qualities.filter((q) => q.allowed).map((q) => q.name)}
+              defaultValue={form.qualities.find((q) => q.id === form.cutoff)?.name ?? ''}
+              onChange={(name) => {
+                const q = form.qualities.find((x) => x.name === name);
+                if (q) update({ cutoff: q.id });
+              }}
+            />
           </div>
 
           <Divider type="GRADIENT" />
