@@ -380,6 +380,9 @@ export default function ActivityPage() {
                   <RowSpaceBetween>
                     <Text>{row.title}</Text>
                     <span style={{ display: 'inline-flex', gap: '1ch', alignItems: 'center' }}>
+                      {row.record?.timeleft && !TERMINAL.has(row.status) ? (
+                        <Text style={{ opacity: 0.6 }}>ETA {row.record.timeleft}</Text>
+                      ) : null}
                       <StatusBadge status={lifecycleLabel(row.status)} />
                       {row.record ? (
                         <QueueActions record={row.record} onChanged={refreshQueue} />
