@@ -466,7 +466,7 @@ function MetadataBlock({
               href={`https://www.themoviedb.org/movie/${tmdbId}`}
               target="_blank"
               rel="noreferrer"
-              style={{ color: 'var(--ansi-12-blue)' }}
+              style={{ color: 'var(--tone-info)' }}
             >
               #{tmdbId} ↗
             </a>

@@ -338,6 +338,20 @@ body.theme-light {
   */
   --theme-window-background: var(--color-gray-89);
   --theme-window-shadow: var(--color-gray-66);
+
+  /*
+  Semantic status tones, theme-aware. The raw --ansi-* primitives are fixed sRGB
+  (a terminal's 16 colors) and are NOT tuned per background: pure yellow (#ff0) is
+  invisible on white and pure blue (#00f) is illegible on black. So each tone is an
+  OKLCH projection of its palette colour at a lightness that actually contrasts with
+  THIS theme's page background (web-only derivation, same rule as the tints above).
+  On the LIGHT (white) page, tones run dark. Consumed via --_lib/status TONE_COLOR.
+  */
+  --tone-ok: var(--ansi-2-green); /* #008000 — already ~5:1 on white */
+  --tone-warn: oklch(from var(--ansi-11-yellow) 0.52 0.15 h); /* dark amber, not #ff0 */
+  --tone-error: var(--ansi-9-red);
+  --tone-info: var(--ansi-12-blue); /* #00f — ~8.6:1 on white */
+  --tone-neutral: var(--color-gray-42);
 }
 
 body.theme-dark {
@@ -366,6 +380,18 @@ body.theme-dark {
   */
   --theme-window-background: var(--color-gray-23);
   --theme-window-shadow: var(--color-gray-15);
+
+  /*
+  Semantic status tones, theme-aware (see the light-theme block for the rationale).
+  On the DARK (black) page the tones run BRIGHT so they clear the contrast floor:
+  pure blue (#00f, ~2.4:1 on black) becomes a legible azure, and the rest lift to a
+  consistent perceptual band. Yellow already reads on black, so it stays as-is.
+  */
+  --tone-ok: oklch(from var(--ansi-2-green) 0.78 0.18 h);
+  --tone-warn: var(--ansi-11-yellow); /* #ff0 — ~19:1 on black */
+  --tone-error: oklch(from var(--ansi-9-red) 0.68 0.21 h);
+  --tone-info: oklch(from var(--ansi-12-blue) 0.72 0.15 h); /* azure, legible on black */
+  --tone-neutral: var(--color-gray-66);
 }
 
 /*

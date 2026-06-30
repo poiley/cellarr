@@ -6,13 +6,17 @@
 
 export type Tone = 'ok' | 'warn' | 'error' | 'info' | 'neutral';
 
-/** SRCL ANSI tokens, used for meaning only (severity/state). Stable across themes. */
+// Theme-aware semantic tones. The raw --ansi-* primitives are fixed sRGB and only
+// contrast with one background (pure blue is illegible on black, pure yellow on
+// white), so these resolve to the per-theme --tone-* tokens defined in global.css
+// (an OKLCH projection of the same palette colour, brightened on dark / darkened on
+// light). Colour is always paired with the label text — never the sole signal.
 export const TONE_COLOR: Record<Tone, string> = {
-  ok: 'var(--ansi-2-green)',
-  warn: 'var(--ansi-11-yellow)',
-  error: 'var(--ansi-9-red)',
-  info: 'var(--ansi-12-blue)',
-  neutral: 'var(--ansi-8-gray)',
+  ok: 'var(--tone-ok)',
+  warn: 'var(--tone-warn)',
+  error: 'var(--tone-error)',
+  info: 'var(--tone-info)',
+  neutral: 'var(--tone-neutral)',
 };
 
 // Status tokens that recur across screens (library, activity, history, health,
