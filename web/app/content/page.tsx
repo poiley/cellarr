@@ -333,8 +333,19 @@ function formatRuntime(minutes: number | undefined): string | undefined {
 function Poster({ id, title }: { id: string; title: string }) {
   // 'loading' until the image resolves; 'error' when the endpoint 404s / fails.
   const [state, setState] = React.useState<'loading' | 'ok' | 'error'>('loading');
-  // Reset when the id changes so a re-navigation re-attempts the fetch.
-  React.useEffect(() => setState('loading'), [id]);
+  const imgRef = React.useRef<HTMLImageElement | null>(null);
+  // Reset when the id changes so a re-navigation re-attempts the fetch, then
+  // immediately reconcile against the element: a *cached* image can already be
+  // `complete` before React attaches `onLoad`, so `onLoad` never fires and the
+  // card would be stuck on "Loading…" until a refresh. Reading `complete` /
+  // `naturalWidth` after the commit covers that race (and re-checks on a new id).
+  React.useEffect(() => {
+    setState('loading');
+    const img = imgRef.current;
+    if (img && img.complete) {
+      setState(img.naturalWidth > 0 ? 'ok' : 'error');
+    }
+  }, [id]);
 
   const frame: React.CSSProperties = {
     width: '20ch',
@@ -367,6 +378,7 @@ function Poster({ id, title }: { id: string; title: string }) {
           component imports, not media tags). Hidden until it actually loads so a
           half-loaded/404 frame never flashes; onError swaps in the placeholder. */}
       <img
+        ref={imgRef}
         src={mediaCoverUrl('poster', id)}
         alt={`${title} poster`}
         onLoad={() => setState('ok')}
