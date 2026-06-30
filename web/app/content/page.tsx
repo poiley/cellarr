@@ -1049,7 +1049,10 @@ function ItemDetail() {
         </Card>
       ) : null}
 
-      {data && root ? (
+      {/* The structure tree is only meaningful when there's a hierarchy to show
+          (a series' seasons/episodes). For a movie it's a single node rendered as
+          its raw "#id" — pure noise — so hide it when the root has no children. */}
+      {data && root && (byParent.get(root.id)?.length ?? 0) > 0 ? (
         <Card title="Structure" style={{ marginTop: '2ch' }}>
           <ContentBranch
             node={root}
