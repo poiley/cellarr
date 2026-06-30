@@ -16,7 +16,7 @@ import Link from 'next/link';
 import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
 import BlockLoader from '@components/BlockLoader';
-import Button from '@components/Button';
+import ButtonGroup from '@components/ButtonGroup';
 import Card from '@components/Card';
 import Divider from '@components/Divider';
 import Row from '@components/Row';
@@ -105,23 +105,18 @@ function CalendarScreen() {
 
         <Divider type="GRADIENT" />
 
-        {/* Window switcher — an inline segmented control over the forward range. */}
-        <Row role="group" aria-label="Window" style={{ gap: '1ch', flexWrap: 'wrap' }}>
-          {WINDOW_OPTIONS.map((opt) => {
-            const isActive = opt.days === windowDays;
-            return (
-              <Button
-                key={opt.days}
-                theme={isActive ? 'PRIMARY' : 'SECONDARY'}
-                onClick={() => setWindowDays(opt.days)}
-                aria-pressed={isActive}
-              >
-                {isActive ? '● ' : '○ '}
-                {opt.label}
-              </Button>
-            );
-          })}
-        </Row>
+        {/* Window switcher — a horizontal segmented control over the forward
+            range (SRCL Button is full-width and would stack; ButtonGroup is the
+            inline cluster with selected-state highlighting). */}
+        <div role="group" aria-label="Window">
+          <ButtonGroup
+            items={WINDOW_OPTIONS.map((opt) => ({
+              body: opt.label,
+              selected: opt.days === windowDays,
+              onClick: () => setWindowDays(opt.days),
+            }))}
+          />
+        </div>
       </Card>
 
       {state.phase === 'loading' ? (
