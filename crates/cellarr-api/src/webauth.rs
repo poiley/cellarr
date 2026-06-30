@@ -286,6 +286,29 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// Whether a request is authenticated under the configured **web-auth** method,
+/// independent of the `/api/v3` apikey surface.
+///
+/// Returns `true` when the method is not effectively enforced (an open install),
+/// or a valid Basic credential / Forms session is present. This is the seam the
+/// `/api/v3` apikey middleware uses to *also* admit a logged-in SPA user (or any
+/// caller on an open install): the web UI authenticates by session and never sends
+/// the apikey, so without this it could not drive the v3 write endpoints the SPA
+/// depends on (add, monitor toggle, grab, …). A config read failure fails closed.
+pub async fn request_is_web_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
+    let Ok(cfg) = state.db.auth().get_config().await else {
+        return false;
+    };
+    if !cfg.is_effectively_enforced() {
+        return true;
+    }
+    match cfg.method {
+        AuthMethod::None => true,
+        AuthMethod::Basic => check_basic(headers, &cfg),
+        AuthMethod::Forms => check_forms(state, headers).await,
+    }
+}
+
 /// The web-UI authentication gate. Applied to the whole router; exempt paths
 /// (`/api/v3`, `/login`, `/health`, static assets) pass straight through, and the
 /// configured [`AuthMethod`] enforces the rest.

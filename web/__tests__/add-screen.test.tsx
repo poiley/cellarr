@@ -137,10 +137,12 @@ describe('Add / search-new screen', () => {
     fireEvent.change(input, { target: { value: 'blade' } });
     await waitFor(() => expect(screen.getByText('Blade Runner')).toBeTruthy(), { timeout: 2000 });
 
-    // Click the per-row Add ActionButton (avoid the "Search" button etc).
+    // Click the per-row Add ActionButton — it carries the "＋" hotkey glyph, which
+    // the "Search" button and the sidebar "Add" nav link do not, so this targets
+    // the row action unambiguously.
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     // Dialog appears with the title.
     await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
@@ -221,7 +223,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
 
@@ -263,7 +265,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
     fireEvent.click(screen.getByText('OK'));
@@ -298,7 +300,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Breaking Bad"/)).toBeTruthy());
 
@@ -355,7 +357,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Breaking Bad"/)).toBeTruthy());
 
@@ -405,7 +407,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Frieren"/)).toBeTruthy());
 
@@ -448,7 +450,7 @@ describe('Add / search-new screen', () => {
 
     const addButton = screen
       .getAllByRole('button')
-      .find((el) => el.textContent?.includes('Add')) as HTMLElement;
+      .find((el) => el.textContent?.includes('＋')) as HTMLElement;
     fireEvent.click(addButton);
     await waitFor(() => expect(screen.getByText(/Add "Blade Runner"/)).toBeTruthy());
     // A movie dialog has no series-type select.

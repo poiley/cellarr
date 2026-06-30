@@ -294,20 +294,25 @@ async fn basic_challenge_then_valid_creds_pass_wrong_creds_401() {
 // /api/v3 stays apikey-authenticated under EVERY method
 // ===========================================================================
 
-/// Under each web-UI method, a `/api/v3` mutating request still needs the apikey
-/// (and a read still works), proving the gate never touches the *arr surface.
+/// A `/api/v3` write is admitted by EITHER the apikey OR a web-authenticated
+/// caller. Reads stay open; the apikey works under every method; and a write with
+/// neither apikey nor web-auth is rejected only when the install is *enforced*.
+///
+/// Under `none` the install is open (the SPA + `/api/v1` are already open), so a
+/// keyless `/api/v3` write succeeds — locking only `/api/v3` there was the
+/// inconsistency that left the SPA (which authenticates by session, never the
+/// apikey) unable to write. Under `forms`/`basic` (enforced, no session), a
+/// keyless write is still 401.
 #[tokio::test]
-async fn v3_apikey_auth_is_independent_of_web_method() {
+async fn v3_write_accepts_apikey_or_web_auth() {
     for method in ["none", "forms", "basic"] {
-        // The server enforces the apikey on /api/v3 writes (start_authed wires the
-        // apikey AuthConfig); the web method is layered on top via the DB config.
         let srv = start_authed().await;
         set_credential(&srv.base_url, "admin", "web-pass-123").await;
         set_method(&srv.base_url, method).await;
 
         let client = no_redirect_client();
 
-        // A /api/v3 read (ping) is open regardless — and never gated by the web gate.
+        // A /api/v3 read (ping) is open regardless — never gated by the web gate.
         let res = client
             .get(format!("{}/api/v3/ping", srv.base_url))
             .send()
@@ -319,7 +324,7 @@ async fn v3_apikey_auth_is_independent_of_web_method() {
             "v3 ping must stay open under web method {method}"
         );
 
-        // A /api/v3 mutating request WITH the apikey → not 401 (apikey accepted).
+        // A /api/v3 mutating request WITH the apikey → accepted under every method.
         let res = client
             .post(format!("{}/api/v3/tag", srv.base_url))
             .header("X-Api-Key", TEST_API_KEY)
@@ -333,20 +338,78 @@ async fn v3_apikey_auth_is_independent_of_web_method() {
             "v3 write WITH apikey must succeed under web method {method}"
         );
 
-        // A /api/v3 mutating request WITHOUT the apikey → 401, under every method,
-        // and it is the APIKEY 401 (never a web-gate redirect).
+        // A /api/v3 mutating request with NEITHER apikey nor web-auth:
+        //   * none  → open install → succeeds;
+        //   * forms/basic (enforced, no session) → 401.
         let res = client
             .post(format!("{}/api/v3/tag", srv.base_url))
             .json(&serde_json::json!({ "label": "no-key" }))
             .send()
             .await
             .unwrap();
+        let expected = if method == "none" {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        };
         assert_eq!(
             res.status(),
-            StatusCode::UNAUTHORIZED,
-            "v3 write WITHOUT apikey must 401 under web method {method}"
+            expected,
+            "keyless v3 write under web method {method}"
         );
     }
+}
+
+/// On a secured (Forms-enforced) install with an apikey configured, a logged-in
+/// session admits a keyless `/api/v3` write — the SPA path (the SPA authenticates
+/// by session and never sends the apikey, yet drives the v3 write endpoints).
+#[tokio::test]
+async fn v3_write_accepts_a_valid_forms_session_without_apikey() {
+    let srv = start_authed().await; // apikey wired → require_api_key is active
+    set_credential(&srv.base_url, "admin", "hunter2-strong").await;
+    set_method(&srv.base_url, "forms").await;
+
+    let client = no_redirect_client();
+
+    // No session, no apikey, enforced → 401.
+    let res = client
+        .post(format!("{}/api/v3/tag", srv.base_url))
+        .json(&serde_json::json!({ "label": "no-auth" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // Log in to obtain a session cookie.
+    let res = client
+        .post(format!("{}/login", srv.base_url))
+        .json(&serde_json::json!({ "username": "admin", "password": "hunter2-strong" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = res
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .expect("a session cookie is set")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let cookie_pair = cookie.split(';').next().unwrap().to_string();
+
+    // With the session cookie (and NO apikey), the v3 write now succeeds.
+    let res = client
+        .post(format!("{}/api/v3/tag", srv.base_url))
+        .header(reqwest::header::COOKIE, &cookie_pair)
+        .json(&serde_json::json!({ "label": "via-session" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "a logged-in Forms session must admit a keyless v3 write"
+    );
 }
 
 // ===========================================================================

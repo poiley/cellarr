@@ -72,15 +72,30 @@ fn presented_key(req: &Request) -> Option<String> {
     })
 }
 
-/// Middleware enforcing API-key auth. Applied to mutating routes only; reads
-/// stay open so the UI and discovery work without a key on first run.
+/// Middleware enforcing auth on mutating `/api/v3` routes. Reads stay open so the
+/// UI and discovery work without a key on first run.
+///
+/// A write is admitted when EITHER:
+///   * a valid API key is presented (the ecosystem path — Radarr/Sonarr clients,
+///     scripts), OR
+///   * the request is authenticated under the configured **web-auth** method (an
+///     open install, or a logged-in Forms/Basic SPA session).
+///
+/// The second arm is essential: the web SPA authenticates by session and never
+/// sends the API key, yet drives the v3 write endpoints (add, monitor toggle,
+/// grab, …). Without it, any install that sets an API key would have a SPA that
+/// can read but never write. The two arms keep ecosystem clients and the SPA both
+/// working without weakening an enforced install (an anonymous caller with no key
+/// and no session is still rejected).
 pub async fn require_api_key(
     State(state): State<AppState>,
     req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
     let presented = presented_key(&req);
-    if state.auth.accepts(presented.as_deref()) {
+    if state.auth.accepts(presented.as_deref())
+        || crate::webauth::request_is_web_authenticated(&state, req.headers()).await
+    {
         Ok(next.run(req).await)
     } else {
         Err(ApiError::Unauthorized)
