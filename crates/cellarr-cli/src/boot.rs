@@ -227,7 +227,7 @@ impl Daemon {
 
         // Wire the (already-created) artwork cache dir into the API state so the v3
         // `mediacover/{id}/{kind}` route serves the bytes the resolver caches.
-        let state = state.with_artwork_dir(artwork_dir);
+        let state = state.with_artwork_dir(artwork_dir.clone());
 
         // The recycle bin a `deleteFiles` content delete moves removed media into
         // (making the delete reversible). Unset → deletes unlink outright.
@@ -240,8 +240,11 @@ impl Daemon {
         // live DB + its file path (the path is needed for the atomic restore swap).
         // This powers the `/api/v3/system/backup` surface and the scheduled backup
         // job below.
+        // Bundle the MediaCover artwork into backups too, so a restore carries the
+        // cached posters/fanart (the DB already carries the text metadata).
         let backup_engine =
-            cellarr_api::BackupEngine::new(config.backup_dir(), state.db.clone(), db_path.clone());
+            cellarr_api::BackupEngine::new(config.backup_dir(), state.db.clone(), db_path.clone())
+                .with_artwork_dir(artwork_dir.clone());
         let state = state.with_backup(backup_engine);
 
         // The on-disk log-file reader, bound to the rolling appender's directory

@@ -65,6 +65,10 @@ pub enum BackupError {
 
 type Result<T> = std::result::Result<T, BackupError>;
 
+/// Bundled artwork: `(relative_path, bytes)` pairs, the path relative to the
+/// MediaCover dir (e.g. `<content-id>/poster.jpg`).
+type ArtworkFiles = Vec<(String, Vec<u8>)>;
+
 /// The manifest stored at the head of a bundle: metadata plus the daemon's
 /// effective config at backup time, so a restore re-establishes the same wiring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +85,11 @@ pub struct BackupManifest {
     pub config: serde_json::Value,
     /// Length in bytes of the DB snapshot section that follows the manifest.
     pub db_len: u64,
+    /// Number of MediaCover artwork files bundled after the DB section. `0` (the
+    /// serde default) for older bundles that predate artwork bundling, so they
+    /// still parse and restore (with no artwork) unchanged.
+    #[serde(default)]
+    pub artwork_files: u64,
 }
 
 /// A backup as listed on the API surface.
@@ -105,6 +114,10 @@ pub struct BackupEngine {
     db: Database,
     /// The live SQLite database file path, needed for the atomic restore swap.
     db_path: PathBuf,
+    /// The MediaCover artwork dir, bundled into backups so a restore carries the
+    /// cached posters/fanart (the DB holds the text metadata; artwork bytes live on
+    /// disk). `None` → artwork is not bundled (older wiring / tests).
+    artwork_dir: Option<PathBuf>,
 }
 
 /// The bundle file extension.
@@ -115,7 +128,20 @@ impl BackupEngine {
     /// `db_path`). The directory is created on first [`create`](Self::create).
     #[must_use]
     pub fn new(dir: PathBuf, db: Database, db_path: PathBuf) -> Self {
-        Self { dir, db, db_path }
+        Self {
+            dir,
+            db,
+            db_path,
+            artwork_dir: None,
+        }
+    }
+
+    /// Bundle the MediaCover artwork dir into backups (and restore it). Builder form
+    /// so the base constructor stays artwork-less.
+    #[must_use]
+    pub fn with_artwork_dir(mut self, dir: PathBuf) -> Self {
+        self.artwork_dir = Some(dir);
+        self
     }
 
     /// The backups directory.
@@ -181,18 +207,24 @@ impl BackupEngine {
             .map_err(|e| BackupError::Io(format!("reading snapshot: {e}")))?;
         let _ = std::fs::remove_file(&tmp_snap);
 
+        // Collect the cached MediaCover artwork (relative path + bytes) to bundle
+        // alongside the DB, so a restore carries posters/fanart. Best-effort: an
+        // unreadable artwork tree yields an empty set, never failing the backup.
+        let artwork = self.collect_artwork();
+
         let manifest = BackupManifest {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             created_unix: now.unix_timestamp(),
             kind: kind.to_string(),
             config,
             db_len: snap_bytes.len() as u64,
+            artwork_files: artwork.len() as u64,
         };
 
         // Write the bundle to a temp file, then atomically rename into place so a
         // crash mid-write never leaves a half-bundle under the real name.
         let tmp_bundle = self.dir.join(format!(".{id}.bundle.tmp"));
-        write_bundle(&tmp_bundle, &manifest, &snap_bytes)?;
+        write_bundle(&tmp_bundle, &manifest, &snap_bytes, &artwork)?;
         std::fs::rename(&tmp_bundle, &bundle_path)
             .map_err(|e| BackupError::Io(format!("finalizing bundle: {e}")))?;
 
@@ -325,7 +357,7 @@ impl BackupEngine {
         }
 
         // 1. Parse + validate the bundle and extract the snapshot to a temp file.
-        let (_manifest, snap_bytes) = parse_bundle(bundle)?;
+        let (_manifest, snap_bytes, artwork) = parse_bundle(bundle)?;
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| BackupError::Io(format!("creating backups dir: {e}")))?;
         let staged = self.dir.join(format!(
@@ -370,10 +402,79 @@ impl BackupEngine {
             let _ = std::fs::remove_file(PathBuf::from(p));
         }
 
+        // 4. Restore the bundled artwork into the MediaCover dir (best-effort — the
+        //    DB is the authoritative state and is already swapped; a missing poster
+        //    just re-downloads on the next refresh, so an artwork write failure must
+        //    not fail an otherwise-successful restore).
+        self.restore_artwork(&artwork);
+
         Ok(RestoreOutcome {
             safety_backup_id: safety.id,
             restart_required: true,
         })
+    }
+
+    /// Collect the cached MediaCover artwork as `(relative_path, bytes)` pairs
+    /// (relative to the artwork dir, e.g. `<content-id>/poster.jpg`). Returns empty
+    /// when no artwork dir is configured or the tree is unreadable.
+    fn collect_artwork(&self) -> ArtworkFiles {
+        let Some(root) = self.artwork_dir.as_deref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        // One level of per-item subdirs (<id>/<kind>.<ext>), matching how the
+        // resolver lays artwork out — no need for a general recursive walk.
+        let Ok(items) = std::fs::read_dir(root) else {
+            return out;
+        };
+        for item in items.flatten() {
+            if !item.path().is_dir() {
+                continue;
+            }
+            let Some(id) = item.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Ok(files) = std::fs::read_dir(item.path()) else {
+                continue;
+            };
+            for f in files.flatten() {
+                if !f.path().is_file() {
+                    continue;
+                }
+                let Some(name) = f.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if let Ok(bytes) = std::fs::read(f.path()) {
+                    out.push((format!("{id}/{name}"), bytes));
+                }
+            }
+        }
+        out
+    }
+
+    /// Write bundled artwork back under the artwork dir. Path segments are validated
+    /// (no separators beyond the single `<id>/<name>` join, no `..`) so a crafted
+    /// bundle can never escape the artwork dir. Best-effort per file.
+    fn restore_artwork(&self, artwork: &ArtworkFiles) {
+        let Some(root) = self.artwork_dir.as_deref() else {
+            return;
+        };
+        for (rel, bytes) in artwork {
+            // Accept only `<id>/<name>` with safe segments (the resolver's layout).
+            let parts: Vec<&str> = rel.split('/').collect();
+            if parts.len() != 2
+                || parts
+                    .iter()
+                    .any(|p| p.is_empty() || *p == ".." || p.contains('\\') || p.contains('\0'))
+            {
+                continue;
+            }
+            let dir = root.join(parts[0]);
+            if std::fs::create_dir_all(&dir).is_err() {
+                continue;
+            }
+            let _ = std::fs::write(dir.join(parts[1]), bytes);
+        }
     }
 }
 
@@ -419,8 +520,16 @@ fn sanitize_kind(kind: &str) -> String {
     }
 }
 
-/// Write a bundle file: magic, length-prefixed manifest JSON, then the DB bytes.
-fn write_bundle(path: &Path, manifest: &BackupManifest, db_bytes: &[u8]) -> Result<()> {
+/// Write a bundle file: magic, length-prefixed manifest JSON, the DB bytes, then
+/// the artwork section — `manifest.artwork_files` entries, each a length-prefixed
+/// relative path followed by length-prefixed bytes. Older readers that stop after
+/// the DB section ignore the trailing artwork; newer readers consume it.
+fn write_bundle(
+    path: &Path,
+    manifest: &BackupManifest,
+    db_bytes: &[u8],
+    artwork: &ArtworkFiles,
+) -> Result<()> {
     let manifest_json = serde_json::to_vec(manifest)
         .map_err(|e| BackupError::Malformed(format!("encoding manifest: {e}")))?;
     let file = std::fs::File::create(path)
@@ -434,6 +543,15 @@ fn write_bundle(path: &Path, manifest: &BackupManifest, db_bytes: &[u8]) -> Resu
     w.write_all(&(db_bytes.len() as u64).to_le_bytes())
         .map_err(io)?;
     w.write_all(db_bytes).map_err(io)?;
+    // Artwork section (count is in the manifest): per entry → path then bytes.
+    for (rel, bytes) in artwork {
+        let rel = rel.as_bytes();
+        w.write_all(&(rel.len() as u64).to_le_bytes()).map_err(io)?;
+        w.write_all(rel).map_err(io)?;
+        w.write_all(&(bytes.len() as u64).to_le_bytes())
+            .map_err(io)?;
+        w.write_all(bytes).map_err(io)?;
+    }
     w.flush().map_err(io)?;
     Ok(())
 }
@@ -463,8 +581,9 @@ fn read_manifest(path: &Path) -> Result<BackupManifest> {
         .map_err(|e| BackupError::Malformed(format!("decoding manifest: {e}")))
 }
 
-/// Parse a full in-memory bundle into its manifest and DB snapshot bytes.
-fn parse_bundle(bundle: &[u8]) -> Result<(BackupManifest, Vec<u8>)> {
+/// Parse a full in-memory bundle into its manifest, DB snapshot bytes, and the
+/// bundled artwork (`(relative_path, bytes)`; empty for pre-artwork bundles).
+fn parse_bundle(bundle: &[u8]) -> Result<(BackupManifest, Vec<u8>, ArtworkFiles)> {
     let mut cur = bundle;
     let take = |cur: &mut &[u8], n: usize, what: &str| -> Result<Vec<u8>> {
         if cur.len() < n {
@@ -474,28 +593,45 @@ fn parse_bundle(bundle: &[u8]) -> Result<(BackupManifest, Vec<u8>)> {
         *cur = tail;
         Ok(head.to_vec())
     };
+    let take_u64 = |cur: &mut &[u8], what: &str| -> Result<u64> {
+        Ok(u64::from_le_bytes(
+            take(cur, 8, what)?
+                .try_into()
+                .map_err(|_| BackupError::Malformed(what.to_string()))?,
+        ))
+    };
     let magic = take(&mut cur, MAGIC.len(), "magic")?;
     if magic != MAGIC {
         return Err(BackupError::Malformed("bad magic / wrong format".into()));
     }
-    let mlen = u64::from_le_bytes(
-        take(&mut cur, 8, "manifest length")?
-            .try_into()
-            .map_err(|_| BackupError::Malformed("manifest length".into()))?,
-    ) as usize;
+    let mlen = take_u64(&mut cur, "manifest length")? as usize;
     if mlen > 1 << 20 {
         return Err(BackupError::Malformed("manifest length implausible".into()));
     }
     let manifest_bytes = take(&mut cur, mlen, "manifest")?;
     let manifest: BackupManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| BackupError::Malformed(format!("decoding manifest: {e}")))?;
-    let dlen = u64::from_le_bytes(
-        take(&mut cur, 8, "db length")?
-            .try_into()
-            .map_err(|_| BackupError::Malformed("db length".into()))?,
-    ) as usize;
+    let dlen = take_u64(&mut cur, "db length")? as usize;
     let db_bytes = take(&mut cur, dlen, "db snapshot")?;
-    Ok((manifest, db_bytes))
+
+    // Artwork section: `manifest.artwork_files` length-prefixed (path, bytes) pairs.
+    // Zero (older bundles) → none. A guard on the path length stops a hostile bundle
+    // from claiming an absurd allocation.
+    let mut artwork = Vec::new();
+    for _ in 0..manifest.artwork_files {
+        let plen = take_u64(&mut cur, "artwork path length")? as usize;
+        if plen > 1 << 16 {
+            return Err(BackupError::Malformed(
+                "artwork path length implausible".into(),
+            ));
+        }
+        let path = String::from_utf8(take(&mut cur, plen, "artwork path")?)
+            .map_err(|_| BackupError::Malformed("artwork path not UTF-8".into()))?;
+        let blen = take_u64(&mut cur, "artwork data length")? as usize;
+        let bytes = take(&mut cur, blen, "artwork data")?;
+        artwork.push((path, bytes));
+    }
+    Ok((manifest, db_bytes, artwork))
 }
 
 #[cfg(test)]
@@ -521,6 +657,7 @@ mod tests {
                 dir: PathBuf::from("/tmp/none"),
                 db: dummy_db(),
                 db_path: PathBuf::from("/tmp/none/db.sqlite"),
+                artwork_dir: None,
             };
             assert!(eng.path_for(bad).is_err(), "should reject id {bad:?}");
         }
@@ -562,7 +699,7 @@ mod tests {
 
         // The downloadable bytes parse back to the same manifest + a valid DB.
         let bytes = eng.read_bundle(&info.id).unwrap();
-        let (manifest, db_bytes) = parse_bundle(&bytes).unwrap();
+        let (manifest, db_bytes, _artwork) = parse_bundle(&bytes).unwrap();
         assert_eq!(manifest.config, serde_json::json!({ "k": "v" }));
         assert_eq!(manifest.db_len as usize, db_bytes.len());
 
@@ -621,6 +758,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backup_bundles_and_restore_recovers_artwork() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, db_path) = temp_db(dir.path()).await;
+        let artwork_dir = dir.path().join("MediaCover");
+        let item = artwork_dir.join("abc123");
+        std::fs::create_dir_all(&item).unwrap();
+        std::fs::write(item.join("poster.jpg"), b"POSTERBYTES").unwrap();
+        std::fs::write(item.join("fanart.jpg"), b"FANARTBYTES").unwrap();
+
+        let eng = BackupEngine::new(dir.path().join("backups"), db.clone(), db_path)
+            .with_artwork_dir(artwork_dir.clone());
+
+        // The bundle records both artwork files.
+        let info = eng.create("manual", serde_json::Value::Null).await.unwrap();
+        let (manifest, _db, artwork) = parse_bundle(&eng.read_bundle(&info.id).unwrap()).unwrap();
+        assert_eq!(manifest.artwork_files, 2);
+        assert_eq!(artwork.len(), 2);
+
+        // Delete the cached artwork (simulating a fresh node), then restore.
+        std::fs::remove_dir_all(&artwork_dir).unwrap();
+        assert!(!item.join("poster.jpg").exists());
+        eng.restore_id(&info.id).await.unwrap();
+
+        // Artwork is back, byte-for-byte.
+        assert_eq!(
+            std::fs::read(item.join("poster.jpg")).unwrap(),
+            b"POSTERBYTES"
+        );
+        assert_eq!(
+            std::fs::read(item.join("fanart.jpg")).unwrap(),
+            b"FANARTBYTES"
+        );
+        db.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn retention_prunes_oldest() {
         let dir = tempfile::tempdir().unwrap();
         let (db, db_path) = temp_db(dir.path()).await;
@@ -666,6 +839,7 @@ mod tests {
             kind: "manual".into(),
             config: serde_json::Value::Null,
             db_len: 4,
+            artwork_files: 0,
         };
         let mut bundle = Vec::new();
         let mjson = serde_json::to_vec(&manifest).unwrap();
