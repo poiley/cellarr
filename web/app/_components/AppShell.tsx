@@ -88,6 +88,23 @@ const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     if (typeof window !== 'undefined') window.location.assign('/login');
   }, [auth]);
 
+  // Responsive shell: below a narrow threshold the fixed 24ch sidebar would eat
+  // the viewport, so collapse it behind a hamburger toggle and let content go
+  // full-width. Defaults to the wide layout for SSR + first paint (and the jsdom
+  // tests, which run at 1024px), then narrows on the client after measuring.
+  const [narrow, setNarrow] = React.useState(false);
+  const [navOpen, setNavOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const measure = () => setNarrow(window.innerWidth < 768);
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+  React.useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
+
   const sidebar = (
     <div style={{ padding: '1ch 0' }}>
       <Text style={{ padding: '0 1ch', fontWeight: 600 }}>cellarr</Text>
@@ -145,22 +162,47 @@ const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     </div>
   );
 
+  const logo = (
+    <>
+      <span aria-hidden="true">✸</span>
+      {/* Accessible name for the icon-only logo button (SRCL Navigation
+          does not expose an aria-label prop, so name it via content). */}
+      <span className="sr-only">Open command palette</span>
+    </>
+  );
+
+  const main = <main style={{ padding: '2ch' }}>{children}</main>;
+
+  // Narrow viewport: top bar with a hamburger that toggles the nav inline,
+  // content full-width. No fixed sidebar eating the screen.
+  if (narrow) {
+    const navLeft = (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1ch' }}>
+        <ActionButton
+          onClick={() => setNavOpen((o) => !o)}
+          aria-label="Toggle navigation"
+          aria-expanded={navOpen}
+        >
+          ☰
+        </ActionButton>
+        {topCenter}
+      </div>
+    );
+    return (
+      <div>
+        <Navigation logo={logo} onClickLogo={palette.open} left={navLeft} right={topRight} />
+        {navOpen ? (
+          <div style={{ borderBottom: '1px solid var(--theme-border)' }}>{sidebar}</div>
+        ) : null}
+        {main}
+      </div>
+    );
+  }
+
   return (
     <SidebarLayout defaultSidebarWidth={24} sidebar={sidebar}>
-      <Navigation
-        logo={
-          <>
-            <span aria-hidden="true">✸</span>
-            {/* Accessible name for the icon-only logo button (SRCL Navigation
-                does not expose an aria-label prop, so name it via content). */}
-            <span className="sr-only">Open command palette</span>
-          </>
-        }
-        onClickLogo={palette.open}
-        left={topCenter}
-        right={topRight}
-      />
-      <main style={{ padding: '2ch' }}>{children}</main>
+      <Navigation logo={logo} onClickLogo={palette.open} left={topCenter} right={topRight} />
+      {main}
     </SidebarLayout>
   );
 };
