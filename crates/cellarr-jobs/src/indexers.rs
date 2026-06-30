@@ -218,16 +218,30 @@ impl DbIndexerSet {
         })
     }
 
-    /// Build a Cardigann adapter: the YAML definition comes from
-    /// `settings.definition`, and the remaining string settings become the
-    /// `{{ .Config.* }}` template context (a passkey, a sitelink override, …).
+    /// Build a Cardigann adapter. The YAML definition comes from inline
+    /// `settings.definition` or, failing that, the file at `settings.definitionFile`
+    /// (so operators can keep a folder of definitions instead of pasting YAML). The
+    /// remaining string settings become the `{{ .Config.* }}` template context (a
+    /// passkey, a sitelink override, …).
     fn build_cardigann(&self, config: &IndexerConfig) -> Result<NabAdapter, IndexerSetError> {
-        let yaml = setting_str(config, "definition")
+        let yaml = match setting_str(config, "definition")
             .or_else(|| setting_str(config, "definitionYaml"))
-            .ok_or_else(|| IndexerSetError::Misconfigured {
-                name: config.name.clone(),
-                reason: "missing cardigann 'definition' in settings".into(),
-            })?;
+        {
+            Some(inline) => inline,
+            None => {
+                let path = setting_str(config, "definitionFile").ok_or_else(|| {
+                    IndexerSetError::Misconfigured {
+                        name: config.name.clone(),
+                        reason: "missing cardigann 'definition' or 'definitionFile' in settings"
+                            .into(),
+                    }
+                })?;
+                std::fs::read_to_string(&path).map_err(|e| IndexerSetError::Misconfigured {
+                    name: config.name.clone(),
+                    reason: format!("reading cardigann definitionFile '{path}': {e}"),
+                })?
+            }
+        };
         let definition =
             Definition::from_yaml(&yaml).map_err(|e| IndexerSetError::Misconfigured {
                 name: config.name.clone(),
@@ -497,6 +511,43 @@ search:
         };
         assert!(matches!(
             set.build_adapter(&missing),
+            Err(IndexerSetError::Misconfigured { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn build_adapter_reads_a_cardigann_definition_from_a_file() {
+        let (_dir, db) = temp_db().await;
+        let set = DbIndexerSet::new(db);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wiring.yml");
+        std::fs::write(&path, CARDIGANN_DEF).unwrap();
+
+        let config = IndexerConfig {
+            id: IndexerId::new(),
+            name: "file-sourced".into(),
+            kind: "cardigann".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags: vec![],
+            settings: json!({ "definitionFile": path.to_str().unwrap() }),
+        };
+
+        // The definition is loaded from the file path in settings.
+        match set.build_adapter(&config).expect("build from file") {
+            NabAdapter::Cardigann(a) => assert_eq!(a.name(), "Wiring Tracker"),
+            _ => panic!("expected a Cardigann adapter"),
+        }
+
+        // A non-existent file is a clear misconfiguration.
+        let bad = IndexerConfig {
+            settings: json!({ "definitionFile": "/no/such/definition.yml" }),
+            ..config
+        };
+        assert!(matches!(
+            set.build_adapter(&bad),
             Err(IndexerSetError::Misconfigured { .. })
         ));
     }

@@ -60,8 +60,10 @@ each as a normal Torznab source. This turns 500+ indexers into a folder of YAML.
   2000, TV 5000) into the tracker's own ids (a parent expands to its whole range).
 
 **Configuring one** (config-as-code, `managed-config.yaml`): add an indexer with `kind: cardigann`
-and put the definition YAML in `settings.definition`; any other string settings become the
-`{{ .Config.* }}` context (e.g. a passkey):
+and either put the definition YAML inline in `settings.definition`, or point `settings.definitionFile`
+at a `.yml` on the host (so you can keep a folder of definitions instead of pasting YAML); any other
+string settings become the `{{ .Config.* }}` context (e.g. a passkey). An inline definition is
+validated when the config is applied; a `definitionFile` is read at runtime.
 
 ```yaml
 indexers:

@@ -205,21 +205,22 @@ pub fn validate(config: &ManagedConfig) -> Result<(), ManagedError> {
                     )));
                 }
             }
-            // A Cardigann indexer's definition must parse now, so a broken YAML is
-            // caught at config-apply time rather than at the first search.
+            // A Cardigann indexer needs a definition source. An inline definition is
+            // parsed now, so broken YAML is caught at config-apply time rather than at
+            // the first search; a `definitionFile` is read at runtime on the target
+            // host, so only its presence is checked here.
             if ix.kind.eq_ignore_ascii_case("cardigann") {
-                let yaml = ix
+                let inline = ix
                     .settings
                     .get("definition")
                     .or_else(|| ix.settings.get("definitionYaml"))
                     .and_then(|v| v.as_str());
-                match yaml {
-                    None => {
-                        return Err(ManagedError::Validation(format!(
-                            "indexer `{}` is kind `cardigann` but has no `settings.definition`",
-                            ix.name
-                        )))
-                    }
+                let has_file = ix
+                    .settings
+                    .get("definitionFile")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                match inline {
                     Some(y) => {
                         if let Err(e) = cellarr_indexers::Definition::from_yaml(y) {
                             return Err(ManagedError::Validation(format!(
@@ -227,6 +228,14 @@ pub fn validate(config: &ManagedConfig) -> Result<(), ManagedError> {
                                 ix.name
                             )));
                         }
+                    }
+                    None if has_file => {}
+                    None => {
+                        return Err(ManagedError::Validation(format!(
+                            "indexer `{}` is kind `cardigann` but has no `settings.definition` \
+                             or `settings.definitionFile`",
+                            ix.name
+                        )))
                     }
                 }
             }
@@ -578,6 +587,22 @@ indexers:
           fields:
             title: { selector: a }
             download: { selector: a, attribute: href }
+"#;
+        load_str(text, no_env).unwrap();
+    }
+
+    #[test]
+    fn cardigann_indexer_with_definition_file_passes() {
+        // A definitionFile is read on the target host at runtime; validation only
+        // checks that a source is declared.
+        let text = r#"
+apiVersion: cellarr/v1
+indexers:
+  - name: ct
+    kind: cardigann
+    protocol: torrent
+    settings:
+      definitionFile: /config/definitions/ct.yml
 "#;
         load_str(text, no_env).unwrap();
     }
