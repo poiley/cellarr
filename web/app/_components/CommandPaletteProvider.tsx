@@ -77,10 +77,16 @@ const CommandPalette: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const panelRef = React.useRef<HTMLDivElement | null>(null);
   const listRef = React.useRef<HTMLDivElement | null>(null);
 
-  // Focus the SRCL Input's underlying <input> on mount. The SRCL Input does not
-  // forward a ref, so reach it through the panel after the first paint.
+  // Focus the SRCL Input's underlying <input> on mount, and restore focus to
+  // whatever was focused before the palette opened when it closes (the Panel
+  // unmounts on close). The SRCL Input does not forward a ref, so reach it
+  // through the panel after the first paint.
   React.useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     panelRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+    return () => {
+      previouslyFocused?.focus?.();
+    };
   }, []);
 
   // Title search against the v3 library lists, debounced. Filters movies +
@@ -168,6 +174,25 @@ const CommandPalette: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         event.preventDefault();
         onClose();
         break;
+      case 'Tab': {
+        // Trap focus within the dialog so Tab does not escape to the page behind
+        // the modal overlay.
+        const focusables = panelRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusables || focusables.length === 0) break;
+        const list = Array.from(focusables);
+        const first = list[0];
+        const last = list[list.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+        break;
+      }
       default:
         break;
     }
