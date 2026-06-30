@@ -425,7 +425,7 @@ export default function ActivityPage() {
                     <TableColumn>{row.title}</TableColumn>
                     <TableColumn>{row.indexer || '—'}</TableColumn>
                     <TableColumn>
-                      <Badge>blocklisted</Badge> {row.reason || ''}
+                      <StatusBadge status="blocklisted" /> {row.reason || ''}
                     </TableColumn>
                   </TableRow>
                 ))}

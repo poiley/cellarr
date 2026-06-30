@@ -23,6 +23,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Accordion from '@components/Accordion';
 import AlertBanner from '@components/AlertBanner';
 import Badge from '@components/Badge';
+
+import StatusBadge from '@app/_components/StatusBadge';
 import BlockLoader from '@components/BlockLoader';
 import Button from '@components/Button';
 import Card from '@components/Card';
@@ -95,7 +97,7 @@ const GlobalFeedTable: React.FC<{
       <TableRow key={`${String(row.date)}-${i}`}>
         <TableColumn style={{ whiteSpace: 'nowrap' }}>{formatHistoryDate(row.date)}</TableColumn>
         <TableColumn>
-          <Badge>{v3EventLabel(row.eventType)}</Badge>
+          <StatusBadge status={v3EventLabel(row.eventType)} />
         </TableColumn>
         <TableColumn>{row.sourceTitle || '—'}</TableColumn>
         <TableColumn>
@@ -129,7 +131,7 @@ const NodeTimelineTable: React.FC<{ records: TypedHistoryRecord[] }> = ({ record
       <TableRow key={`${rec.at}-${i}`}>
         <TableColumn style={{ whiteSpace: 'nowrap' }}>{formatTimestamp(rec.at)}</TableColumn>
         <TableColumn>
-          <Badge>{historyEventLabel(rec.event.event)}</Badge>
+          <StatusBadge status={historyEventLabel(rec.event.event)} />
         </TableColumn>
         <TableColumn>{eventDetail(rec) || '—'}</TableColumn>
         <TableColumn>

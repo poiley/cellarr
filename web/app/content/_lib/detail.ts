@@ -170,6 +170,8 @@ export interface DetailView {
   hasFile?: boolean;
   monitored: boolean;
   path?: string;
+  /** The TMDB id for a movie node (links out to themoviedb.org); absent for series. */
+  tmdbId?: number;
   /** The content node's assigned tag ids (`content_tag` join table). */
   tags: number[];
   /**
@@ -194,6 +196,7 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
     hasFile: r.hasFile === true,
     monitored: r.monitored === true,
     path: str(r.path),
+    tmdbId: num(r.tmdbId),
     tags: Array.isArray(r.tags)
       ? r.tags.filter((t): t is number => typeof t === 'number')
       : [],

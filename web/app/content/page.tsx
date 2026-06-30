@@ -420,8 +420,8 @@ function MetadataBlock({
 }) {
   const sizeBytes = detail?.sizeOnDisk;
   const statusText = (detail?.status ?? (detail?.hasFile ? 'Downloaded' : 'Missing')).toUpperCase();
-  const path = (detail as { path?: string } | undefined)?.path;
-  const tmdbId = (detail as { tmdbId?: number } | undefined)?.tmdbId;
+  const path = detail?.path;
+  const tmdbId = detail?.tmdbId;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
       {year !== undefined ? <MetaRow label="Year" value={year} /> : null}
