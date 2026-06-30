@@ -14,6 +14,7 @@ import TableRow from '@components/TableRow';
 import TableColumn from '@components/TableColumn';
 import Button from '@components/Button';
 import ButtonGroup from '@components/ButtonGroup';
+import Input from '@components/Input';
 import Select from '@components/Select';
 import Badge from '@components/Badge';
 import Divider from '@components/Divider';
@@ -69,6 +70,7 @@ export default function LogsPage() {
 
   const [level, setLevel] = React.useState<LogLevel | null>(null);
   const [lines, setLines] = React.useState<number>(DEFAULT_LINES);
+  const [query, setQuery] = React.useState('');
 
   // Load the file list once.
   React.useEffect(() => {
@@ -126,7 +128,12 @@ export default function LogsPage() {
   }, [selected, lines, loadContent]);
 
   const parsed = React.useMemo(() => parseLogLines(content), [content]);
-  const visible = React.useMemo(() => filterByLevel(parsed, level), [parsed, level]);
+  const byLevel = React.useMemo(() => filterByLevel(parsed, level), [parsed, level]);
+  // Free-text filter on top of the level filter — a grep over the loaded lines.
+  const visible = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? byLevel.filter((l) => l.text.toLowerCase().includes(q)) : byLevel;
+  }, [byLevel, query]);
 
   const refresh = () => {
     if (selected) loadContent(selected, lines);
@@ -224,6 +231,16 @@ export default function LogsPage() {
                   options={LINE_COUNTS.map(String)}
                   defaultValue={String(DEFAULT_LINES)}
                   onChange={(v) => setLines(Number(v))}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: '20ch' }}>
+                <Text style={{ opacity: 0.6 }}>Filter</Text>
+                <Input
+                  name="log-filter"
+                  aria-label="Filter log lines"
+                  placeholder="Filter lines (substring)…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
               <ButtonGroup
