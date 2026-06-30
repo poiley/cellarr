@@ -15,3 +15,4 @@ pub mod managed;
 pub mod metadata;
 pub mod pipeline;
 pub mod registry;
+pub mod resolver;

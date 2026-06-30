@@ -336,7 +336,9 @@ impl ContentNode {
 ///
 /// Dates are ISO `yyyy-mm-dd` strings, kept string-comparable so the calendar's
 /// `[start, end]` windowing is a plain lexical compare.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `rating` is an `f32` (PartialEq only). Equality comparisons in tests
+// use `assert_eq!` (PartialEq), so this is sufficient.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContentMetadata {
     /// Display title resolved by the metadata source, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -358,6 +360,16 @@ pub struct ContentMetadata {
     /// theatrical release. Unused for episodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digital_date: Option<String>,
+    /// Genres resolved by the metadata source (e.g. `["Animation", "Comedy"]`),
+    /// most significant first. Empty when unresolved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    /// Primary-source user rating on a 0–10 scale (TMDB `vote_average`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f32>,
+    /// Number of votes backing `rating` (TMDB `vote_count`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_votes: Option<u32>,
 }
 
 impl ContentMetadata {
@@ -371,6 +383,9 @@ impl ContentMetadata {
             && self.runtime.is_none()
             && self.air_date.is_none()
             && self.digital_date.is_none()
+            && self.genres.is_empty()
+            && self.rating.is_none()
+            && self.rating_votes.is_none()
     }
 }
 

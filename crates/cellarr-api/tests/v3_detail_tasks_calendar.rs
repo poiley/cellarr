@@ -11,7 +11,7 @@ use common::{seed_library, start_authed, start_open, TEST_API_KEY};
 use serde_json::{json, Value};
 
 use cellarr_core::repo::ContentRepository;
-use cellarr_core::{ContentId, ContentKind, ContentNode, Coordinates, MediaType};
+use cellarr_core::{ContentId, ContentKind, ContentMetadata, ContentNode, Coordinates, MediaType};
 
 // --- content detail + monitor toggle ---------------------------------------
 
@@ -61,6 +61,57 @@ async fn movie_detail_returns_identity_quality_profile_and_file_state() {
     assert_eq!(body["hasFile"], false);
     assert_eq!(body["sizeOnDisk"], 0);
     assert!(body.get("overview").is_some(), "overview field is present");
+}
+
+/// Once the resolver has persisted rich metadata, the v3 movie detail surfaces it:
+/// overview + runtime, the genres array, and the Radarr-shaped `ratings.tmdb`
+/// object. (Posters come from the cached MediaCover bytes via `images[]`; this
+/// node has none cached, so `images` is empty — asserted to be an array.)
+#[tokio::test]
+async fn movie_detail_surfaces_rich_metadata() {
+    let server = start_open().await;
+    let id = seed_movie(&server.state, "Big Buck Bunny", true).await;
+
+    server
+        .state
+        .db
+        .content()
+        .set_metadata(
+            id,
+            &ContentMetadata {
+                title: Some("Big Buck Bunny".to_string()),
+                year: Some(2008),
+                overview: Some("A big rabbit takes revenge on three rodents.".to_string()),
+                runtime: Some(10),
+                genres: vec!["Animation".to_string(), "Comedy".to_string()],
+                rating: Some(7.5),
+                rating_votes: Some(1234),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let resp = server
+        .client()
+        .get(server.url(&format!("/api/v3/movie/{id}")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["overview"],
+        "A big rabbit takes revenge on three rodents."
+    );
+    assert_eq!(body["runtime"], 10);
+    assert_eq!(body["genres"], json!(["Animation", "Comedy"]));
+    assert_eq!(body["ratings"]["tmdb"]["value"], 7.5);
+    assert_eq!(body["ratings"]["tmdb"]["votes"], 1234);
+    assert!(
+        body["images"].is_array(),
+        "images[] is always an array (empty when no artwork cached)"
+    );
 }
 
 #[tokio::test]

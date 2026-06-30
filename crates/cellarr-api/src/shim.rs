@@ -4834,6 +4834,9 @@ async fn v3_resource_item(
         "sizeOnDisk": size_on_disk,
         "titleSlug": slug(title),
         "tags": node.tags,
+        // Radarr-style images[] referencing the cached MediaCover bytes, so both
+        // the library grid and the detail page can show the poster/fanart.
+        "images": artwork_images(state, &node.id.to_string()),
     });
     // The numeric id (tmdb/tvdb) the ecosystem keys on, projected from the
     // persisted external id; 0 when the node carries no such id yet.
@@ -5166,8 +5169,41 @@ async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiR
             }
         }
     }
+    // Genres + rating (rich metadata resolved by the source). Genres is always
+    // present (possibly empty); ratings only when a rating was resolved, in the
+    // Radarr `{ tmdb: { value, votes, type } }` shape.
+    merge_into(&mut patch, json!({ "genres": meta.genres }));
+    if let Some(rating) = meta.rating {
+        let mut tmdb = json!({ "value": rating, "type": "user" });
+        if let Some(votes) = meta.rating_votes {
+            merge_into(&mut tmdb, json!({ "votes": votes }));
+        }
+        merge_into(&mut patch, json!({ "ratings": { "tmdb": tmdb } }));
+    }
     merge_into(&mut detail, patch);
     Ok(detail)
+}
+
+/// Build the v3 `images[]` for a node from its cached MediaCover artwork — one
+/// entry per kind (poster/fanart) that has a cached file on disk. `url` points at
+/// the local mediacover route (served from the cache, so it works offline). Empty
+/// when no artwork dir is configured or nothing is cached for the node.
+fn artwork_images(state: &AppState, content_id: &str) -> Vec<Value> {
+    let Some(dir) = state.artwork_dir.as_deref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for kind in ["poster", "fanart"] {
+        if crate::mediacover::cached_artwork_path(dir, content_id, kind).is_some() {
+            let url = format!("/api/v3/mediacover/{content_id}/{kind}");
+            out.push(json!({
+                "coverType": kind,
+                "url": url.clone(),
+                "remoteUrl": url,
+            }));
+        }
+    }
+    out
 }
 
 /// Render an ISO `yyyy-mm-dd` date as the midnight-UTC RFC 3339 timestamp the v3
@@ -5640,6 +5676,21 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
     }
     // Re-read the node so the response reflects the linked title_id/identity.
     let node = content.get_node(node.id).await?.unwrap_or(node);
+
+    // Kick off an immediate metadata refresh so the freshly-added node gains its
+    // overview/runtime/genres/rating/poster without waiting for the daily cron.
+    // The scheduler dedups by kind, so concurrent adds don't pile up; best-effort
+    // (a scheduler hiccup must never fail the add).
+    if let Err(e) = state
+        .scheduler
+        .submit_now(
+            cellarr_jobs::JobKind::MetadataRefresh,
+            cellarr_jobs::RetryPolicy::default(),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "add: enqueueing metadata refresh failed");
+    }
 
     Ok(Json(merge(
         v3_resource_item(state, &node, &title).await?,

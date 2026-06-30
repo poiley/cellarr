@@ -441,7 +441,8 @@ impl ContentRepo {
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn metadata(&self, id: ContentId) -> Result<Option<ContentMetadata>> {
         let row = sqlx::query(
-            "SELECT title, year, overview, runtime, air_date, digital_date
+            "SELECT title, year, overview, runtime, air_date, digital_date,
+                    genres, rating, rating_votes
              FROM content_meta WHERE content_id = ?1",
         )
         .bind(id.to_string())
@@ -851,20 +852,33 @@ impl ContentRepository for ContentRepo {
         let runtime = meta.runtime.map(i64::from);
         let air_date = meta.air_date.clone();
         let digital_date = meta.digital_date.clone();
+        // Genres are list-valued; store as a JSON array string so no association
+        // table is needed. An empty list stores NULL (not "[]") to read back empty.
+        let genres = if meta.genres.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&meta.genres).unwrap_or_default())
+        };
+        let rating = meta.rating.map(f64::from);
+        let rating_votes = meta.rating_votes.map(i64::from);
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO content_meta
-                            (content_id, title, year, overview, runtime, air_date, digital_date)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                            (content_id, title, year, overview, runtime, air_date, digital_date,
+                             genres, rating, rating_votes)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                          ON CONFLICT(content_id) DO UPDATE SET
                             title        = excluded.title,
                             year         = excluded.year,
                             overview     = excluded.overview,
                             runtime      = excluded.runtime,
                             air_date     = excluded.air_date,
-                            digital_date = excluded.digital_date",
+                            digital_date = excluded.digital_date,
+                            genres       = excluded.genres,
+                            rating       = excluded.rating,
+                            rating_votes = excluded.rating_votes",
                     )
                     .bind(id)
                     .bind(title)
@@ -873,6 +887,9 @@ impl ContentRepository for ContentRepo {
                     .bind(runtime)
                     .bind(air_date)
                     .bind(digital_date)
+                    .bind(genres)
+                    .bind(rating)
+                    .bind(rating_votes)
                     .execute(&mut *conn)
                     .await?;
                     Ok(())
@@ -902,6 +919,12 @@ impl ContentRepository for ContentRepo {
 fn row_to_content_metadata(row: sqlx::sqlite::SqliteRow) -> Result<ContentMetadata> {
     let year: Option<i64> = row.try_get("year")?;
     let runtime: Option<i64> = row.try_get("runtime")?;
+    let rating_votes: Option<i64> = row.try_get("rating_votes")?;
+    let genres_json: Option<String> = row.try_get("genres")?;
+    let genres = genres_json
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    let rating: Option<f64> = row.try_get("rating")?;
     Ok(ContentMetadata {
         title: row.try_get("title")?,
         year: year.and_then(|y| u16::try_from(y).ok()),
@@ -909,5 +932,9 @@ fn row_to_content_metadata(row: sqlx::sqlite::SqliteRow) -> Result<ContentMetada
         runtime: runtime.and_then(|r| u32::try_from(r).ok()),
         air_date: row.try_get("air_date")?,
         digital_date: row.try_get("digital_date")?,
+        genres,
+        #[allow(clippy::cast_possible_truncation)]
+        rating: rating.map(|r| r as f32),
+        rating_votes: rating_votes.and_then(|v| u32::try_from(v).ok()),
     })
 }

@@ -284,6 +284,35 @@ fn normalize_movie(value: &serde_json::Value) -> Option<Metadata> {
 
     let images = value.get("images").map(collect_images).unwrap_or_default();
 
+    // Genres: TMDb details carries `genres: [{id, name}]`; keep the names in order.
+    let genres = value
+        .get("genres")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|g| g.get("name").and_then(|v| v.as_str()))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // Rating: `vote_average` (0..10) with `vote_count` votes. A zero count means
+    // no ratings yet — drop the rating so the UI shows nothing rather than 0.0.
+    #[allow(clippy::cast_possible_truncation)]
+    let rating_votes = value
+        .get("vote_count")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|&n| n > 0)
+        .and_then(|n| u32::try_from(n).ok());
+    #[allow(clippy::cast_possible_truncation)]
+    let rating = rating_votes.and_then(|_| {
+        value
+            .get("vote_average")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|&v| v > 0.0)
+            .map(|v| v as f32)
+    });
+
     Some(Metadata {
         source_id,
         media_type: MediaType::Movie,
@@ -308,6 +337,9 @@ fn normalize_movie(value: &serde_json::Value) -> Option<Metadata> {
         external_ids,
         children: Vec::new(),
         images,
+        genres,
+        rating,
+        rating_votes,
     })
 }
 
@@ -320,18 +352,30 @@ fn iso_date(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The TMDb image CDN base. TMDb serves artwork from this host (the `file_path`
+/// values in the API are host-relative); `original` is the always-valid full-size
+/// rendition. This base is stable and documented; we compose it rather than call
+/// the `/configuration` endpoint for a single fixed value.
+const TMDB_IMAGE_BASE: &str = "https://image.themoviedb.org/t/p/original";
+
 fn collect_images(images: &serde_json::Value) -> Vec<Image> {
     let mut out = Vec::new();
+    // Take only the primary (first, i.e. highest-voted) poster and fanart — the
+    // resolver caches one of each kind. Compose the full CDN URL from the
+    // host-relative `file_path` so callers get a directly resolvable URL.
     for (kind, key) in [("poster", "posters"), ("fanart", "backdrops")] {
-        if let Some(arr) = images.get(key).and_then(|v| v.as_array()) {
-            for img in arr {
-                if let Some(path) = img.get("file_path").and_then(|v| v.as_str()) {
-                    out.push(Image {
-                        kind: kind.to_string(),
-                        url: path.to_string(),
-                    });
-                }
-            }
+        if let Some(path) = images
+            .get(key)
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|img| img.get("file_path"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            out.push(Image {
+                kind: kind.to_string(),
+                url: format!("{TMDB_IMAGE_BASE}{path}"),
+            });
         }
     }
     out
@@ -367,5 +411,66 @@ mod year_split_tests {
         assert_eq!(split_trailing_year("Inception"), ("Inception", None));
         // Out of plausible range.
         assert_eq!(split_trailing_year("Title 3000"), ("Title 3000", None));
+    }
+}
+
+#[cfg(test)]
+mod normalize_movie_tests {
+    use super::normalize_movie;
+    use serde_json::json;
+
+    /// A full TMDb movie-details payload normalizes the rich fields: genres,
+    /// rating (vote_average + vote_count), and the primary poster + fanart composed
+    /// into full CDN URLs (host-relative `file_path` -> absolute).
+    #[test]
+    fn parses_genres_rating_and_full_image_urls() {
+        let payload = json!({
+            "id": 10378,
+            "title": "Big Buck Bunny",
+            "overview": "A big rabbit takes revenge on three rodents.",
+            "runtime": 10,
+            "release_date": "2008-05-20",
+            "vote_average": 7.5,
+            "vote_count": 1234,
+            "genres": [{"id": 16, "name": "Animation"}, {"id": 35, "name": "Comedy"}],
+            "images": {
+                "posters": [{"file_path": "/poster1.jpg"}, {"file_path": "/poster2.jpg"}],
+                "backdrops": [{"file_path": "/back1.jpg"}]
+            }
+        });
+        let meta = normalize_movie(&payload).expect("movie normalizes");
+        assert_eq!(
+            meta.overview.as_deref(),
+            Some("A big rabbit takes revenge on three rodents.")
+        );
+        assert_eq!(meta.runtime, Some(10));
+        assert_eq!(
+            meta.genres,
+            vec!["Animation".to_string(), "Comedy".to_string()]
+        );
+        assert_eq!(meta.rating, Some(7.5));
+        assert_eq!(meta.rating_votes, Some(1234));
+        // Only the primary poster + fanart, each a full CDN URL.
+        assert_eq!(meta.images.len(), 2);
+        let poster = meta.images.iter().find(|i| i.kind == "poster").unwrap();
+        assert_eq!(
+            poster.url,
+            "https://image.themoviedb.org/t/p/original/poster1.jpg"
+        );
+        let fanart = meta.images.iter().find(|i| i.kind == "fanart").unwrap();
+        assert_eq!(
+            fanart.url,
+            "https://image.themoviedb.org/t/p/original/back1.jpg"
+        );
+    }
+
+    /// A movie with no votes yet drops the rating entirely (so the UI shows nothing
+    /// rather than a misleading 0.0).
+    #[test]
+    fn zero_votes_drops_the_rating() {
+        let payload = json!({ "id": 1, "title": "Unrated", "vote_average": 0.0, "vote_count": 0 });
+        let meta = normalize_movie(&payload).unwrap();
+        assert_eq!(meta.rating, None);
+        assert_eq!(meta.rating_votes, None);
     }
 }

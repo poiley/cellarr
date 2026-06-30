@@ -398,6 +398,19 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
 
     let images = collect_artworks(data.get("artworks"));
 
+    // TheTVDB `/series/{id}/extended` carries `genres: [{id, name, slug}]`.
+    let genres = data
+        .get("genres")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|g| g.get("name").and_then(|v| v.as_str()))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
     Some(Metadata {
         source_id,
         media_type: MediaType::Tv,
@@ -426,6 +439,11 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
         external_ids,
         children,
         images,
+        genres,
+        // TheTVDB's `score` is a popularity metric, not a 0–10 user rating, so we
+        // leave the rating unset rather than surface a non-comparable number.
+        rating: None,
+        rating_votes: None,
     })
 }
 

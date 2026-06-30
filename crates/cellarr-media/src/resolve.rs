@@ -42,7 +42,8 @@ impl ArtworkKind {
 
 /// The resolved, content-scoped metadata for a node: the persisted facts plus the
 /// artwork the resolver was able to cache for it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// No `Eq`: `meta: ContentMetadata` carries an `f32` rating (PartialEq only).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolvedMetadata {
     /// The facts to persist on the node (year/overview/runtime/dates/title).
     pub meta: ContentMetadata,

@@ -80,7 +80,8 @@ pub struct ChildNode {
 /// The full normalized metadata record for an identity.
 ///
 /// The common schema returned to `cellarr-media` from any source's `fetch`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `rating` is an `f32` (PartialEq only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     /// The source-native id.
     pub source_id: String,
@@ -114,4 +115,13 @@ pub struct Metadata {
     /// Artwork references.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<Image>,
+    /// Genres (e.g. `["Animation", "Comedy"]`), most significant first, when known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    /// Primary user rating on a 0–10 scale (TMDB `vote_average`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f32>,
+    /// Number of votes backing `rating` (TMDB `vote_count`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_votes: Option<u32>,
 }

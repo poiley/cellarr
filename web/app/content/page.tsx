@@ -426,6 +426,31 @@ function MetadataBlock({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5ch' }}>
       {year !== undefined ? <MetaRow label="Year" value={year} /> : null}
       {runtime ? <MetaRow label="Runtime" value={runtime} /> : null}
+      {detail?.genres && detail.genres.length > 0 ? (
+        <MetaRow
+          label="Genres"
+          value={
+            <span style={{ display: 'inline-flex', gap: '0.5ch', flexWrap: 'wrap' }}>
+              {detail.genres.map((g) => (
+                <Badge key={g}>{g}</Badge>
+              ))}
+            </span>
+          }
+        />
+      ) : null}
+      {detail?.rating !== undefined ? (
+        <MetaRow
+          label="Rating"
+          value={
+            <span>
+              <span style={{ color: 'var(--ansi-11-yellow)' }}>★</span> {detail.rating.toFixed(1)}/10
+              {detail.ratingVotes ? (
+                <span style={{ opacity: 0.6 }}> ({detail.ratingVotes.toLocaleString()} votes)</span>
+              ) : null}
+            </span>
+          }
+        />
+      ) : null}
       <MetaRow
         label="Quality profile"
         value={profileName ?? (detail?.qualityProfileId ? '—' : 'Unassigned')}

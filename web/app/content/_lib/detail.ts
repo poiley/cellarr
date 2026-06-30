@@ -174,6 +174,12 @@ export interface DetailView {
   tmdbId?: number;
   /** The content node's assigned tag ids (`content_tag` join table). */
   tags: number[];
+  /** Genres resolved by the metadata source (empty when unresolved). */
+  genres: string[];
+  /** Primary-source user rating on a 0–10 scale (TMDB vote_average), when known. */
+  rating?: number;
+  /** Number of votes backing `rating`, when known. */
+  ratingVotes?: number;
   /**
    * The Sonarr `seriesType` (`standard`/`daily`/`anime`) for a series node; the
    * v3 series resource carries it, a movie resource does not (so it is absent).
@@ -200,8 +206,25 @@ export function toDetailView(detail: Detail | undefined): DetailView | undefined
     tags: Array.isArray(r.tags)
       ? r.tags.filter((t): t is number => typeof t === 'number')
       : [],
+    genres: Array.isArray(r.genres)
+      ? r.genres.filter((g): g is string => typeof g === 'string')
+      : [],
+    rating: num(tmdbRating(r)?.value),
+    ratingVotes: num(tmdbRating(r)?.votes),
     seriesType: str(r.seriesType),
   };
+}
+
+/** Pull the TMDB rating object out of the v3 `ratings` map, if present. */
+function tmdbRating(r: Loose): { value?: unknown; votes?: unknown } | undefined {
+  const ratings = r.ratings;
+  if (ratings && typeof ratings === 'object' && 'tmdb' in ratings) {
+    const tmdb = (ratings as { tmdb?: unknown }).tmdb;
+    if (tmdb && typeof tmdb === 'object') {
+      return tmdb as { value?: unknown; votes?: unknown };
+    }
+  }
+  return undefined;
 }
 
 /**

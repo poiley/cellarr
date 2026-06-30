@@ -158,6 +158,26 @@ impl Daemon {
         let grab_db = db.clone();
         let grab_registry = std::sync::Arc::clone(&registry);
         let handler_scene_provider = std::sync::Arc::clone(&scene_provider);
+
+        // The artwork cache dir (`<data_dir>/MediaCover`): the v3 mediacover route
+        // serves from it and the metadata resolver caches poster/fanart into it.
+        // Created up front (before the handler) so neither the route's reads nor the
+        // resolver's writes race a missing dir.
+        let artwork_dir = config.data_dir.join("MediaCover");
+        std::fs::create_dir_all(&artwork_dir)
+            .with_context(|| format!("creating artwork dir {}", artwork_dir.display()))?;
+        // The concrete metadata resolver the identify/refresh path resolves rich
+        // metadata + artwork through (movies via TMDb, TV via TheTVDB). Attached to
+        // the pipeline handler so `RefreshMetadata` (and a content-scoped refresh)
+        // do real work; degrades to a no-op when a source has no key.
+        let resolver: std::sync::Arc<dyn cellarr_media::DynMetadataResolver> =
+            std::sync::Arc::new(crate::resolver::LiveMetadataResolver::from_config(
+                config,
+                db.clone(),
+                artwork_dir.clone(),
+            ));
+        let handler_resolver = std::sync::Arc::clone(&resolver);
+
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
             // Attach the scene-mapping provider so a fired job's Identify stage
@@ -169,7 +189,8 @@ impl Daemon {
                     events,
                     env,
                 )
-                .with_scene_provider(handler_scene_provider),
+                .with_scene_provider(handler_scene_provider)
+                .with_resolver(handler_resolver),
             )
         })
         .with_metadata(metadata)
@@ -204,12 +225,8 @@ impl Daemon {
             std::sync::Arc::new(crate::pipeline::LiveQueueClient::new(state.db.clone()));
         let state = state.with_queue_client(queue_client);
 
-        // The artwork cache dir (`<data_dir>/MediaCover`) the identify/refresh path
-        // caches poster/fanart into and the v3 `mediacover/{id}/{kind}` route serves
-        // from. Created up front so the route's reads never race a missing dir.
-        let artwork_dir = config.data_dir.join("MediaCover");
-        std::fs::create_dir_all(&artwork_dir)
-            .with_context(|| format!("creating artwork dir {}", artwork_dir.display()))?;
+        // Wire the (already-created) artwork cache dir into the API state so the v3
+        // `mediacover/{id}/{kind}` route serves the bytes the resolver caches.
         let state = state.with_artwork_dir(artwork_dir);
 
         // The recycle bin a `deleteFiles` content delete moves removed media into
@@ -387,6 +404,13 @@ async fn register_recurring(state: &AppState) -> Result<()> {
         .add_cron(JobKind::DiskSpaceCheck, "@hourly", RetryPolicy::default())
         .await
         .context("registering DiskSpaceCheck")?;
+    // Refresh rich metadata + artwork for the library daily. Without this the
+    // resolver only runs on a manual/per-add refresh, so existing nodes never gain
+    // overview/runtime/genres/ratings/posters on their own.
+    scheduler
+        .add_cron(JobKind::MetadataRefresh, "@daily", RetryPolicy::default())
+        .await
+        .context("registering MetadataRefresh")?;
     Ok(())
 }
 
