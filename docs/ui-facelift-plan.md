@@ -254,3 +254,23 @@ Within SRCL's intentional terminal/monospace/dense aesthetic:
 ---
 
 **Bottom line:** the fastest path to a UI that reads as a serious Radarr/Sonarr peer is Phase 0 — ship the status-color map, the shared route registry, the one media-row `Table` pattern, the reusable PageHeader, and overlay focus management. Those five foundations convert cellarr's solid-but-underused SRCL baseline into a dense, colored, keyboard-driven, theme-correct surface, and every per-screen rich-data fix then composes cleanly on top of them — without a single new primitive.
+---
+
+## Implementation progress (live)
+
+Shipped + gated (typecheck + SRCL-lint + 363 web tests) + deployed + verified on rinzler:
+
+- **Phase 0 colour taxonomy (D1):** `web/app/_lib/status.ts` + `StatusBadge`; applied to Library, Dashboard health, Activity lifecycle, Interactive + Manual-Import rejected/ok. Fixed silently-broken tokens (logs `LEVEL_COLOR`, dashboard `--theme-error`, logs bg). — `f96d24d`, `a5fd695`, `e752c85`
+- **Density:** Quality-profile cutoff 16-row radio → `Select`; Calendar range → horizontal `ButtonGroup`. — `f4bfa90`, `62bf567`
+- **Select stale-label fix:** profile + cutoff Selects key on resolved value (the v3 API ships `rank-N` placeholders resolved async). — `dcab488`
+- **Clarity:** content-detail raw `#id` "Structure" hidden for movies. — `3d432ae`
+- **Organization:** Settings 15-tab wall → 4 labelled bands (Profiles/Connections/Media/General). — `0ba191e`
+- **Logs:** in-log substring Filter input. — `cf794d8`
+- **Responsive:** AppShell collapses the sidebar behind a hamburger below 768px (was desktop-only). — `e635375`
+
+Remaining (larger / backend / higher-risk), in priority order:
+1. **Content-detail rich metadata** — needs a backend TMDB-enrichment feature (the v3 API returns `overview:''`/`runtime:0`/no images/genres; cellarr stores only identity), then the UI renders poster/overview/genres/runtime/ratings.
+2. Activity Downloads ETA/timeleft + status taxonomy; table horizontal-scroll wrappers.
+3. Broaden colour to System health (`SimpleTable` status contract) + History event types.
+4. Library parity columns + per-row `DropdownMenu`; overlay focus-trap (palette + ModalProvider).
+5. Per-screen density passes; routed Settings sub-sections + breadcrumbs.
