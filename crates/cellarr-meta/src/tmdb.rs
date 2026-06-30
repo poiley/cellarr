@@ -458,10 +458,7 @@ mod normalize_movie_tests {
             "https://image.tmdb.org/t/p/original/poster1.jpg"
         );
         let fanart = meta.images.iter().find(|i| i.kind == "fanart").unwrap();
-        assert_eq!(
-            fanart.url,
-            "https://image.tmdb.org/t/p/original/back1.jpg"
-        );
+        assert_eq!(fanart.url, "https://image.tmdb.org/t/p/original/back1.jpg");
     }
 
     /// A movie with no votes yet drops the rating entirely (so the UI shows nothing
