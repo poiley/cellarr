@@ -96,9 +96,17 @@ pub struct TransmissionClient {
 struct Torrent {
     #[serde(default)]
     name: String,
-    /// Fraction complete in `[0.0, 1.0]`.
+    /// Fraction of the KNOWN content downloaded, `[0.0, 1.0]`. For a magnet whose
+    /// metadata has not been fetched yet Transmission reports `1.0` — 100% of the
+    /// 0 bytes it currently knows about — so this must be read together with
+    /// [`metadata_percent_complete`](Self::metadata_percent_complete).
     #[serde(rename = "percentDone", default)]
     percent_done: f64,
+    /// Metadata fetch progress for a magnet, `[0.0, 1.0]`. Below `1.0` the torrent
+    /// has not resolved its size/file list yet, so `percentDone` is meaningless and
+    /// the download is NOT complete no matter what `percentDone` says.
+    #[serde(rename = "metadataPercentComplete", default)]
+    metadata_percent_complete: f64,
     /// Transmission's numeric status: 0 stopped, 1 check-wait, 2 checking,
     /// 3 download-wait, 4 downloading, 5 seed-wait, 6 seeding.
     #[serde(default)]
@@ -383,6 +391,10 @@ impl TransmissionClient {
                 "id", "hashString", "name", "percentDone", "status",
                 "downloadDir", "labels", "doneDate", "uploadRatio",
                 "secondsSeeding", "errorString",
+                // Without these the struct's serde(default) silently reported
+                // 0 connected peers for every torrent, and a magnet still fetching
+                // metadata was mistaken for a finished download.
+                "peersConnected", "metadataPercentComplete",
             ],
         });
         let arguments = self.call("torrent-get", args).await?;
@@ -430,10 +442,14 @@ impl TransmissionClient {
 
 /// Map a Transmission torrent row to detailed progress.
 fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
+    // A magnet that has not resolved its metadata knows neither its size nor its
+    // files — Transmission reports `percentDone: 1.0` for the 0 bytes it currently
+    // knows about, which must NOT be read as a finished download.
+    let has_metadata = t.metadata_percent_complete >= 1.0;
     // A non-empty errorString is a hard failure regardless of status.
     let state = if !t.error_string.is_empty() {
         DownloadState::Failed
-    } else if t.percent_done >= 1.0 || matches!(t.status, 5 | 6) {
+    } else if has_metadata && (t.percent_done >= 1.0 || matches!(t.status, 5 | 6)) {
         // status 5 (seed-wait) / 6 (seeding) — the content is on disk and the
         // torrent has finished; treat 100% the same even mid-status-transition.
         DownloadState::Completed
@@ -442,10 +458,14 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
             // 0 stopped, 1 check-wait, 2 checking, 3 download-wait: not yet
             // actively pulling data.
             0..=3 => DownloadState::Queued,
-            // 4 downloading (and any unexpected code) — in flight.
+            // 4 downloading (and any unexpected code) — in flight. A magnet still
+            // fetching metadata lands here (status 4), reported as Downloading.
             _ => DownloadState::Downloading,
         }
     };
+    // Progress only means something once the metadata (and the real size) is known;
+    // a magnet still fetching metadata is 0% of its unknown content, not 100%.
+    let progress = if has_metadata { t.percent_done } else { 0.0 };
     let content_path = if matches!(state, DownloadState::Completed)
         && !t.download_dir.is_empty()
         && !t.name.is_empty()
@@ -460,7 +480,7 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
     };
     DownloadProgress {
         state,
-        progress: t.percent_done,
+        progress,
         content_path,
         ratio: Some(t.upload_ratio),
         seeding_time_secs: Some(t.seconds_seeding.max(0) as u64),
@@ -508,6 +528,7 @@ mod tests {
         let t = Torrent {
             name: "Show.S01E01".into(),
             percent_done: 1.0,
+            metadata_percent_complete: 1.0,
             status: 6,
             download_dir: "/downloads/cellarr-tv/".into(),
             labels: vec!["cellarr-tv".into()],
@@ -530,6 +551,7 @@ mod tests {
         let t = Torrent {
             name: "Show.S01E01".into(),
             percent_done: 0.4,
+            metadata_percent_complete: 1.0,
             status: 4,
             download_dir: "/downloads".into(),
             labels: vec![],
@@ -545,10 +567,37 @@ mod tests {
     }
 
     #[test]
+    fn magnet_without_metadata_is_downloading_not_completed() {
+        // Transmission reports percentDone: 1.0 for a magnet it has only just added
+        // and not yet resolved metadata for (100% of the 0 bytes it knows). It must
+        // read as an in-flight download at 0%, NOT as finished — otherwise the
+        // pipeline tries to import an empty download and the queue shows a bogus
+        // "100% complete".
+        let t = Torrent {
+            name: "Jackass.Forever.2022.1080p".into(),
+            percent_done: 1.0,
+            metadata_percent_complete: 0.0,
+            status: 4, // downloading (fetching metadata)
+            download_dir: "/downloads".into(),
+            labels: vec![],
+            upload_ratio: 0.0,
+            seconds_seeding: 0,
+            peers_connected: 12,
+            error_string: String::new(),
+        };
+        let p = progress_from_torrent(&t);
+        assert_eq!(p.state, DownloadState::Downloading, "no metadata => not complete");
+        assert_eq!(p.progress, 0.0, "no metadata => 0%, not 100%");
+        assert!(p.content_path.is_none(), "no content to import yet");
+        assert_eq!(p.peers, Some(12), "the real connected-peer count is reported");
+    }
+
+    #[test]
     fn error_string_is_failed() {
         let t = Torrent {
             name: "x".into(),
             percent_done: 0.2,
+            metadata_percent_complete: 1.0,
             status: 4,
             download_dir: "/d".into(),
             labels: vec![],
