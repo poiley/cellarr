@@ -536,8 +536,16 @@ where
     /// constructed). Domain outcomes — reject, grab-failed, import-held — are
     /// returned as [`RunOutcome`], not errors, because they are normal, logged
     /// results, not bugs.
+    #[tracing::instrument(
+        name = "pipeline.run",
+        skip_all,
+        fields(content_id = %content.id, run_id = tracing::field::Empty)
+    )]
     pub async fn run(&self, content: &ContentRef) -> Result<RunOutcome> {
         let run_id = PipelineRunId::new();
+        // Recorded after creation so the whole run span (and every child stage
+        // span) carries the canonical run_id correlation field.
+        tracing::Span::current().record("run_id", tracing::field::display(run_id));
         let mut stage = Stage::Discover;
 
         // --- Discover -----------------------------------------------------
@@ -1069,6 +1077,7 @@ where
 
     // --- Stage implementations -------------------------------------------
 
+    #[tracing::instrument(name = "pipeline.discover", skip_all, fields(content_id = %content.id))]
     async fn discover(&self, content: &ContentRef) -> Result<Vec<Release>> {
         let module = self.module_for(content)?;
         let terms = module
@@ -1243,6 +1252,11 @@ where
         }
     }
 
+    #[tracing::instrument(
+        name = "pipeline.decide",
+        skip_all,
+        fields(content_id = %content_ref.id, release = %release.title, indexer = %release.indexer_id)
+    )]
     async fn decide(
         &self,
         content_ref: &ContentRef,
@@ -1472,6 +1486,11 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "pipeline.grab",
+        skip_all,
+        fields(run_id = %run_id, content_id = %content.id, release = %release.title, indexer = %release.indexer_id)
+    )]
     async fn grab_track_import(
         &self,
         run_id: PipelineRunId,
@@ -1705,6 +1724,7 @@ where
     ///
     /// Bounded by `max_track_polls`; the logical clock advances between polls so
     /// tests never sleep.
+    #[tracing::instrument(name = "pipeline.track", skip_all, fields(download_id = %download_id))]
     async fn track(&self, download_id: &str) -> TrackOutcome {
         let mut last_progress = f32::NEG_INFINITY;
         let mut stagnant_no_peer_polls: u32 = 0;
@@ -1780,6 +1800,11 @@ where
     /// Re-parses the *file* path (the second parse, the source of truth) and
     /// asks the media module for naming tokens, renders the destination via
     /// cellarr-fs, then runs the crash-safe `plan_import`/`execute_import`.
+    #[tracing::instrument(
+        name = "pipeline.import",
+        skip_all,
+        fields(grab_id = %grab_id, content_id = %matched_ref.id)
+    )]
     async fn import(
         &self,
         grab_id: GrabId,

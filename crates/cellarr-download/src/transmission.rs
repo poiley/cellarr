@@ -322,6 +322,11 @@ impl TransmissionClient {
     /// The per-category save path is sent as `download-dir` (only when an absolute
     /// root is configured — see [`Self::download_dir`]), cellarr's category as a
     /// `labels` entry, and the `paused` flag verbatim.
+    #[tracing::instrument(
+        name = "download.add",
+        skip_all,
+        fields(download_client = "transmission", release = %grab.release.title, indexer = %grab.indexer_id)
+    )]
     pub async fn add(&self, grab: &GrabRequest, paused: bool) -> Result<String, DownloadError> {
         let source =
             TorrentSource::resolve(&grab.release.download_url, self.transport.as_ref()).await?;
@@ -425,6 +430,11 @@ impl TransmissionClient {
     }
 
     /// Poll the coarse [`DownloadState`] of a torrent by infohash.
+    #[tracing::instrument(
+        name = "download.status",
+        skip_all,
+        fields(download_client = "transmission", download_id = %hash)
+    )]
     pub async fn status(&self, hash: &str) -> Result<DownloadState, DownloadError> {
         Ok(self.progress(hash).await?.state)
     }
@@ -433,6 +443,11 @@ impl TransmissionClient {
     ///
     /// Returns `Ok(false)` without removing when the gate is not yet satisfied, so
     /// the caller can poll again later. Returns `Ok(true)` once removed.
+    #[tracing::instrument(
+        name = "download.remove",
+        skip_all,
+        fields(download_client = "transmission", download_id = %hash, delete_data = policy.delete_data)
+    )]
     pub async fn remove(&self, hash: &str, policy: RemovePolicy) -> Result<bool, DownloadError> {
         let progress = self.progress(hash).await?;
         if !policy.is_satisfied_by(&progress) {

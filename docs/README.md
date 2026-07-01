@@ -28,6 +28,7 @@ Read top to bottom the first time. After that, jump to the doc you need.
 | 15 | [15-glossary.md](15-glossary.md) | Domain glossary — read when a term is unfamiliar. |
 | 16 | [16-local-dev-and-testing.md](16-local-dev-and-testing.md) | Local dev/test + parallel-workflow isolation (ports, DBs, Docker, worktrees). |
 | 17 | [17-config-as-code.md](17-config-as-code.md) | Declarative managed config: the YAML file, `${ENV}` secrets, safe prune, the `managed-config` CLI. |
+| 18 | [18-observability.md](18-observability.md) | Logging, span catalogue, canonical field names, and the opt-in OpenTelemetry (OTLP) exporter. |
 
 ## Specs (the contracts)
 
