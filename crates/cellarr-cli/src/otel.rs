@@ -37,7 +37,6 @@ pub fn otlp_layer(endpoint: &str) -> Option<(OtelLayer, OtelGuard)> {
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use opentelemetry_sdk::Resource;
-    use opentelemetry_semantic_conventions as semconv;
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
@@ -46,14 +45,14 @@ pub fn otlp_layer(endpoint: &str) -> Option<(OtelLayer, OtelGuard)> {
         .map_err(|e| eprintln!("warning: OTLP exporter init failed: {e}"))
         .ok()?;
 
+    // Canonical OpenTelemetry resource keys as plain literals — avoids coupling to
+    // the semantic-conventions crate (whose `service.instance.id` sits behind an
+    // experimental feature gate); these strings are the stable convention.
     let resource = Resource::builder()
         .with_service_name("cellarr")
+        .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
         .with_attribute(KeyValue::new(
-            semconv::resource::SERVICE_VERSION,
-            env!("CARGO_PKG_VERSION"),
-        ))
-        .with_attribute(KeyValue::new(
-            semconv::resource::SERVICE_INSTANCE_ID,
+            "service.instance.id",
             uuid::Uuid::new_v4().to_string(),
         ))
         .build();
