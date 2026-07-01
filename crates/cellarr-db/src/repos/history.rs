@@ -79,4 +79,32 @@ impl HistoryRepository for HistoryRepo {
             })
             .collect()
     }
+
+    async fn recent(&self, limit: u32, offset: u32) -> Result<Vec<HistoryRecord>> {
+        // Global feed, newest first. `at` is a zero-padded rfc3339 UTC string, so a
+        // lexical sort is chronological; `id` breaks ties within the same instant.
+        let rows = sqlx::query(
+            "SELECT at, content_id, run_id, event
+             FROM history ORDER BY at DESC, id DESC LIMIT ?1 OFFSET ?2",
+        )
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let at: String = row.try_get("at")?;
+                let content_id: String = row.try_get("content_id")?;
+                let run_id: String = row.try_get("run_id")?;
+                let event: String = row.try_get("event")?;
+                let event: HistoryEvent = serde_json::from_str(&event)?;
+                Ok(HistoryRecord {
+                    at: parse_time("at", &at)?,
+                    content_id: ContentId::from_uuid(parse_uuid("content_id", &content_id)?),
+                    run_id: PipelineRunId::from_uuid(parse_uuid("run_id", &run_id)?),
+                    event,
+                })
+            })
+            .collect()
+    }
 }

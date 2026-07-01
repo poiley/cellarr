@@ -6864,6 +6864,10 @@ struct HistoryQuery {
     movie_id: Option<String>,
     #[serde(rename = "seriesId")]
     series_id: Option<String>,
+    /// 1-based page for the global (no-id) feed.
+    page: Option<u32>,
+    #[serde(rename = "pageSize")]
+    page_size: Option<u32>,
 }
 
 async fn history(
@@ -6871,9 +6875,18 @@ async fn history(
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Value>> {
     use cellarr_core::repo::HistoryRepository;
+    // Shared projection for a history record → the v3 row shape.
+    let to_row = |r: &cellarr_core::HistoryRecord| {
+        json!({
+            "id": r.content_id.to_string(),
+            "eventType": history_event_type(&r.event),
+            "date": r.at.unix_timestamp(),
+        })
+    };
     let id = q.movie_id.or(q.series_id);
     let records: Vec<Value> = match id {
         Some(raw) if !raw.is_empty() => {
+            // A content-scoped timeline, oldest first (as the item screen reads it).
             let cid = cellarr_core::ContentId::from_uuid(
                 raw.parse::<uuid::Uuid>()
                     .map_err(|_| ApiError::BadRequest(format!("invalid id: {raw}")))?,
@@ -6883,17 +6896,26 @@ async fn history(
                 .history()
                 .for_content(cid)
                 .await?
-                .into_iter()
-                .map(|r| {
-                    json!({
-                        "id": r.content_id.to_string(),
-                        "eventType": history_event_type(&r.event),
-                        "date": r.at.unix_timestamp(),
-                    })
-                })
+                .iter()
+                .map(to_row)
                 .collect()
         }
-        _ => Vec::new(),
+        // The GLOBAL feed the dashboard reads (no id): newest first, paged. This
+        // used to return an empty list, so the dashboard's "Recent activity" was
+        // always blank even after real grabs/imports.
+        _ => {
+            let page = q.page.unwrap_or(1).max(1);
+            let page_size = q.page_size.unwrap_or(50).clamp(1, 200);
+            let offset = (page - 1) * page_size;
+            fs.state
+                .db
+                .history()
+                .recent(page_size, offset)
+                .await?
+                .iter()
+                .map(to_row)
+                .collect()
+        }
     };
     Ok(Json(paged(records, "date")))
 }
@@ -6920,9 +6942,11 @@ async fn wanted_missing(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
 }
 
 fn history_event_type(event: &cellarr_core::HistoryEvent) -> String {
+    // The HistoryEvent enum is serde-tagged `event` (see cellarr_core::HistoryEvent
+    // `#[serde(tag = "event")]`); reading `type` here made every row "unknown".
     serde_json::to_value(event)
         .ok()
-        .and_then(|v| v.get("type").and_then(|t| t.as_str().map(String::from)))
+        .and_then(|v| v.get("event").and_then(|t| t.as_str().map(String::from)))
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -7885,5 +7909,28 @@ mod numeric_id_js_safety {
         // Stable + deterministic (lookups re-project and match).
         assert_eq!(uuid_to_i64(worst), uuid_to_i64(worst));
         assert_eq!(JS_SAFE_INT_MAX, 9_007_199_254_740_991);
+    }
+}
+
+#[cfg(test)]
+mod history_projection {
+    use super::history_event_type;
+    use cellarr_core::{GrabId, HistoryEvent};
+
+    // Regression: HistoryEvent is serde-tagged `event`, but the projection read
+    // `type` — so every history row's `eventType` came back "unknown" and the
+    // dashboard/feed could not label anything.
+    #[test]
+    fn event_type_reads_the_serde_tag_not_unknown() {
+        let grabbed = HistoryEvent::Grabbed {
+            grab_id: GrabId::new(),
+            release_type: None,
+        };
+        assert_eq!(history_event_type(&grabbed), "grabbed");
+
+        let imported = HistoryEvent::Imported {
+            grab_id: GrabId::new(),
+        };
+        assert_eq!(history_event_type(&imported), "imported");
     }
 }

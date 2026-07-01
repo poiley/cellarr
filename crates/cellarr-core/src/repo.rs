@@ -174,6 +174,11 @@ pub trait HistoryRepository: Send + Sync {
 
     /// All history for a content node, oldest first.
     async fn for_content(&self, id: ContentId) -> Result<Vec<HistoryRecord>, Self::Error>;
+
+    /// The most recent history across ALL content, newest first — the global
+    /// activity/history feed the dashboard reads when no content id is given.
+    /// `limit`/`offset` page the result.
+    async fn recent(&self, limit: u32, offset: u32) -> Result<Vec<HistoryRecord>, Self::Error>;
 }
 
 /// Append-only writes and queries for the decision log.

@@ -400,7 +400,8 @@ async fn get_history(
 ) -> ApiResult<Json<Vec<cellarr_core::HistoryRecord>>> {
     use cellarr_core::repo::HistoryRepository;
     let Some(content) = q.content else {
-        return Ok(Json(Vec::new()));
+        // No content filter: the global feed, newest first (was an empty list).
+        return Ok(Json(state.db.history().recent(100, 0).await?));
     };
     let content_id = ContentId::from_uuid(parse_uuid(&content, "content")?);
     Ok(Json(state.db.history().for_content(content_id).await?))
