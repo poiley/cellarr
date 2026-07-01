@@ -763,18 +763,19 @@ where
     ///
     /// [`grab_track_import`]: Self::grab_track_import
     pub async fn grab_release(&self, content: &ContentRef, guid: &str) -> Result<RunOutcome> {
-        let run_id = PipelineRunId::new();
-        let mut stage = Stage::Discover;
-
-        // Re-discover to locate the chosen release. The interactive search the user
-        // grabbed from listed the live candidates; we re-run Discover and match the
-        // user's pick by guid (the stable id the UI carries), falling back to the
-        // download URL when an indexer advertises no guid.
+        // Fallback path: only a guid is known, so re-run Discover to locate the
+        // chosen release, matching by guid (the stable id the UI carries), falling
+        // back to the download URL when an indexer advertises no guid. Callers that
+        // already hold the picked release should use
+        // [`grab_selected_release`](Self::grab_selected_release) instead — it skips
+        // this redundant indexer round-trip (and the "no longer offered" race when
+        // the indexer's listing shifts between search and grab).
         let releases = self.discover(content).await?;
         let Some(release) = releases
             .into_iter()
             .find(|r| r.guid.as_deref() == Some(guid) || r.download_url == guid)
         else {
+            let run_id = PipelineRunId::new();
             let reason = format!("release {guid} is no longer offered by the indexers");
             self.log(
                 run_id,
@@ -787,6 +788,28 @@ where
             .await?;
             return Ok(RunOutcome::NothingFound);
         };
+        self.grab_selected_release(content, &release).await
+    }
+
+    /// **Interactive grab of an already-chosen release.** The interactive-search
+    /// screen already fetched the live candidates and the user picked one; drive
+    /// that exact [`Release`] through Parse→Identify→Decide→Grab→Track→Import
+    /// WITHOUT re-running Discover. This removes both the redundant indexer
+    /// round-trip and the "no longer offered" race that
+    /// [`grab_release`](Self::grab_release)'s re-Discover is prone to when the
+    /// indexer's live listing shifts between the search and the grab.
+    ///
+    /// Identical downstream semantics to [`grab_release`]: the user's pick is
+    /// grabbed even against a Reject verdict (manual override), a blocklisted or
+    /// non-identifying release is still refused (library-safety), and the same
+    /// grab row / history / webhook / import path is taken.
+    pub async fn grab_selected_release(
+        &self,
+        content: &ContentRef,
+        release: &Release,
+    ) -> Result<RunOutcome> {
+        let run_id = PipelineRunId::new();
+        let mut stage = Stage::Discover;
         stage = self.advance(run_id, stage, None).await?; // -> Parse
 
         // Parse + reconcile any anime absolute, exactly as a run does. An
@@ -845,7 +868,7 @@ where
         // A blocklisted release previously failed for this node; refuse it even on
         // a manual grab (grab-next blocklisted it for a reason).
         if self
-            .is_blocklisted(matched.content_ref.id, &release)
+            .is_blocklisted(matched.content_ref.id, release)
             .await?
         {
             let reason = "release is blocklisted".to_string();
@@ -866,7 +889,7 @@ where
         // anyway (recorded as a manual override); Grab/Upgrade carry their score.
         let on_disk = self.on_disk_for(content).await?;
         let decision = self
-            .decide(&matched.content_ref, &release, &parsed, on_disk)
+            .decide(&matched.content_ref, release, &parsed, on_disk)
             .await?;
         let score = match &decision.verdict {
             Verdict::Grab { score } | Verdict::Upgrade { to: score, .. } => *score,
@@ -881,7 +904,7 @@ where
                 &mut stage,
                 content,
                 &matched.content_ref,
-                &release,
+                release,
                 &parsed,
                 decision,
                 score,

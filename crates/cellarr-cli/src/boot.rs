@@ -146,9 +146,14 @@ impl Daemon {
         // preview (no grab).
         let search_db = db.clone();
         let search_registry = std::sync::Arc::clone(&registry);
+        // A shared candidate cache: the search records the exact releases it
+        // surfaces, and the grab reads from the SAME instance so it can acquire the
+        // user's pick without re-querying the indexer (no "no longer offered" race).
+        let grab_cache = std::sync::Arc::new(crate::pipeline::GrabCandidateCache::new());
         let release_search = std::sync::Arc::new(
             crate::pipeline::LiveReleaseSearch::new(search_db, search_registry)
-                .with_scene_provider(std::sync::Arc::clone(&scene_provider)),
+                .with_scene_provider(std::sync::Arc::clone(&scene_provider))
+                .with_grab_cache(std::sync::Arc::clone(&grab_cache)),
         );
         // The interactive grab seam (POST /api/v3/release) shares the same DB +
         // media registry, but — unlike search — builds the download client and
@@ -197,7 +202,8 @@ impl Daemon {
         .with_release_search(release_search);
         let release_grab = std::sync::Arc::new(
             crate::pipeline::LiveReleaseGrab::new(grab_db, grab_registry, state.events.clone())
-                .with_scene_provider(std::sync::Arc::clone(&scene_provider)),
+                .with_scene_provider(std::sync::Arc::clone(&scene_provider))
+                .with_grab_cache(grab_cache),
         );
         let state = state.with_release_grab(release_grab);
 

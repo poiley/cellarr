@@ -385,3 +385,60 @@ async fn grab_release_for_unknown_guid_is_nothing_found_and_grabs_nothing() {
         .unwrap();
     assert!(history.is_empty(), "no grab => no history");
 }
+
+#[tokio::test]
+async fn grab_selected_release_grabs_the_pick_without_rediscovering() {
+    // The interactive search already fetched the candidates and the user picked
+    // one; `grab_selected_release` must acquire that exact release WITHOUT re-running
+    // Discover. Prove it by giving the runner an EMPTY indexer — a re-Discover would
+    // find nothing ("no longer offered") — yet the grab of the held release still
+    // reaches Imported. This is the fix for the indexer-listing race between the
+    // search and the grab.
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+
+    let download_dir = tmp.path().join("downloads/movie");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.720p.WEB-DL.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"synthetic movie bytes").unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_movie_node(&db).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    // Empty indexer: a re-Discover would return nothing.
+    let indexer = FakeIndexer { releases: vec![] };
+    let client = RecordingClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+        grabbed_title: std::sync::Mutex::new(None),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(library_root.clone());
+
+    // The exact release the search surfaced (what the cache would hand back).
+    let picked = movie_release("The.Matrix.1999.720p.WEB-DL.x264-GROUP", "guid-720p");
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.grab_selected_release(&node, &picked).await.unwrap();
+
+    let (grab_id, destinations) = match outcome {
+        RunOutcome::Imported {
+            grab_id,
+            destinations,
+        } => (grab_id, destinations),
+        other => panic!("expected Imported (no re-Discover needed), got {other:?}"),
+    };
+
+    // The held pick was grabbed + imported despite the indexer offering nothing.
+    let grabbed = client.grabbed_title.lock().unwrap().clone().unwrap();
+    assert!(grabbed.contains("720p"), "the picked release must be grabbed, got {grabbed:?}");
+    assert_eq!(destinations.len(), 1);
+    assert!(PathBuf::from(&destinations[0]).starts_with(&library_root));
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grab.status, GrabStatus::Imported);
+}

@@ -755,6 +755,57 @@ impl PipelineEnv for LivePipelineEnv {
 /// [`Unavailable`](cellarr_api::release_search::ReleaseSearchOutcome::Unavailable)
 /// — a benign empty result, not an error.
 ///
+/// A small, shared cache of the exact [`Release`](cellarr_core::Release) objects
+/// the interactive search last surfaced, keyed by the guid / download-url the UI
+/// carries in each row.
+///
+/// The grab reads it so it can acquire the release the user *actually picked* —
+/// the same bytes the search returned — WITHOUT re-querying the indexer. That
+/// removes a redundant round-trip and, more importantly, the "no longer offered
+/// by the indexers" race: an indexer's live listing (RSS/torrent search) shifts
+/// minute to minute, so a re-Discover between the search and the grab can miss a
+/// release the user is looking right at. Bounded so a long-lived daemon can't
+/// grow it without limit (a fresh search for a node overwrites its rows).
+#[derive(Default)]
+pub struct GrabCandidateCache {
+    inner: std::sync::Mutex<std::collections::HashMap<String, cellarr_core::Release>>,
+}
+
+/// The cache is a convenience, not a store of record — cap it so a very long
+/// session can't accumulate unbounded entries; on overflow the whole map is
+/// dropped (the next search repopulates the rows that matter).
+const GRAB_CACHE_MAX: usize = 4096;
+
+impl GrabCandidateCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remember the candidates a search produced, keyed by both the indexer guid
+    /// (when advertised) and the download url — the two ids a grab can arrive with.
+    fn remember(&self, candidates: &[cellarr_jobs::ReleaseCandidate]) {
+        let Ok(mut map) = self.inner.lock() else {
+            return; // a poisoned lock only costs the cache; the grab re-discovers.
+        };
+        if map.len() >= GRAB_CACHE_MAX {
+            map.clear();
+        }
+        for c in candidates {
+            if let Some(guid) = c.release.guid.as_deref() {
+                map.insert(guid.to_string(), c.release.clone());
+            }
+            map.insert(c.release.download_url.clone(), c.release.clone());
+        }
+    }
+
+    /// The cached release for a guid / download-url the UI grabbed, if the search
+    /// that produced it is still remembered. `None` falls back to a re-Discover.
+    fn get(&self, key: &str) -> Option<cellarr_core::Release> {
+        self.inner.lock().ok()?.get(key).cloned()
+    }
+}
+
 /// No download client is constructed or driven here: the preview stops before
 /// Grab, so no download is ever created by an interactive search.
 pub struct LiveReleaseSearch {
@@ -768,6 +819,10 @@ pub struct LiveReleaseSearch {
     /// leaves an absolute release un-remapped (skipped from the preview), never
     /// guessed.
     scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
+    /// The candidate cache this search populates; the grab seam reads from the
+    /// same instance so it can acquire the exact release the user picked without a
+    /// re-Discover. Its own private cache by default (harmless when unshared).
+    cache: Arc<GrabCandidateCache>,
 }
 
 impl LiveReleaseSearch {
@@ -783,6 +838,7 @@ impl LiveReleaseSearch {
             env,
             clock: SystemClock,
             scene_provider: None,
+            cache: Arc::new(GrabCandidateCache::new()),
         }
     }
 
@@ -794,6 +850,14 @@ impl LiveReleaseSearch {
         provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
     ) -> Self {
         self.scene_provider = Some(provider);
+        self
+    }
+
+    /// Share the candidate cache with the grab seam so a grab can acquire the exact
+    /// release this search surfaced without re-querying the indexer.
+    #[must_use]
+    pub fn with_grab_cache(mut self, cache: Arc<GrabCandidateCache>) -> Self {
+        self.cache = cache;
         self
     }
 }
@@ -846,6 +910,9 @@ impl cellarr_api::release_search::ReleaseSearch for LiveReleaseSearch {
             .preview_releases(&node)
             .await
             .map_err(|e| format!("interactive release search failed: {e}"))?;
+        // Remember the exact releases so a subsequent grab of any of these rows can
+        // acquire it directly, without re-querying the indexer.
+        self.cache.remember(&candidates);
         Ok(ReleaseSearchOutcome::Found(candidates))
     }
 }
@@ -880,6 +947,9 @@ pub struct LiveReleaseGrab {
     /// season/episode (parity with an automatic acquisition). `None` surfaces an
     /// absolute release for manual resolution rather than guessing.
     scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
+    /// Shared with the search seam: the exact releases the last search surfaced, so
+    /// a grab acquires the user's pick without re-querying the indexer.
+    cache: Arc<GrabCandidateCache>,
 }
 
 impl LiveReleaseGrab {
@@ -897,6 +967,7 @@ impl LiveReleaseGrab {
             env,
             clock: SystemClock,
             scene_provider: None,
+            cache: Arc::new(GrabCandidateCache::new()),
         }
     }
 
@@ -908,6 +979,14 @@ impl LiveReleaseGrab {
         provider: Arc<dyn cellarr_media::DynSceneMappingProvider>,
     ) -> Self {
         self.scene_provider = Some(provider);
+        self
+    }
+
+    /// Share the candidate cache the interactive search populates, so a grab can
+    /// acquire the exact release the user picked without re-querying the indexer.
+    #[must_use]
+    pub fn with_grab_cache(mut self, cache: Arc<GrabCandidateCache>) -> Self {
+        self.cache = cache;
         self
     }
 }
@@ -932,43 +1011,61 @@ impl cellarr_api::release_search::ReleaseGrab for LiveReleaseGrab {
         };
 
         // A grab builds the real download client (unlike a search). No enabled
-        // client / library root / profile -> not ready: a benign message.
+        // client / library root / profile -> not ready: a benign message. Resolved
+        // synchronously so a misconfigured environment is reported to the user
+        // immediately (before the request returns), not swallowed in the background.
         let Some((indexer, client, config)) = self.env.resolve(&node).await? else {
             return Ok(ReleaseGrabOutcome::Unavailable(
                 "no enabled download client / library root configured to grab with yet".into(),
             ));
         };
 
-        let mut runner = PipelineRunner::new(
-            &indexer,
-            &client,
-            &self.registry,
-            &self.db,
-            &self.clock,
-            &config,
-        );
-        if let Some(scene_provider) = self.scene_provider.as_ref() {
-            runner = runner.with_scene_provider(scene_provider.clone());
-        }
-        let outcome = runner
-            .grab_release(&node, guid)
-            .await
-            .map_err(|e| format!("interactive grab failed: {e}"))?;
+        // Prefer the exact release the search surfaced (no indexer re-query, no
+        // "no longer offered" race); fall back to a guid re-Discover when the cache
+        // has aged out.
+        let cached = self.cache.get(guid);
 
-        // Surface the same domain events an automatic run publishes, then map the
-        // terminal outcome to the FE-facing grab result.
-        publish_outcome(&self.events, &node, &outcome);
-        let imported = matches!(outcome, RunOutcome::Imported { .. });
-        let detail = match &outcome {
-            RunOutcome::Imported { destinations, .. } => {
-                format!("grabbed and imported ({} file(s))", destinations.len())
+        // Drive Grab→Track→Import on a background task and return immediately. The
+        // download runs for minutes (Track polls the client until the file lands),
+        // so blocking the HTTP request on it is what made the row hang forever. The
+        // spawned run publishes the same domain events an automatic acquisition does
+        // — Grabbed, then Imported/Rejected/etc — which the UI already observes over
+        // the WebSocket and the /queue view, so the user sees real progress.
+        let db = self.db.clone();
+        let registry = Arc::clone(&self.registry);
+        let events = self.events.clone();
+        let clock = self.clock;
+        let scene = self.scene_provider.clone();
+        let guid_owned = guid.to_string();
+        tokio::spawn(async move {
+            let mut runner =
+                PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+            if let Some(scene_provider) = scene.as_ref() {
+                runner = runner.with_scene_provider(scene_provider.clone());
             }
-            RunOutcome::Rejected { reason } => format!("not grabbed: {reason}"),
-            RunOutcome::Failed { detail } => format!("grab failed: {detail}"),
-            RunOutcome::HeldForReview { reason } => format!("held for review: {reason}"),
-            RunOutcome::NothingFound => "release is no longer offered by the indexers".to_string(),
-        };
-        Ok(ReleaseGrabOutcome::Grabbed { imported, detail })
+            let outcome = match &cached {
+                Some(release) => runner.grab_selected_release(&node, release).await,
+                None => runner.grab_release(&node, &guid_owned).await,
+            };
+            match outcome {
+                // The runner already logs each stage transition; publish the same
+                // domain events an automatic run does so the UI reflects the result.
+                Ok(o) => publish_outcome(&events, &node, &o),
+                Err(e) => {
+                    tracing::warn!(guid = %guid_owned, error = %e, "interactive grab failed");
+                    events.publish(DomainEvent::DecisionLogged {
+                        run_id: node.id.to_string(),
+                        note: format!("interactive grab failed: {e}"),
+                    });
+                }
+            }
+        });
+
+        // The grab was accepted and is now downloading in the background.
+        Ok(ReleaseGrabOutcome::Grabbed {
+            imported: false,
+            detail: "queued for download — cellarr is tracking it in the background".into(),
+        })
     }
 }
 
