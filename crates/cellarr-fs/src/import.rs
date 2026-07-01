@@ -48,6 +48,10 @@ pub enum PlacedAs {
     Copied,
     /// The file was already in place (a resumed/idempotent run).
     AlreadyPresent,
+    /// An existing untracked file at the destination was ADOPTED — nothing was
+    /// written or moved (the destination is byte-for-byte untouched); the caller
+    /// records it in the DB. Reconciles an orphaned on-disk file.
+    Adopted,
 }
 
 /// The result of executing an import plan.
@@ -191,6 +195,16 @@ async fn verify_move(m: &PlannedMove) -> Result<()> {
     let src = PathBuf::from(&m.source_path);
     let dst = PathBuf::from(&m.destination_path);
 
+    // Adopt: we take the existing destination file as-is and move nothing. The
+    // only precondition is that the destination actually holds a file to adopt;
+    // the source (download copy) is irrelevant and may or may not exist.
+    if m.adopt {
+        if !path_exists(&dst).await? {
+            return Err(FsError::MissingPath { path: dst });
+        }
+        return Ok(());
+    }
+
     if !path_exists(&src).await? {
         // On a *resumed* run the source may legitimately be gone if this move is
         // already fully committed (a copy could have removed nothing, but a move
@@ -215,6 +229,14 @@ async fn verify_move(m: &PlannedMove) -> Result<()> {
 async fn commit_move(m: &PlannedMove) -> Result<PlacedAs> {
     let src = PathBuf::from(&m.source_path);
     let dst = PathBuf::from(&m.destination_path);
+
+    // Adopt: the destination already holds the file we want; record it, write
+    // nothing, and never touch the existing bytes. (The redundant download copy
+    // is left to the grab's normal lifecycle — same as a hardlink import keeps
+    // its source.)
+    if m.adopt {
+        return Ok(PlacedAs::Adopted);
+    }
 
     if destination_already_satisfied(m).await? {
         return Ok(PlacedAs::AlreadyPresent);

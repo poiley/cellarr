@@ -122,6 +122,11 @@ pub trait MediaFileRepository: Send + Sync {
     /// Fetch a media file by id.
     async fn get(&self, id: MediaFileId) -> Result<Option<MediaFile>, Self::Error>;
 
+    /// Fetch a media file by its on-disk `path` (the UNIQUE index). Lets the
+    /// import path ask "is this destination already a tracked file?" so it can
+    /// classify an occupied destination — tracked (upgrade) vs orphaned (adopt).
+    async fn find_by_path(&self, path: &str) -> Result<Option<MediaFile>, Self::Error>;
+
     /// Every media file linked to `content` (one node may map to several files,
     /// and one file to several nodes).
     async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>, Self::Error>;

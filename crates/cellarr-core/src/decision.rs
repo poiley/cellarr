@@ -212,6 +212,15 @@ pub struct PlannedMove {
     pub replaced_path: Option<String>,
     /// Whether the move can be a hardlink (same filesystem) or must be a copy.
     pub hardlink: bool,
+    /// Adopt an EXISTING untracked file already at `destination_path` instead of
+    /// moving `source_path` over it. The destination is left byte-for-byte
+    /// untouched (read-only) and no bytes are written; the caller records a
+    /// `media_file` row for the existing file. This reconciles an orphaned on-disk
+    /// file (present, but with no DB row) when a completed download renders to the
+    /// same library path — the "destination already exists" case that previously
+    /// hard-failed the import.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopt: bool,
 }
 
 /// The fully computed Stage output: every move, with nothing mutated yet.

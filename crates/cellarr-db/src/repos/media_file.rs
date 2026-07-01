@@ -167,6 +167,18 @@ impl MediaFileRepository for MediaFileRepo {
         row.map(row_to_media_file).transpose()
     }
 
+    async fn find_by_path(&self, path: &str) -> Result<Option<MediaFile>> {
+        let row = sqlx::query(
+            "SELECT id, path, size, languages, quality, media_info, custom_format_score,
+                    release_type
+             FROM media_file WHERE path = ?1",
+        )
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(row_to_media_file).transpose()
+    }
+
     async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>> {
         let rows = sqlx::query(
             "SELECT m.id, m.path, m.size, m.languages, m.quality, m.media_info,

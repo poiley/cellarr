@@ -38,6 +38,7 @@ fn planned(src: &Path, dst: &Path, replaces: Option<MediaFileId>) -> PlannedMove
         replaced_path: None,
         // plan_import recomputes this; default for direct construction.
         hardlink: false,
+        adopt: false,
     }
 }
 
@@ -56,6 +57,7 @@ fn planned_replacing_distinct(
         replaces: Some(replaces),
         replaced_path: Some(replaced.to_string_lossy().into_owned()),
         hardlink: false,
+        adopt: false,
     }
 }
 
@@ -360,6 +362,46 @@ async fn plan_import_errors_on_missing_source() {
     let missing = tmp.path().join("dl/gone.mkv");
     let dst = tmp.path().join("lib/gone.mkv");
     let err = plan_import(GrabId::new(), vec![planned(&missing, &dst, None)]).await;
+    assert!(matches!(err, Err(cellarr_fs::FsError::MissingPath { .. })));
+}
+
+#[tokio::test]
+async fn adopts_an_orphaned_destination_without_touching_it() {
+    // The destination already holds an UNTRACKED orphan — a completed download
+    // whose media_file row was deleted (the "keep files" drift). An adopt move
+    // records it in place: the existing bytes are read-only, never overwritten,
+    // and the freshly downloaded source is not moved onto it.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("dl/movie.mkv");
+    let dst = tmp.path().join("lib/movie.mkv");
+    write(&src, b"freshly downloaded bytes");
+    write(&dst, b"the original orphan on disk");
+
+    let mut m = planned(&src, &dst, None);
+    m.adopt = true;
+    let plan = plan_import(GrabId::new(), vec![m]).await.unwrap();
+    let result = execute_import(&plan).await.unwrap();
+
+    assert_eq!(result.moves[0].outcome, PlacedAs::Adopted);
+    // Destination untouched — adopt never overwrites the existing file.
+    assert_eq!(read(&dst), b"the original orphan on disk");
+    // Nothing is removed as a replacement (adopt has no replaced_path).
+    assert!(!result.moves[0].removed_replaced);
+}
+
+#[tokio::test]
+async fn adopt_of_a_missing_destination_is_refused() {
+    // Adopt asserts the file it claims to record actually exists; a missing
+    // destination is a bug, not an adoptable file.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("dl/movie.mkv");
+    let dst = tmp.path().join("lib/movie.mkv");
+    write(&src, b"freshly downloaded bytes");
+
+    let mut m = planned(&src, &dst, None);
+    m.adopt = true;
+    let plan = plan_import(GrabId::new(), vec![m]).await.unwrap();
+    let err = execute_import(&plan).await;
     assert!(matches!(err, Err(cellarr_fs::FsError::MissingPath { .. })));
 }
 

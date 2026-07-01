@@ -80,6 +80,7 @@ pub fn plan_file_operations<P: NamingPolicy>(
             // Recognizing/relocating within the same library is a hardlink-able
             // move on the common single-filesystem layout.
             hardlink: true,
+            adopt: false,
         });
     }
     moves

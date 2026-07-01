@@ -1429,25 +1429,42 @@ where
             if !seen_paths.insert(dest.clone()) {
                 continue;
             }
-            let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-            let file = cellarr_core::MediaFile {
-                id: cellarr_core::MediaFileId::new(),
-                path: dest.clone(),
-                size,
-                quality: quality.clone(),
-                languages: title_parsed.languages.clone(),
-                media_info: None,
-                custom_format_score: None,
-                release_type: Some(release_type),
+            // If a row already tracks this exact path — an ADOPTED orphan we are
+            // reconciling, or a resumed/replayed import — reuse it instead of
+            // inserting a duplicate (`media_file.path` is UNIQUE). This makes the
+            // persist step idempotent: re-running an import, or recording an
+            // untracked on-disk file, links the content without a UNIQUE collision.
+            let file_id = match self
+                .db
+                .media_files()
+                .find_by_path(dest)
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?
+            {
+                Some(existing) => existing.id,
+                None => {
+                    let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+                    let file = cellarr_core::MediaFile {
+                        id: cellarr_core::MediaFileId::new(),
+                        path: dest.clone(),
+                        size,
+                        quality: quality.clone(),
+                        languages: title_parsed.languages.clone(),
+                        media_info: None,
+                        custom_format_score: None,
+                        release_type: Some(release_type),
+                    };
+                    self.db
+                        .media_files()
+                        .create(&file)
+                        .await
+                        .map_err(|e| JobError::Persistence(Box::new(e)))?;
+                    file.id
+                }
             };
             self.db
                 .media_files()
-                .create(&file)
-                .await
-                .map_err(|e| JobError::Persistence(Box::new(e)))?;
-            self.db
-                .media_files()
-                .link(matched_ref.id, file.id)
+                .link(matched_ref.id, file_id)
                 .await
                 .map_err(|e| JobError::Persistence(Box::new(e)))?;
         }
@@ -1802,19 +1819,39 @@ where
             matched_ref.media_type,
             &tokens,
         );
+        use cellarr_core::repo::MediaFileRepository;
         let mut moves = Vec::with_capacity(sources.len());
         for source in &sources {
             let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
             let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
                 .map_err(|e| format!("render name: {e}"))?;
             let dest = self.config.library_root.join(&rel);
+            let dest_str = dest.to_string_lossy().into_owned();
+            // If the destination is already occupied by an ORPHANED on-disk file
+            // (present, but with no media_file row — the drift a "keep files" delete
+            // or an interrupted import leaves), ADOPT it in place instead of
+            // hard-failing: the existing file is recorded, nothing is written or
+            // overwritten. A file that IS tracked keeps today's behavior
+            // (upgrade-by-distinct-name / already-satisfied) — we only reconcile the
+            // untracked orphan case, which is exactly the "destination already
+            // exists and is not a planned replacement" failure.
+            let occupied = tokio::fs::try_exists(&dest).await.unwrap_or(false);
+            let adopt = occupied
+                && self
+                    .db
+                    .media_files()
+                    .find_by_path(&dest_str)
+                    .await
+                    .map_err(|e| format!("media_file lookup: {e}"))?
+                    .is_none();
             moves.push(PlannedMove {
                 source_path: source.to_string_lossy().into_owned(),
-                destination_path: dest.to_string_lossy().into_owned(),
+                destination_path: dest_str,
                 content_ids: vec![matched_ref.id],
                 replaces: None,
                 replaced_path: None,
                 hardlink: false,
+                adopt,
             });
         }
 
@@ -2481,6 +2518,7 @@ where
             replaces: None,
             replaced_path: None,
             hardlink: false,
+            adopt: false,
         }];
         let plan = cellarr_fs::plan_import(GrabId::new(), moves)
             .await
