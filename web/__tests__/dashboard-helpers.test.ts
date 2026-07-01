@@ -126,6 +126,17 @@ describe('downloadProgress', () => {
       downloadProgress({ id: '1', title: '', status: '', protocol: '', size: 100, sizeleft: -10 })
     ).toBe(1);
   });
+
+  it('prefers the client live percentage — incl. a real 0% on a stuck magnet', () => {
+    // Advertised size 0 (metadata not fetched) but the client reports 0% live:
+    // that must render as 0%, not "unknown".
+    expect(
+      downloadProgress({ id: '1', title: '', status: '', protocol: '', size: 0, progress: 0 })
+    ).toBe(0);
+    expect(
+      downloadProgress({ id: '1', title: '', status: '', protocol: '', size: 0, progress: 42 })
+    ).toBeCloseTo(0.42);
+  });
 });
 
 describe('notableHealth', () => {

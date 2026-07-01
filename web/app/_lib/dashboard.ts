@@ -66,6 +66,13 @@ export function activeDownloads(records: QueueRecord[]): QueueRecord[] {
 
 /** Fraction [0,1] of a download that is complete, or undefined if unknown. */
 export function downloadProgress(record: QueueRecord): number | undefined {
+  // Prefer the client's explicit live percentage (0..100). A magnet still fetching
+  // metadata reports 0 here — a real "0%", which we DO want to show (it's the
+  // "stuck" signal), unlike the size/sizeleft path which can't distinguish 0% from
+  // unknown when the advertised size is 0.
+  if (typeof record.progress === 'number' && !Number.isNaN(record.progress)) {
+    return Math.min(1, Math.max(0, record.progress / 100));
+  }
   const size = typeof record.size === 'number' ? record.size : undefined;
   const left = typeof record.sizeleft === 'number' ? record.sizeleft : undefined;
   if (size === undefined || left === undefined || size <= 0) return undefined;

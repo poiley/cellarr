@@ -6485,12 +6485,36 @@ async fn queue(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
     use cellarr_core::repo::GrabRepository;
     let surface = fs.face.fixed_media();
     let grabs = fs.state.db.grabs().list().await?;
-    let records: Vec<Value> = grabs
+
+    // One row per DOWNLOAD, not per grab. A release grabbed more than once (or on
+    // several nodes) shares the download client's infohash — the client keeps ONE
+    // download — so collapse the grab rows the same way, keyed by download_id.
+    // Grabs not yet handed to a client (no download_id) stay individual.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut live_grabs: Vec<&cellarr_core::Grab> = Vec::new();
+    for g in grabs
         .iter()
         .filter(|g| !is_terminal_grab(g.status))
         .filter(|g| surface.is_none_or(|m| g.request.content_ref.media_type == m))
-        .map(v3_queue_item)
-        .collect();
+    {
+        match g.download_id.as_deref() {
+            Some(id) if !seen.insert(id.to_string()) => continue, // duplicate download
+            _ => live_grabs.push(g),
+        }
+    }
+
+    // Enrich each with the client's LIVE progress (percent + peers + state) so the
+    // queue reflects what the download is actually doing — not the release's
+    // advertised size and the coarse stored grab status. A client that is down or
+    // no longer knows an id degrades to the stored status (never fails the list).
+    let mut records = Vec::with_capacity(live_grabs.len());
+    for g in live_grabs {
+        let live = match (fs.state.queue_client.as_ref(), g.download_id.as_deref()) {
+            (Some(client), Some(id)) => client.progress(id).await.ok().flatten(),
+            _ => None,
+        };
+        records.push(v3_queue_item(g, live.as_ref()));
+    }
     Ok(Json(paged(records, "timeleft")))
 }
 
@@ -6520,19 +6544,52 @@ fn grab_status_strs(status: cellarr_core::GrabStatus) -> (&'static str, &'static
 
 /// Render one in-flight [`Grab`](cellarr_core::Grab) into the v3 queue record the
 /// ecosystem reads, keyed by the grab id's numeric projection.
-fn v3_queue_item(g: &cellarr_core::Grab) -> Value {
-    let (status, tracked_state) = grab_status_strs(g.status);
+fn v3_queue_item(g: &cellarr_core::Grab, live: Option<&crate::queue::QueueItemProgress>) -> Value {
+    use crate::queue::QueueDownloadState;
+    // Prefer the client's LIVE state over the stored grab lifecycle so the row is
+    // real-time; fall back to the stored status when there is no live data.
+    let (status, tracked_state) = match live.map(|p| p.state) {
+        Some(QueueDownloadState::Queued) => ("queued", "downloading"),
+        Some(QueueDownloadState::Downloading) => ("downloading", "downloading"),
+        Some(QueueDownloadState::Completed) => ("completed", "importPending"),
+        Some(QueueDownloadState::Failed) => ("failed", "failed"),
+        None => grab_status_strs(g.status),
+    };
+    // Size: the client's live total when known, else the release's advertised size
+    // (0 for a magnet whose metadata has not been fetched — the "stuck" signal).
+    let total = live
+        .and_then(|p| p.total_bytes)
+        .unwrap_or_else(|| g.request.release.size.unwrap_or(0));
+    // Bytes remaining, from the live fraction when a total is known.
+    let size_left = match live {
+        Some(p) if total > 0 => {
+            (f64::from(1.0 - p.progress.clamp(0.0, 1.0)) * total as f64) as u64
+        }
+        _ => 0,
+    };
+    // A 0..100 percentage the FE renders directly (null when the client reports no
+    // live progress — the row then shows as queued without a bogus 0% bar).
+    let progress_pct = live.map(|p| f64::from(p.progress.clamp(0.0, 1.0)) * 100.0);
+    let has_error = live.and_then(|p| p.error.as_ref()).is_some();
     json!({
         "id": grab_numeric_id(&g.id.to_string()),
         "title": g.request.release.title,
         "downloadId": g.download_id,
         "status": status,
-        "trackedDownloadStatus": "ok",
+        "trackedDownloadStatus": if has_error { "warning" } else { "ok" },
         "trackedDownloadState": tracked_state,
         "protocol": protocol_str(g.request.release.protocol),
         "indexer": g.request.indexer_id.to_string(),
         "downloadClient": g.request.client_id.to_string(),
-        "size": g.request.release.size.unwrap_or(0),
+        "size": total,
+        "sizeleft": size_left,
+        // cellarr-native live fields the FE reads: an explicit 0..100 percentage and
+        // the connected-peer count, so a magnet stuck fetching metadata reads as
+        // "0% · 0 peers" (a clear "no seeders / no connectivity" signal) instead of
+        // a blank "queued".
+        "progress": progress_pct,
+        "peers": live.and_then(|p| p.peers),
+        "errorMessage": live.and_then(|p| p.error.clone()),
         // cellarr-native aliases the native queue FE reads.
         "category": g.request.category,
         "contentId": g.request.content_ref.id.to_string(),
@@ -6672,7 +6729,8 @@ async fn update_queue_category(
     };
     fs.state.db.grabs().set_category(grab.id, category).await?;
     grab.request.category = category.to_string();
-    Ok(Json(v3_queue_item(&grab)))
+    // A category-change ack — the stored status is enough; no live fetch needed.
+    Ok(Json(v3_queue_item(&grab, None)))
 }
 
 /// The `POST /api/v3/queue/grab` body: import a completed-but-unmatched download

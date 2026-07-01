@@ -1340,4 +1340,40 @@ impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
             .await
             .map_err(|e| format!("download client removal failed: {e}"))
     }
+
+    async fn progress(
+        &self,
+        download_id: &str,
+    ) -> Result<Option<cellarr_api::queue::QueueItemProgress>, String> {
+        use cellarr_api::queue::{QueueDownloadState, QueueItemProgress};
+        use cellarr_core::DownloadState;
+
+        let Some((client, _category)) = self.env.resolve_client(&[]).await? else {
+            // No client wired — the queue falls back to the stored grab status.
+            return Ok(None);
+        };
+        let status = match client.status(download_id).await {
+            Ok(s) => s,
+            // The client no longer knows this id (removed), or a transient read
+            // error: report "no live data" so the queue degrades to the stored
+            // status rather than erroring the whole list.
+            Err(_) => return Ok(None),
+        };
+        let state = match status.state {
+            DownloadState::Queued => QueueDownloadState::Queued,
+            DownloadState::Downloading => QueueDownloadState::Downloading,
+            DownloadState::Completed => QueueDownloadState::Completed,
+            DownloadState::Failed => QueueDownloadState::Failed,
+        };
+        Ok(Some(QueueItemProgress {
+            state,
+            progress: status.progress,
+            // The download client reports a fraction + peers, not byte totals, so
+            // the byte fields stay None (the queue renders the percentage + peers).
+            total_bytes: None,
+            size_left: None,
+            peers: status.peers,
+            error: status.error_string,
+        }))
+    }
 }

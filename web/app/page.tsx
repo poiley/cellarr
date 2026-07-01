@@ -319,12 +319,21 @@ export default function HomePage() {
                   {progress !== undefined ? (
                     <BarProgress progress={progress * 100} />
                   ) : null}
-                  {typeof d.sizeleft === 'number' && d.sizeleft > 0 ? (
-                    <Text style={{ opacity: 0.6 }}>
-                      {formatBytes(d.sizeleft)} left
-                      {d.timeleft ? ` · ${d.timeleft}` : ''}
-                    </Text>
-                  ) : null}
+                  {/* Size-left/ETA when known, plus the peer count — a torrent at
+                      0% with 0 peers is stuck for lack of seeders/connectivity, so
+                      surface it explicitly rather than leaving a bare "QUEUED". */}
+                  <Text style={{ opacity: 0.6 }}>
+                    {typeof d.sizeleft === 'number' && d.sizeleft > 0
+                      ? `${formatBytes(d.sizeleft)} left${d.timeleft ? ` · ${d.timeleft}` : ''}`
+                      : progress !== undefined
+                        ? `${Math.round(progress * 100)}%`
+                        : ''}
+                    {typeof d.peers === 'number'
+                      ? `${(typeof d.sizeleft === 'number' && d.sizeleft > 0) || progress !== undefined ? ' · ' : ''}${
+                          d.peers === 0 ? 'no peers (no seeders / connectivity)' : `${d.peers} peer${d.peers === 1 ? '' : 's'}`
+                        }`
+                      : ''}
+                  </Text>
                 </React.Fragment>
               );
             })

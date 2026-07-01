@@ -679,6 +679,11 @@ export interface QueueRecord {
   sizeleft?: number;
   timeleft?: string;
   errorMessage?: string;
+  /** The download client's live percent-complete (0..100), when it reports one. */
+  progress?: number | null;
+  /** Connected peers (seeds + leechers) for a torrent, when the client reports it.
+   *  `0` on a stalled magnet means "no one to download from". */
+  peers?: number | null;
   /** The download client's id for the in-flight download. */
   downloadId?: string;
   indexer?: string;
