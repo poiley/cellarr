@@ -13,6 +13,8 @@ use cellarr_cli::{boot, config::Config};
 use cellarr_db::Database;
 use clap::{Parser, Subcommand};
 
+mod otel;
+
 #[derive(Parser)]
 #[command(
     name = "cellarr",
@@ -100,13 +102,21 @@ async fn real_main() -> Result<ExitCode> {
 
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
-            // Hold the appender guard for the whole daemon lifetime so the
-            // non-blocking writer flushes buffered log lines on shutdown.
-            let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
+            // Hold the guards for the whole daemon lifetime so the non-blocking
+            // writer and the OTLP exporter flush their buffers on shutdown.
+            let _log_guard = init_tracing(
+                &config.log.filter,
+                Some(&config.log_dir()),
+                config.otel.endpoint.as_deref(),
+            );
             boot::run(config).await.map(|()| ExitCode::SUCCESS)
         }
         Command::Migrate { sources } => {
-            let _log_guard = init_tracing(&config.log.filter, Some(&config.log_dir()));
+            let _log_guard = init_tracing(
+                &config.log.filter,
+                Some(&config.log_dir()),
+                config.otel.endpoint.as_deref(),
+            );
             run_migrate(&config, &sources)
                 .await
                 .map(|()| ExitCode::SUCCESS)
@@ -132,14 +142,25 @@ async fn real_main() -> Result<ExitCode> {
 ///
 /// Idempotent-safe: a second init (e.g. in tests) is ignored rather than
 /// panicking, in which case no guard is returned.
+/// Guards that must outlive the process: the non-blocking file appender's writer
+/// and the OTLP exporter. Dropping either flushes its buffered output, so the
+/// returned value is held for the daemon's whole lifetime.
+#[derive(Default)]
+#[must_use]
+struct TracingGuards {
+    _appender: Option<tracing_appender::non_blocking::WorkerGuard>,
+    _otel: Option<otel::OtelGuard>,
+}
+
 #[must_use]
 fn init_tracing(
     filter: &str,
     log_dir: Option<&std::path::Path>,
-) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    otel_endpoint: Option<&str>,
+) -> TracingGuards {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::{EnvFilter, Layer};
 
     let make_filter = || {
         EnvFilter::try_from_default_env()
@@ -147,40 +168,53 @@ fn init_tracing(
             .unwrap_or_else(|_| EnvFilter::new("info"))
     };
 
-    // Try to set up the rolling file appender. If the directory cannot be created
-    // we degrade to console-only rather than refusing to start (logging must never
-    // block the daemon from running).
-    let file_layer_and_guard = log_dir.and_then(|dir| match std::fs::create_dir_all(dir) {
-        Ok(()) => {
-            let appender = tracing_appender::rolling::daily(dir, "cellarr.log");
-            let (writer, guard) = tracing_appender::non_blocking(appender);
-            let layer = tracing_subscriber::fmt::layer()
-                .with_writer(writer)
-                .with_ansi(false);
-            Some((layer, guard))
-        }
-        Err(e) => {
-            eprintln!("warning: could not create log dir {}: {e}", dir.display());
-            None
-        }
-    });
+    // Every sink is a boxed layer on the root registry so the set is composed the
+    // same way whether or not the file appender and OTLP exporter are present.
+    let mut layers: Vec<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> =
+        vec![tracing_subscriber::fmt::layer().boxed()];
+    let mut guards = TracingGuards::default();
 
-    match file_layer_and_guard {
-        Some((file_layer, guard)) => {
-            let registered = tracing_subscriber::registry()
-                .with(make_filter())
-                .with(tracing_subscriber::fmt::layer())
-                .with(file_layer)
-                .try_init()
-                .is_ok();
-            registered.then_some(guard)
+    // Rolling daily file appender. If its directory cannot be created we degrade
+    // to console-only rather than refusing to start (logging must never block the
+    // daemon from running).
+    if let Some(dir) = log_dir {
+        match std::fs::create_dir_all(dir) {
+            Ok(()) => {
+                let appender = tracing_appender::rolling::daily(dir, "cellarr.log");
+                let (writer, guard) = tracing_appender::non_blocking(appender);
+                layers.push(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(writer)
+                        .with_ansi(false)
+                        .boxed(),
+                );
+                guards._appender = Some(guard);
+            }
+            Err(e) => eprintln!("warning: could not create log dir {}: {e}", dir.display()),
         }
-        None => {
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(make_filter())
-                .try_init();
-            None
+    }
+
+    // Opt-in OTLP export: only when an endpoint is configured (and, at build time,
+    // the `otlp` feature is on — otherwise `otlp_layer` is a no-op).
+    if let Some(endpoint) = otel_endpoint.filter(|e| !e.is_empty()) {
+        if let Some((layer, guard)) = otel::otlp_layer(endpoint) {
+            layers.push(layer);
+            guards._otel = Some(guard);
         }
+    }
+
+    // The EnvFilter is added last as a global filter over every layer above. A
+    // second init (e.g. in tests) is ignored rather than panicking, in which case
+    // the guards are dropped immediately — there is nothing to flush.
+    let registered = tracing_subscriber::registry()
+        .with(layers)
+        .with(make_filter())
+        .try_init()
+        .is_ok();
+    if registered {
+        guards
+    } else {
+        TracingGuards::default()
     }
 }
 

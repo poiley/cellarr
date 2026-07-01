@@ -35,6 +35,10 @@ pub struct Config {
     pub api: ApiConfig,
     /// Logging settings.
     pub log: LogConfig,
+    /// OpenTelemetry (OTLP) export settings — **off by default** (an unset
+    /// endpoint means no export; the network exporter is also behind the `otlp`
+    /// build feature, so a default build never dials out).
+    pub otel: OtelConfig,
     /// Metrics settings — **off by default** (never required, per the spec).
     pub metrics: MetricsConfig,
     /// TheTVDB (TV metadata) credentials. Populated from `CELLARR_TVDB__*`
@@ -98,6 +102,22 @@ pub struct LogConfig {
     pub filter: String,
 }
 
+/// OpenTelemetry (OTLP) export settings.
+///
+/// Export is opt-in on two axes, both of which must be satisfied for a span to
+/// leave the process: the binary must be built with the `otlp` feature, and
+/// `endpoint` must be set (from `CELLARR_OTEL__ENDPOINT` or the config file). An
+/// unset endpoint — the default — means logging stays entirely local. See
+/// [`docs/18-observability.md`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtelConfig {
+    /// The OTLP/HTTP collector endpoint (e.g. `http://localhost:4318`). `None`
+    /// (the default) disables export. Only consulted when the `otlp` feature is
+    /// compiled in.
+    pub endpoint: Option<String>,
+}
+
 /// Optional metrics settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -155,6 +175,7 @@ impl Default for Config {
             data_dir: default_data_dir(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            otel: OtelConfig::default(),
             metrics: MetricsConfig::default(),
             tvdb: TvdbConfig::default(),
             tmdb: TmdbConfig::default(),

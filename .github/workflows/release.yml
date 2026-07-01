@@ -15,6 +15,23 @@ env:
   IMAGE: ghcr.io/poiley/cellarr
 
 jobs:
+  # Validate the opt-in OTLP feature compiles. It is off by default (the image
+  # below builds without it), so nothing else exercises it — this native check
+  # keeps the exporter path from bitrotting. Non-blocking: it does not gate the
+  # image build, so a default-feature deploy still ships if only this breaks.
+  otlp-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # rust-embed's derive reads this folder at macro time; the built UI is not
+      # needed to type-check, so an empty dir satisfies it without a web build.
+      - name: Stub embedded web assets
+        run: mkdir -p web/dist
+      - name: cargo check --features otlp
+        run: cargo check --locked -p cellarr-cli --features otlp
+
   image:
     runs-on: ubuntu-latest
     permissions:
