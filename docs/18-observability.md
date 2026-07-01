@@ -42,6 +42,13 @@ when it is not, the same fields still tag every log line emitted within the span
 | `download.add` | `cellarr-download` (transmission) | `download_client`, `release`, `indexer` |
 | `download.status` | transmission | `download_client`, `download_id` |
 | `download.remove` | transmission | `download_client`, `download_id`, `delete_data` |
+| `scheduler.tick` | `cellarr-jobs` scheduler | — |
+| `scheduler.job` | scheduler | `job_kind`, `job_id` |
+
+Incoming HTTP requests are already spanned by `tower_http`'s `TraceLayer`
+(installed in `cellarr-api`), which opens a `request` span per call carrying the
+method and path — so the API surface is covered without per-handler
+instrumentation.
 
 ## Canonical field names
 

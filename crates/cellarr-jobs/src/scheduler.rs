@@ -256,6 +256,7 @@ where
     /// # Errors
     /// Propagates store errors (a handler's failure is recorded on the job, not
     /// returned).
+    #[tracing::instrument(name = "scheduler.tick", skip_all)]
     pub async fn tick(&self) -> Result<usize, S::Error> {
         let now = self.clock.now_secs();
         let mut jobs = self.store.load_all().await?;
@@ -277,6 +278,11 @@ where
 
     /// Attempt to run one due job, respecting dedup and the concurrency cap.
     /// Returns `true` if it ran, `false` if skipped.
+    #[tracing::instrument(
+        name = "scheduler.job",
+        skip_all,
+        fields(job_kind = ?job.kind, job_id = %job.id)
+    )]
     async fn try_dispatch(&self, mut job: Job) -> Result<bool, S::Error> {
         let resource = job.kind.resource();
         let dedup_key = job.dedup_key();
