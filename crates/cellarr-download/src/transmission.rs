@@ -122,6 +122,12 @@ struct Torrent {
     /// Connected peers, for the no-peers stall signal.
     #[serde(rename = "peersConnected", default)]
     peers_connected: i64,
+    /// Transmission's numeric error severity: 0 none, 1 tracker-warning,
+    /// 2 tracker-error, 3 local-error. Only a LOCAL error (3) is fatal — a
+    /// tracker warning/error is benign (the torrent keeps downloading via DHT/PEX
+    /// and the magnet's other trackers), so it must NOT fail the download.
+    #[serde(rename = "error", default)]
+    error: i64,
     #[serde(rename = "errorString", default)]
     error_string: String,
 }
@@ -392,9 +398,10 @@ impl TransmissionClient {
                 "downloadDir", "labels", "doneDate", "uploadRatio",
                 "secondsSeeding", "errorString",
                 // Without these the struct's serde(default) silently reported
-                // 0 connected peers for every torrent, and a magnet still fetching
-                // metadata was mistaken for a finished download.
-                "peersConnected", "metadataPercentComplete",
+                // 0 connected peers for every torrent, mistook a metadata-less
+                // magnet for a finished download, and could not tell a benign
+                // tracker warning from a fatal local error.
+                "peersConnected", "metadataPercentComplete", "error",
             ],
         });
         let arguments = self.call("torrent-get", args).await?;
@@ -446,8 +453,14 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
     // files — Transmission reports `percentDone: 1.0` for the 0 bytes it currently
     // knows about, which must NOT be read as a finished download.
     let has_metadata = t.metadata_percent_complete >= 1.0;
-    // A non-empty errorString is a hard failure regardless of status.
-    let state = if !t.error_string.is_empty() {
+    // ONLY a local error (code 3 — disk full, permissions, missing files) is a
+    // hard failure. A tracker warning/error (1/2) is benign: Transmission sets
+    // `errorString` for it, but the torrent keeps downloading via DHT/PEX and the
+    // magnet's other trackers. Failing on any errorString removed live torrents on
+    // the first dead-tracker hiccup — which is exactly why a release downloads in
+    // Radarr/Sonarr (they ignore tracker warnings) but "did nothing" here.
+    let has_local_error = t.error == 3;
+    let state = if has_local_error {
         DownloadState::Failed
     } else if has_metadata && (t.percent_done >= 1.0 || matches!(t.status, 5 | 6)) {
         // status 5 (seed-wait) / 6 (seeding) — the content is on disk and the
@@ -485,7 +498,11 @@ fn progress_from_torrent(t: &Torrent) -> DownloadProgress {
         ratio: Some(t.upload_ratio),
         seeding_time_secs: Some(t.seconds_seeding.max(0) as u64),
         peers: Some(t.peers_connected.max(0) as u32),
-        error_string: (!t.error_string.is_empty()).then(|| t.error_string.clone()),
+        // Only surface the error text for a fatal local error; a tracker
+        // warning/error is tolerated and left off the status so it neither fails
+        // the download nor shows as an error in the queue.
+        error_string: (has_local_error && !t.error_string.is_empty())
+            .then(|| t.error_string.clone()),
         category: t.labels.first().cloned(),
     }
 }
@@ -535,6 +552,7 @@ mod tests {
             upload_ratio: 1.0,
             seconds_seeding: 10,
             peers_connected: 5,
+            error: 0,
             error_string: String::new(),
         };
         let p = progress_from_torrent(&t);
@@ -558,6 +576,7 @@ mod tests {
             upload_ratio: 0.0,
             seconds_seeding: 0,
             peers_connected: 3,
+            error: 0,
             error_string: String::new(),
         };
         let p = progress_from_torrent(&t);
@@ -583,6 +602,7 @@ mod tests {
             upload_ratio: 0.0,
             seconds_seeding: 0,
             peers_connected: 12,
+            error: 0,
             error_string: String::new(),
         };
         let p = progress_from_torrent(&t);
@@ -593,7 +613,8 @@ mod tests {
     }
 
     #[test]
-    fn error_string_is_failed() {
+    fn local_error_is_failed() {
+        // error code 3 = local error (disk full / missing files) — the only fatal one.
         let t = Torrent {
             name: "x".into(),
             percent_done: 0.2,
@@ -604,9 +625,38 @@ mod tests {
             upload_ratio: 0.0,
             seconds_seeding: 0,
             peers_connected: 0,
-            error_string: "tracker error".into(),
+            error: 3,
+            error_string: "No data found! Ensure your drives are connected.".into(),
         };
-        assert_eq!(progress_from_torrent(&t).state, DownloadState::Failed);
+        let p = progress_from_torrent(&t);
+        assert_eq!(p.state, DownloadState::Failed);
+        assert!(p.error_string.is_some(), "a fatal local error surfaces its detail");
+    }
+
+    #[test]
+    fn tracker_warning_does_not_fail_the_download() {
+        // error code 1/2 = tracker warning/error. Transmission sets errorString for
+        // it, but the torrent keeps downloading via DHT + the magnet's other
+        // trackers — so it must NOT be failed (this is why releases download in
+        // Radarr/Sonarr but "did nothing" in cellarr before this fix).
+        for code in [1_i64, 2] {
+            let t = Torrent {
+                name: "x".into(),
+                percent_done: 0.3,
+                metadata_percent_complete: 1.0,
+                status: 4, // downloading
+                download_dir: "/d".into(),
+                labels: vec![],
+                upload_ratio: 0.0,
+                seconds_seeding: 0,
+                peers_connected: 4,
+                error: code,
+                error_string: "Tracker gave HTTP response code 404".into(),
+            };
+            let p = progress_from_torrent(&t);
+            assert_eq!(p.state, DownloadState::Downloading, "tracker error {code} must not fail");
+            assert!(p.error_string.is_none(), "a benign tracker warning is not surfaced as an error");
+        }
     }
 
     #[test]
