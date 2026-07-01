@@ -390,6 +390,58 @@ impl cellarr_core::traits::DownloadClient for EndgameClient {
     }
 }
 
+/// A fake whose download sits at 50% (real content already fetched) with zero
+/// peers and no forward progress for many polls — a mid-download peer dry spell —
+/// then completes. A torrent that has actually started downloading must survive a
+/// transient peer drop; blocklisting a 36%/80% download and re-grabbing from
+/// scratch over a 15s dry spell was the live bug this guards.
+struct MidDownloadPeerBlipClient {
+    completed_path: String,
+    polls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for MidDownloadPeerBlipClient {
+    type Error = FakeClientError;
+    fn name(&self) -> &str {
+        "mid-download-client"
+    }
+    async fn add(&self, _grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        Ok("dl-mid".to_string())
+    }
+    async fn status(
+        &self,
+        _download_id: &str,
+    ) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        let n = self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // 50% done, 0 peers, no advance for MANY polls (well over
+        // STALL_MAX_STAGNANT_POLLS) — a real mid-download peer dry spell.
+        if n < 8 {
+            return Ok(cellarr_core::DownloadStatus {
+                state: cellarr_core::DownloadState::Downloading,
+                progress: 0.5,
+                content_path: None,
+                ratio: Some(0.0),
+                seeding_time_secs: Some(0),
+                peers: Some(0),
+                error_string: None,
+            });
+        }
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Completed,
+            progress: 1.0,
+            content_path: Some(self.completed_path.clone()),
+            ratio: Some(1.0),
+            seeding_time_secs: Some(1),
+            peers: Some(2),
+            error_string: None,
+        })
+    }
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct MockContentLookup {
     candidate: ContentCandidate,
 }
@@ -1020,6 +1072,52 @@ async fn a_near_complete_download_is_not_killed_by_the_stall_detector() {
             .await
             .unwrap(),
         "a successful near-complete download must not be blocklisted"
+    );
+}
+
+/// A download that has already fetched real content (here 50%) must NOT be
+/// stall-failed when its peer count drops to zero for a stretch — it keeps
+/// tracking and completes. Regression for the live bug where downloads that
+/// reached 36% / 80% were blocklisted + removed over a transient peer dry spell
+/// and re-grabbed from scratch (only a torrent stuck at ~0% is a real stall).
+#[tokio::test]
+async fn a_mid_download_peer_drop_is_not_killed_by_the_stall_detector() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let mut config = runner_config(library_root.clone());
+    config.max_track_polls = 20; // headroom past the 8-poll dry spell
+
+    let release = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![release.clone()],
+    };
+    let client = MidDownloadPeerBlipClient {
+        completed_path: file.to_string_lossy().into_owned(),
+        polls: std::sync::atomic::AtomicU32::new(0),
+    };
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    match outcome {
+        RunOutcome::Imported { .. } => {}
+        other => panic!("a mid-download peer drop must not stall-fail: {other:?}"),
+    }
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &release)
+            .await
+            .unwrap(),
+        "a download that reached 50% must not be blocklisted on a peer blip"
     );
 }
 

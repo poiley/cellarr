@@ -422,9 +422,13 @@ impl LivePipelineEnv {
         Self {
             db,
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
-            // A real download takes minutes; poll every few seconds for a budget
-            // that spans it rather than burning instant polls.
-            max_track_polls: 240,
+            // A real multi-GB download takes far longer than a few minutes —
+            // especially through a VPN. 240 polls (20 min) was "tracking timed out"
+            // and blocklisting live downloads mid-flight; this is a backstop that
+            // spans a very slow download (~24h at 5s). A genuinely dead torrent is
+            // caught much sooner by the stall detector (stuck at ~0% with no peers),
+            // not by this cap.
+            max_track_polls: 17_280,
             track_poll_interval: std::time::Duration::from_secs(5),
             // ~60s grace for a magnet to fetch metadata + bootstrap peers before the
             // stall detector can fire (verified live: peers connect only after ~40s).

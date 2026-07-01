@@ -90,6 +90,18 @@ const STALL_MAX_STAGNANT_POLLS: u32 = 3;
 /// genuinely hangs on a last unavailable piece). Observed live against Transmission.
 const NEAR_COMPLETE_PROGRESS: f32 = 0.99;
 
+/// A download that has already fetched at least this fraction of its content has
+/// **started** and is treated as alive: the stall detector never fails it, no
+/// matter how its peer count fluctuates. A real torrent's connected-peer count
+/// churns to zero for stretches (especially through a VPN), and blocklisting a
+/// half-downloaded release over a transient dry spell — then re-grabbing from
+/// scratch — is far worse than waiting. Only a torrent stuck *below* this floor
+/// (a magnet that never found a single peer / a dead swarm) is stall-failed, so
+/// self-heal still moves past a genuinely dead release. Radarr/Sonarr likewise
+/// keep a downloading release rather than dropping it on a peer blip — which is
+/// why a release that reached 36% / 80% here was being killed while it downloaded.
+const STALL_PROGRESS_FLOOR: f32 = 0.01;
+
 /// The maximum number of grab-next iterations the runner performs for one content
 /// node in a single run before giving up. After a download fails (or stalls) the
 /// runner blocklists the release, removes it from the client, and re-decides over
@@ -1702,11 +1714,18 @@ where
                     let advanced = status.progress > last_progress;
                     let no_peers = status.peers == Some(0);
                     let near_complete = status.progress >= NEAR_COMPLETE_PROGRESS;
+                    // Only a download still stuck at ~0% (a magnet that never found a
+                    // peer / a dead swarm) is a stall candidate. Once it has fetched
+                    // real content it is ALIVE and is never stall-failed on a peer
+                    // blip — otherwise a 36%/80% download gets blocklisted + removed
+                    // and re-grabbed from scratch over a transient dry spell.
+                    let never_started = status.progress < STALL_PROGRESS_FLOOR;
                     // During the startup grace window a magnet legitimately sits at
                     // 0%/no-peers while fetching metadata + bootstrapping peers; do
                     // not count that as a stall.
                     if !advanced
                         && no_peers
+                        && never_started
                         && !near_complete
                         && poll_index >= self.config.stall_grace_polls
                     {
