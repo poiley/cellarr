@@ -5979,10 +5979,21 @@ async fn grab_release(
     };
 
     use crate::release_search::ReleaseGrabOutcome;
-    let outcome = grabber
-        .grab(content_id, guid)
-        .await
-        .map_err(|e| ApiError::Internal(format!("grab failed: {e}")))?;
+    // Bound the grab. The indexer re-fetch + download-client handoff are external
+    // calls that can stall; without a ceiling the HTTP request hangs and the UI
+    // sits on "grabbing…" forever. On timeout degrade to an Unavailable result
+    // (200 + message) instead of holding the connection open indefinitely.
+    let outcome = match tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        grabber.grab(content_id, guid),
+    )
+    .await
+    {
+        Ok(res) => res.map_err(|e| ApiError::Internal(format!("grab failed: {e}")))?,
+        Err(_) => ReleaseGrabOutcome::Unavailable(
+            "grab timed out — the indexer or download client did not respond in time".into(),
+        ),
+    };
     let body = match outcome {
         ReleaseGrabOutcome::Grabbed { imported, detail } => json!({
             "guid": guid,

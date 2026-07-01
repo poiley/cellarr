@@ -29,6 +29,7 @@ import RowSpaceBetween from '@components/RowSpaceBetween';
 import { ApiError } from '@lib/api/client';
 
 import AppShell from '@app/_components/AppShell';
+import { useToast } from '@app/_lib/ToastProvider';
 
 import {
   formatSize,
@@ -36,6 +37,11 @@ import {
   searchReleases,
   type CandidateRelease,
 } from '../_search/api';
+
+// A manual grab waits on the indexer re-fetch + download-client handoff, both
+// external calls. Bound it on the client so a slow/stuck pipeline can't leave the
+// row spinning on "grabbing…" forever (the symptom that read as "nothing happens").
+const GRAB_TIMEOUT_MS = 25_000;
 
 type Phase = 'idle' | 'loading' | 'ready' | 'error';
 type GrabState = 'idle' | 'grabbing' | 'grabbed' | 'failed';
@@ -45,6 +51,7 @@ function InteractiveSearch() {
   // Opened from an item with `?id=…`; also accept the legacy `?content=…` alias.
   const initialContent = params.get('id') ?? params.get('content') ?? '';
 
+  const { success, info, error: toastError } = useToast();
   const [contentId, setContentId] = React.useState(initialContent);
   const [phase, setPhase] = React.useState<Phase>('idle');
   const [releases, setReleases] = React.useState<CandidateRelease[]>([]);
@@ -93,14 +100,41 @@ function InteractiveSearch() {
       const cid = contentId.trim();
       if (!cid) return;
       setGrabs((prev) => ({ ...prev, [release.guid]: 'grabbing' }));
+      // Time-box the request so a hung pipeline surfaces an error instead of an
+      // endless spinner.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), GRAB_TIMEOUT_MS);
       try {
-        await grabRelease(release.guid, cid);
-        setGrabs((prev) => ({ ...prev, [release.guid]: 'grabbed' }));
-      } catch {
+        const res = await grabRelease(release.guid, cid, controller.signal);
+        // The shim returns 200 with `grabbed:false` + a reason when it declines
+        // (e.g. the indexer no longer offers the release) — that is NOT a thrown
+        // error, so branch on the result and always tell the user what happened.
+        if (res.grabbed) {
+          setGrabs((prev) => ({ ...prev, [release.guid]: 'grabbed' }));
+          success(
+            res.imported
+              ? 'Grabbed and imported.'
+              : res.message
+                ? `Grabbed — ${res.message}`
+                : 'Sent to the download client.'
+          );
+        } else {
+          setGrabs((prev) => ({ ...prev, [release.guid]: 'failed' }));
+          info(res.message || 'The release could not be grabbed.');
+        }
+      } catch (err) {
         setGrabs((prev) => ({ ...prev, [release.guid]: 'failed' }));
+        if (controller.signal.aborted) {
+          toastError('Grab timed out — the indexer or download client did not respond.');
+        } else {
+          const msg = err instanceof ApiError ? `${err.message} (${err.code})` : 'Grab failed.';
+          toastError(msg);
+        }
+      } finally {
+        clearTimeout(timer);
       }
     },
-    [contentId]
+    [contentId, success, info, toastError]
   );
 
   return (

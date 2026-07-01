@@ -133,7 +133,8 @@ describe('Interactive / manual-search screen', () => {
     searchValue = 'id=c1';
     requestV3
       .mockResolvedValueOnce([{ guid: 'g1', title: 'rel', quality: 'WEBDL-720p', cf_score: 0 }])
-      .mockResolvedValueOnce({ accepted: true });
+      // The shim returns `{ grabbed: true }` (Radarr/Sonarr shape), not `accepted`.
+      .mockResolvedValueOnce({ grabbed: true, imported: false, message: 'sent to client' });
     renderPage();
 
     // Two "Grab" texts exist: the table header column and the action button.
@@ -151,6 +152,27 @@ describe('Interactive / manual-search screen', () => {
       expect(requestV3).toHaveBeenCalledWith('/release', expect.objectContaining({ method: 'POST' }))
     );
     await waitFor(() => expect(screen.getByText('grabbed')).toBeTruthy());
+  });
+
+  it('recovers (not stuck on grabbing) when the shim declines the grab', async () => {
+    // `grabbed:false` is a 200, not a thrown error — the row must leave the
+    // grabbing state so it can be retried, instead of spinning forever.
+    searchValue = 'id=c1';
+    requestV3
+      .mockResolvedValueOnce([{ guid: 'g1', title: 'rel', quality: 'WEBDL-720p', cf_score: 0 }])
+      .mockResolvedValueOnce({ grabbed: false, message: 'release is no longer offered by the indexers' });
+    renderPage();
+
+    const grabButton = await waitFor(() => {
+      const btn = screen.getAllByRole('button').find((el) => el.textContent?.includes('Grab'));
+      if (!btn) throw new Error('grab button not found yet');
+      return btn;
+    });
+    fireEvent.click(grabButton);
+
+    // Lands in the failed/retry state (a retry affordance), never stuck on "grabbing…".
+    await waitFor(() => expect(screen.getByText('retry')).toBeTruthy());
+    expect(screen.queryByText(/grabbing/i)).toBeNull();
   });
 
   it('renders an empty state when no releases are found', async () => {

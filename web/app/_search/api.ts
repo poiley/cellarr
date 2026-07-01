@@ -354,9 +354,23 @@ export async function searchReleases(
   }));
 }
 
+/** The result of a manual grab (the shim's `POST /release` body). */
+export interface GrabResult {
+  /** True when the release was handed to the download pipeline. */
+  grabbed?: boolean;
+  /** True when it was also imported (rare for a fresh grab). */
+  imported?: boolean;
+  /** Human-readable detail (why it wasn't grabbed, or what happened). */
+  message?: string;
+}
+
 /** Hand a chosen release to a download client (the manual grab). */
-export function grabRelease(guid: string, contentId: string, signal?: AbortSignal) {
-  return api.requestV3<{ accepted?: boolean }>('/release', {
+export function grabRelease(
+  guid: string,
+  contentId: string,
+  signal?: AbortSignal
+): Promise<GrabResult> {
+  return api.requestV3<GrabResult>('/release', {
     method: 'POST',
     body: { guid, contentId },
     signal,
