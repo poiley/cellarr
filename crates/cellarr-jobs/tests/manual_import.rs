@@ -274,12 +274,16 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let config = runner_config(lib_root.clone());
     let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
 
-    let candidates = runner.scan_manual_import(Some(&loose)).await.unwrap();
+    let candidates = runner.scan_manual_import(Some(&loose), None).await.unwrap();
     assert_eq!(
         candidates.len(),
         2,
         "only the two video files are reported; the .srt and .nfo are filtered"
     );
+
+    // The interactive cap truncates: asking for one candidate returns exactly one.
+    let capped = runner.scan_manual_import(Some(&loose), Some(1)).await.unwrap();
+    assert_eq!(capped.len(), 1, "the limit caps the candidate count");
 
     // The identifiable file suggests the seeded movie node, carries its parsed
     // title + a real quality, and has no rejection.

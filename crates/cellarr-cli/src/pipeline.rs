@@ -1247,9 +1247,13 @@ impl cellarr_api::manual_import::ManualImport for LiveManualImport {
             &config,
         );
         // `None` (no folder) scans the library roots so untracked in-place files
-        // auto-surface; `Some(folder)` scans that loose folder.
+        // auto-surface; `Some(folder)` scans that loose folder. Interactive scans
+        // cap the candidate count: a barely-tracked library has tens of thousands of
+        // untracked files, and the review screen only needs a bounded preview (the
+        // background rescan job reconciles the rest, unbounded).
+        const MANUAL_IMPORT_SCAN_CAP: usize = 500;
         let candidates = runner
-            .scan_manual_import(folder.map(std::path::Path::new))
+            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP))
             .await
             .map_err(|e| format!("manual-import scan failed: {e}"))?;
         Ok(ManualImportOutcome::Found(candidates))

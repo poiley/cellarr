@@ -2362,6 +2362,7 @@ where
     pub async fn scan_manual_import(
         &self,
         folder: Option<&std::path::Path>,
+        limit: Option<usize>,
     ) -> Result<Vec<ManualImportCandidate>> {
         use cellarr_core::repo::MediaFileRepository;
 
@@ -2398,7 +2399,7 @@ where
             .collect();
 
         let mut out = Vec::new();
-        for root in roots {
+        'roots: for root in roots {
             // A configured root that is missing/unreadable must not fail the whole
             // scan — especially the no-folder library sweep, where one bad root
             // would 500 the auto-surface. Skip it and carry on.
@@ -2410,6 +2411,14 @@ where
                 }
             };
             for entry in &inventory.entries {
+                // Interactive scans (the screen's auto-surface) cap the candidate
+                // count so a large, barely-tracked library returns fast and small
+                // instead of tens of thousands of rows / tens of MB. The background
+                // rescan job passes `None` and processes everything.
+                if limit.is_some_and(|n| out.len() >= n) {
+                    tracing::debug!(limit = ?limit, "manual-import scan: candidate cap reached, truncating");
+                    break 'roots;
+                }
                 // Only real video containers are import candidates; the scan
                 // inventories every file, but sidecars (subtitles, nfo, artwork) and
                 // throwaway sample clips are not media files and would only be noise
@@ -2577,8 +2586,9 @@ where
     /// write failed). Per-file adopt failures are collected into the report's
     /// `errors`, not errored.
     pub async fn rescan(&self) -> Result<RescanReport> {
+        // Unbounded: the background job reconciles the whole root, not a preview.
         let candidates = self
-            .scan_manual_import(Some(&self.config.library_root))
+            .scan_manual_import(Some(&self.config.library_root), None)
             .await?;
         let mut requests = Vec::new();
         let mut unmatched = 0;
