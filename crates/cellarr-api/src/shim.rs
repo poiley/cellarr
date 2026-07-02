@@ -6035,12 +6035,14 @@ async fn manual_import_scan(
     State(fs): State<FaceState>,
     Query(q): Query<ManualImportQuery>,
 ) -> ApiResult<Json<Vec<Value>>> {
+    // A folder scopes the scan to one loose folder; omitting it scans the library
+    // roots for untracked in-place files (orphans, out-of-band media) so they
+    // auto-surface for review — no `folder` is no longer an error.
     let folder = q
         .folder
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::BadRequest("a folder query parameter is required".into()))?;
+        .filter(|s| !s.is_empty());
 
     // No pipeline wiring (offline/test): degrade to an empty list, never 500.
     let Some(mi) = fs.state.manual_import.as_ref() else {

@@ -270,7 +270,7 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let config = runner_config(lib_root.clone());
     let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
 
-    let candidates = runner.scan_manual_import(&loose).await.unwrap();
+    let candidates = runner.scan_manual_import(Some(&loose)).await.unwrap();
     assert_eq!(candidates.len(), 2, "both loose files are reported");
 
     // The identifiable file suggests the seeded movie node, carries its parsed
@@ -801,4 +801,79 @@ async fn commit_reports_error_for_an_unknown_content_node() {
     );
     // The source was not touched (no node to place it on).
     assert!(source.exists());
+}
+
+#[tokio::test]
+async fn rescan_adopts_confident_in_library_files_and_surfaces_the_rest() {
+    use cellarr_core::repo::MediaFileRepository;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    // Two UNTRACKED files sitting directly under the library root: one the scanner
+    // identifies (a rescan adopts/records it) and one it cannot place (a rescan
+    // leaves it on disk for the manual-import screen).
+    let good = lib_root.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    let junk = lib_root.join("Random.Junk.File.2024.1080p.mkv");
+    std::fs::write(&good, b"good-bytes").unwrap();
+    std::fs::write(&junk, b"junk-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    // Nothing is tracked yet.
+    assert!(db
+        .media_files()
+        .list_for_content(node.id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let report = runner.rescan().await.unwrap();
+    assert_eq!(report.adopted, 1, "the identifiable file is adopted");
+    assert_eq!(
+        report.unmatched, 1,
+        "the unidentifiable file is surfaced, not adopted"
+    );
+    assert!(
+        report.errors.is_empty(),
+        "no per-file errors: {:?}",
+        report.errors
+    );
+
+    // The node now carries exactly one media file, recorded at a path on disk.
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(files.len(), 1, "the adopted file is recorded and linked");
+    assert!(
+        std::path::Path::new(&files[0].path).exists(),
+        "the recorded file exists on disk"
+    );
+    // The unidentifiable file was never moved or deleted.
+    assert!(junk.exists(), "the unmatched file is left in place");
+
+    // A second rescan is idempotent: the now-tracked file is filtered out, so it is
+    // neither re-adopted nor errored; only the still-unmatched file remains.
+    let again = runner.rescan().await.unwrap();
+    assert_eq!(again.adopted, 0, "an already-tracked file is not re-adopted");
+    assert_eq!(again.unmatched, 1, "the junk file still surfaces");
+    assert!(again.errors.is_empty(), "no errors on re-run: {:?}", again.errors);
+    assert_eq!(
+        db.media_files()
+            .list_for_content(node.id)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "no duplicate row on re-run"
+    );
 }

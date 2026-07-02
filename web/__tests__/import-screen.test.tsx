@@ -92,9 +92,29 @@ describe('Manual Import screen', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows the idle prompt before any scan', () => {
+  it('auto-scans the library on mount and surfaces untracked files', async () => {
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/manualImport') return Promise.resolve([goodRow]);
+      return Promise.resolve(undefined);
+    });
     renderPage();
-    expect(screen.getByText(/Enter a folder path above/i)).toBeTruthy();
+    // The mount scan hits the library roots (no `folder` query) so untracked
+    // in-place files auto-surface without the user pointing at a folder.
+    await waitFor(() =>
+      expect(requestV3).toHaveBeenCalledWith(
+        '/manualImport',
+        expect.objectContaining({ query: {} })
+      )
+    );
+    await waitFor(() => expect(screen.getByText('Blade Runner 2049 1080p.mkv')).toBeTruthy());
+  });
+
+  it('reports an empty library when nothing untracked is on disk', async () => {
+    requestV3.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByText(/No untracked files under the library/i)).toBeTruthy()
+    );
   });
 
   it('scans a folder and renders candidate rows', async () => {

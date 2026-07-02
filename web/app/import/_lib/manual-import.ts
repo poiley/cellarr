@@ -85,20 +85,24 @@ function toRow(raw: Loose): ManualImportRow {
 }
 
 /**
- * Scan a loose folder for importable media (`GET /api/v3/manualimport?folder=…`).
- * Read-only: the daemon parses + identifies each file and ranks placement
- * candidates without moving anything. An empty array means no files were found
- * (or no library is ready); a 400 means the folder was missing/blank.
+ * Scan for importable media (`GET /api/v3/manualimport`). Read-only: the daemon
+ * parses + identifies each file and ranks placement candidates without moving
+ * anything. A `folder` scans exactly that loose folder; omitting it scans the
+ * configured library roots for UNTRACKED in-place files (orphans, out-of-band
+ * media), so they auto-surface for review. An empty array means no files were
+ * found (or no library is ready).
  */
 export async function scanFolder(
-  folder: string,
+  folder?: string,
   signal?: AbortSignal
 ): Promise<ManualImportRow[]> {
+  const trimmed = folder?.trim();
   // Uses the shim's camelCase route alias (identical behavior to the lowercase
   // spelling). The camelCase form keeps the route string clear of the SRCL-only
   // lint's module-specifier heuristic, which scans for the lowercased keyword.
   const raw = await api.requestV3<Loose[]>('/manualImport', {
-    query: { folder },
+    // No folder → the daemon scans the library roots (the auto-surface path).
+    query: trimmed ? { folder: trimmed } : {},
     signal,
   });
   return (raw ?? []).map(toRow);

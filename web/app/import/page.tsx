@@ -3,12 +3,16 @@
 // Manual Import screen (docs/10-ui.md §screen-mapping): map loose files on disk
 // onto library content WITHOUT moving anything until the user confirms.
 //
-// Flow: type a folder path -> SCAN (GET /api/v3/manualimport, read-only) -> a
-// table of candidate rows (file / parsed title / suggested match / quality /
-// rejection reasons) with a per-row include checkbox and an editable target
-// (re-map to a movie/series + season/episode via lookup). The Import button POSTs
-// the included rows to the commit endpoint, which runs the existing crash-safe
-// stage->verify->commit->log path; a result toast reports what landed where.
+// Flow: on open, AUTO-SURFACE — scan the library roots (GET /api/v3/manualimport
+// with no folder, read-only) so untracked in-place files (orphans, out-of-band
+// media) appear for review. The user can also type a folder path and SCAN it, or
+// press "Rescan library" to re-surface. Either yields a table of candidate rows
+// (file / parsed title / suggested match / quality / rejection reasons) with a
+// per-row include checkbox and an editable target (re-map to a movie/series +
+// season/episode via lookup). The Import button POSTs the included rows to the
+// commit endpoint, which runs the existing crash-safe stage->verify->commit->log
+// path (adopting in place when the file is already correctly named); a result
+// toast reports what landed where.
 //
 // SAFE BY CONSTRUCTION: the scan never touches the filesystem, and Import is gated
 // on rows the user explicitly included AND that resolve to a content id. Built
@@ -70,6 +74,7 @@ export default function Page() {
 
   const [folder, setFolder] = React.useState('');
   const [phase, setPhase] = React.useState<Phase>('idle');
+  const [scope, setScope] = React.useState<'library' | 'folder'>('library');
   const [rows, setRows] = React.useState<ManualImportRow[]>([]);
   const [rowStates, setRowStates] = React.useState<Record<string, RowState>>({});
   const [error, setError] = React.useState('');
@@ -95,22 +100,18 @@ export default function Page() {
   const scanAbort = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => scanAbort.current?.abort(), []);
 
-  const runScan = React.useCallback(async () => {
-    const f = folder.trim();
-    if (!f) {
-      setPhase('idle');
-      setRows([]);
-      setError('');
-      return;
-    }
+  // The scan core. `target` scans a loose folder; `undefined` scans the library
+  // roots for untracked in-place files (the auto-surface path).
+  const performScan = React.useCallback(async (target: string | undefined) => {
     scanAbort.current?.abort();
     const controller = new AbortController();
     scanAbort.current = controller;
 
+    setScope(target === undefined ? 'library' : 'folder');
     setPhase('scanning');
     setError('');
     try {
-      const found = await scanFolder(f, controller.signal);
+      const found = await scanFolder(target, controller.signal);
       if (controller.signal.aborted) return;
       setRows(found);
       // Seed per-row state: pre-include rows that the scan both identified AND
@@ -131,7 +132,24 @@ export default function Page() {
       setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Scan failed.');
       setPhase('error');
     }
-  }, [folder]);
+  }, []);
+
+  const runScan = React.useCallback(() => {
+    const f = folder.trim();
+    if (!f) {
+      setPhase('idle');
+      setRows([]);
+      setError('');
+      return;
+    }
+    void performScan(f);
+  }, [folder, performScan]);
+
+  // Auto-surface: on open, scan the library roots so untracked in-place files
+  // (orphans, out-of-band media) appear without the user pointing at a folder.
+  React.useEffect(() => {
+    void performScan(undefined);
+  }, [performScan]);
 
   const setRowState = React.useCallback((path: string, patch: Partial<RowState>) => {
     setRowStates((prev) => ({ ...prev, [path]: { ...prev[path], ...patch } }));
@@ -214,7 +232,8 @@ export default function Page() {
       <ModalStack />
       <Card title="Manual import — map loose files to library content">
         <Text style={{ opacity: 0.6 }}>
-          Scan a folder of loose files; nothing moves until you press Import.
+          Untracked files already under your library are listed automatically. Scan a
+          loose folder to import from elsewhere; nothing moves until you press Import.
         </Text>
         <div style={{ height: '1ch' }} />
         <RowSpaceBetween>
@@ -234,11 +253,18 @@ export default function Page() {
           <Button theme="SECONDARY" onClick={() => void runScan()} isDisabled={!folder.trim()}>
             Scan
           </Button>
+          <Button
+            theme="SECONDARY"
+            onClick={() => void performScan(undefined)}
+            isDisabled={phase === 'scanning'}
+          >
+            Rescan library
+          </Button>
         </RowSpaceBetween>
 
         <Divider type="GRADIENT" />
 
-        <ScanResults phase={phase} folder={folder} rows={rows} error={error} />
+        <ScanResults phase={phase} scope={scope} folder={folder} rows={rows} error={error} />
 
         {phase === 'ready' && rows.length > 0 ? (
           <ImportTable
@@ -277,10 +303,12 @@ export default function Page() {
 
 const ScanResults: React.FC<{
   phase: Phase;
+  scope: 'library' | 'folder';
   folder: string;
   rows: ManualImportRow[];
   error: string;
-}> = ({ phase, folder, rows, error }) => {
+}> = ({ phase, scope, folder, rows, error }) => {
+  const where = scope === 'library' ? 'the library' : `“${folder.trim()}”`;
   if (phase === 'idle') {
     return (
       <Text style={{ opacity: 0.6 }}>
@@ -291,7 +319,7 @@ const ScanResults: React.FC<{
   if (phase === 'scanning') {
     return (
       <Text>
-        <BlockLoader mode={1} /> Scanning “{folder.trim()}”…
+        <BlockLoader mode={1} /> Scanning {where}…
       </Text>
     );
   }
@@ -301,7 +329,9 @@ const ScanResults: React.FC<{
   if (rows.length === 0) {
     return (
       <Text style={{ opacity: 0.6 }}>
-        No importable files found in “{folder.trim()}”. Check the path, or that a library is ready.
+        {scope === 'library'
+          ? 'No untracked files under the library — everything on disk is already tracked.'
+          : `No importable files found in “${folder.trim()}”. Check the path, or that a library is ready.`}
       </Text>
     );
   }

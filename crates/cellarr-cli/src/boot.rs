@@ -420,6 +420,15 @@ async fn register_recurring(state: &AppState) -> Result<()> {
         .add_cron(JobKind::MetadataRefresh, "@daily", RetryPolicy::default())
         .await
         .context("registering MetadataRefresh")?;
+    // Reconcile on-disk files against the DB daily: adopt untracked files the
+    // scanner confidently identifies (recovering orphans and onboarding media
+    // placed out-of-band) and leave the ambiguous ones for the manual-import
+    // screen. Adopt-only — additive and confidence-gated, so a daily cadence is
+    // safe; it never moves the confident ones out of place or guesses a placement.
+    scheduler
+        .add_cron(JobKind::RescanLibrary, "@daily", RetryPolicy::default())
+        .await
+        .context("registering RescanLibrary")?;
     Ok(())
 }
 

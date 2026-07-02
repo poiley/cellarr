@@ -66,14 +66,16 @@ pub enum ManualImportCommitOutcome {
 /// unavailable — the offline/test default).
 #[async_trait]
 pub trait ManualImport: Send + Sync {
-    /// Scan `folder` (read-only) for loose media files and return the parsed,
-    /// identified candidates — moving nothing.
+    /// Scan for media files and return the parsed, identified candidates — moving
+    /// nothing. `Some(folder)` scans exactly that loose folder; `None` scans the
+    /// configured library roots for UNTRACKED files, so orphans and out-of-band
+    /// media auto-surface for review (the manual-import counterpart to `rescan`).
     ///
     /// # Errors
     /// Returns a short human string only for an infrastructure failure the scan
     /// could not recover from (the folder could not be read). "No environment
     /// ready" is **not** an error — it is [`ManualImportOutcome::Unavailable`].
-    async fn scan(&self, folder: &str) -> Result<ManualImportOutcome, String>;
+    async fn scan(&self, folder: Option<&str>) -> Result<ManualImportOutcome, String>;
 
     /// Commit the user's chosen `items` through the crash-safe import path.
     ///

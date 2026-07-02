@@ -88,6 +88,7 @@ pub fn command_name(kind: &JobKind) -> &'static str {
         JobKind::MissingItemSearch => "MissingItemSearch",
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
+        JobKind::RescanLibrary => "RescanLibrary",
         JobKind::ManualSearch { .. } => "ManualSearch",
     }
 }
@@ -114,6 +115,11 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
             Some(JobKind::MetadataRefresh)
         }
         "diskspacecheck" => Some(JobKind::DiskSpaceCheck),
+        // Reconcile the library in place. cellarr's native name plus the *arr
+        // rescan commands (a whole-library disk rescan) so ecosystem clients and the
+        // UI's "Rescan" action all resolve to it.
+        "rescanlibrary" | "rescanfolders" | "rescanseries" | "rescanmovie"
+        | "downloadedmoviesscan" | "downloadedepisodesscan" => Some(JobKind::RescanLibrary),
         "manualsearch" | "moviesearch" | "episodesearch" | "seriessearch" => {
             content_id.map(|content_id| JobKind::ManualSearch { content_id })
         }

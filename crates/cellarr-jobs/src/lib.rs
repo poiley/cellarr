@@ -47,6 +47,6 @@ pub use job::{
 pub use notify::{ProviderNotifier, WebhookNotifier, WEBHOOK_KIND, WEBHOOK_URL_FIELD};
 pub use runner::{
     ManualImportCandidate, ManualImportRequest, ManualImportResult, ManualImportSuggestion,
-    PipelineRunner, ReleaseCandidate, RunOutcome, RunnerConfig,
+    PipelineRunner, RescanReport, ReleaseCandidate, RunOutcome, RunnerConfig,
 };
 pub use scheduler::{ConcurrencyCaps, CronError, JobHandler, JobResult, Scheduler};

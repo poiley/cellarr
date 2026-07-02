@@ -281,6 +281,21 @@ pub struct ManualImportResult {
     pub content_id: cellarr_core::ContentId,
 }
 
+/// The tally of a library **rescan** (`PipelineRunner::rescan`): the in-place
+/// reconcile of on-disk files against the `media_file` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RescanReport {
+    /// Untracked files the scan confidently identified and adopted in place
+    /// (recorded, not moved).
+    pub adopted: usize,
+    /// Untracked files the scan could not confidently place. Left on disk and
+    /// surfaced in the manual-import screen for the user to map by hand.
+    pub unmatched: usize,
+    /// Per-file failures while adopting a confident match (one string each); the
+    /// rest of the batch still proceeds.
+    pub errors: Vec<String>,
+}
+
 /// Everything the runner needs that is *not* a live integration seam: the
 /// decision inputs and the on-disk naming/target configuration.
 ///
@@ -2346,33 +2361,68 @@ where
     /// a candidate carrying a rejection.
     pub async fn scan_manual_import(
         &self,
-        folder: &std::path::Path,
+        folder: Option<&std::path::Path>,
     ) -> Result<Vec<ManualImportCandidate>> {
-        let inventory = cellarr_fs::scan(folder.to_path_buf())
-            .await
-            .map_err(|e| JobError::stage(Stage::Import, e))?;
+        use cellarr_core::repo::MediaFileRepository;
 
-        let mut out = Vec::with_capacity(inventory.entries.len());
-        for entry in &inventory.entries {
-            let name = entry
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let parsed = cellarr_parse::parse_title(&name);
-            let quality = cellarr_core::resolve_quality(&parsed, &self.config.ranking);
+        // With an explicit folder, scan exactly it (the classic "point at a loose
+        // download folder" flow). With none, scan every library root so a file
+        // sitting UNTRACKED under the library (a completed download whose row was
+        // dropped, or media placed on disk out-of-band) auto-surfaces for review —
+        // the reconcile counterpart to `rescan`. Already-tracked files are filtered
+        // out either way: a file the library already knows about is not a candidate.
+        let roots: Vec<std::path::PathBuf> = match folder {
+            Some(f) => vec![f.to_path_buf()],
+            None => self
+                .db
+                .config()
+                .list_libraries()
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?
+                .into_iter()
+                .flat_map(|lib| lib.root_folders.into_iter().map(std::path::PathBuf::from))
+                .collect(),
+        };
 
-            let (suggested, rejections) = self.suggest_placement(&parsed).await;
-            out.push(ManualImportCandidate {
-                path: entry.path.to_string_lossy().into_owned(),
-                name,
-                size: entry.size,
-                parsed_title: parsed.clean_title.clone(),
-                quality,
-                suggested,
-                rejections,
-            });
+        let mut out = Vec::new();
+        for root in roots {
+            let inventory = cellarr_fs::scan(root)
+                .await
+                .map_err(|e| JobError::stage(Stage::Import, e))?;
+            for entry in &inventory.entries {
+                let path = entry.path.to_string_lossy().into_owned();
+                // Skip files the library already tracks — they are not import
+                // candidates, only orphans and loose files are.
+                if self
+                    .db
+                    .media_files()
+                    .find_by_path(&path)
+                    .await
+                    .map_err(|e| JobError::Persistence(Box::new(e)))?
+                    .is_some()
+                {
+                    continue;
+                }
+                let name = entry
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let parsed = cellarr_parse::parse_title(&name);
+                let quality = cellarr_core::resolve_quality(&parsed, &self.config.ranking);
+
+                let (suggested, rejections) = self.suggest_placement(&parsed).await;
+                out.push(ManualImportCandidate {
+                    path,
+                    name,
+                    size: entry.size,
+                    parsed_title: parsed.clean_title.clone(),
+                    quality,
+                    suggested,
+                    rejections,
+                });
+            }
         }
         Ok(out)
     }
@@ -2482,6 +2532,52 @@ where
         Ok((imported, errors))
     }
 
+    /// **Rescan this runner's library root**: reconcile on-disk files under
+    /// [`RunnerConfig::library_root`] against the `media_file` table, in place.
+    ///
+    /// Scans the root for UNTRACKED files (`scan_manual_import` filters out what the
+    /// library already knows), then auto-adopts each one the scanner confidently
+    /// identified — recorded onto its suggested node through the crash-safe import
+    /// path, which ADOPTS (no byte moved) when the file is already at its correct
+    /// name, or renames it to the scheme when it is not. Files the scanner could not
+    /// confidently place are left on disk and reported as `unmatched` so the
+    /// manual-import screen surfaces them for the user to map by hand — the
+    /// acquisition path never guesses a placement.
+    ///
+    /// Scoped to this runner's own root (not every library's) because the import
+    /// step renders each destination under that root; the caller builds one runner
+    /// per library so each file lands under the correct root. This is the proactive
+    /// counterpart to the import-time adopt: it recovers orphans (a completed
+    /// download whose row was dropped) and onboards a pre-existing library that has
+    /// no \*arr database to migrate from, without a re-download.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only for an infrastructure failure (a repository read or
+    /// write failed). Per-file adopt failures are collected into the report's
+    /// `errors`, not errored.
+    pub async fn rescan(&self) -> Result<RescanReport> {
+        let candidates = self
+            .scan_manual_import(Some(&self.config.library_root))
+            .await?;
+        let mut requests = Vec::new();
+        let mut unmatched = 0;
+        for candidate in &candidates {
+            match &candidate.suggested {
+                Some(suggestion) => requests.push(ManualImportRequest {
+                    path: candidate.path.clone(),
+                    content_id: suggestion.content_id,
+                }),
+                None => unmatched += 1,
+            }
+        }
+        let (imported, errors) = self.import_manual(&requests).await?;
+        Ok(RescanReport {
+            adopted: imported.len(),
+            unmatched,
+            errors,
+        })
+    }
+
     /// Import one chosen loose file onto `matched_ref` through the crash-safe path,
     /// persisting the resulting media-file row. Mirrors [`import`](Self::import) but
     /// drives a single user-chosen source rather than a download directory, and is
@@ -2525,6 +2621,17 @@ where
         let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
             .map_err(|e| format!("render name: {e}"))?;
         let dest = self.config.library_root.join(&rel);
+        let dest_string = dest.to_string_lossy().into_owned();
+        // In-place ADOPTION: the chosen file already sits exactly at its computed
+        // library destination — a rescan of a correctly-named file already under
+        // the library root. Record it without moving a byte. Anything else (a loose
+        // file elsewhere, or an in-library file whose name does not match the
+        // scheme) is moved/renamed to its destination as usual. Keyed on the paths
+        // being equal, NOT merely "destination occupied", so a manual import never
+        // discards the user's chosen source for a coincidental orphan already at the
+        // target — the destination-is-evidence shortcut is for the automatic path,
+        // where the source is a fresh download, not a user's explicit pick.
+        let adopt_in_place = source_path == dest_string;
 
         // Verify the file's parse does not contradict the chosen node's coordinates
         // (the same library-safety gate the automatic import applies), then plan and
@@ -2538,12 +2645,12 @@ where
 
         let moves = vec![PlannedMove {
             source_path: source_path.to_string(),
-            destination_path: dest.to_string_lossy().into_owned(),
+            destination_path: dest_string,
             content_ids: vec![matched_ref.id],
             replaces: None,
             replaced_path: None,
             hardlink: false,
-            adopt: false,
+            adopt: adopt_in_place,
         }];
         let plan = cellarr_fs::plan_import(GrabId::new(), moves)
             .await
@@ -2595,6 +2702,20 @@ where
             )
             .await
             .map_err(|e| format!("persist imported file: {e}"))?;
+        }
+
+        // Reorganize-in-place cleanup: when the source was an in-library file we
+        // RENAMED to its scheme path (not an in-place adopt, and the destination is
+        // now durable), remove the redundant original so a rescan reorganizes rather
+        // than duplicates. A loose source from OUTSIDE the library root is always
+        // preserved (the seeding-copy rule the automatic import relies on) — only a
+        // file already under the library is a reorganize.
+        if !adopt_in_place
+            && destination_path != source_path
+            && src.starts_with(&self.config.library_root)
+            && std::path::Path::new(&destination_path).exists()
+        {
+            let _ = tokio::fs::remove_file(src).await;
         }
 
         Ok(ManualImportResult {

@@ -296,6 +296,74 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         }
         JobResult::Success
     }
+
+    /// `RescanLibrary`: reconcile on-disk files against the `media_file` table,
+    /// one library at a time. Each library gets its own runner (built from that
+    /// library's config) so a scanned file's destination is rendered under the
+    /// correct root; the runner adopts the confident matches in place and leaves the
+    /// rest for the manual-import screen. A per-library failure is logged and the
+    /// sweep continues — one unreadable root must not strand the others.
+    async fn run_rescan(&self) -> JobResult {
+        let libraries = match self.db.config().list_libraries().await {
+            Ok(l) => l,
+            Err(detail) => {
+                return JobResult::Retryable {
+                    detail: format!("loading libraries failed: {detail}"),
+                }
+            }
+        };
+        let (mut adopted, mut unmatched, mut errors) = (0usize, 0usize, 0usize);
+        for library in libraries {
+            // A synthetic node ref scoped to this library lets the env build the
+            // library's config (root + naming); it is used only to resolve config,
+            // never persisted. The indexer/client are unused by a rescan (it scans
+            // and imports, never searches or grabs).
+            let probe = match ContentRef::new(
+                cellarr_core::ContentId::new(),
+                library.id,
+                library.media_type,
+                default_coords(library.media_type),
+            ) {
+                Ok(p) => p,
+                Err(detail) => {
+                    tracing::warn!(library = %library.id, error = %detail, "rescan: probe build failed; skipping");
+                    continue;
+                }
+            };
+            let resolved = match self.env.resolve(&probe).await {
+                Ok(r) => r,
+                Err(detail) => {
+                    tracing::warn!(library = %library.id, error = %detail, "rescan: env resolve failed; skipping");
+                    continue;
+                }
+            };
+            let Some((indexer, client, config)) = resolved else {
+                // No environment ready for this library (no root/profile) — nothing
+                // to reconcile here yet.
+                continue;
+            };
+            let runner = PipelineRunner::new(
+                &indexer,
+                &client,
+                &self.registry,
+                &self.db,
+                &self.clock,
+                &config,
+            );
+            match runner.rescan().await {
+                Ok(report) => {
+                    adopted += report.adopted;
+                    unmatched += report.unmatched;
+                    errors += report.errors.len();
+                }
+                Err(detail) => {
+                    tracing::warn!(library = %library.id, error = %detail, "rescan: library failed; continuing");
+                }
+            }
+        }
+        tracing::info!(adopted, unmatched, errors, "library rescan complete");
+        JobResult::Success
+    }
 }
 
 /// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the UI/WS
@@ -373,6 +441,8 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
             },
             // Re-resolve and persist content metadata + artwork for the library.
             JobKind::MetadataRefresh => self.refresh_metadata().await,
+            // Reconcile on-disk files against the DB: adopt what parses, surface the rest.
+            JobKind::RescanLibrary => self.run_rescan().await,
             // Not pipeline work: a benign success so the scheduler keeps its cadence.
             JobKind::DiskSpaceCheck => JobResult::Success,
         }
@@ -387,6 +457,7 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::MissingItemSearch => "MissingItemSearch",
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
+        JobKind::RescanLibrary => "RescanLibrary",
         JobKind::ManualSearch { .. } => "ManualSearch",
     }
 }
@@ -1155,7 +1226,7 @@ impl LiveManualImport {
 impl cellarr_api::manual_import::ManualImport for LiveManualImport {
     async fn scan(
         &self,
-        folder: &str,
+        folder: Option<&str>,
     ) -> Result<cellarr_api::manual_import::ManualImportOutcome, String> {
         use cellarr_api::manual_import::ManualImportOutcome;
 
@@ -1175,8 +1246,10 @@ impl cellarr_api::manual_import::ManualImport for LiveManualImport {
             &self.clock,
             &config,
         );
+        // `None` (no folder) scans the library roots so untracked in-place files
+        // auto-surface; `Some(folder)` scans that loose folder.
         let candidates = runner
-            .scan_manual_import(std::path::Path::new(folder))
+            .scan_manual_import(folder.map(std::path::Path::new))
             .await
             .map_err(|e| format!("manual-import scan failed: {e}"))?;
         Ok(ManualImportOutcome::Found(candidates))

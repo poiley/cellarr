@@ -28,6 +28,10 @@ pub enum JobKind {
     MetadataRefresh,
     /// A disk-space / health check.
     DiskSpaceCheck,
+    /// Reconcile on-disk files against the `media_file` table: adopt untracked
+    /// files the scanner confidently identifies, and surface the rest for manual
+    /// import. The in-place counterpart to import-time adopt.
+    RescanLibrary,
     /// An on-demand manual search for a specific content node.
     ManualSearch {
         /// The content node (UUID string) to search for.
@@ -47,6 +51,9 @@ impl JobKind {
             }
             JobKind::MetadataRefresh => "metadata",
             JobKind::DiskSpaceCheck => "disk",
+            // A rescan is filesystem-bound (scan + in-place adopt), sharing no third
+            // party — its own bucket keeps it off the indexer/metadata budgets.
+            JobKind::RescanLibrary => "filesystem",
         }
     }
 
@@ -59,6 +66,7 @@ impl JobKind {
             JobKind::MissingItemSearch => "missing_item_search".into(),
             JobKind::MetadataRefresh => "metadata_refresh".into(),
             JobKind::DiskSpaceCheck => "disk_space_check".into(),
+            JobKind::RescanLibrary => "rescan_library".into(),
             JobKind::ManualSearch { content_id } => format!("manual_search:{content_id}"),
         }
     }

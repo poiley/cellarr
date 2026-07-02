@@ -263,7 +263,7 @@ struct FakeManualImport {
 
 #[async_trait]
 impl ManualImport for FakeManualImport {
-    async fn scan(&self, _folder: &str) -> Result<ManualImportOutcome, String> {
+    async fn scan(&self, _folder: Option<&str>) -> Result<ManualImportOutcome, String> {
         Ok(ManualImportOutcome::Found(vec![]))
     }
 
