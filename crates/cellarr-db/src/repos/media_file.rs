@@ -218,4 +218,20 @@ impl MediaFileRepository for MediaFileRepo {
             })
             .await
     }
+
+    async fn delete_by_path(&self, path: &str) -> Result<()> {
+        let path = path.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    // ON DELETE CASCADE on content_file clears any links.
+                    sqlx::query("DELETE FROM media_file WHERE path = ?1")
+                        .bind(path)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
 }

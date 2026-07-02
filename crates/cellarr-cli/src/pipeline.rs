@@ -312,7 +312,20 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 }
             }
         };
-        let (mut adopted, mut unmatched, mut errors) = (0usize, 0usize, 0usize);
+        // Roots that currently exist on disk — the ONLY roots the prune pass is
+        // allowed to remove rows under, so a transient mount outage (every file
+        // "missing") never mass-deletes the library and triggers a re-download.
+        let mut accessible_roots: Vec<std::path::PathBuf> = Vec::new();
+        for library in &libraries {
+            for root in &library.root_folders {
+                if tokio::fs::try_exists(root).await.unwrap_or(false) {
+                    accessible_roots.push(std::path::PathBuf::from(root));
+                }
+            }
+        }
+
+        let (mut adopted, mut unmatched, mut errors, mut pruned) = (0usize, 0usize, 0usize, 0usize);
+        let mut pruned_once = false;
         for library in libraries {
             // A synthetic node ref scoped to this library lets the env build the
             // library's config (root + naming); it is used only to resolve config,
@@ -360,8 +373,19 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     tracing::warn!(library = %library.id, error = %detail, "rescan: library failed; continuing");
                 }
             }
+            // Prune vanished files once — it is global (all roots), so any one
+            // runner does it; the media_file table is shared across libraries.
+            if !pruned_once {
+                pruned_once = true;
+                match runner.prune_missing(&accessible_roots).await {
+                    Ok(n) => pruned += n,
+                    Err(detail) => {
+                        tracing::warn!(error = %detail, "rescan: prune pass failed; continuing");
+                    }
+                }
+            }
         }
-        tracing::info!(adopted, unmatched, errors, "library rescan complete");
+        tracing::info!(adopted, unmatched, errors, pruned, "library rescan complete");
         JobResult::Success
     }
 }

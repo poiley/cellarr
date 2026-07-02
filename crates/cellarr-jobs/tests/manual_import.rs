@@ -889,3 +889,63 @@ async fn rescan_adopts_confident_in_library_files_and_surfaces_the_rest() {
         "no duplicate row on re-run"
     );
 }
+
+#[tokio::test]
+async fn prune_removes_rows_for_vanished_files_but_respects_mount_safety() {
+    use cellarr_core::repo::MediaFileRepository;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    // Adopt a file so a media_file row exists at a path under the library root.
+    let good = lib_root.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&good, b"x").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    assert_eq!(runner.rescan().await.unwrap().adopted, 1);
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(files.len(), 1, "one row tracked");
+    let tracked_path = files[0].path.clone();
+
+    // The file vanishes from disk (deleted outside cellarr).
+    std::fs::remove_file(&tracked_path).unwrap();
+
+    // MOUNT SAFETY: with no accessible root, prune removes nothing — a mount
+    // outage must never mass-delete rows.
+    assert_eq!(
+        runner.prune_missing(&[]).await.unwrap(),
+        0,
+        "no accessible root => prune is a no-op"
+    );
+    assert_eq!(
+        db.media_files().list_for_content(node.id).await.unwrap().len(),
+        1,
+        "the row survives when its root is inaccessible"
+    );
+
+    // With the library root accessible, the vanished file's row is pruned so the
+    // content re-flags as missing.
+    assert_eq!(
+        runner.prune_missing(&[lib_root.clone()]).await.unwrap(),
+        1,
+        "the vanished file's row is pruned"
+    );
+    assert!(
+        db.media_files().list_for_content(node.id).await.unwrap().is_empty(),
+        "content is now missing a file"
+    );
+    // Idempotent: a second prune finds nothing to do.
+    assert_eq!(runner.prune_missing(&[lib_root]).await.unwrap(), 0);
+}

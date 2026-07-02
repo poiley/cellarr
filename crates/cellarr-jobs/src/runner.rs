@@ -2609,6 +2609,59 @@ where
         })
     }
 
+    /// **Prune vanished files**: drop every `media_file` row whose on-disk file is
+    /// gone, so its content re-flags as missing and is re-acquired — the DB→disk
+    /// direction of a reconcile.
+    ///
+    /// MOUNT SAFETY is the whole design here. A tracked file is pruned only when it
+    /// lives under a root in `accessible_roots` AND is confirmed absent. A row under
+    /// a root that is *not* currently accessible (an unmounted network share, a
+    /// disconnected disk) is left untouched — otherwise a transient mount outage
+    /// would delete every row and trigger a mass re-download. Likewise an existence
+    /// check that errors (rather than cleanly returning "absent") keeps the row.
+    /// With no accessible root at all, this prunes nothing.
+    ///
+    /// # Errors
+    /// Returns [`JobError`] only on a repository read/write failure.
+    pub async fn prune_missing(&self, accessible_roots: &[std::path::PathBuf]) -> Result<usize> {
+        use cellarr_core::repo::MediaFileRepository;
+
+        if accessible_roots.is_empty() {
+            return Ok(0);
+        }
+        let paths = self
+            .db
+            .media_files()
+            .all_paths()
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+
+        let mut pruned = 0;
+        for path in paths {
+            let p = std::path::Path::new(&path);
+            if !accessible_roots.iter().any(|root| p.starts_with(root)) {
+                // Under a root we cannot currently read — its mount may be offline;
+                // never prune on that uncertainty.
+                continue;
+            }
+            // try_exists → Ok(false) only when *confirmed* absent. Present or an
+            // errored check (Ok(true)/Err) keeps the row. The path came from
+            // `all_paths`, so a confirmed-absent file means a stale row to prune.
+            match tokio::fs::try_exists(p).await {
+                Ok(false) => {
+                    self.db
+                        .media_files()
+                        .delete_by_path(&path)
+                        .await
+                        .map_err(|e| JobError::Persistence(Box::new(e)))?;
+                    pruned += 1;
+                }
+                _ => continue,
+            }
+        }
+        Ok(pruned)
+    }
+
     /// Import one chosen loose file onto `matched_ref` through the crash-safe path,
     /// persisting the resulting media-file row. Mirrors [`import`](Self::import) but
     /// drives a single user-chosen source rather than a download directory, and is

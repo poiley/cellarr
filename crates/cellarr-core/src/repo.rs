@@ -139,6 +139,12 @@ pub trait MediaFileRepository: Send + Sync {
 
     /// Delete a media file row by id (the on-disk removal is `cellarr-fs`'s job).
     async fn delete(&self, id: MediaFileId) -> Result<(), Self::Error>;
+
+    /// Delete the media file row at `path` (the UNIQUE index). The library-rescan
+    /// prune uses this to drop a row whose file has vanished from disk, so the
+    /// content re-flags as missing and is re-acquired. Idempotent; a path with no
+    /// row is a no-op.
+    async fn delete_by_path(&self, path: &str) -> Result<(), Self::Error>;
 }
 
 /// Reads and writes for grabs handed to download clients.
