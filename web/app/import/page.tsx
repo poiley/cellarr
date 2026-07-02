@@ -47,11 +47,14 @@ import AppShell from '@app/_components/AppShell';
 import { useToast } from '@app/_lib/ToastProvider';
 
 import {
+  clearLibraryScanCache,
   commitImport,
   formatSize,
   listTargets,
   lookupTargets,
+  readCachedLibraryScan,
   scanFolder,
+  writeCachedLibraryScan,
   type ImportTarget,
   type ManualImportRow,
 } from './_lib/manual-import';
@@ -100,39 +103,47 @@ export default function Page() {
   const scanAbort = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => scanAbort.current?.abort(), []);
 
-  // The scan core. `target` scans a loose folder; `undefined` scans the library
-  // roots for untracked in-place files (the auto-surface path).
-  const performScan = React.useCallback(async (target: string | undefined) => {
-    scanAbort.current?.abort();
-    const controller = new AbortController();
-    scanAbort.current = controller;
-
-    setScope(target === undefined ? 'library' : 'folder');
-    setPhase('scanning');
-    setError('');
-    try {
-      const found = await scanFolder(target, controller.signal);
-      if (controller.signal.aborted) return;
-      setRows(found);
-      // Seed per-row state: pre-include rows that the scan both identified AND
-      // did not reject (the safe default); leave rejected/unidentified rows for
-      // the user to opt in + fix.
-      const seeded: Record<string, RowState> = {};
-      for (const r of found) {
-        seeded[r.path] = {
-          include: !r.rejected && !!r.contentId,
-          contentId: r.contentId,
-        };
-      }
-      setRowStates(seeded);
-      setPhase('ready');
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      setRows([]);
-      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Scan failed.');
-      setPhase('error');
+  // Seed per-row state: pre-include rows that the scan both identified AND did not
+  // reject (the safe default); leave rejected/unidentified rows for the user to
+  // opt in + fix. Shared by a fresh scan and a cache-hydrated load.
+  const seedRowStates = React.useCallback((found: ManualImportRow[]) => {
+    const seeded: Record<string, RowState> = {};
+    for (const r of found) {
+      seeded[r.path] = { include: !r.rejected && !!r.contentId, contentId: r.contentId };
     }
+    setRowStates(seeded);
   }, []);
+
+  // The scan core. `target` scans a loose folder; `undefined` scans the library
+  // roots for untracked in-place files (the auto-surface path). A library scan's
+  // result is cached in the session so a re-open is instant.
+  const performScan = React.useCallback(
+    async (target: string | undefined) => {
+      scanAbort.current?.abort();
+      const controller = new AbortController();
+      scanAbort.current = controller;
+
+      const isLibrary = target === undefined;
+      setScope(isLibrary ? 'library' : 'folder');
+      setPhase('scanning');
+      setError('');
+      try {
+        const found = await scanFolder(target, controller.signal);
+        if (controller.signal.aborted) return;
+        setRows(found);
+        seedRowStates(found);
+        // Cache only the (slow) whole-library scan; a folder scan is specific.
+        if (isLibrary) writeCachedLibraryScan(found);
+        setPhase('ready');
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setRows([]);
+        setError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Scan failed.');
+        setPhase('error');
+      }
+    },
+    [seedRowStates]
+  );
 
   const runScan = React.useCallback(() => {
     const f = folder.trim();
@@ -145,11 +156,20 @@ export default function Page() {
     void performScan(f);
   }, [folder, performScan]);
 
-  // Auto-surface: on open, scan the library roots so untracked in-place files
-  // (orphans, out-of-band media) appear without the user pointing at a folder.
+  // Auto-surface: on open, show untracked in-place files without the user pointing
+  // at a folder. Hydrate instantly from the session cache when present (the
+  // library walk is slow on a large collection); otherwise scan and cache.
   React.useEffect(() => {
-    void performScan(undefined);
-  }, [performScan]);
+    const cached = readCachedLibraryScan();
+    if (cached) {
+      setScope('library');
+      setRows(cached);
+      seedRowStates(cached);
+      setPhase('ready');
+    } else {
+      void performScan(undefined);
+    }
+  }, [performScan, seedRowStates]);
 
   const setRowState = React.useCallback((path: string, patch: Partial<RowState>) => {
     setRowStates((prev) => ({ ...prev, [path]: { ...prev[path], ...patch } }));
@@ -219,6 +239,9 @@ export default function Page() {
         // Drop the imported rows from the table; keep any that errored.
         const importedPaths = new Set(result.imported.map((i) => i.sourcePath));
         setRows((prev) => prev.filter((r) => !importedPaths.has(r.path)));
+        // Bust the session cache: those files are now tracked, so a cached
+        // library scan is stale — the next open re-scans.
+        clearLibraryScanCache();
       }
     } catch (err) {
       toastError(err instanceof ApiError ? `${err.code}: ${err.message}` : 'Import failed.');

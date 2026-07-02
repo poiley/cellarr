@@ -84,6 +84,9 @@ describe('Manual Import screen', () => {
     listMovies.mockResolvedValue([{ id: 'm-1', title: 'Blade Runner 2049', year: 2017 }]);
     listSeries.mockResolvedValue([]);
     window.localStorage.clear();
+    // The auto-surface caches the library scan in sessionStorage; clear it so a
+    // cached scan from one test never leaks into the next.
+    window.sessionStorage.clear();
     document.body.className = '';
     installMatchMedia();
   });
@@ -115,6 +118,56 @@ describe('Manual Import screen', () => {
     await waitFor(() =>
       expect(screen.getByText(/No untracked files under the library/i)).toBeTruthy()
     );
+  });
+
+  const scanCount = () =>
+    requestV3.mock.calls.filter(
+      (c) => c[0] === '/manualImport' && (c[1] as { method?: string } | undefined)?.method !== 'POST'
+    ).length;
+
+  it('hydrates the library scan from the session cache on re-open (no re-scan)', async () => {
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/manualImport') return Promise.resolve([goodRow]);
+      return Promise.resolve(undefined);
+    });
+    // First open scans the library and caches the result.
+    const first = renderPage();
+    await waitFor(() => expect(screen.getByText('Blade Runner 2049 1080p.mkv')).toBeTruthy());
+    const afterFirst = scanCount();
+    expect(afterFirst).toBeGreaterThan(0);
+    first.unmount();
+    cleanup();
+
+    // Re-open: hydrates instantly from the session cache — no additional scan GET.
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Blade Runner 2049 1080p.mkv')).toBeTruthy());
+    expect(scanCount()).toBe(afterFirst);
+  });
+
+  it('busts the cache after a commit so the next open re-scans', async () => {
+    requestV3.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/manualImport' && opts?.method === 'POST') {
+        return Promise.resolve({
+          imported: [
+            { sourcePath: goodRow.path, destinationPath: '/movies/x.mkv', contentId: goodRow.contentId },
+          ],
+          errors: [],
+        });
+      }
+      if (path === '/manualImport') return Promise.resolve([goodRow]);
+      return Promise.resolve(undefined);
+    });
+    const first = renderPage();
+    await waitFor(() => expect(screen.getByText(/Import 1/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/Import 1/));
+    await waitFor(() => expect(screen.getByText(/Imported/)).toBeTruthy());
+    const afterCommit = scanCount();
+    first.unmount();
+    cleanup();
+
+    // The commit cleared the cache, so re-opening scans again rather than hydrating.
+    renderPage();
+    await waitFor(() => expect(scanCount()).toBeGreaterThan(afterCommit));
   });
 
   it('scans a folder and renders candidate rows', async () => {

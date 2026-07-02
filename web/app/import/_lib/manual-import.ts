@@ -136,6 +136,58 @@ export async function commitImport(
   };
 }
 
+// --- Library auto-surface cache (per browser session) ---------------------
+//
+// The no-folder library scan walks the whole library (every root, every file),
+// which is slow on a large collection. Cache its result in sessionStorage so
+// re-opening the Import screen within a session is instant instead of re-walking.
+// The cache is deliberately session-scoped (not localStorage): it should not
+// outlive the tab, and a fresh session always re-scans.
+//
+// Busting: the cache is cleared whenever the on-disk↔DB picture could have
+// changed under it — a successful commit (imported files are now tracked) — and
+// bypassed-then-refreshed whenever the user explicitly presses "Rescan library".
+// A stale cache only ever shows a file that is now tracked; the next explicit
+// rescan or commit corrects it, and nothing is mutated off a cached read.
+
+const LIBRARY_SCAN_CACHE_KEY = 'cellarr:import:library-scan:v1';
+
+/** The cached library scan for this session, or `null` if absent/unreadable. */
+export function readCachedLibraryScan(): ManualImportRow[] | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(LIBRARY_SCAN_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { rows?: ManualImportRow[] };
+    return Array.isArray(parsed.rows) ? parsed.rows : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Store the library scan for this session (best-effort; quota/serialize is non-fatal). */
+export function writeCachedLibraryScan(rows: ManualImportRow[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(
+      LIBRARY_SCAN_CACHE_KEY,
+      JSON.stringify({ rows, at: Date.now() })
+    );
+  } catch {
+    /* sessionStorage full or unavailable — the screen just re-scans next time. */
+  }
+}
+
+/** Invalidate the cached library scan (call after any commit that changes tracking). */
+export function clearLibraryScanCache(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(LIBRARY_SCAN_CACHE_KEY);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 /** A target the user can re-map a file onto (a movie or series in the library). */
 export interface ImportTarget {
   id: string;
