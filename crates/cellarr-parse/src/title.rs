@@ -11,9 +11,12 @@ use cellarr_core::media::Coordinates;
 use cellarr_core::parsed::ParsedRelease;
 use regex::Regex;
 
-// Leading bracketed tag(s): `[Group]`, `(2019)` etc. at the very start.
+// Leading `[Group]` fansub bracket(s) at the very start. Only SQUARE brackets are
+// stripped: a leading `(...)` is far more often part of the title (`(500) Days of
+// Summer`, `(Untitled)`) than a tag, and a leading `(year)` is rare — the year
+// marker handles years wherever they appear.
 static LEADING_TAGS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:\s*[\[\(][^\]\)]*[\]\)]\s*)+").unwrap());
+    LazyLock::new(|| Regex::new(r"^(?:\s*\[[^\]]*\]\s*)+").unwrap());
 
 // A bare anime absolute number ending the title in fansub form: `Title 07`,
 // `Title-01`, `Title.100`, `Title #957`. Only applied when a fansub bracket was
@@ -58,8 +61,12 @@ static MARKER: LazyLock<Regex> = LazyLock::new(|| {
 // A four-digit year token, used to detect a "title number that looks like a
 // year immediately followed by the real release year" (e.g. `Blade Runner 2049
 // 2017 ...`), so the title keeps the embedded number.
-static TWO_YEARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b((?:19|20)\d{2})[\s._-]+((?:19|20)\d{2})\b").unwrap());
+// Separators tolerated between the title-year and the real year include brackets,
+// so a bracketed real year (`1917 (2019)`, normalized to `1917 ( 2019 )`) is still
+// recognized as the two-year case and the title keeps its number.
+static TWO_YEARS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b((?:19|20)\d{2})[\s._\-()\[\]{}]*((?:19|20)\d{2})\b").unwrap()
+});
 
 /// Extract a cleaned title.
 pub fn extract(input: &str, out: &mut ParsedRelease) {
@@ -93,29 +100,32 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
         None => body,
     };
 
-    // For anime fansub form "[Group] Title - 071", the title is before the dash.
-    let title_part = title_part.split(" - ").next().unwrap_or(title_part);
-
-    // Anime fansub bare absolute: "[Group] Title 07", "Title-01", "Title.100",
-    // "Title #957". Cut at the absolute number — but only when a fansub bracket
-    // was stripped (anime context) and the numbering layer actually recognised an
-    // Absolute, so a number that is part of a real title is never severed.
+    // Anime fansub form "[Group] Title - 071" / "[Group] Title 07": the title is
+    // before the dash/absolute number. This ONLY applies in the anime context (a
+    // fansub bracket was stripped AND the numbering layer recognized an Absolute) —
+    // a movie's " - Subtitle" (`Ace Ventura - Pet Detective`) must survive, and a
+    // number that is part of a real title is never severed.
     let has_absolute = out
         .coordinates
         .iter()
         .any(|c| matches!(c, Coordinates::Absolute { .. }));
     let title_part = if had_leading_tag && has_absolute {
-        match BARE_ABSOLUTE.find(title_part) {
-            Some(m) if m.start() > 0 => &title_part[..m.start()],
-            _ => title_part,
+        let before_dash = title_part.split(" - ").next().unwrap_or(title_part);
+        match BARE_ABSOLUTE.find(before_dash) {
+            Some(m) if m.start() > 0 => &before_dash[..m.start()],
+            _ => before_dash,
         }
     } else {
         title_part
     };
 
+    // Trim separators from both ends; additionally trim a TRAILING open-bracket left
+    // when the year cut lands just after it (`10 Cloverfield Lane (` → year `(2016)`).
+    // Leading brackets are kept so a `(500)`-style title prefix survives.
     let cleaned = title_part
         .trim()
-        .trim_matches(|c: char| c == '-' || c == '.' || c == ' ' || c == '_')
+        .trim_end_matches(|c: char| matches!(c, '-' | '.' | ' ' | '_' | '(' | '[' | '{'))
+        .trim_start_matches(|c: char| matches!(c, '-' | '.' | ' ' | '_'))
         .trim();
 
     if !cleaned.is_empty() {
@@ -127,10 +137,11 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
 mod tests {
     use super::*;
 
+    // Drive the FULL parse (not just `extract`) so the numbering layer runs first —
+    // the anime "Title - 071" cut is gated on it having recognized an Absolute, so a
+    // test that skips numbering would not reflect real usage.
     fn title(s: &str) -> Option<String> {
-        let mut p = ParsedRelease::new(s);
-        extract(s, &mut p);
-        p.clean_title
+        crate::parse_title(s).clean_title
     }
 
     #[test]
@@ -154,6 +165,39 @@ mod tests {
         assert_eq!(
             title("[SubsPlease] Some Anime - 1071 (1080p) [ABCD1234].mkv"),
             Some("Some Anime".to_string())
+        );
+    }
+
+    // The library-onboarding dry-run over the real rinzler collection surfaced
+    // these `Title (Year).ext` parse failures; the confident-match onboarding is
+    // only as good as the title it looks up.
+
+    #[test]
+    fn keeps_dash_subtitle_for_a_movie() {
+        // A " - " subtitle must survive (only anime fansub "Title - 071" cuts it).
+        assert_eq!(
+            title("Ace Ventura - Pet Detective (1994).mkv"),
+            Some("Ace Ventura - Pet Detective".to_string())
+        );
+        assert_eq!(
+            title("Alien - Covenant (2017).mkv"),
+            Some("Alien - Covenant".to_string())
+        );
+    }
+
+    #[test]
+    fn numeric_title_survives_its_own_year_like_value() {
+        // A title that IS a year-like number, followed by the real (bracketed) year.
+        assert_eq!(title("1917 (2019).mkv"), Some("1917".to_string()));
+        assert_eq!(title("2012 (2009).mkv"), Some("2012".to_string()));
+        assert_eq!(title("300 (2006).mkv"), Some("300".to_string()));
+    }
+
+    #[test]
+    fn no_trailing_open_bracket_from_the_year_cut() {
+        assert_eq!(
+            title("10 Cloverfield Lane (2016).mkv"),
+            Some("10 Cloverfield Lane".to_string())
         );
     }
 }

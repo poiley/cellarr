@@ -569,9 +569,14 @@ fn native_external_id<'a>(
 
 /// Pick the single confident match for auto-onboard, or `None` to leave the file
 /// for manual import. Confident = exactly one candidate whose normalized title
-/// equals the parsed title AND whose year matches the parsed year (when the file
-/// parsed one; a parsed year with no candidate year is not confident). Any
-/// ambiguity yields `None` — content is never created from a guess.
+/// equals the parsed title and whose year lines up. Any ambiguity yields `None` —
+/// content is never created from a guess.
+///
+/// Year handling prefers an EXACT match and only falls back to within-1: a file's
+/// year is often the festival/premiere year while the source lists the release
+/// year (300: 2006 vs 2007), so ±1 recovers the common off-by-one — but doing it
+/// exact-first means a genuine exact-year hit still wins over an adjacent-year one
+/// (so a duplicate a year apart doesn't spuriously make a clean match ambiguous).
 fn pick_confident_candidate<'a>(
     results: &'a [cellarr_api::LookupCandidate],
     parsed_title: &str,
@@ -584,20 +589,30 @@ fn pick_confident_candidate<'a>(
             .collect()
     }
     let want = normalize(parsed_title);
-    let mut matches = results.iter().filter(|c| {
-        normalize(&c.title) == want
-            && match (parsed_year, c.year) {
-                (Some(py), Some(cy)) => py == cy,
-                (Some(_), None) => false,
-                (None, _) => true,
-            }
-    });
-    let first = matches.next()?;
-    // Exactly one → confident. A second match means ambiguity → skip.
-    match matches.next() {
-        None => Some(first),
-        Some(_) => None,
-    }
+    let title_matches: Vec<&cellarr_api::LookupCandidate> =
+        results.iter().filter(|c| normalize(&c.title) == want).collect();
+
+    // No parsed year → a single title match is confident.
+    let Some(py) = parsed_year else {
+        return (title_matches.len() == 1).then(|| title_matches[0]);
+    };
+
+    // Exact-year candidates; fall back to within-1 only if there is no exact year.
+    let exact: Vec<&cellarr_api::LookupCandidate> = title_matches
+        .iter()
+        .copied()
+        .filter(|c| c.year == Some(py))
+        .collect();
+    let pool = if exact.is_empty() {
+        title_matches
+            .iter()
+            .copied()
+            .filter(|c| c.year.is_some_and(|cy| py.abs_diff(cy) == 1))
+            .collect()
+    } else {
+        exact
+    };
+    (pool.len() == 1).then(|| pool[0])
 }
 
 /// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the UI/WS
@@ -1720,10 +1735,24 @@ mod auto_onboard_tests {
         assert!(pick_confident_candidate(&results, "The Matrix", Some(1999)).is_some());
         // Normalization ignores case/punctuation.
         assert!(pick_confident_candidate(&results, "the matrix!", Some(1999)).is_some());
-        // Year mismatch → not confident.
+        // Year within 1 (festival vs release year) → still confident.
+        assert!(pick_confident_candidate(&results, "The Matrix", Some(2000)).is_some());
+        assert!(pick_confident_candidate(&results, "The Matrix", Some(1998)).is_some());
+        // Off by more than 1 → not confident.
         assert!(pick_confident_candidate(&results, "The Matrix", Some(2003)).is_none());
         // A different title → no match.
         assert!(pick_confident_candidate(&results, "Blade Runner", Some(1999)).is_none());
+
+        // Exact year wins over an adjacent-year duplicate — the ±1 fallback must not
+        // turn a clean exact hit into false ambiguity.
+        let dup = vec![
+            cand("Abigail", Some(2024), &[("tmdb", "1")]),
+            cand("Abigail", Some(2023), &[("tmdb", "2")]),
+        ];
+        assert_eq!(
+            pick_confident_candidate(&dup, "Abigail", Some(2024)).and_then(|c| c.year),
+            Some(2024)
+        );
     }
 
     #[test]
