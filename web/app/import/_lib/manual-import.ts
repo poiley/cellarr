@@ -190,18 +190,30 @@ export function clearLibraryScanCache(): void {
 
 /** A target the user can re-map a file onto (a movie or series in the library). */
 export interface ImportTarget {
+  /**
+   * The content-node id, when this target already exists in the library. Empty
+   * for a not-yet-added metadata candidate that must be created (via
+   * {@link createContent}) before a file is mapped onto it.
+   */
   id: string;
   title: string;
   year?: number;
   mediaType: 'movie' | 'tv';
+  /**
+   * Present when this is a metadata candidate NOT yet in the library — the
+   * onboarding path. Picking it creates the movie/series (from this identity)
+   * before the file is adopted onto the new node.
+   */
+  create?: { tmdbId?: number; tvdbId?: number };
 }
 
 /**
- * Free-text lookup for a content node to re-map a file onto. Fans out to both the
- * movie and series lookups and merges them; a failure of one surface still
- * returns the other. Only candidates already carrying a content id are usable as
- * a move target (the file has to land on a real node), so untyped lookup hits
- * without an id are dropped.
+ * Free-text lookup for a content to re-map / onboard a file onto. Fans out to the
+ * movie and series metadata lookups; a failure of one surface still returns the
+ * other. A hit already in the library carries a content `id` and is a direct
+ * re-map target; a hit that is only a metadata match carries its tmdb/tvdb
+ * identity and becomes a **creatable** target — the file's title exists in the
+ * metadata source but not yet in cellarr (onboarding a library from scratch).
  */
 export async function lookupTargets(
   term: string,
@@ -216,12 +228,48 @@ export async function lookupTargets(
   const out: ImportTarget[] = [];
   const take = (c: LookupCandidate, mediaType: 'movie' | 'tv') => {
     const id = str((c as Loose).id);
-    if (!id) return;
-    out.push({ id, title: c.title, year: c.year, mediaType });
+    if (id) {
+      // Already in the library — a direct re-map target.
+      out.push({ id, title: c.title, year: c.year, mediaType });
+    } else if (c.tmdbId || c.tvdbId) {
+      // A metadata match not yet added — a creatable onboarding target.
+      out.push({
+        id: '',
+        title: c.title,
+        year: c.year,
+        mediaType,
+        create: { tmdbId: c.tmdbId, tvdbId: c.tvdbId },
+      });
+    }
   };
   if (movies.status === 'fulfilled') for (const c of movies.value ?? []) take(c, 'movie');
   if (series.status === 'fulfilled') for (const c of series.value ?? []) take(c, 'tv');
   return out;
+}
+
+/**
+ * Create a content node from a chosen metadata candidate (`POST /movie` or
+ * `/series`) and return the new node's content id. The onboarding step: a bare
+ * on-disk file matched no existing node, so the user picks its title from a
+ * metadata lookup and cellarr creates the movie/series (monitored, identified by
+ * tmdb/tvdb id) before the file is adopted onto it. A target that already exists
+ * (no `create`) is returned as-is.
+ */
+export async function createContent(target: ImportTarget, signal?: AbortSignal): Promise<string> {
+  if (!target.create) return target.id;
+  const route = target.mediaType === 'tv' ? '/series' : '/movie';
+  const body: Record<string, unknown> = {
+    title: target.title,
+    year: target.year,
+    monitored: true,
+    addOptions: { monitor: 'all' },
+  };
+  if (target.create.tmdbId) body.tmdbId = target.create.tmdbId;
+  if (target.create.tvdbId) body.tvdbId = target.create.tvdbId;
+  const created = await api.requestV3<Loose>(route, { method: 'POST', body, signal });
+  const id = str(created?.id);
+  if (!id) throw new Error('the title was added but the server returned no id');
+  return id;
 }
 
 /**

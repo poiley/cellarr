@@ -49,6 +49,7 @@ import { useToast } from '@app/_lib/ToastProvider';
 import {
   clearLibraryScanCache,
   commitImport,
+  createContent,
   formatSize,
   listTargets,
   lookupTargets,
@@ -175,7 +176,10 @@ export default function Page() {
     setRowStates((prev) => ({ ...prev, [path]: { ...prev[path], ...patch } }));
   }, []);
 
-  // Re-map a single row onto a different content node via a lookup dialog.
+  // Re-map a single row onto a different content node via a lookup dialog. The
+  // chosen target may already exist (direct re-map) or be a metadata candidate not
+  // yet in the library — the onboarding case, where we create the movie/series
+  // first and then map the file onto the new node.
   const editTarget = React.useCallback(
     (row: ManualImportRow) => {
       const chosenRef: { current: ImportTarget | undefined } = { current: undefined };
@@ -192,18 +196,33 @@ export default function Page() {
         onConfirm: () => {
           modals.close();
           const t = chosenRef.current;
-          if (t) {
-            setRowState(row.path, {
-              contentId: t.id,
-              targetLabel: t.year ? `${t.title} (${t.year})` : t.title,
-              include: true,
-            });
-          }
+          if (!t) return;
+          const label = t.year ? `${t.title} (${t.year})` : t.title;
+          void (async () => {
+            try {
+              let contentId = t.id;
+              if (t.create) {
+                info(`Adding “${label}”…`, { durationMs: 2000 });
+                contentId = await createContent(t);
+                // Seed the created node so later files map to it without re-adding.
+                targetsRef.current = [
+                  { id: contentId, title: t.title, year: t.year, mediaType: t.mediaType },
+                  ...targetsRef.current,
+                ];
+                success(`Added “${label}”.`);
+              }
+              setRowState(row.path, { contentId, targetLabel: label, include: true });
+            } catch (err) {
+              toastError(
+                err instanceof ApiError ? `${err.code}: ${err.message}` : 'Could not add the title.'
+              );
+            }
+          })();
         },
         onCancel: () => modals.close(),
       });
     },
-    [modals, setRowState]
+    [modals, setRowState, info, success, toastError]
   );
 
   const includable = rows.filter((r) => rowStates[r.path]?.include && rowStates[r.path]?.contentId);
@@ -516,7 +535,10 @@ const TargetPicker: React.FC<{
 
 function labelFor(t: ImportTarget): string {
   const kind = t.mediaType === 'tv' ? 'TV' : 'Movie';
-  return `${t.title}${t.year ? ` (${t.year})` : ''} · ${kind}`;
+  const base = `${t.title}${t.year ? ` (${t.year})` : ''} · ${kind}`;
+  // A metadata candidate not yet in the library is flagged so the user knows
+  // picking it will add the title before importing the file.
+  return t.create ? `+ Add: ${base}` : base;
 }
 
 function pad(n: number): string {
