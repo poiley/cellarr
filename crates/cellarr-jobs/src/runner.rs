@@ -561,6 +561,10 @@ where
         // Recorded after creation so the whole run span (and every child stage
         // span) carries the canonical run_id correlation field.
         tracing::Span::current().record("run_id", tracing::field::display(run_id));
+        // Metric: one pipeline run. The `monotonic_counter.*` field is turned into
+        // an OTLP counter by the metrics layer when the `otlp` feature exports; with
+        // no exporter it is an ordinary (rare, one-per-run) log line.
+        tracing::info!(monotonic_counter.cellarr_pipeline_runs = 1_u64, "pipeline run");
         let mut stage = Stage::Discover;
 
         // --- Discover -----------------------------------------------------

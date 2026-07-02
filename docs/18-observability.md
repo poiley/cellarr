@@ -80,6 +80,13 @@ the opt-in build close to the default one. Resource attributes identify the
 service: `service.name = cellarr`, `service.version` (crate version), and a
 per-process `service.instance.id`.
 
+Both **spans** and **metrics** export. Metrics ride the same `tracing` pipeline: a
+`tracing_opentelemetry::MetricsLayer` turns events carrying `monotonic_counter.*` /
+`histogram.*` fields into OTLP instruments, so code emits metrics with ordinary
+`tracing` macros (e.g. `cellarr_pipeline_runs`) and no crate needs its own
+OpenTelemetry dependency. A metric event is a rare, informative log line when the
+exporter is off, and an OTLP counter/histogram when it is on.
+
 When the feature is off, none of the OpenTelemetry crates are compiled and the
 binary has no network exporter — the file/console logging above is the whole
 story.

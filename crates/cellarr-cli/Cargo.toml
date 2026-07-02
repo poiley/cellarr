@@ -49,9 +49,9 @@ uuid.workspace = true
 # `--features otlp`; see docs/18-observability.md. OTLP over HTTP/protobuf
 # (reqwest + rustls, already in the tree) rather than gRPC/tonic.
 opentelemetry = { version = "0.28", optional = true }
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.28", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
-tracing-opentelemetry = { version = "0.29", optional = true }
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+tracing-opentelemetry = { version = "0.29", features = ["metrics"], optional = true }
 
 [features]
 default = []

@@ -194,11 +194,12 @@ fn init_tracing(
         }
     }
 
-    // Opt-in OTLP export: only when an endpoint is configured (and, at build time,
-    // the `otlp` feature is on — otherwise `otlp_layer` is a no-op).
+    // Opt-in OTLP export (spans + metrics): only when an endpoint is configured
+    // (and, at build time, the `otlp` feature is on — otherwise `otlp_layers` is a
+    // no-op returning None).
     if let Some(endpoint) = otel_endpoint.filter(|e| !e.is_empty()) {
-        if let Some((layer, guard)) = otel::otlp_layer(endpoint) {
-            layers.push(layer);
+        if let Some((otel_layers, guard)) = otel::otlp_layers(endpoint) {
+            layers.extend(otel_layers);
             guards._otel = Some(guard);
         }
     }
