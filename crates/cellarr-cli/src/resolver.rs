@@ -190,6 +190,11 @@ fn to_content_metadata(m: Metadata) -> ContentMetadata {
 impl<F: Fetcher> MetadataResolver for LiveMetadataResolver<F> {
     type Error = ResolverError;
 
+    #[tracing::instrument(
+        name = "metadata.resolve",
+        skip_all,
+        fields(content_id = %content.id, media_type = ?content.media_type)
+    )]
     async fn resolve(&self, content: &ContentRef) -> Result<Option<ResolvedMetadata>, Self::Error> {
         // The node's native external id (tmdb for movies, tvdb for TV). An
         // unidentified node has none — nothing to resolve.

@@ -1092,6 +1092,7 @@ impl Indexer for CardigannIndexer {
         &self.definition.name
     }
 
+    #[tracing::instrument(name = "indexer.search", skip_all, fields(indexer = %self.definition.name))]
     async fn search(&self, terms: &SearchTerms) -> Result<Vec<Release>> {
         let mut releases = Vec::new();
         for req in self.search_requests(terms)? {

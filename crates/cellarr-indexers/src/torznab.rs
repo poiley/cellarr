@@ -169,6 +169,7 @@ impl Indexer for NabIndexer {
         &self.name
     }
 
+    #[tracing::instrument(name = "indexer.search", skip_all, fields(indexer = %self.name))]
     async fn search(&self, terms: &SearchTerms) -> Result<Vec<Release>> {
         let caps = self.caps().await?.clone();
         let mode = self.select_mode(&caps, terms)?;

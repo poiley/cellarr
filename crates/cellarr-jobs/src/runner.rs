@@ -2388,22 +2388,44 @@ where
         // Load every tracked path ONCE so telling orphans from tracked files is an
         // in-memory set lookup, not a query per file — a library is tens of
         // thousands of files, and a per-file query made the whole-library sweep
-        // time out.
-        let tracked: std::collections::HashSet<String> = self
-            .db
-            .media_files()
-            .all_paths()
-            .await
-            .map_err(|e| JobError::Persistence(Box::new(e)))?
-            .into_iter()
-            .collect();
+        // time out. Shared into each root's walk predicate via an Arc.
+        let tracked: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
+            self.db
+                .media_files()
+                .all_paths()
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?
+                .into_iter()
+                .collect(),
+        );
 
         let mut out = Vec::new();
-        'roots: for root in roots {
+        for root in roots {
+            // Interactive scans (the screen's auto-surface) cap the candidate count
+            // so a large, barely-tracked library returns fast and small. The cap is
+            // enforced DURING the walk (below) so it also bounds the walk cost — the
+            // scan stops descending once it has enough, instead of stat-ing the whole
+            // tree. The background rescan job passes `None` and processes everything.
+            let remaining = match limit {
+                Some(n) if out.len() >= n => break,
+                Some(n) => Some(n - out.len()),
+                None => None,
+            };
+            // The candidate predicate, run during the walk: only untracked, non-sample
+            // video files. Sidecars (subs, nfo, artwork) and samples are not media,
+            // and a tracked file the library already knows is not a candidate — the
+            // same predicates the automatic import selects files with. Filtering here
+            // (before the stat) keeps the walk from touching the non-media majority.
+            let tracked = std::sync::Arc::clone(&tracked);
+            let keep = move |p: &std::path::Path| {
+                is_video_file(p)
+                    && !is_sample_file(p)
+                    && !tracked.contains(p.to_string_lossy().as_ref())
+            };
             // A configured root that is missing/unreadable must not fail the whole
-            // scan — especially the no-folder library sweep, where one bad root
-            // would 500 the auto-surface. Skip it and carry on.
-            let inventory = match cellarr_fs::scan(root.clone()).await {
+            // scan — especially the no-folder library sweep, where one bad root would
+            // 500 the auto-surface. Skip it and carry on.
+            let inventory = match cellarr_fs::scan_filtered(root.clone(), keep, remaining).await {
                 Ok(inv) => inv,
                 Err(e) => {
                     tracing::warn!(root = %root.display(), error = %e, "manual-import scan: skipping unreadable root");
@@ -2411,28 +2433,8 @@ where
                 }
             };
             for entry in &inventory.entries {
-                // Interactive scans (the screen's auto-surface) cap the candidate
-                // count so a large, barely-tracked library returns fast and small
-                // instead of tens of thousands of rows / tens of MB. The background
-                // rescan job passes `None` and processes everything.
-                if limit.is_some_and(|n| out.len() >= n) {
-                    tracing::debug!(limit = ?limit, "manual-import scan: candidate cap reached, truncating");
-                    break 'roots;
-                }
-                // Only real video containers are import candidates; the scan
-                // inventories every file, but sidecars (subtitles, nfo, artwork) and
-                // throwaway sample clips are not media files and would only be noise
-                // in the review list. Reuses the same predicates the automatic
-                // import selects files with, so manual and automatic agree.
-                if !is_video_file(&entry.path) || is_sample_file(&entry.path) {
-                    continue;
-                }
+                // `keep` already selected these — parse + identify each candidate.
                 let path = entry.path.to_string_lossy().into_owned();
-                // Skip files the library already tracks — only orphans and loose
-                // files are candidates.
-                if tracked.contains(&path) {
-                    continue;
-                }
                 let name = entry
                     .path
                     .file_name()

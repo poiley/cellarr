@@ -44,6 +44,9 @@ when it is not, the same fields still tag every log line emitted within the span
 | `download.remove` | transmission | `download_client`, `download_id`, `delete_data` |
 | `scheduler.tick` | `cellarr-jobs` scheduler | — |
 | `scheduler.job` | scheduler | `job_kind`, `job_id` |
+| `indexer.search` | `cellarr-indexers` (torznab/cardigann) | `indexer` |
+| `metadata.resolve` | `cellarr-cli` resolver | `content_id`, `media_type` |
+| `db.write` | `cellarr-db` writer | — (the serialized write path) |
 
 Incoming HTTP requests are already spanned by `tower_http`'s `TraceLayer`
 (installed in `cellarr-api`), which opens a `request` span per call carrying the

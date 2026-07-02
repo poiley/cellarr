@@ -130,6 +130,7 @@ impl WriterHandle {
     /// # Errors
     /// Returns [`DbError::WriterUnavailable`] if the writer task has stopped, or
     /// whatever error the job produced.
+    #[tracing::instrument(name = "db.write", skip_all)]
     pub async fn submit<F>(&self, job: F) -> Result<()>
     where
         F: for<'c> FnOnce(

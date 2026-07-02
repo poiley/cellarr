@@ -5584,7 +5584,7 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
         .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| ApiError::BadRequest("title is required".into()))?;
 
-    let library = pick_library(state, surface).await?;
+    let library = pick_library(state, surface, body.root_folder_path.as_deref()).await?;
 
     let profile_id = match body.quality_profile_id {
         Some(raw) if !raw.is_empty() => raw
@@ -5713,14 +5713,36 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
     )))
 }
 
-async fn pick_library(state: &AppState, surface: MediaType) -> ApiResult<Library> {
-    state
+async fn pick_library(
+    state: &AppState,
+    surface: MediaType,
+    root_folder_path: Option<&str>,
+) -> ApiResult<Library> {
+    let libraries: Vec<Library> = state
         .db
         .config()
         .list_libraries()
         .await?
         .into_iter()
-        .find(|l| l.media_type == surface)
+        .filter(|l| l.media_type == surface)
+        .collect();
+    // When a root folder is given (onboarding a file already under a specific
+    // library, or a multi-library-of-one-type setup), prefer the library that owns
+    // that root — the given path IS a configured root, or sits under one. Otherwise
+    // fall back to the first library of this media type (the single-library-per-type
+    // common case, unchanged).
+    if let Some(root) = root_folder_path.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(l) = libraries.iter().find(|l| {
+            l.root_folders
+                .iter()
+                .any(|r| r == root || root.starts_with(r.as_str()))
+        }) {
+            return Ok(l.clone());
+        }
+    }
+    libraries
+        .into_iter()
+        .next()
         .ok_or_else(|| ApiError::NotFound(format!("no {surface:?} library configured")))
 }
 

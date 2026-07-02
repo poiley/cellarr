@@ -132,15 +132,23 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
 /// than waiting for an external tick loop; this keeps the command observable in
 /// request scope.
 ///
+/// A **long-running** job (a whole-library rescan can take tens of seconds) is the
+/// exception: it is enqueued but NOT ticked in-band, so the request returns at
+/// once and the daemon's background tick loop (every few seconds) runs it. Without
+/// this, a UI "Rescan" button would block on the full library walk.
+///
 /// # Errors
 /// Returns the store error as a string on failure.
 pub async fn submit(scheduler: &ApiScheduler, kind: JobKind) -> Result<String, String> {
+    let defer = matches!(kind, JobKind::RescanLibrary);
     let id = scheduler
         .submit_now(kind, RetryPolicy::default())
         .await
         .map_err(|e| e.to_string())?;
-    // Fire due jobs now so the command runs and emits its event in-band.
-    scheduler.tick().await.map_err(|e| e.to_string())?;
+    if !defer {
+        // Fire due jobs now so the command runs and emits its event in-band.
+        scheduler.tick().await.map_err(|e| e.to_string())?;
+    }
     Ok(id)
 }
 

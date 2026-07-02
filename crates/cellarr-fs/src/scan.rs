@@ -82,6 +82,41 @@ pub async fn scan(root: impl Into<PathBuf>) -> Result<Inventory> {
 }
 
 fn scan_blocking(root: &Path) -> Result<Inventory> {
+    scan_blocking_filtered(root, &|_| true, None)
+}
+
+/// Walk `root`, keeping only files `keep` accepts, and stop once `limit` are kept
+/// (`None` = unbounded). Dispatched to a blocking thread.
+///
+/// This bounds BOTH the result size AND the walk cost: `keep` is checked before the
+/// file is `stat`-ed, and the walk stops descending the moment it has `limit`
+/// matches — so a caller wanting a small preview of a huge library (the manual
+/// import auto-surface) never `stat`s the whole tree. `keep` runs on the blocking
+/// thread, so it must be cheap and non-blocking (a path/extension test, a set
+/// membership check).
+///
+/// # Errors
+/// Same as [`scan`].
+pub async fn scan_filtered<F>(
+    root: impl Into<PathBuf>,
+    keep: F,
+    limit: Option<usize>,
+) -> Result<Inventory>
+where
+    F: Fn(&Path) -> bool + Send + 'static,
+{
+    let root = root.into();
+    match tokio::task::spawn_blocking(move || scan_blocking_filtered(&root, &keep, limit)).await {
+        Ok(r) => r,
+        Err(e) => Err(FsError::TaskJoin(e.to_string())),
+    }
+}
+
+fn scan_blocking_filtered<F: Fn(&Path) -> bool>(
+    root: &Path,
+    keep: &F,
+    limit: Option<usize>,
+) -> Result<Inventory> {
     if !root.exists() {
         return Err(FsError::MissingPath {
             path: root.to_path_buf(),
@@ -92,7 +127,7 @@ fn scan_blocking(root: &Path) -> Result<Inventory> {
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
     queue.push_back(root.to_path_buf());
 
-    while let Some(dir) = queue.pop_front() {
+    'walk: while let Some(dir) = queue.pop_front() {
         let read = fs::read_dir(&dir).map_err(|e| FsError::io(&dir, e))?;
         for item in read {
             let item = item.map_err(|e| FsError::io(&dir, e))?;
@@ -103,13 +138,18 @@ fn scan_blocking(root: &Path) -> Result<Inventory> {
             let file_type = item.file_type().map_err(|e| FsError::io(&path, e))?;
             if file_type.is_dir() {
                 queue.push_back(path);
-            } else if file_type.is_file() {
+            } else if file_type.is_file() && keep(&path) {
+                // `keep` gates the (relatively costly) stat, so a filtered-out file
+                // is never stat-ed.
                 let meta = item.metadata().map_err(|e| FsError::io(&path, e))?;
                 entries.push(InventoryEntry {
                     path,
                     size: meta.len(),
                     link_count: link_count(&meta),
                 });
+                if limit.is_some_and(|n| entries.len() >= n) {
+                    break 'walk;
+                }
             }
             // Symlinks and special files are intentionally ignored.
         }
@@ -202,5 +242,25 @@ mod tests {
             .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["a.mkv", "b.mkv", "c.mkv"]);
+    }
+
+    #[tokio::test]
+    async fn scan_filtered_keeps_only_matches_and_honors_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for name in ["a.mkv", "b.mkv", "c.mkv", "d.mkv", "notes.txt", "poster.jpg"] {
+            std::fs::write(root.join(name), b"z").unwrap();
+        }
+        // `keep` selects only .mkv — the non-video files are never inventoried.
+        let is_mkv = |p: &Path| p.extension().and_then(|e| e.to_str()) == Some("mkv");
+
+        // Unbounded: every .mkv, no .txt/.jpg.
+        let all = scan_filtered(root.to_path_buf(), is_mkv, None).await.unwrap();
+        assert_eq!(all.entries.len(), 4, "only the four videos are kept");
+        assert!(all.entries.iter().all(|e| e.path.extension().unwrap() == "mkv"));
+
+        // Bounded: stops after `limit` matches.
+        let two = scan_filtered(root.to_path_buf(), is_mkv, Some(2)).await.unwrap();
+        assert_eq!(two.entries.len(), 2, "the limit caps the kept entries");
     }
 }

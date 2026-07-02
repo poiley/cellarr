@@ -24,6 +24,7 @@ vi.mock('@lib/api/client', async () => {
 });
 
 import ImportPage from '@app/import/page';
+import { createContent, lookupTargets } from '@app/import/_lib/manual-import';
 import { ToastProvider } from '@app/_lib/ToastProvider';
 
 function installMatchMedia() {
@@ -142,6 +143,63 @@ describe('Manual Import screen', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Blade Runner 2049 1080p.mkv')).toBeTruthy());
     expect(scanCount()).toBe(afterFirst);
+  });
+
+  it('surfaces a metadata-only hit as a creatable "+ Add" target', async () => {
+    // A lookup hit with a tmdbId but NO content id is not in the library yet, so
+    // it becomes a creatable onboarding target rather than being dropped.
+    requestV3.mockImplementation((path: string) => {
+      if (path === '/movie/lookup') {
+        return Promise.resolve([{ title: 'The Matrix', year: 1999, tmdbId: 603 }]);
+      }
+      if (path === '/series/lookup') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    const targets = await lookupTargets('matrix');
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toMatchObject({
+      id: '',
+      title: 'The Matrix',
+      mediaType: 'movie',
+      create: { tmdbId: 603 },
+    });
+  });
+
+  it('createContent posts the identity + file root and returns the new content id', async () => {
+    requestV3.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/movie' && opts?.method === 'POST') return Promise.resolve({ id: 'new-content-id' });
+      return Promise.resolve(undefined);
+    });
+    const id = await createContent(
+      { id: '', title: 'The Matrix', year: 1999, mediaType: 'movie', create: { tmdbId: 603 } },
+      '/library/movies/The Matrix.mkv'
+    );
+    expect(id).toBe('new-content-id');
+    expect(requestV3).toHaveBeenCalledWith(
+      '/movie',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.objectContaining({
+          tmdbId: 603,
+          title: 'The Matrix',
+          rootFolderPath: '/library/movies/The Matrix.mkv',
+        }),
+      })
+    );
+  });
+
+  it('opens the re-map / onboarding picker for an unmatched row', async () => {
+    requestV3.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/manualImport' && opts?.method !== 'POST') return Promise.resolve([rejectedRow]);
+      return Promise.resolve(undefined);
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('mystery.avi')).toBeTruthy());
+    fireEvent.click(screen.getByText('Pick'));
+    // The picker dialog opens with a search box for looking up / adding a title.
+    await waitFor(() =>
+      expect(document.querySelector('input[name="target-search"]')).toBeTruthy()
+    );
   });
 
   it('busts the cache after a commit so the next open re-scans', async () => {

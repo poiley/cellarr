@@ -255,7 +255,11 @@ export async function lookupTargets(
  * tmdb/tvdb id) before the file is adopted onto it. A target that already exists
  * (no `create`) is returned as-is.
  */
-export async function createContent(target: ImportTarget, signal?: AbortSignal): Promise<string> {
+export async function createContent(
+  target: ImportTarget,
+  filePath?: string,
+  signal?: AbortSignal
+): Promise<string> {
   if (!target.create) return target.id;
   const route = target.mediaType === 'tv' ? '/series' : '/movie';
   const body: Record<string, unknown> = {
@@ -266,6 +270,10 @@ export async function createContent(target: ImportTarget, signal?: AbortSignal):
   };
   if (target.create.tmdbId) body.tmdbId = target.create.tmdbId;
   if (target.create.tvdbId) body.tvdbId = target.create.tvdbId;
+  // The file being onboarded lives under some library root; passing its path lets
+  // the server pick the library that owns that root (a multi-library-of-one-type
+  // setup) rather than the first matching one.
+  if (filePath) body.rootFolderPath = filePath;
   const created = await api.requestV3<Loose>(route, { method: 'POST', body, signal });
   const id = str(created?.id);
   if (!id) throw new Error('the title was added but the server returned no id');

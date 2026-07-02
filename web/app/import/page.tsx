@@ -203,7 +203,9 @@ export default function Page() {
               let contentId = t.id;
               if (t.create) {
                 info(`Adding “${label}”…`, { durationMs: 2000 });
-                contentId = await createContent(t);
+                // Pass the file's path so the server places the new node in the
+                // library that owns the root the file lives under.
+                contentId = await createContent(t, row.path);
                 // Seed the created node so later files map to it without re-adding.
                 targetsRef.current = [
                   { id: contentId, title: t.title, year: t.year, mediaType: t.mediaType },
