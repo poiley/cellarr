@@ -2384,23 +2384,44 @@ where
                 .collect(),
         };
 
+        // Load every tracked path ONCE so telling orphans from tracked files is an
+        // in-memory set lookup, not a query per file — a library is tens of
+        // thousands of files, and a per-file query made the whole-library sweep
+        // time out.
+        let tracked: std::collections::HashSet<String> = self
+            .db
+            .media_files()
+            .all_paths()
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?
+            .into_iter()
+            .collect();
+
         let mut out = Vec::new();
         for root in roots {
-            let inventory = cellarr_fs::scan(root)
-                .await
-                .map_err(|e| JobError::stage(Stage::Import, e))?;
+            // A configured root that is missing/unreadable must not fail the whole
+            // scan — especially the no-folder library sweep, where one bad root
+            // would 500 the auto-surface. Skip it and carry on.
+            let inventory = match cellarr_fs::scan(root.clone()).await {
+                Ok(inv) => inv,
+                Err(e) => {
+                    tracing::warn!(root = %root.display(), error = %e, "manual-import scan: skipping unreadable root");
+                    continue;
+                }
+            };
             for entry in &inventory.entries {
+                // Only real video containers are import candidates; the scan
+                // inventories every file, but sidecars (subtitles, nfo, artwork) and
+                // throwaway sample clips are not media files and would only be noise
+                // in the review list. Reuses the same predicates the automatic
+                // import selects files with, so manual and automatic agree.
+                if !is_video_file(&entry.path) || is_sample_file(&entry.path) {
+                    continue;
+                }
                 let path = entry.path.to_string_lossy().into_owned();
-                // Skip files the library already tracks — they are not import
-                // candidates, only orphans and loose files are.
-                if self
-                    .db
-                    .media_files()
-                    .find_by_path(&path)
-                    .await
-                    .map_err(|e| JobError::Persistence(Box::new(e)))?
-                    .is_some()
-                {
+                // Skip files the library already tracks — only orphans and loose
+                // files are candidates.
+                if tracked.contains(&path) {
                     continue;
                 }
                 let name = entry

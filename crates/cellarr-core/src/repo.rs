@@ -127,6 +127,12 @@ pub trait MediaFileRepository: Send + Sync {
     /// classify an occupied destination — tracked (upgrade) vs orphaned (adopt).
     async fn find_by_path(&self, path: &str) -> Result<Option<MediaFile>, Self::Error>;
 
+    /// Every tracked file's on-disk `path`. A library rescan loads this once into a
+    /// set to tell tracked files from orphans in memory, rather than a per-file
+    /// `find_by_path` across a whole library — the difference between one query and
+    /// tens of thousands on a large collection.
+    async fn all_paths(&self) -> Result<Vec<String>, Self::Error>;
+
     /// Every media file linked to `content` (one node may map to several files,
     /// and one file to several nodes).
     async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>, Self::Error>;

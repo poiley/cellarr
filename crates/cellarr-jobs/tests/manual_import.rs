@@ -263,6 +263,10 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let junk = loose.join("Random.Junk.File.2024.1080p.mkv");
     std::fs::write(&good, b"good-bytes").unwrap();
     std::fs::write(&junk, b"junk-bytes").unwrap();
+    // Sidecars are not media files: a subtitle and an nfo alongside the videos
+    // must be filtered out of the candidate list, not offered for import.
+    std::fs::write(loose.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.srt"), b"subs").unwrap();
+    std::fs::write(loose.join("movie.nfo"), b"<nfo/>").unwrap();
 
     let indexer = FakeIndexer;
     let client = NeverDrivenClient;
@@ -271,7 +275,11 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
 
     let candidates = runner.scan_manual_import(Some(&loose)).await.unwrap();
-    assert_eq!(candidates.len(), 2, "both loose files are reported");
+    assert_eq!(
+        candidates.len(),
+        2,
+        "only the two video files are reported; the .srt and .nfo are filtered"
+    );
 
     // The identifiable file suggests the seeded movie node, carries its parsed
     // title + a real quality, and has no rejection.
