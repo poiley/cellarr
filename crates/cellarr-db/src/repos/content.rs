@@ -318,6 +318,81 @@ impl ContentRepo {
         Ok(None)
     }
 
+    /// The reverse of [`external_id_for`](Self::external_id_for): find the content
+    /// node already carrying `(scheme, value)` for `media_type`, if any.
+    ///
+    /// The add path uses this to stay idempotent on identity — adding a title that
+    /// is already in the library returns the existing node instead of creating a
+    /// duplicate. `scheme` is `tmdb`/`tvdb`/`imdb`; a value that does not parse for a
+    /// numeric scheme, or a media type with no external identity, yields `None`.
+    pub async fn content_id_for_external_id(
+        &self,
+        media_type: MediaType,
+        scheme: &str,
+        value: &str,
+    ) -> Result<Option<ContentId>> {
+        let scheme = scheme.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let numeric: Option<i64> = value.parse::<i64>().ok();
+        let row = match (media_type, scheme.as_str()) {
+            (MediaType::Movie, "tmdb") => match numeric {
+                Some(n) => {
+                    sqlx::query(
+                        "SELECT c.id AS id FROM content c
+                         JOIN movie_meta m ON m.title_id = c.title_id
+                         WHERE m.tmdb_id = ?1 LIMIT 1",
+                    )
+                    .bind(n)
+                    .fetch_optional(&self.pool)
+                    .await?
+                }
+                None => None,
+            },
+            (MediaType::Movie, "imdb") => {
+                sqlx::query(
+                    "SELECT c.id AS id FROM content c
+                     JOIN movie_meta m ON m.title_id = c.title_id
+                     WHERE m.imdb_id = ?1 LIMIT 1",
+                )
+                .bind(value)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+            (MediaType::Tv, "tvdb") => match numeric {
+                Some(n) => {
+                    sqlx::query(
+                        "SELECT c.id AS id FROM content c
+                         JOIN series_meta s ON s.title_id = c.title_id
+                         WHERE s.tvdb_id = ?1 LIMIT 1",
+                    )
+                    .bind(n)
+                    .fetch_optional(&self.pool)
+                    .await?
+                }
+                None => None,
+            },
+            (MediaType::Tv, "tmdb") => match numeric {
+                Some(n) => {
+                    sqlx::query(
+                        "SELECT c.id AS id FROM content c
+                         JOIN series_meta s ON s.title_id = c.title_id
+                         WHERE s.tmdb_id = ?1 LIMIT 1",
+                    )
+                    .bind(n)
+                    .fetch_optional(&self.pool)
+                    .await?
+                }
+                None => None,
+            },
+            _ => None,
+        };
+        row.map(|r| {
+            let id: String = r.try_get("id")?;
+            Ok(ContentId::from_uuid(parse_uuid("id", &id)?))
+        })
+        .transpose()
+    }
+
     /// Resolve a content node to the **TVDB id of the series it belongs to**.
     ///
     /// This is the identity-link query the anime absolute→episode remap is gated

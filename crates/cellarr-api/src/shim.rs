@@ -5553,7 +5553,32 @@ async fn add_series(
     add(&fs.state, body, MediaType::Tv).await
 }
 
+/// The external identity `(scheme, value)` an add payload carries — the title's
+/// tmdb/tvdb/imdb id, preferring the namespace its media type primarily keys on
+/// (tvdb for TV, tmdb for movies), then falling back. `None` when the payload has
+/// no id. Shared by the add's dedup check and its identity link so both agree.
+fn add_external_identity(body: &AddBody, surface: MediaType) -> Option<(&'static str, String)> {
+    match surface {
+        MediaType::Tv => body
+            .tvdb_id
+            .as_ref()
+            .and_then(id_value_str)
+            .map(|v| ("tvdb", v))
+            .or_else(|| body.tmdb_id.as_ref().and_then(id_value_str).map(|v| ("tmdb", v)))
+            .or_else(|| body.imdb_id.as_ref().and_then(id_value_str).map(|v| ("imdb", v))),
+        _ => body
+            .tmdb_id
+            .as_ref()
+            .and_then(id_value_str)
+            .map(|v| ("tmdb", v))
+            .or_else(|| body.imdb_id.as_ref().and_then(id_value_str).map(|v| ("imdb", v))),
+    }
+}
+
 async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<Json<Value>> {
+    // Computed before `title` is moved out of `body` below (it borrows the whole
+    // body). The title's external identity keys both the dedup check and the link.
+    let external = add_external_identity(&body, surface);
     let title = body
         .title
         .filter(|t| !t.trim().is_empty())
@@ -5568,6 +5593,26 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
             .map_err(|_| ApiError::BadRequest(format!("invalid qualityProfileId: {raw}")))?,
         _ => library.default_quality_profile,
     };
+
+    let content = state.db.content();
+    // Idempotent on identity: a re-add of a title already in the library returns the
+    // EXISTING node rather than creating a duplicate (the onboarding path can offer a
+    // title that is already tracked). Without this, each add mints a fresh node.
+    if let Some((scheme, value)) = external.as_ref() {
+        if let Some(existing_id) = content
+            .content_id_for_external_id(surface, scheme, value)
+            .await?
+        {
+            if let Some(existing) = content.get_node(existing_id).await? {
+                let existing_title = title.clone();
+                return Ok(Json(merge(
+                    v3_resource_item(state, &existing, &existing_title).await?,
+                    json!({ "qualityProfileId": profile_id.to_string(),
+                            "rootFolderPath": body.root_folder_path }),
+                )));
+            }
+        }
+    }
 
     let (kind, coords) = match surface {
         MediaType::Tv => (
@@ -5615,7 +5660,6 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
         // also carries them so the response projection renders them.
         tags: body.tags.clone(),
     };
-    let content = state.db.content();
     content.upsert(&node).await?;
     content.index_title(node.id, &title).await?;
     // Persist the tag association (the node row carries no tags column).
@@ -5626,36 +5670,6 @@ async fn add(state: &AppState, body: AddBody, surface: MediaType) -> ApiResult<J
     // and the v3 projection surfaces tmdbId/tvdbId/imdbId instead of 0 — and store
     // the year (+ title) in content metadata for the search query + detail screen.
     // Without this an added title has no identity and search returns nothing.
-    let external = match surface {
-        MediaType::Tv => body
-            .tvdb_id
-            .as_ref()
-            .and_then(id_value_str)
-            .map(|v| ("tvdb", v))
-            .or_else(|| {
-                body.tmdb_id
-                    .as_ref()
-                    .and_then(id_value_str)
-                    .map(|v| ("tmdb", v))
-            })
-            .or_else(|| {
-                body.imdb_id
-                    .as_ref()
-                    .and_then(id_value_str)
-                    .map(|v| ("imdb", v))
-            }),
-        _ => body
-            .tmdb_id
-            .as_ref()
-            .and_then(id_value_str)
-            .map(|v| ("tmdb", v))
-            .or_else(|| {
-                body.imdb_id
-                    .as_ref()
-                    .and_then(id_value_str)
-                    .map(|v| ("imdb", v))
-            }),
-    };
     if let Some((id_type, id_value)) = external {
         content
             .link_external_id(node.id, surface, id_type, &id_value, &title)

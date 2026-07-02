@@ -210,6 +210,62 @@ async fn content_metadata_round_trips_and_upserts() {
 }
 
 #[tokio::test]
+async fn external_id_reverse_lookup_finds_the_node() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let node = movie_node(library.id, ContentId::new());
+    content.upsert(&node).await.unwrap();
+
+    // No identity linked yet → no reverse hit.
+    assert_eq!(
+        content
+            .content_id_for_external_id(MediaType::Movie, "tmdb", "603")
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Link the tmdb id, then the reverse lookup resolves back to the node — the
+    // idempotency key the add path dedups on so a re-add returns this node.
+    content
+        .link_external_id(node.id, MediaType::Movie, "tmdb", "603", "The Matrix")
+        .await
+        .unwrap();
+    assert_eq!(
+        content
+            .content_id_for_external_id(MediaType::Movie, "tmdb", "603")
+            .await
+            .unwrap(),
+        Some(node.id)
+    );
+    // A different id, a non-numeric value, and the wrong media type all miss.
+    for (mt, scheme, value) in [
+        (MediaType::Movie, "tmdb", "604"),
+        (MediaType::Movie, "tmdb", "notanumber"),
+        (MediaType::Tv, "tvdb", "603"),
+    ] {
+        assert_eq!(
+            content
+                .content_id_for_external_id(mt, scheme, value)
+                .await
+                .unwrap(),
+            None,
+            "{scheme}:{value} for {mt:?} must not match"
+        );
+    }
+}
+
+#[tokio::test]
 async fn monitored_missing_excludes_nodes_with_files_and_containers() {
     let (_dir, db) = temp_db().await;
     let config = db.config();
