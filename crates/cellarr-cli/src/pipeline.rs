@@ -108,6 +108,13 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// so the absence is safe. The daemon constructs one from the meta-service and
     /// opts in via [`with_scene_provider`](Self::with_scene_provider).
     scene_provider: Option<Arc<dyn cellarr_media::DynSceneMappingProvider>>,
+    /// The metadata **lookup** seam (title → candidates), attached for the opt-in
+    /// auto-onboard: a rescan that cannot place a file looks its title up here.
+    /// `None` disables auto-onboard regardless of the flag.
+    metadata: Option<Arc<dyn cellarr_api::MetadataLookup>>,
+    /// Whether the rescan auto-onboards (creates content from a confident metadata
+    /// match for an otherwise-unplaceable file). Off by default.
+    auto_onboard: bool,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -122,7 +129,24 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             clock: SystemClock,
             resolver: None,
             scene_provider: None,
+            metadata: None,
+            auto_onboard: false,
         }
+    }
+
+    /// Attach the metadata-lookup seam and enable the opt-in auto-onboard: a rescan
+    /// that cannot place a file looks its parsed title up and, on a high-confidence
+    /// match, creates the movie/series and adopts the file. `enabled = false` (or no
+    /// seam) leaves the conservative adopt-to-existing-nodes behavior.
+    #[must_use]
+    pub fn with_auto_onboard(
+        mut self,
+        metadata: Arc<dyn cellarr_api::MetadataLookup>,
+        enabled: bool,
+    ) -> Self {
+        self.metadata = Some(metadata);
+        self.auto_onboard = enabled;
+        self
     }
 
     /// Attach the anime scene-mapping provider (TheTVDB/TheXEM) so the Identify
@@ -324,7 +348,8 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             }
         }
 
-        let (mut adopted, mut unmatched, mut errors, mut pruned) = (0usize, 0usize, 0usize, 0usize);
+        let (mut adopted, mut unmatched, mut errors, mut pruned, mut onboarded) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut pruned_once = false;
         for library in libraries {
             // A synthetic node ref scoped to this library lets the env build the
@@ -373,6 +398,69 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     tracing::warn!(library = %library.id, error = %detail, "rescan: library failed; continuing");
                 }
             }
+            // Opt-in AUTO-ONBOARD: after the adopt pass, the files still untracked
+            // under this root are the ones no existing node could place. For each,
+            // look its parsed title up in the metadata source and, on a HIGH-
+            // confidence match (exact normalized title + year), create the
+            // movie/series and adopt the file onto it. Off unless configured; a
+            // no-confidence / ambiguous file is left for the manual-import screen —
+            // content is never created from a guess.
+            if self.auto_onboard {
+                if let Some(meta) = self.metadata.clone() {
+                    match runner
+                        .scan_manual_import(Some(&config.library_root), None)
+                        .await
+                    {
+                        Ok(candidates) => {
+                            for c in candidates {
+                                if c.suggested.is_some() {
+                                    continue; // an existing node fits — the adopt pass handled it.
+                                }
+                                let parsed = cellarr_parse::parse_title(&c.name);
+                                let Some(title) = parsed.clean_title.clone() else {
+                                    continue;
+                                };
+                                let results = match meta.search(library.media_type, &title).await {
+                                    Ok(cellarr_api::LookupOutcome::Resolved(r)) => r,
+                                    // Unavailable / errored source → skip; try next run.
+                                    _ => continue,
+                                };
+                                let Some(chosen) =
+                                    pick_confident_candidate(&results, &title, parsed.year)
+                                else {
+                                    continue; // no unambiguous match — leave for manual import.
+                                };
+                                let node_id = match self.create_content_node(&library, chosen).await
+                                {
+                                    Ok(id) => id,
+                                    Err(detail) => {
+                                        tracing::warn!(title = %title, error = %detail, "auto-onboard: create failed");
+                                        continue;
+                                    }
+                                };
+                                match runner
+                                    .import_manual(&[cellarr_jobs::runner::ManualImportRequest {
+                                        path: c.path.clone(),
+                                        content_id: node_id,
+                                    }])
+                                    .await
+                                {
+                                    Ok((_imported, errs)) if errs.is_empty() => onboarded += 1,
+                                    Ok((_imported, errs)) => {
+                                        tracing::warn!(path = %c.path, ?errs, "auto-onboard: adopt failed after create");
+                                    }
+                                    Err(detail) => {
+                                        tracing::warn!(path = %c.path, error = %detail, "auto-onboard: adopt errored");
+                                    }
+                                }
+                            }
+                        }
+                        Err(detail) => {
+                            tracing::warn!(library = %library.id, error = %detail, "auto-onboard: scan failed");
+                        }
+                    }
+                }
+            }
             // Prune vanished files once — it is global (all roots), so any one
             // runner does it; the media_file table is shared across libraries.
             if !pruned_once {
@@ -385,8 +473,130 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 }
             }
         }
-        tracing::info!(adopted, unmatched, errors, pruned, "library rescan complete");
+        tracing::info!(adopted, unmatched, errors, pruned, onboarded, "library rescan complete");
         JobResult::Success
+    }
+
+    /// Create a content node from a confident metadata candidate, returning its id.
+    /// Persists identity (title + external id) and metadata, then best-effort
+    /// enriches via the resolver if one is attached (else the daily RefreshMetadata
+    /// cron fills it in). The node is monitored so acquisition maintains it.
+    async fn create_content_node(
+        &self,
+        library: &cellarr_core::Library,
+        chosen: &cellarr_api::LookupCandidate,
+    ) -> Result<cellarr_core::ContentId, String> {
+        use cellarr_core::{ContentId, ContentKind, ContentNode, Coordinates};
+
+        let (kind, coords) = match library.media_type {
+            MediaType::Tv => (
+                ContentKind::Series,
+                Coordinates::Episode {
+                    season: 1,
+                    episode: 1,
+                    absolute: None,
+                },
+            ),
+            _ => (ContentKind::Movie, Coordinates::Movie),
+        };
+        let node = ContentNode {
+            id: ContentId::new(),
+            library_id: library.id,
+            media_type: library.media_type,
+            parent_id: None,
+            kind,
+            series_type: cellarr_core::SeriesType::default(),
+            coords,
+            monitored: true,
+            title_id: None,
+            tags: Vec::new(),
+        };
+        let content = self.db.content();
+        content.upsert(&node).await.map_err(|e| e.to_string())?;
+        content
+            .index_title(node.id, &chosen.title)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Link the native external id so the resolver can enrich and search builds a
+        // real query. Prefer the namespace the media type keys on.
+        if let Some((scheme, value)) = native_external_id(chosen, library.media_type) {
+            content
+                .link_external_id(node.id, library.media_type, scheme, value, &chosen.title)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let meta = cellarr_core::ContentMetadata {
+            title: Some(chosen.title.clone()),
+            year: chosen.year,
+            ..Default::default()
+        };
+        content
+            .set_metadata(node.id, &meta)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Best-effort rich enrichment now (poster/overview/runtime); a failure is
+        // fine — the daily metadata refresh retries.
+        if let Some(resolver) = &self.resolver {
+            if let Ok(node_ref) = ContentRef::new(
+                node.id,
+                library.id,
+                library.media_type,
+                default_coords(library.media_type),
+            ) {
+                let _ = resolver.resolve(&node_ref).await;
+            }
+        }
+        Ok(node.id)
+    }
+}
+
+/// The native external id `(scheme, value)` of a lookup candidate — tvdb for TV,
+/// tmdb for movies, then imdb. `None` when the candidate carries no id.
+fn native_external_id<'a>(
+    candidate: &'a cellarr_api::LookupCandidate,
+    media_type: MediaType,
+) -> Option<(&'static str, &'a str)> {
+    if media_type == MediaType::Tv {
+        if let Some(v) = candidate.external_id("tvdb") {
+            return Some(("tvdb", v));
+        }
+    }
+    if let Some(v) = candidate.external_id("tmdb") {
+        return Some(("tmdb", v));
+    }
+    candidate.external_id("imdb").map(|v| ("imdb", v))
+}
+
+/// Pick the single confident match for auto-onboard, or `None` to leave the file
+/// for manual import. Confident = exactly one candidate whose normalized title
+/// equals the parsed title AND whose year matches the parsed year (when the file
+/// parsed one; a parsed year with no candidate year is not confident). Any
+/// ambiguity yields `None` — content is never created from a guess.
+fn pick_confident_candidate<'a>(
+    results: &'a [cellarr_api::LookupCandidate],
+    parsed_title: &str,
+    parsed_year: Option<u16>,
+) -> Option<&'a cellarr_api::LookupCandidate> {
+    fn normalize(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+    let want = normalize(parsed_title);
+    let mut matches = results.iter().filter(|c| {
+        normalize(&c.title) == want
+            && match (parsed_year, c.year) {
+                (Some(py), Some(cy)) => py == cy,
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
+    });
+    let first = matches.next()?;
+    // Exactly one → confident. A second match means ambiguity → skip.
+    match matches.next() {
+        None => Some(first),
+        Some(_) => None,
     }
 }
 
@@ -1480,5 +1690,71 @@ impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
             peers: status.peers,
             error: status.error_string,
         }))
+    }
+}
+
+#[cfg(test)]
+mod auto_onboard_tests {
+    use super::{native_external_id, pick_confident_candidate};
+    use cellarr_api::LookupCandidate;
+    use cellarr_core::MediaType;
+
+    fn cand(title: &str, year: Option<u16>, ids: &[(&str, &str)]) -> LookupCandidate {
+        LookupCandidate {
+            source_id: "1".to_string(),
+            media_type: MediaType::Movie,
+            title: title.to_string(),
+            year,
+            overview: None,
+            external_ids: ids
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn confident_only_on_a_single_exact_title_year_match() {
+        let results = vec![cand("The Matrix", Some(1999), &[("tmdb", "603")])];
+        // Exact title + year → confident.
+        assert!(pick_confident_candidate(&results, "The Matrix", Some(1999)).is_some());
+        // Normalization ignores case/punctuation.
+        assert!(pick_confident_candidate(&results, "the matrix!", Some(1999)).is_some());
+        // Year mismatch → not confident.
+        assert!(pick_confident_candidate(&results, "The Matrix", Some(2003)).is_none());
+        // A different title → no match.
+        assert!(pick_confident_candidate(&results, "Blade Runner", Some(1999)).is_none());
+    }
+
+    #[test]
+    fn ambiguous_or_yearless_candidate_is_not_confident() {
+        // Two same-title/year candidates → ambiguous → skip.
+        let two = vec![
+            cand("Dune", Some(2021), &[("tmdb", "438631")]),
+            cand("Dune", Some(2021), &[("tmdb", "999")]),
+        ];
+        assert!(pick_confident_candidate(&two, "Dune", Some(2021)).is_none());
+
+        // Parsed a year, but the candidate has none → not confident.
+        let no_year = vec![cand("Dune", None, &[("tmdb", "438631")])];
+        assert!(pick_confident_candidate(&no_year, "Dune", Some(2021)).is_none());
+
+        // No parsed year → a single title match is enough.
+        assert!(pick_confident_candidate(&no_year, "Dune", None).is_some());
+    }
+
+    #[test]
+    fn native_external_id_prefers_the_media_type_namespace() {
+        let tv = cand("Show", Some(2010), &[("tmdb", "1"), ("tvdb", "2"), ("imdb", "tt3")]);
+        assert_eq!(native_external_id(&tv, MediaType::Tv), Some(("tvdb", "2")));
+        assert_eq!(native_external_id(&tv, MediaType::Movie), Some(("tmdb", "1")));
+
+        // Falls back to imdb when no numeric id is present.
+        let only_imdb = cand("Movie", None, &[("imdb", "tt9")]);
+        assert_eq!(native_external_id(&only_imdb, MediaType::Movie), Some(("imdb", "tt9")));
+
+        // No ids at all → None.
+        let none = cand("Bare", None, &[]);
+        assert_eq!(native_external_id(&none, MediaType::Movie), None);
     }
 }

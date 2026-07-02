@@ -76,6 +76,15 @@ pub struct MediaManagementConfig {
     /// mistaken delete reversible. `None`/unset unlinks the files outright (the
     /// *arr default). From `CELLARR_MEDIA_MANAGEMENT__RECYCLE_BIN_PATH`.
     pub recycle_bin_path: Option<PathBuf>,
+    /// **Opt-in auto-onboard.** When set, the library rescan does not just adopt
+    /// files matching an existing content node — for a file it cannot place, it
+    /// looks the parsed title up in the metadata source and, on a HIGH-confidence
+    /// match (exact normalized title, and year if the file parsed one), CREATES the
+    /// movie/series and adopts the file onto it. Off by default: it creates content
+    /// from filenames, so a mis-parse could add a wrong title; leave it off to keep
+    /// the conservative "adopt to existing nodes only, surface the rest" behavior.
+    /// From `CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD`.
+    pub auto_onboard: bool,
 }
 
 /// HTTP API server settings.
