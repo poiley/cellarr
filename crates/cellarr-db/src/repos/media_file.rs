@@ -64,6 +64,32 @@ impl MediaFileRepo {
     ///
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
+    /// Every media file, grouped by the content node it is linked to, in ONE query.
+    /// The list projections use this to avoid a per-node `list_for_content` (an N+1
+    /// that made the library list fire thousands of queries for a large library).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn all_grouped_by_content(
+        &self,
+    ) -> Result<std::collections::HashMap<ContentId, Vec<cellarr_core::MediaFile>>> {
+        let rows = sqlx::query(
+            "SELECT cf.content_id AS content_id, m.id, m.path, m.size, m.languages,
+                    m.quality, m.media_info, m.custom_format_score, m.release_type
+             FROM content_file cf JOIN media_file m ON m.id = cf.media_file_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map: std::collections::HashMap<ContentId, Vec<cellarr_core::MediaFile>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let cid: String = row.try_get("content_id")?;
+            let cid = ContentId::from_uuid(parse_uuid("content_id", &cid)?);
+            map.entry(cid).or_default().push(row_to_media_file(row)?);
+        }
+        Ok(map)
+    }
+
     pub async fn content_ids_for_file(&self, file: MediaFileId) -> Result<Vec<ContentId>> {
         let rows = sqlx::query("SELECT content_id FROM content_file WHERE media_file_id = ?1")
             .bind(file.to_string())

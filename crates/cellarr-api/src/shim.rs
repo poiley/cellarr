@@ -4791,7 +4791,6 @@ async fn v3_resource_item(
 ) -> ApiResult<Value> {
     use cellarr_core::repo::MediaFileRepository;
     let files = state.db.media_files().list_for_content(node.id).await?;
-    let file = files.first();
     let root = state
         .db
         .config()
@@ -4799,22 +4798,11 @@ async fn v3_resource_item(
         .await?
         .and_then(|l| l.root_folders.into_iter().next())
         .unwrap_or_default();
-    let path = if root.is_empty() {
-        format!("/{}", slug(title))
-    } else {
-        format!("{}/{}", root.trim_end_matches('/'), slug(title))
-    };
-    let size_on_disk: u64 = files.iter().map(|f| f.size).sum();
-    // The persisted external id (tmdb/tvdb/imdb), when the node carries one — e.g.
-    // an import-list-added node now links its identity. `None` falls back to 0,
-    // matching an un-identified node.
     let external = state
         .db
         .content()
         .external_id_for(node.id, node.media_type)
         .await?;
-    // Release/first-air year from the node's identified metadata (0 when not yet
-    // identified) — surfaced on the add/list projection just like the detail one.
     let meta_year = state
         .db
         .content()
@@ -4822,6 +4810,38 @@ async fn v3_resource_item(
         .await?
         .and_then(|m| m.year)
         .unwrap_or(0);
+    let images = artwork_images(state, &node.id.to_string());
+    Ok(build_resource_json(
+        node,
+        title,
+        &files,
+        external.as_ref(),
+        meta_year,
+        &root,
+        images,
+    ))
+}
+
+/// Assemble one v3 movie/series resource from ALREADY-FETCHED inputs — no DB. The
+/// single-item path ([`v3_resource_item`]) fetches then calls this; the list path
+/// ([`list_resources`]) batch-fetches every input once and calls this per node,
+/// so a large library is not an N+1 of per-node queries.
+fn build_resource_json(
+    node: &cellarr_core::ContentNode,
+    title: &str,
+    files: &[cellarr_core::MediaFile],
+    external: Option<&(String, String)>,
+    meta_year: u16,
+    root: &str,
+    images: Vec<Value>,
+) -> Value {
+    let file = files.first();
+    let path = if root.is_empty() {
+        format!("/{}", slug(title))
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), slug(title))
+    };
+    let size_on_disk: u64 = files.iter().map(|f| f.size).sum();
     let base = json!({
         "title": title,
         "monitored": node.monitored,
@@ -4836,24 +4856,22 @@ async fn v3_resource_item(
         "tags": node.tags,
         // Radarr-style images[] referencing the cached MediaCover bytes, so both
         // the library grid and the detail page can show the poster/fanart.
-        "images": artwork_images(state, &node.id.to_string()),
+        "images": images,
     });
     // The numeric id (tmdb/tvdb) the ecosystem keys on, projected from the
     // persisted external id; 0 when the node carries no such id yet.
     let numeric_external_id = |ns: &str| -> i64 {
         external
-            .as_ref()
             .filter(|(t, _)| t == ns)
             .and_then(|(_, v)| v.parse::<i64>().ok())
             .unwrap_or(0)
     };
     let imdb_external = || -> Option<String> {
         external
-            .as_ref()
             .filter(|(t, _)| t == "imdb")
             .map(|(_, v)| v.clone())
     };
-    Ok(match node.media_type {
+    match node.media_type {
         MediaType::Tv => {
             let mut v = merge(
                 base,
@@ -4887,7 +4905,7 @@ async fn v3_resource_item(
             }
             v
         }
-    })
+    }
 }
 
 /// List the root content nodes of a media type as v3 resources — the series /
@@ -4896,21 +4914,45 @@ async fn v3_resource_item(
 async fn list_resources(fs: &FaceState, surface: MediaType) -> ApiResult<Vec<Value>> {
     let cfg = fs.state.db.config();
     let content = fs.state.db.content();
+    let libs: Vec<_> = cfg
+        .list_libraries()
+        .await?
+        .into_iter()
+        .filter(|l| l.media_type == surface)
+        .collect();
+    if libs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Batch every per-node lookup into ONE query each up front, keyed by content
+    // id, instead of firing title/metadata/external-id/file queries per node. A
+    // large library (thousands of roots) was an N+1 that ran ~5 queries per row
+    // and made the list endpoint take tens of seconds; these maps make it O(1)
+    // queries regardless of library size.
+    let files_by_content = fs.state.db.media_files().all_grouped_by_content().await?;
+    let titles = content.all_titles().await?;
+    let years = content.all_years().await?;
+    let externals = content.all_external_ids(surface).await?;
+    let artwork_present = artwork_present_ids(&fs.state);
     let mut out = Vec::new();
-    for lib in cfg.list_libraries().await? {
-        if lib.media_type != surface {
-            continue;
-        }
+    for lib in &libs {
+        let root = lib.root_folders.first().cloned().unwrap_or_default();
         for node in content.roots(lib.id).await? {
-            // Surface the real indexed title for an identified node (one added /
-            // identified with a title); fall back to the id only when the node
-            // has no indexed title yet. This closes the Phase A "UUID title"
-            // deferred gap for identified items.
-            let title = content
-                .title_for(node.id)
-                .await?
+            // Surface the real indexed title for an identified node; fall back to
+            // the id only when the node has no indexed title yet.
+            let title = titles
+                .get(&node.id)
+                .cloned()
                 .unwrap_or_else(|| node.id.to_string());
-            out.push(v3_resource_item(&fs.state, &node, &title).await?);
+            let files = files_by_content
+                .get(&node.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let year = years.get(&node.id).copied().unwrap_or(0);
+            let external = externals.get(&node.id);
+            let images = artwork_images_present(&fs.state, &node.id.to_string(), &artwork_present);
+            out.push(build_resource_json(
+                &node, &title, files, external, year, &root, images,
+            ));
         }
     }
     Ok(out)
@@ -5188,6 +5230,40 @@ async fn content_detail(state: &AppState, id: &str, expected: MediaType) -> ApiR
 /// entry per kind (poster/fanart) that has a cached file on disk. `url` points at
 /// the local mediacover route (served from the cache, so it works offline). Empty
 /// when no artwork dir is configured or nothing is cached for the node.
+/// The set of content-id subdirectories present under the artwork dir, read in ONE
+/// `read_dir`. The list path builds this once and consults it before touching the
+/// filesystem per item — an item with no cached-artwork directory (the common case
+/// for a freshly onboarded library) is skipped without any per-item stat, instead
+/// of the up-to-8 `is_file` probes [`artwork_images`] would otherwise run per row.
+fn artwork_present_ids(state: &AppState) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let Some(dir) = state.artwork_dir.as_deref() else {
+        return set;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return set;
+    };
+    for entry in entries.flatten() {
+        if let Ok(name) = entry.file_name().into_string() {
+            set.insert(name);
+        }
+    }
+    set
+}
+
+/// [`artwork_images`], gated on a precomputed presence set so the (common) no-artwork
+/// item costs a hash lookup instead of filesystem stats.
+fn artwork_images_present(
+    state: &AppState,
+    content_id: &str,
+    present: &std::collections::HashSet<String>,
+) -> Vec<Value> {
+    if !present.contains(content_id) {
+        return Vec::new();
+    }
+    artwork_images(state, content_id)
+}
+
 fn artwork_images(state: &AppState, content_id: &str) -> Vec<Value> {
     let Some(dir) = state.artwork_dir.as_deref() else {
         return Vec::new();

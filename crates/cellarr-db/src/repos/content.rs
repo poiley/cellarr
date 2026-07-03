@@ -90,6 +90,94 @@ impl ContentRepo {
             .transpose()
     }
 
+    // --- Batched reads for the list projections -----------------------------
+    //
+    // The library list renders every root node; doing the per-node reads
+    // (`title_for`/`metadata`/`external_id_for`) inside that loop is an N+1 that
+    // fired thousands of queries for a large library. These fetch the whole set in
+    // ONE query each so the list handler can assemble in memory.
+
+    /// Every indexed title, keyed by content id.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn all_titles(&self) -> Result<std::collections::HashMap<ContentId, String>> {
+        let rows = sqlx::query("SELECT content_id, title FROM content_fts")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let id: String = r.try_get("content_id")?;
+            let title: String = r.try_get("title")?;
+            map.insert(ContentId::from_uuid(parse_uuid("content_id", &id)?), title);
+        }
+        Ok(map)
+    }
+
+    /// Every content-metadata year, keyed by content id (rows with no year skipped).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn all_years(&self) -> Result<std::collections::HashMap<ContentId, u16>> {
+        let rows = sqlx::query("SELECT content_id, year FROM content_meta WHERE year IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let id: String = r.try_get("content_id")?;
+            let year: Option<i64> = r.try_get("year")?;
+            if let Some(y) = year {
+                map.insert(ContentId::from_uuid(parse_uuid("content_id", &id)?), y as u16);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Every node's native external id `(scheme, value)`, keyed by content id — the
+    /// bulk form of [`external_id_for`](Self::external_id_for), preferring the
+    /// namespace the media type keys on (tvdb for TV, tmdb for movies), then imdb.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
+    pub async fn all_external_ids(
+        &self,
+        media_type: MediaType,
+    ) -> Result<std::collections::HashMap<ContentId, (String, String)>> {
+        let sql = match media_type {
+            MediaType::Movie => {
+                "SELECT c.id AS id, m.tmdb_id AS tmdb_id, NULL AS tvdb_id, m.imdb_id AS imdb_id
+                 FROM content c JOIN movie_meta m ON m.title_id = c.title_id"
+            }
+            MediaType::Tv => {
+                "SELECT c.id AS id, s.tmdb_id AS tmdb_id, s.tvdb_id AS tvdb_id, s.imdb_id AS imdb_id
+                 FROM content c JOIN series_meta s ON s.title_id = c.title_id"
+            }
+            MediaType::Music | MediaType::Book => return Ok(std::collections::HashMap::new()),
+        };
+        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let id: String = r.try_get("id")?;
+            let tmdb: Option<i64> = r.try_get("tmdb_id").unwrap_or(None);
+            let tvdb: Option<i64> = r.try_get("tvdb_id").unwrap_or(None);
+            let imdb: Option<String> = r.try_get("imdb_id").unwrap_or(None);
+            let picked = if media_type == MediaType::Tv {
+                tvdb.map(|v| ("tvdb".to_string(), v.to_string()))
+            } else {
+                None
+            }
+            .or_else(|| tmdb.map(|v| ("tmdb".to_string(), v.to_string())))
+            .or_else(|| {
+                imdb.filter(|v| !v.trim().is_empty())
+                    .map(|v| ("imdb".to_string(), v.trim().to_string()))
+            });
+            if let Some(pair) = picked {
+                map.insert(ContentId::from_uuid(parse_uuid("id", &id)?), pair);
+            }
+        }
+        Ok(map)
+    }
+
     /// Persist an external id (`id_type` + `id_value`) for a content node, the way
     /// the identify pipeline does: mint a `title_id`, link it onto the node, and
     /// write the matching typed `*_meta` identity row carrying the external id.
