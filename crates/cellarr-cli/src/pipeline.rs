@@ -446,28 +446,40 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                 else {
                                     continue; // no unambiguous match — leave for manual import.
                                 };
-                                let node_id = match self.create_content_node(&library, chosen).await
-                                {
-                                    Ok(id) => id,
-                                    Err(detail) => {
-                                        tracing::warn!(title = %title, error = %detail, "auto-onboard: create failed");
-                                        continue;
-                                    }
-                                };
-                                match runner
+                                let (node_id, created) =
+                                    match self.create_content_node(&library, chosen).await {
+                                        Ok(v) => v,
+                                        Err(detail) => {
+                                            tracing::warn!(title = %title, error = %detail, "auto-onboard: create failed");
+                                            continue;
+                                        }
+                                    };
+                                let adopt = runner
                                     .import_manual(&[cellarr_jobs::runner::ManualImportRequest {
                                         path: c.path.clone(),
                                         content_id: node_id,
                                     }])
-                                    .await
-                                {
-                                    Ok((_imported, errs)) if errs.is_empty() => onboarded += 1,
+                                    .await;
+                                let failed = match adopt {
+                                    Ok((_imported, errs)) if errs.is_empty() => {
+                                        onboarded += 1;
+                                        false
+                                    }
                                     Ok((_imported, errs)) => {
                                         tracing::warn!(path = %c.path, ?errs, "auto-onboard: adopt failed after create");
+                                        true
                                     }
                                     Err(detail) => {
                                         tracing::warn!(path = %c.path, error = %detail, "auto-onboard: adopt errored");
+                                        true
                                     }
+                                };
+                                // Roll back a node WE just created if its file could
+                                // not be adopted, so a failed onboard leaves no empty
+                                // orphan node (the file falls to manual instead). A
+                                // reused existing node is never deleted.
+                                if failed && created {
+                                    self.rollback_node(&library, node_id).await;
                                 }
                             }
                         }
@@ -494,16 +506,34 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         JobResult::Success
     }
 
-    /// Create a content node from a confident metadata candidate, returning its id.
-    /// Persists identity (title + external id) and metadata, then best-effort
-    /// enriches via the resolver if one is attached (else the daily RefreshMetadata
-    /// cron fills it in). The node is monitored so acquisition maintains it.
+    /// Create a content node from a confident metadata candidate, returning its id
+    /// and whether it was NEWLY created (vs. an existing node reused). Persists
+    /// identity (title + external id) and metadata, then best-effort enriches via
+    /// the resolver if one is attached (else the daily RefreshMetadata cron fills it
+    /// in). The node is monitored so acquisition maintains it.
+    ///
+    /// Idempotent on identity: if a node already carries this external id it is
+    /// reused (returned with `created = false`), so a re-run — e.g. of a file whose
+    /// adopt failed last pass — never mints a duplicate.
     async fn create_content_node(
         &self,
         library: &cellarr_core::Library,
         chosen: &cellarr_api::LookupCandidate,
-    ) -> Result<cellarr_core::ContentId, String> {
+    ) -> Result<(cellarr_core::ContentId, bool), String> {
         use cellarr_core::{ContentId, ContentKind, ContentNode, Coordinates};
+
+        let content = self.db.content();
+        let external = native_external_id(chosen, library.media_type);
+        // Reuse an existing node with this identity instead of duplicating.
+        if let Some((scheme, value)) = external {
+            if let Some(existing) = content
+                .content_id_for_external_id(library.media_type, scheme, value)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                return Ok((existing, false));
+            }
+        }
 
         let (kind, coords) = match library.media_type {
             MediaType::Tv => (
@@ -528,7 +558,6 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             title_id: None,
             tags: Vec::new(),
         };
-        let content = self.db.content();
         content.upsert(&node).await.map_err(|e| e.to_string())?;
         content
             .index_title(node.id, &chosen.title)
@@ -536,7 +565,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .map_err(|e| e.to_string())?;
         // Link the native external id so the resolver can enrich and search builds a
         // real query. Prefer the namespace the media type keys on.
-        if let Some((scheme, value)) = native_external_id(chosen, library.media_type) {
+        if let Some((scheme, value)) = external {
             content
                 .link_external_id(node.id, library.media_type, scheme, value, &chosen.title)
                 .await
@@ -563,7 +592,21 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 let _ = resolver.resolve(&node_ref).await;
             }
         }
-        Ok(node.id)
+        Ok((node.id, true))
+    }
+
+    /// Roll back (delete) a node that was just created but whose file could not be
+    /// adopted, so a failed onboard leaves no empty orphan. Best-effort; a failure
+    /// is logged, not propagated.
+    async fn rollback_node(&self, library: &cellarr_core::Library, id: cellarr_core::ContentId) {
+        let content = self.db.content();
+        let result = match library.media_type {
+            MediaType::Tv => content.delete_series(id).await,
+            _ => content.delete_movie(id).await,
+        };
+        if let Err(e) = result {
+            tracing::warn!(content = %id, error = %e, "auto-onboard: rollback delete failed");
+        }
     }
 }
 
