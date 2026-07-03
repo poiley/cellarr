@@ -187,6 +187,7 @@ impl Daemon {
         // file it cannot otherwise place. Off unless configured.
         let handler_metadata = std::sync::Arc::clone(&metadata);
         let auto_onboard = config.media_management.auto_onboard;
+        let auto_onboard_limit = config.media_management.auto_onboard_limit;
 
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
@@ -201,7 +202,7 @@ impl Daemon {
                 )
                 .with_scene_provider(handler_scene_provider)
                 .with_resolver(handler_resolver)
-                .with_auto_onboard(handler_metadata, auto_onboard),
+                .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit),
             )
         })
         .with_metadata(metadata)

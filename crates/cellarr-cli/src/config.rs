@@ -85,6 +85,12 @@ pub struct MediaManagementConfig {
     /// the conservative "adopt to existing nodes only, surface the rest" behavior.
     /// From `CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD`.
     pub auto_onboard: bool,
+    /// Cap on how many nodes ONE auto-onboard pass creates. `None` (the default) is
+    /// unbounded. Set a small value to onboard a first batch of a large library and
+    /// verify the results before lifting the cap for the rest — a rescan is
+    /// idempotent, so already-onboarded files are skipped on the next run and it
+    /// picks up where it left off. From `CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD_LIMIT`.
+    pub auto_onboard_limit: Option<usize>,
 }
 
 /// HTTP API server settings.

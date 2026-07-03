@@ -115,6 +115,9 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// Whether the rescan auto-onboards (creates content from a confident metadata
     /// match for an otherwise-unplaceable file). Off by default.
     auto_onboard: bool,
+    /// Cap on nodes created per onboard pass (`None` = unbounded) — for a staged
+    /// first batch of a large library.
+    auto_onboard_limit: Option<usize>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -131,6 +134,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             scene_provider: None,
             metadata: None,
             auto_onboard: false,
+            auto_onboard_limit: None,
         }
     }
 
@@ -143,9 +147,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         mut self,
         metadata: Arc<dyn cellarr_api::MetadataLookup>,
         enabled: bool,
+        limit: Option<usize>,
     ) -> Self {
         self.metadata = Some(metadata);
         self.auto_onboard = enabled;
+        self.auto_onboard_limit = limit;
         self
     }
 
@@ -407,12 +413,22 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // content is never created from a guess.
             if self.auto_onboard {
                 if let Some(meta) = self.metadata.clone() {
-                    match runner
-                        .scan_manual_import(Some(&config.library_root), None)
-                        .await
-                    {
+                    // A staged first batch caps how many nodes are created; the scan
+                    // is bounded to match so a huge library is not fully walked just
+                    // to onboard a few. The cap is a running total across libraries.
+                    let remaining = self.auto_onboard_limit.map(|n| n.saturating_sub(onboarded));
+                    if remaining == Some(0) {
+                        // Cap already reached in an earlier library this pass.
+                    } else {
+                        match runner
+                            .scan_manual_import(Some(&config.library_root), remaining)
+                            .await
+                        {
                         Ok(candidates) => {
                             for c in candidates {
+                                if self.auto_onboard_limit.is_some_and(|n| onboarded >= n) {
+                                    break;
+                                }
                                 if c.suggested.is_some() {
                                     continue; // an existing node fits — the adopt pass handled it.
                                 }
@@ -457,6 +473,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         }
                         Err(detail) => {
                             tracing::warn!(library = %library.id, error = %detail, "auto-onboard: scan failed");
+                        }
                         }
                     }
                 }
