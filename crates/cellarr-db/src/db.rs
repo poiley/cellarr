@@ -53,7 +53,18 @@ impl Database {
             // still race the actor on the WAL.
             .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true)
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            // Give each connection a page cache large enough to hold the whole
+            // working set in memory. The database file can live on high-latency
+            // storage (a homelab NAS mount reaches it over CIFS), where every
+            // uncached page read is a network round-trip; a 2 MB default cache
+            // turned list endpoints into thousands of round-trips and multi-second
+            // loads. A generous cache means a connection reads each page from the
+            // network at most once, then serves it from RAM.
+            .pragma("cache_size", "-65536")
+            // Keep sort/temp b-trees (ORDER BY, GROUP BY spills) in memory rather
+            // than materializing them onto the (possibly networked) DB directory.
+            .pragma("temp_store", "MEMORY");
 
         Self::connect_with(options).await
     }
