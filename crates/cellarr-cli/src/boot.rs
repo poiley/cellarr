@@ -53,6 +53,10 @@ impl Daemon {
         // 1. Data dir + database (migrations run inside `Database::connect`).
         std::fs::create_dir_all(&config.data_dir)
             .with_context(|| format!("creating data dir {}", config.data_dir.display()))?;
+        // The SQLite file path, still derived for the backup engine's atomic
+        // restore swap (a no-op concern on the Postgres backend, whose backups
+        // are handled out-of-band).
+        let db_path = config.database_path();
         let db_target = config.database_target();
         let db = Database::connect(&db_target)
             .await

@@ -55,15 +55,6 @@ impl MediaFileRepo {
             .await
     }
 
-    /// The content nodes a media file is linked to (the reverse of
-    /// [`MediaFileRepository::list_for_content`]). A single file can satisfy
-    /// several nodes (a multi-episode `.mkv`); the v3 `episodefile`/`moviefile`
-    /// resources use this to resolve a file's owning content (and thus its library
-    /// root boundary for a crash-safe recycle, and its `seriesId`/`movieId` for
-    /// filtering). Returns an empty vec for an unlinked or missing file.
-    ///
-    /// # Errors
-    /// Returns a [`DbError`] on query/decode failure.
     /// Every media file, grouped by the content node it is linked to, in ONE query.
     /// The list projections use this to avoid a per-node `list_for_content` (an N+1
     /// that made the library list fire thousands of queries for a large library).
@@ -90,6 +81,15 @@ impl MediaFileRepo {
         Ok(map)
     }
 
+    /// The content nodes a media file is linked to (the reverse of
+    /// [`MediaFileRepository::list_for_content`]). A single file can satisfy
+    /// several nodes (a multi-episode `.mkv`); the v3 `episodefile`/`moviefile`
+    /// resources use this to resolve a file's owning content (and thus its library
+    /// root boundary for a crash-safe recycle, and its `seriesId`/`movieId` for
+    /// filtering). Returns an empty vec for an unlinked or missing file.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query/decode failure.
     pub async fn content_ids_for_file(&self, file: MediaFileId) -> Result<Vec<ContentId>> {
         let rows = sqlx::query(&pq("SELECT content_id FROM content_file WHERE media_file_id = ?1"))
             .bind(file.to_string())
