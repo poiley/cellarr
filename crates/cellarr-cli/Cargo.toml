@@ -61,6 +61,10 @@ otlp = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# Compile the daemon against a Postgres server instead of the default embedded
+# SQLite. Opt-in: the default build stays offline / single-binary / SQLite.
+# Enables the Postgres backend across the whole persistence layer via cellarr-db.
+postgres = ["cellarr-db/postgres"]
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -31,6 +31,14 @@ pub struct Config {
     /// workspace). Defaults to a per-user data dir; everything else is derived
     /// from it unless explicitly overridden.
     pub data_dir: PathBuf,
+    /// Optional database connection URL, from `CELLARR_DATABASE_URL`. Unset (the
+    /// default) uses the SQLite file under `data_dir` — the zero-config, offline
+    /// default. Set to a `postgres://…` DSN to run against a Postgres **server**
+    /// instead (only honoured by a build compiled with the `postgres` feature);
+    /// this is the deployment escape hatch for when the SQLite file would
+    /// otherwise sit on high-latency network storage. A `sqlite://<path>` value
+    /// is also accepted to point the SQLite backend at an explicit file.
+    pub database_url: Option<String>,
     /// HTTP API server settings.
     pub api: ApiConfig,
     /// Logging settings.
@@ -188,6 +196,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             data_dir: default_data_dir(),
+            database_url: None,
             api: ApiConfig::default(),
             log: LogConfig::default(),
             otel: OtelConfig::default(),
@@ -258,6 +267,33 @@ impl Config {
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.data_dir.join("cellarr.sqlite")
+    }
+
+    /// The database connection target the daemon opens: the configured
+    /// [`database_url`](Self::database_url) when set, else a `sqlite://` URL for
+    /// the file under [`data_dir`](Self::data_dir). This is what boot passes to
+    /// `Database::connect`, so the same code opens SQLite or Postgres by config.
+    #[must_use]
+    pub fn database_target(&self) -> String {
+        self.database_url
+            .clone()
+            .unwrap_or_else(|| format!("sqlite://{}", self.database_path().display()))
+    }
+
+    /// The database target with any credentials redacted, safe to log. A
+    /// `postgres://<user>:<pw>@<host>/<db>` DSN is reduced to its host/db; a
+    /// `sqlite://` target (no secrets) is returned as-is.
+    #[must_use]
+    pub fn database_target_redacted(&self) -> String {
+        let target = self.database_target();
+        // Strip an `user[:pass]@` userinfo section from the authority, if any.
+        match target.split_once("://") {
+            Some((scheme, rest)) => match rest.split_once('@') {
+                Some((_userinfo, host_and_path)) => format!("{scheme}://{host_and_path}"),
+                None => target,
+            },
+            None => target,
+        }
     }
 
     /// The directory the rolling log appender writes to (`<data_dir>/logs`), which

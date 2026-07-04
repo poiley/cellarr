@@ -226,14 +226,15 @@ async fn run_migrate(config: &Config, sources: &[PathBuf]) -> Result<()> {
 
     std::fs::create_dir_all(&config.data_dir)
         .with_context(|| format!("creating data dir {}", config.data_dir.display()))?;
-    let db_path = config.database_path();
-    let db = Database::open(
-        db_path
-            .to_str()
-            .context("database path is not valid UTF-8")?,
-    )
-    .await
-    .with_context(|| format!("opening destination database at {}", db_path.display()))?;
+    let db_target = config.database_target();
+    let db = Database::connect(&db_target)
+        .await
+        .with_context(|| {
+            format!(
+                "opening destination database at {}",
+                config.database_target_redacted()
+            )
+        })?;
 
     let source_strs: Vec<&str> = sources
         .iter()
@@ -317,14 +318,15 @@ async fn run_managed_config(config: &Config, cmd: ManagedConfigCommand) -> Resul
     let open_db = || async {
         std::fs::create_dir_all(&config.data_dir)
             .with_context(|| format!("creating data dir {}", config.data_dir.display()))?;
-        let db_path = config.database_path();
-        let db = Database::open(
-            db_path
-                .to_str()
-                .context("database path is not valid UTF-8")?,
-        )
-        .await
-        .with_context(|| format!("opening database at {}", db_path.display()))?;
+        let db_target = config.database_target();
+        let db = Database::connect(&db_target)
+            .await
+            .with_context(|| {
+                format!(
+                    "opening database at {}",
+                    config.database_target_redacted()
+                )
+            })?;
         anyhow::Ok(db)
     };
 

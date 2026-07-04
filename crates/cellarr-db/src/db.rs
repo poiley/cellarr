@@ -5,10 +5,16 @@
 //! task (docs/08-database.md). The pool is configured for the SQLite single-
 //! writer reality: WAL journaling, a nonzero `busy_timeout`, and foreign keys on.
 
-use std::str::FromStr;
 use std::sync::Arc;
+
+#[cfg(not(feature = "postgres"))]
+use std::str::FromStr;
+#[cfg(not(feature = "postgres"))]
 use std::time::Duration;
 
+#[cfg(feature = "postgres")]
+use sqlx::postgres::PgPoolOptions;
+#[cfg(not(feature = "postgres"))]
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tokio::sync::Mutex;
 
@@ -41,10 +47,52 @@ pub struct Database {
 }
 
 impl Database {
+    /// Open the database from a connection URL and run migrations, dispatching on
+    /// the backend compiled in.
+    ///
+    /// On the default (SQLite) build the URL is a `sqlite://<path>` (a bare path
+    /// is also accepted) and this opens/creates that file. On the `postgres`
+    /// build it is a `postgres://…` DSN and this connects to that server. This is
+    /// the backend-agnostic entry point the daemon uses; callers pass the
+    /// configured target and never branch on engine themselves.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DbError`] if the database cannot be opened/connected or
+    /// migrations fail.
+    #[cfg(not(feature = "postgres"))]
+    pub async fn connect(url: &str) -> Result<Self> {
+        // Accept both a `sqlite://path` URL and a bare filesystem path.
+        let path = url
+            .strip_prefix("sqlite://")
+            .or_else(|| url.strip_prefix("sqlite:"))
+            .unwrap_or(url);
+        Self::open(path).await
+    }
+
+    /// Connect to a Postgres server and run migrations. See the SQLite twin.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DbError`] on connect or migration failure.
+    #[cfg(feature = "postgres")]
+    pub async fn connect(url: &str) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(url)
+            .await?;
+        sqlx::migrate!("./migrations/postgres").run(&pool).await?;
+        let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
+        Ok(Self {
+            pool,
+            writer,
+            shutdown: Arc::new(Mutex::new(Some(shutdown))),
+        })
+    }
+
     /// Open (creating if absent) a SQLite database at `path` and run migrations.
     ///
     /// # Errors
     /// Returns a [`crate::DbError`] if the file cannot be opened or migrations fail.
+    #[cfg(not(feature = "postgres"))]
     pub async fn open(path: &str) -> Result<Self> {
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))?
             .create_if_missing(true)
@@ -75,6 +123,7 @@ impl Database {
     ///
     /// # Errors
     /// Returns a [`crate::DbError`] if the database cannot be created.
+    #[cfg(not(feature = "postgres"))]
     pub async fn open_in_memory() -> Result<Self> {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")?
             .foreign_keys(true)
@@ -94,6 +143,7 @@ impl Database {
         })
     }
 
+    #[cfg(not(feature = "postgres"))]
     async fn connect_with(options: SqliteConnectOptions) -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
@@ -141,6 +191,7 @@ impl Database {
     /// Returns [`crate::DbError::Backup`] if `dest` is unusable (already exists,
     /// not valid UTF-8) or the integrity check fails, or the underlying sqlx error
     /// if `VACUUM INTO` itself fails.
+    #[cfg(not(feature = "postgres"))]
     pub async fn snapshot_to(&self, dest: &std::path::Path) -> Result<()> {
         if dest.exists() {
             return Err(crate::DbError::Backup(format!(
@@ -172,6 +223,22 @@ impl Database {
         Self::verify_snapshot(dest_str).await
     }
 
+    /// Postgres has no in-process single-file snapshot equivalent of SQLite's
+    /// `VACUUM INTO`: a server database is backed up out-of-band (`pg_dump`, the
+    /// NAS's own backup of the Postgres data directory), not by the daemon. The
+    /// call is kept so the backup engine compiles on both backends; it returns a
+    /// clear error rather than pretending to have taken a snapshot.
+    ///
+    /// # Errors
+    /// Always returns [`crate::DbError::Backup`] on the Postgres backend.
+    #[cfg(feature = "postgres")]
+    pub async fn snapshot_to(&self, _dest: &std::path::Path) -> Result<()> {
+        Err(crate::DbError::Backup(
+            "in-process database snapshot is SQLite-only; back up Postgres out-of-band (pg_dump)"
+                .into(),
+        ))
+    }
+
     /// Open `path` read-only and run `PRAGMA integrity_check`, returning an error
     /// if the file is not a healthy SQLite database. Used to validate both a
     /// freshly written snapshot and a candidate restore file before it is trusted.
@@ -179,6 +246,7 @@ impl Database {
     /// # Errors
     /// Returns [`crate::DbError::Backup`] if the file cannot be opened or the
     /// integrity check reports anything other than `ok`.
+    #[cfg(not(feature = "postgres"))]
     pub async fn verify_snapshot(path: &str) -> Result<()> {
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
             .map_err(|e| crate::DbError::Backup(format!("opening snapshot {path}: {e}")))?
@@ -202,6 +270,19 @@ impl Database {
                 row.0
             )))
         }
+    }
+
+    /// Postgres snapshots are validated by the external tooling that produced
+    /// them, not by this daemon; the call is kept for backend-agnostic callers
+    /// and returns a clear error. See [`snapshot_to`](Self::snapshot_to).
+    ///
+    /// # Errors
+    /// Always returns [`crate::DbError::Backup`] on the Postgres backend.
+    #[cfg(feature = "postgres")]
+    pub async fn verify_snapshot(path: &str) -> Result<()> {
+        Err(crate::DbError::Backup(format!(
+            "snapshot verification is SQLite-only; cannot verify {path} on the Postgres backend"
+        )))
     }
 
     /// The read pool. Repositories use this for queries; callers needing an

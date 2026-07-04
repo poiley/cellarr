@@ -50,18 +50,19 @@ impl Daemon {
     /// # Errors
     /// Propagates database, registry, or bind failures with context.
     pub async fn boot(config: &Config) -> Result<Self> {
-        // 1. Data dir + database (migrations run inside `Database::open`).
+        // 1. Data dir + database (migrations run inside `Database::connect`).
         std::fs::create_dir_all(&config.data_dir)
             .with_context(|| format!("creating data dir {}", config.data_dir.display()))?;
-        let db_path = config.database_path();
-        let db = Database::open(
-            db_path
-                .to_str()
-                .context("database path is not valid UTF-8")?,
-        )
-        .await
-        .with_context(|| format!("opening database at {}", db_path.display()))?;
-        info!(path = %db_path.display(), "database open; migrations applied");
+        let db_target = config.database_target();
+        let db = Database::connect(&db_target)
+            .await
+            .with_context(|| {
+                format!(
+                    "opening database at {}",
+                    config.database_target_redacted()
+                )
+            })?;
+        info!(target = %config.database_target_redacted(), "database open; migrations applied");
 
         // 1b. Managed config (config-as-code). If a path is configured, reconcile
         //     the DB to match the declarative file now — after migrations, before
