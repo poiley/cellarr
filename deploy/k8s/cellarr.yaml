@@ -4,9 +4,17 @@
 # `kubectl apply` is safe and nothing prunes it. Multi-arch image, so NO
 # nodeSelector is needed on the mixed arm64/amd64 cluster.
 #
-# NAS mounts mirror radarr/sonarr exactly (hostPath to /mnt/unas-* — present on all
-# nodes): config (the SQLite DB) on the NAS, plus the shared media + downloads
-# trees. Runs as UID/GID 1000 like the linuxserver *arr apps.
+# DATABASE: Postgres (see postgres.yaml) rather than the embedded SQLite default.
+# On this cluster the config volume is a CIFS/SMB NAS mount, and a SQLite file
+# over a network filesystem pays a round-trip per page — the movie/series list
+# took 10-15s. A Postgres server (node-local disk, reached over TCP) serves the
+# same list in well under a second. The image is the `-postgres`-tagged build
+# (`--features postgres`); CELLARR_DATABASE_URL points it at the server.
+#
+# NAS mounts mirror radarr/sonarr exactly (hostPath to /mnt/unas-* — present on
+# all nodes): config (now just logs + the MediaCover artwork cache) on the NAS,
+# plus the shared media + downloads trees. Runs as UID/GID 1000 like the
+# linuxserver *arr apps.
 #
 # CONFIG-AS-CODE: cellarr reconciles its DB on boot from a managed-config.yaml
 # mounted (read-only) from the `cellarr-managed-config` ConfigMap at
@@ -19,7 +27,10 @@
 #       --from-file=managed-config.yaml=deploy/managed-config.yaml \
 #       --dry-run=client -o yaml | kubectl apply -f -
 #   kubectl -n cellarr apply -f deploy/k8s/cellarr-secret.yaml
+#   kubectl apply -f deploy/k8s/postgres.yaml     # the database server (node-local disk)
 #   kubectl apply -f deploy/k8s/cellarr.yaml
+# The secret must carry POSTGRES_PASSWORD and the matching CELLARR_DATABASE_URL
+# (postgres://cellarr:<pw>@postgres:5432/cellarr) — see cellarr-secret.example.yaml.
 # Templates: deploy/managed-config.example.yaml + deploy/k8s/cellarr-secret.example.yaml.
 #
 # Reach the UI at https://cellarr.rinzler.cloud (Traefik ingress below).
@@ -36,7 +47,7 @@ metadata:
   labels: { app: cellarr }
 spec:
   replicas: 1
-  strategy: { type: Recreate } # single SQLite writer
+  strategy: { type: Recreate } # single instance; the writer-actor still serializes writes
   selector:
     matchLabels: { app: cellarr }
   template:
@@ -49,7 +60,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: cellarr
-          image: ghcr.io/poiley/cellarr:latest
+          image: ghcr.io/poiley/cellarr:postgres # --features postgres build
           imagePullPolicy: Always
           ports:
             - { name: http, containerPort: 9494 }
@@ -58,6 +69,14 @@ spec:
             - { name: CELLARR_API__PORT, value: "9494" }
             - { name: CELLARR_DATA_DIR, value: "/data" }
             - { name: TZ, value: "America/Los_Angeles" }
+            # Talk to the Postgres server (postgres.yaml), not the SQLite file.
+            # The DSN carries the password, so it comes from the Secret.
+            - name: CELLARR_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: CELLARR_DATABASE_URL } }
+            # Onboard untracked media on a schedule (adopt confident matches from
+            # disk); capped per pass so a huge first scan stages in batches.
+            - { name: CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD, value: "true" }
+            - { name: CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD_LIMIT, value: "2000" }
             # Config-as-code: reconcile the DB from this file on boot.
             - { name: CELLARR_MANAGED_CONFIG_PATH, value: "/config/managed-config.yaml" }
             # API key for /api/v3 (the API is reachable via the ingress, so it must
@@ -76,7 +95,7 @@ spec:
             - name: TRANSMISSION_PASS
               valueFrom: { secretKeyRef: { name: cellarr-secrets, key: TRANSMISSION_PASS, optional: true } }
           volumeMounts:
-            - { name: config, mountPath: /data } # cellarr's SQLite DB + config, on NAS
+            - { name: config, mountPath: /data } # logs + MediaCover artwork cache, on NAS (DB is Postgres now)
             - { name: managed-config, mountPath: /config, readOnly: true } # config-as-code, from ConfigMap
             - { name: media, mountPath: /media }
             - { name: downloads, mountPath: /downloads }
