@@ -1,26 +1,32 @@
 # Postgres for cellarr on the program (rinzler) k3s cluster.
 #
 # WHY: cellarr's default backend is an embedded SQLite file. On this cluster the
-# config volume is a CIFS/SMB NAS mount, and SQLite over a network filesystem
-# pays a network round-trip per page — the movie/series list endpoints took
-# 10-15s. A Postgres *server* does its own local-disk I/O and returns result
-# sets over TCP, so the SMB mount never sits in the query path.
+# only writable shared storage is the UniFi UNAS Pro, and SQLite over its CIFS/SMB
+# mount pays a network round-trip per page — the movie/series list took 10-15s. A
+# Postgres *server* keeps the whole (~15 MB) database in its own RAM buffer cache
+# (shared_buffers), so after warmup the read-heavy list queries are served from
+# memory with zero storage I/O — sub-second — even though the data files live on
+# the NAS. Unlike SQLite, Postgres does plain buffered read()/write() (no mmap'd
+# -shm) and is explicitly documented to run on NFS.
 #
-# CRITICAL: Postgres's data directory MUST be on node-LOCAL storage, never the
-# CIFS/NFS NAS mount — running the Postgres data dir over a network filesystem
-# reintroduces exactly the latency (and the locking/corruption hazards Postgres
-# explicitly warns about) we are moving off SQLite to escape. Hence the
-# `local-path` StorageClass (rancher local-path provisioner = node-local disk),
-# not `nas-config`. WaitForFirstConsumer binds the volume to whichever node the
-# pod schedules on; the single replica stays pinned there.
+# STORAGE: the data directory lives on the UNAS Pro's **NFS** export (NFSv3),
+# under the same `databases` area the cluster's other apps use, in a dedicated
+# `cellarr/` subdir. NFS, never SMB/CIFS — Postgres needs POSIX fsync/locking
+# semantics that CIFS does not provide (data corruption otherwise). The node
+# mounts it `hard,proto=tcp,timeo=600,retrans=2` (the recommended Postgres-on-NFS
+# options). The export squashes ownership to uid/gid 977:988, so Postgres runs as
+# that uid (securityContext below) and owns its 0700 data dir.
 #
-# The password lives in the `cellarr-secrets` Secret (applied separately, not in
-# this public manifest): key POSTGRES_PASSWORD here, and the full
-# CELLARR_DATABASE_URL (postgres://cellarr:<pw>@postgres:5432/cellarr) that the
-# cellarr Deployment reads. cellarr runs its Postgres migrations on boot.
+# DURABILITY CAVEAT: the UNAS Pro's server-side NFS export flags aren't settable,
+# so `sync` vs `async` can't be verified; on power loss an async export could lose
+# the last committed write(s). Mitigated by: single writer, a UPS on the UNAS, and
+# the fact that cellarr's library is fully reconstructable from disk + managed
+# config. Postgres backups are external (pg_dump); cellarr's in-process snapshot is
+# SQLite-only.
 #
-# Backups: a server DB is backed up out-of-band (pg_dump / the NAS's own backup
-# of a dump), NOT by cellarr's in-process snapshot (that is SQLite-only).
+# The password is in the `cellarr-secrets` Secret (POSTGRES_PASSWORD) applied
+# separately; cellarr reads the matching CELLARR_DATABASE_URL. cellarr runs its
+# Postgres migrations on boot.
 apiVersion: v1
 kind: Service
 metadata:
@@ -41,19 +47,33 @@ metadata:
   labels: { app: postgres }
 spec:
   serviceName: postgres
-  replicas: 1
+  replicas: 1 # single writer; never run two Postgres on one PGDATA (corruption)
   selector:
     matchLabels: { app: postgres }
   template:
     metadata:
       labels: { app: postgres }
     spec:
-      # No securityContext: the postgres entrypoint starts as root, chowns the
-      # data dir, then drops to the postgres user — the reliable pattern on a
-      # fresh local-path volume.
+      # The UNAS NFS export squashes writes to 977:988; run Postgres as that uid so
+      # it owns its data directory (Postgres refuses a data dir it doesn't own).
+      securityContext:
+        runAsUser: 977
+        runAsGroup: 988
+        fsGroup: 988
       containers:
         - name: postgres
           image: postgres:17-alpine
+          # Hold the whole DB in RAM (shared_buffers >> 15 MB) so reads never touch
+          # NFS after warmup, and re-warm the buffer cache after a restart via
+          # pg_prewarm autoprewarm (otherwise the first post-restart queries would
+          # cold-hit NFS).
+          args:
+            - "-c"
+            - "shared_buffers=128MB"
+            - "-c"
+            - "shared_preload_libraries=pg_prewarm"
+            - "-c"
+            - "pg_prewarm.autoprewarm=on"
           ports:
             - { name: postgres, containerPort: 5432 }
           env:
@@ -61,28 +81,32 @@ spec:
             - { name: POSTGRES_DB, value: "cellarr" }
             - name: POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: cellarr-secrets, key: POSTGRES_PASSWORD } }
-            # initdb into a subdir so the volume root (which may carry a
-            # lost+found) never blocks initialization.
+            # PGDATA in a subdir of the NFS mount (never the mount root).
             - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
             - { name: TZ, value: "America/Los_Angeles" }
           volumeMounts:
             - { name: pgdata, mountPath: /var/lib/postgresql/data }
+          # First-boot initdb over NFS is slow (many small fsync'd file creates,
+          # ~2 min). A startupProbe holds off liveness/readiness until the server
+          # is actually up — up to 5 min — so liveness can't SIGKILL Postgres
+          # mid-initdb and leave a half-created cluster.
+          startupProbe:
+            exec: { command: ["pg_isready", "-U", "cellarr", "-d", "cellarr"] }
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec: { command: ["pg_isready", "-U", "cellarr", "-d", "cellarr"] }
-            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec: { command: ["pg_isready", "-U", "cellarr", "-d", "cellarr"] }
-            initialDelaySeconds: 20
             periodSeconds: 20
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { memory: 1Gi }
-  volumeClaimTemplates:
-    - metadata:
-        name: pgdata
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: local-path # node-local disk — NOT the CIFS NAS mount
-        resources:
-          requests: { storage: 5Gi }
+      volumes:
+        # The UNAS Pro NFS export (NFSv3), cellarr's dedicated subdir. Data lives
+        # on the NAS; reads are served from Postgres's RAM cache.
+        - name: pgdata
+          nfs:
+            server: 192.168.1.152
+            path: /volume/40dcd33b-879a-4793-b244-fa3159edb89c/.srv/.unifi-drive/databases/.data/cellarr
