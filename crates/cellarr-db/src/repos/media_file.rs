@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use cellarr_core::profile::Quality;
 use cellarr_core::repo::MediaFileRepository;
 use cellarr_core::{ContentId, MediaFile, MediaFileId};
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::convert::parse_uuid;
@@ -20,12 +20,12 @@ use crate::writer::WriterHandle;
 /// Reads/writes for `media_file` rows.
 #[derive(Clone)]
 pub struct MediaFileRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl MediaFileRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -40,10 +40,10 @@ impl MediaFileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO content_file (content_id, media_file_id)
                          VALUES (?1, ?2)
-                         ON CONFLICT(content_id, media_file_id) DO NOTHING",
+                         ON CONFLICT(content_id, media_file_id) DO NOTHING"),
                     )
                     .bind(content)
                     .bind(file)
@@ -73,10 +73,10 @@ impl MediaFileRepo {
     pub async fn all_grouped_by_content(
         &self,
     ) -> Result<std::collections::HashMap<ContentId, Vec<cellarr_core::MediaFile>>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT cf.content_id AS content_id, m.id, m.path, m.size, m.languages,
                     m.quality, m.media_info, m.custom_format_score, m.release_type
-             FROM content_file cf JOIN media_file m ON m.id = cf.media_file_id",
+             FROM content_file cf JOIN media_file m ON m.id = cf.media_file_id"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -91,7 +91,7 @@ impl MediaFileRepo {
     }
 
     pub async fn content_ids_for_file(&self, file: MediaFileId) -> Result<Vec<ContentId>> {
-        let rows = sqlx::query("SELECT content_id FROM content_file WHERE media_file_id = ?1")
+        let rows = sqlx::query(&pq("SELECT content_id FROM content_file WHERE media_file_id = ?1"))
             .bind(file.to_string())
             .fetch_all(&self.pool)
             .await?;
@@ -104,7 +104,7 @@ impl MediaFileRepo {
     }
 }
 
-fn row_to_media_file(row: sqlx::sqlite::SqliteRow) -> Result<MediaFile> {
+fn row_to_media_file(row: crate::dialect::DbRow) -> Result<MediaFile> {
     let id: String = row.try_get("id")?;
     let path: String = row.try_get("path")?;
     let size: i64 = row.try_get("size")?;
@@ -158,11 +158,11 @@ impl MediaFileRepository for MediaFileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO media_file
                             (id, path, size, languages, quality, quality_rank,
                              media_info, custom_format_score, release_type)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
                     )
                     .bind(id)
                     .bind(path)
@@ -182,10 +182,10 @@ impl MediaFileRepository for MediaFileRepo {
     }
 
     async fn get(&self, id: MediaFileId) -> Result<Option<MediaFile>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT id, path, size, languages, quality, media_info, custom_format_score,
                     release_type
-             FROM media_file WHERE id = ?1",
+             FROM media_file WHERE id = ?1"),
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -194,10 +194,10 @@ impl MediaFileRepository for MediaFileRepo {
     }
 
     async fn find_by_path(&self, path: &str) -> Result<Option<MediaFile>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT id, path, size, languages, quality, media_info, custom_format_score,
                     release_type
-             FROM media_file WHERE path = ?1",
+             FROM media_file WHERE path = ?1"),
         )
         .bind(path)
         .fetch_optional(&self.pool)
@@ -206,7 +206,7 @@ impl MediaFileRepository for MediaFileRepo {
     }
 
     async fn all_paths(&self) -> Result<Vec<String>> {
-        let rows = sqlx::query("SELECT path FROM media_file")
+        let rows = sqlx::query(&pq("SELECT path FROM media_file"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()
@@ -215,13 +215,13 @@ impl MediaFileRepository for MediaFileRepo {
     }
 
     async fn list_for_content(&self, content: ContentId) -> Result<Vec<MediaFile>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT m.id, m.path, m.size, m.languages, m.quality, m.media_info,
                     m.custom_format_score, m.release_type
              FROM media_file m
              JOIN content_file cf ON cf.media_file_id = m.id
              WHERE cf.content_id = ?1
-             ORDER BY m.path ASC",
+             ORDER BY m.path ASC"),
         )
         .bind(content.to_string())
         .fetch_all(&self.pool)
@@ -235,7 +235,7 @@ impl MediaFileRepository for MediaFileRepo {
             .submit(move |conn| {
                 Box::pin(async move {
                     // ON DELETE CASCADE on content_file clears any links.
-                    sqlx::query("DELETE FROM media_file WHERE id = ?1")
+                    sqlx::query(&pq("DELETE FROM media_file WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -251,7 +251,7 @@ impl MediaFileRepository for MediaFileRepo {
             .submit(move |conn| {
                 Box::pin(async move {
                     // ON DELETE CASCADE on content_file clears any links.
-                    sqlx::query("DELETE FROM media_file WHERE path = ?1")
+                    sqlx::query(&pq("DELETE FROM media_file WHERE path = ?1"))
                         .bind(path)
                         .execute(&mut *conn)
                         .await?;

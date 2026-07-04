@@ -7,12 +7,15 @@
 //!
 //! # Engine
 //!
-//! Default and only wired engine in this pass is **SQLite** in WAL mode with a
-//! nonzero `busy_timeout`; all writes funnel through one task using
-//! `BEGIN IMMEDIATE` so the single-writer reality is explicit rather than
-//! fought (docs/08-database.md). Postgres lives behind the `postgres` cargo
-//! feature and is **deferred** (stub) — the repository interface is identical,
-//! so callers are engine-agnostic when it lands.
+//! The engine is selected **at compile time** ([`dialect`]): SQLite by default
+//! (WAL mode, a nonzero `busy_timeout`, all writes funnelled through one task
+//! using `BEGIN IMMEDIATE` so the single-writer reality is explicit rather than
+//! fought — docs/08-database.md), or **Postgres** under the `postgres` cargo
+//! feature (a database server reached over TCP, for deployments whose storage
+//! makes a file-based engine slow — a SQLite file on a network mount pays a
+//! round-trip per page). Each path uses sqlx's native driver; the repository
+//! code is written once against the [`dialect`] aliases and reads as one
+//! backend-agnostic implementation.
 //!
 //! # Queries
 //!
@@ -26,6 +29,7 @@
 
 mod convert;
 mod db;
+mod dialect;
 mod error;
 mod repos;
 mod writer;

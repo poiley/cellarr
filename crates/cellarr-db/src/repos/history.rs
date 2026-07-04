@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use cellarr_core::history::{HistoryEvent, HistoryRecord};
 use cellarr_core::repo::HistoryRepository;
 use cellarr_core::{ContentId, PipelineRunId};
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -15,12 +15,12 @@ use crate::writer::WriterHandle;
 /// Append-only writes and queries for the history stream.
 #[derive(Clone)]
 pub struct HistoryRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl HistoryRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 }
@@ -38,9 +38,9 @@ impl HistoryRepository for HistoryRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO history (id, at, content_id, run_id, event)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                         VALUES (?1, ?2, ?3, ?4, ?5)"),
                     )
                     .bind(id)
                     .bind(at)
@@ -56,9 +56,9 @@ impl HistoryRepository for HistoryRepo {
     }
 
     async fn for_content(&self, id: ContentId) -> Result<Vec<HistoryRecord>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT at, content_id, run_id, event
-             FROM history WHERE content_id = ?1 ORDER BY at ASC, id ASC",
+             FROM history WHERE content_id = ?1 ORDER BY at ASC, id ASC"),
         )
         .bind(id.to_string())
         .fetch_all(&self.pool)
@@ -83,9 +83,9 @@ impl HistoryRepository for HistoryRepo {
     async fn recent(&self, limit: u32, offset: u32) -> Result<Vec<HistoryRecord>> {
         // Global feed, newest first. `at` is a zero-padded rfc3339 UTC string, so a
         // lexical sort is chronological; `id` breaks ties within the same instant.
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT at, content_id, run_id, event
-             FROM history ORDER BY at DESC, id DESC LIMIT ?1 OFFSET ?2",
+             FROM history ORDER BY at DESC, id DESC LIMIT ?1 OFFSET ?2"),
         )
         .bind(i64::from(limit))
         .bind(i64::from(offset))

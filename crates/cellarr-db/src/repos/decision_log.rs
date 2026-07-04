@@ -6,7 +6,7 @@ use cellarr_core::history::DecisionLogRecord;
 use cellarr_core::pipeline::Transition;
 use cellarr_core::repo::DecisionLogRepository;
 use cellarr_core::PipelineRunId;
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -17,12 +17,12 @@ use crate::writer::WriterHandle;
 /// Append-only writes and queries for the decision log.
 #[derive(Clone)]
 pub struct DecisionLogRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl DecisionLogRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -31,9 +31,9 @@ impl DecisionLogRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn for_run(&self, run_id: PipelineRunId) -> Result<Vec<DecisionLogRecord>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT at, run_id, transition, decision, note
-             FROM decision_log WHERE run_id = ?1 ORDER BY at ASC, id ASC",
+             FROM decision_log WHERE run_id = ?1 ORDER BY at ASC, id ASC"),
         )
         .bind(run_id.to_string())
         .fetch_all(&self.pool)
@@ -78,9 +78,9 @@ impl DecisionLogRepository for DecisionLogRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO decision_log (id, at, run_id, transition, decision, note)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
                     )
                     .bind(id)
                     .bind(at)

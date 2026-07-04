@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use cellarr_core::repo::GrabRepository;
 use cellarr_core::{ContentRef, Grab, GrabId, GrabRequest, GrabStatus, Release, ReleaseType};
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use time::OffsetDateTime;
 
@@ -50,12 +50,12 @@ pub(crate) fn release_type_from_str(rt: Option<String>) -> Result<Option<Release
 /// Reads/writes for grabs handed to download clients.
 #[derive(Clone)]
 pub struct GrabRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl GrabRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 }
@@ -81,11 +81,11 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO grab
                             (id, content_ref, release, indexer_id, client_id, category,
                              download_id, status, created_at, release_type)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)"),
                     )
                     .bind(id_str)
                     .bind(content_ref)
@@ -106,10 +106,10 @@ impl GrabRepository for GrabRepo {
     }
 
     async fn get(&self, id: GrabId) -> Result<Option<Grab>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT content_ref, release, indexer_id, client_id, category, download_id, status,
                     release_type
-             FROM grab WHERE id = ?1",
+             FROM grab WHERE id = ?1"),
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -151,10 +151,10 @@ impl GrabRepository for GrabRepo {
     }
 
     async fn list(&self) -> Result<Vec<Grab>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT id, content_ref, release, indexer_id, client_id, category, download_id, status,
                     release_type
-             FROM grab ORDER BY created_at DESC",
+             FROM grab ORDER BY created_at DESC"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -204,7 +204,7 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("UPDATE grab SET download_id = ?2 WHERE id = ?1")
+                    sqlx::query(&pq("UPDATE grab SET download_id = ?2 WHERE id = ?1"))
                         .bind(id)
                         .bind(download_id)
                         .execute(&mut *conn)
@@ -221,7 +221,7 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("UPDATE grab SET status = ?2 WHERE id = ?1")
+                    sqlx::query(&pq("UPDATE grab SET status = ?2 WHERE id = ?1"))
                         .bind(id)
                         .bind(status)
                         .execute(&mut *conn)
@@ -238,7 +238,7 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("UPDATE grab SET category = ?2 WHERE id = ?1")
+                    sqlx::query(&pq("UPDATE grab SET category = ?2 WHERE id = ?1"))
                         .bind(id)
                         .bind(category)
                         .execute(&mut *conn)
@@ -252,7 +252,7 @@ impl GrabRepository for GrabRepo {
     async fn delete(&self, id: GrabId) -> Result<bool> {
         // The writer actor's job returns `()`, so detect existence with a read
         // before issuing the delete (the queue-remove path is not hot).
-        let existed = sqlx::query("SELECT 1 FROM grab WHERE id = ?1")
+        let existed = sqlx::query(&pq("SELECT 1 FROM grab WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?
@@ -261,7 +261,7 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("DELETE FROM grab WHERE id = ?1")
+                    sqlx::query(&pq("DELETE FROM grab WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;

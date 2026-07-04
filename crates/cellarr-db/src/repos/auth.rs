@@ -8,7 +8,7 @@
 //! never reach this layer.
 
 use cellarr_core::AuthConfig;
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::error::{DbError, Result};
@@ -26,12 +26,12 @@ pub struct AuthSession {
 /// Reads/writes for the auth config and the Forms session store.
 #[derive(Clone)]
 pub struct AuthRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl AuthRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -42,7 +42,7 @@ impl AuthRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_config(&self) -> Result<AuthConfig> {
-        let row = sqlx::query("SELECT body FROM auth_config WHERE id = 1")
+        let row = sqlx::query(&pq("SELECT body FROM auth_config WHERE id = 1"))
             .fetch_optional(&self.pool)
             .await?;
         match row {
@@ -65,9 +65,9 @@ impl AuthRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO auth_config (id, body) VALUES (1, ?1)
-                         ON CONFLICT(id) DO UPDATE SET body = excluded.body",
+                         ON CONFLICT(id) DO UPDATE SET body = excluded.body"),
                     )
                     .bind(body)
                     .execute(&mut *conn)
@@ -95,9 +95,9 @@ impl AuthRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO auth_session (token, username, created_at, expires_at)
-                         VALUES (?1, ?2, ?3, ?4)",
+                         VALUES (?1, ?2, ?3, ?4)"),
                     )
                     .bind(token)
                     .bind(username)
@@ -118,9 +118,9 @@ impl AuthRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_session(&self, token: &str, now: i64) -> Result<Option<AuthSession>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT username, expires_at FROM auth_session
-             WHERE token = ?1 AND expires_at > ?2",
+             WHERE token = ?1 AND expires_at > ?2"),
         )
         .bind(token)
         .bind(now)
@@ -154,7 +154,7 @@ impl AuthRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM auth_session WHERE token = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM auth_session WHERE token = ?1"))
                         .bind(token)
                         .execute(&mut *conn)
                         .await?;
@@ -176,7 +176,7 @@ impl AuthRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("DELETE FROM auth_session")
+                    sqlx::query(&pq("DELETE FROM auth_session"))
                         .execute(&mut *conn)
                         .await?;
                     Ok(())
@@ -198,7 +198,7 @@ impl AuthRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM auth_session WHERE expires_at <= ?1")
+                    let result = sqlx::query(&pq("DELETE FROM auth_session WHERE expires_at <= ?1"))
                         .bind(now)
                         .execute(&mut *conn)
                         .await?;

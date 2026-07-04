@@ -6,7 +6,7 @@ use cellarr_core::{
     CustomFormat, CustomFormatId, DelayProfile, DelayProfileId, QualityDefinition, QualityProfile,
     QualityProfileId, QualityRanking, ReleaseProfile, ReleaseProfileId,
 };
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::error::{DbError, Result};
@@ -15,12 +15,12 @@ use crate::writer::WriterHandle;
 /// Reads/writes for quality profiles and custom formats.
 #[derive(Clone)]
 pub struct ProfileRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl ProfileRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -35,9 +35,9 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO quality_profile (id, name, body) VALUES (?1, ?2, ?3)
-                         ON CONFLICT(id) DO UPDATE SET name = excluded.name, body = excluded.body",
+                         ON CONFLICT(id) DO UPDATE SET name = excluded.name, body = excluded.body"),
                     )
                     .bind(id)
                     .bind(name)
@@ -67,7 +67,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM quality_profile WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM quality_profile WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -91,10 +91,10 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO custom_format (id, name, score, body) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(id) DO UPDATE SET
-                            name = excluded.name, score = excluded.score, body = excluded.body",
+                            name = excluded.name, score = excluded.score, body = excluded.body"),
                     )
                     .bind(id)
                     .bind(name)
@@ -113,7 +113,7 @@ impl ProfileRepo {
     /// # Errors
     /// Returns a [`DbError`] on read or deserialization failure.
     pub async fn get_custom_format(&self, id: CustomFormatId) -> Result<Option<CustomFormat>> {
-        let row = sqlx::query("SELECT body FROM custom_format WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM custom_format WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -141,7 +141,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM custom_format WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM custom_format WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -165,10 +165,10 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO delay_profile (id, enabled, \"order\", body) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(id) DO UPDATE SET
-                            enabled = excluded.enabled, \"order\" = excluded.\"order\", body = excluded.body",
+                            enabled = excluded.enabled, \"order\" = excluded.\"order\", body = excluded.body"),
                     )
                     .bind(id)
                     .bind(enabled)
@@ -187,7 +187,7 @@ impl ProfileRepo {
     /// # Errors
     /// Returns a [`DbError`] on read or deserialization failure.
     pub async fn get_delay_profile(&self, id: DelayProfileId) -> Result<Option<DelayProfile>> {
-        let row = sqlx::query("SELECT body FROM delay_profile WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM delay_profile WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -204,7 +204,7 @@ impl ProfileRepo {
     /// # Errors
     /// Returns a [`DbError`] on read or deserialization failure.
     pub async fn list_delay_profiles(&self) -> Result<Vec<DelayProfile>> {
-        let rows = sqlx::query("SELECT body FROM delay_profile ORDER BY \"order\" ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM delay_profile ORDER BY \"order\" ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()
@@ -235,7 +235,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO quality_definition
                             (name, title, min_size_per_min, max_size_per_min, preferred_size_per_min, body)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -244,7 +244,7 @@ impl ProfileRepo {
                             min_size_per_min = excluded.min_size_per_min,
                             max_size_per_min = excluded.max_size_per_min,
                             preferred_size_per_min = excluded.preferred_size_per_min,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(name)
                     .bind(title)
@@ -276,7 +276,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM quality_definition WHERE name = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM quality_definition WHERE name = ?1"))
                         .bind(name)
                         .execute(&mut *conn)
                         .await?;
@@ -293,7 +293,7 @@ impl ProfileRepo {
     /// # Errors
     /// Returns a [`DbError`] on read or deserialization failure.
     pub async fn quality_definition_overrides(&self) -> Result<Vec<QualityDefinition>> {
-        let rows = sqlx::query("SELECT body FROM quality_definition")
+        let rows = sqlx::query(&pq("SELECT body FROM quality_definition"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()
@@ -352,7 +352,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM delay_profile WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM delay_profile WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -376,10 +376,10 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO release_profile (id, enabled, name, body) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(id) DO UPDATE SET
-                            enabled = excluded.enabled, name = excluded.name, body = excluded.body",
+                            enabled = excluded.enabled, name = excluded.name, body = excluded.body"),
                     )
                     .bind(id)
                     .bind(enabled)
@@ -401,7 +401,7 @@ impl ProfileRepo {
         &self,
         id: ReleaseProfileId,
     ) -> Result<Option<ReleaseProfile>> {
-        let row = sqlx::query("SELECT body FROM release_profile WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM release_profile WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -418,7 +418,7 @@ impl ProfileRepo {
     /// # Errors
     /// Returns a [`DbError`] on read or deserialization failure.
     pub async fn list_release_profiles(&self) -> Result<Vec<ReleaseProfile>> {
-        let rows = sqlx::query("SELECT body FROM release_profile ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM release_profile ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()
@@ -445,7 +445,7 @@ impl ProfileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM release_profile WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM release_profile WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -463,7 +463,7 @@ impl ProfileRepository for ProfileRepo {
     type Error = DbError;
 
     async fn get_profile(&self, id: QualityProfileId) -> Result<Option<QualityProfile>> {
-        let row = sqlx::query("SELECT body FROM quality_profile WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM quality_profile WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -475,7 +475,7 @@ impl ProfileRepository for ProfileRepo {
     }
 
     async fn list_profiles(&self) -> Result<Vec<QualityProfile>> {
-        let rows = sqlx::query("SELECT body FROM quality_profile ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM quality_profile ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()
@@ -487,7 +487,7 @@ impl ProfileRepository for ProfileRepo {
     }
 
     async fn custom_formats(&self) -> Result<Vec<CustomFormat>> {
-        let rows = sqlx::query("SELECT body FROM custom_format ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM custom_format ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()

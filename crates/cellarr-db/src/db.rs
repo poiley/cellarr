@@ -9,9 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tokio::sync::Mutex;
 
+use crate::dialect::DbPool;
 use crate::error::Result;
 use crate::repos::{
     AuthRepo, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo,
@@ -31,7 +32,7 @@ const DEFAULT_WRITER_BOUND: usize = 256;
 /// writer-actor) are entirely contained here.
 #[derive(Clone)]
 pub struct Database {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
     // Shared, take-once shutdown control for the writer actor. Behind an `Arc<Mutex<Option<_>>>`
     // so every `Database` clone observes the same control and `shutdown` runs at most once
@@ -84,7 +85,7 @@ impl Database {
             .max_connections(1)
             .connect_with(options)
             .await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        sqlx::migrate!("./migrations/sqlite").run(&pool).await?;
         let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
         Ok(Self {
             pool,
@@ -98,7 +99,7 @@ impl Database {
             .max_connections(8)
             .connect_with(options)
             .await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        sqlx::migrate!("./migrations/sqlite").run(&pool).await?;
         let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
         Ok(Self {
             pool,
@@ -206,7 +207,7 @@ impl Database {
     /// The read pool. Repositories use this for queries; callers needing an
     /// escape hatch (e.g. `cellarr-migrate` importing) may borrow it.
     #[must_use]
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &DbPool {
         &self.pool
     }
 

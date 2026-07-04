@@ -12,10 +12,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use sqlx::sqlite::SqlitePool;
-use sqlx::SqliteConnection;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::dialect::{DbConnection, DbPool};
 use crate::error::{DbError, Result};
 
 /// A unit of write work: given the writer's connection, do the writes and return.
@@ -24,7 +23,7 @@ use crate::error::{DbError, Result};
 /// closure itself does not commit. Returning `Err` rolls the transaction back.
 type WriteJob = Box<
     dyn for<'c> FnOnce(
-            &'c mut SqliteConnection,
+            &'c mut DbConnection,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'c>>
         + Send,
 >;
@@ -77,7 +76,7 @@ impl WriterHandle {
     /// capacity (backpressure for write bursts). Returns the cloneable submit
     /// handle plus the single [`WriterShutdown`] control.
     #[must_use]
-    pub fn spawn(pool: SqlitePool, bound: usize) -> (Self, WriterShutdown) {
+    pub fn spawn(pool: DbPool, bound: usize) -> (Self, WriterShutdown) {
         let (tx, mut rx) = mpsc::channel::<WriteMessage>(bound);
         let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
 
@@ -134,7 +133,7 @@ impl WriterHandle {
     pub async fn submit<F>(&self, job: F) -> Result<()>
     where
         F: for<'c> FnOnce(
-                &'c mut SqliteConnection,
+                &'c mut DbConnection,
             ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'c>>
             + Send
             + 'static,
@@ -152,12 +151,18 @@ impl WriterHandle {
     }
 }
 
-/// Run a job inside a `BEGIN IMMEDIATE` transaction, committing on success and
-/// rolling back on error.
-async fn run_in_immediate(conn: &mut SqliteConnection, job: WriteJob) -> Result<()> {
-    // BEGIN IMMEDIATE takes the write lock up front so a deferred upgrade can
-    // never error mid-transaction (docs/08-database.md).
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+/// Run a job inside a transaction, committing on success and rolling back on
+/// error.
+async fn run_in_immediate(conn: &mut DbConnection, job: WriteJob) -> Result<()> {
+    // On SQLite `BEGIN IMMEDIATE` takes the write lock up front so a deferred
+    // read→write upgrade can never error mid-transaction (docs/08-database.md).
+    // Postgres has no such lock-upgrade hazard (MVCC), so a plain `BEGIN` is the
+    // correct and only valid spelling there.
+    #[cfg(not(feature = "postgres"))]
+    let begin = "BEGIN IMMEDIATE";
+    #[cfg(feature = "postgres")]
+    let begin = "BEGIN";
+    sqlx::query(begin).execute(&mut *conn).await?;
     match job(conn).await {
         Ok(()) => {
             sqlx::query("COMMIT").execute(&mut *conn).await?;

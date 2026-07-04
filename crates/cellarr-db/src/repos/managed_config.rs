@@ -12,7 +12,7 @@
 //! reconciler in `cellarr-cli` owns the meaning of `kind`/`name`/`content_hash`;
 //! this repo is pure storage.
 
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::error::Result;
@@ -34,12 +34,12 @@ pub struct ManagedEntity {
 /// Reads/writes for the managed-config tracking ledger.
 #[derive(Clone)]
 pub struct ManagedConfigRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl ManagedConfigRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -51,9 +51,9 @@ impl ManagedConfigRepo {
     /// # Errors
     /// Returns a [`DbError`](crate::DbError) on query/decode failure.
     pub async fn list_kind(&self, kind: &str) -> Result<Vec<ManagedEntity>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT kind, name, entity_id, content_hash
-             FROM managed_config_entity WHERE kind = ?1 ORDER BY name ASC",
+             FROM managed_config_entity WHERE kind = ?1 ORDER BY name ASC"),
         )
         .bind(kind)
         .fetch_all(&self.pool)
@@ -67,9 +67,9 @@ impl ManagedConfigRepo {
     /// # Errors
     /// Returns a [`DbError`](crate::DbError) on query/decode failure.
     pub async fn list_all(&self) -> Result<Vec<ManagedEntity>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT kind, name, entity_id, content_hash
-             FROM managed_config_entity ORDER BY kind ASC, name ASC",
+             FROM managed_config_entity ORDER BY kind ASC, name ASC"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -88,12 +88,12 @@ impl ManagedConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO managed_config_entity (kind, name, entity_id, content_hash)
                          VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(kind, name) DO UPDATE SET
                             entity_id = excluded.entity_id,
-                            content_hash = excluded.content_hash",
+                            content_hash = excluded.content_hash"),
                     )
                     .bind(kind)
                     .bind(name)
@@ -123,8 +123,8 @@ impl ManagedConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query(
-                        "DELETE FROM managed_config_entity WHERE kind = ?1 AND name = ?2",
+                    let result = sqlx::query(&pq(
+                        "DELETE FROM managed_config_entity WHERE kind = ?1 AND name = ?2"),
                     )
                     .bind(kind)
                     .bind(name)
@@ -139,7 +139,7 @@ impl ManagedConfigRepo {
     }
 }
 
-fn row_to_entity(row: sqlx::sqlite::SqliteRow) -> Result<ManagedEntity> {
+fn row_to_entity(row: crate::dialect::DbRow) -> Result<ManagedEntity> {
     Ok(ManagedEntity {
         kind: row.try_get("kind")?,
         name: row.try_get("name")?,

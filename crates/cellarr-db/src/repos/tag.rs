@@ -9,7 +9,7 @@
 //! restart.
 
 use cellarr_core::Tag;
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::error::Result;
@@ -18,12 +18,12 @@ use crate::writer::WriterHandle;
 /// Reads/writes for the persisted `tag` vocabulary.
 #[derive(Clone)]
 pub struct TagRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl TagRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -32,7 +32,7 @@ impl TagRepo {
     /// # Errors
     /// Returns a [`DbError`](crate::DbError) on query/decode failure.
     pub async fn list(&self) -> Result<Vec<Tag>> {
-        let rows = sqlx::query("SELECT id, label FROM tag ORDER BY id ASC")
+        let rows = sqlx::query(&pq("SELECT id, label FROM tag ORDER BY id ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_tag).collect()
@@ -43,7 +43,7 @@ impl TagRepo {
     /// # Errors
     /// Returns a [`DbError`](crate::DbError) on query/decode failure.
     pub async fn get(&self, id: u32) -> Result<Option<Tag>> {
-        let row = sqlx::query("SELECT id, label FROM tag WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT id, label FROM tag WHERE id = ?1"))
             .bind(i64::from(id))
             .fetch_optional(&self.pool)
             .await?;
@@ -66,11 +66,17 @@ impl TagRepo {
             .submit(move |conn| {
                 Box::pin(async move {
                     // De-dup case-insensitively: an existing label returns as-is.
-                    if let Some(row) =
-                        sqlx::query("SELECT id, label FROM tag WHERE label = ?1 COLLATE NOCASE")
-                            .bind(&label)
-                            .fetch_optional(&mut *conn)
-                            .await?
+                    // SQLite spells this `COLLATE NOCASE`; Postgres has no such
+                    // collation, so match on `LOWER(label)` (backed by the
+                    // functional unique index).
+                    #[cfg(not(feature = "postgres"))]
+                    let dedup_sql = "SELECT id, label FROM tag WHERE label = ?1 COLLATE NOCASE";
+                    #[cfg(feature = "postgres")]
+                    let dedup_sql = "SELECT id, label FROM tag WHERE LOWER(label) = LOWER(?1)";
+                    if let Some(row) = sqlx::query(&pq(dedup_sql))
+                        .bind(&label)
+                        .fetch_optional(&mut *conn)
+                        .await?
                     {
                         let id: i64 = row.try_get("id")?;
                         let existing: String = row.try_get("label")?;
@@ -81,11 +87,11 @@ impl TagRepo {
                         return Ok(());
                     }
                     // Assign the next dense id (MAX + 1, starting at 1).
-                    let next: i64 = sqlx::query("SELECT COALESCE(MAX(id), 0) + 1 AS next FROM tag")
+                    let next: i64 = sqlx::query(&pq("SELECT COALESCE(MAX(id), 0) + 1 AS next FROM tag"))
                         .fetch_one(&mut *conn)
                         .await?
                         .try_get("next")?;
-                    sqlx::query("INSERT INTO tag (id, label) VALUES (?1, ?2)")
+                    sqlx::query(&pq("INSERT INTO tag (id, label) VALUES (?1, ?2)"))
                         .bind(next)
                         .bind(&label)
                         .execute(&mut *conn)
@@ -120,7 +126,7 @@ impl TagRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query("UPDATE tag SET label = ?1 WHERE id = ?2")
+                    sqlx::query(&pq("UPDATE tag SET label = ?1 WHERE id = ?2"))
                         .bind(&new_label)
                         .bind(i64::from(id))
                         .execute(&mut *conn)
@@ -145,7 +151,7 @@ impl TagRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM tag WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM tag WHERE id = ?1"))
                         .bind(i64::from(id))
                         .execute(&mut *conn)
                         .await?;
@@ -167,8 +173,17 @@ impl TagRepo {
             return Ok(Vec::new());
         }
         // A small IN-list built from the ids (all integers, no injection risk).
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT label FROM tag WHERE id IN ({placeholders}) ORDER BY id ASC");
+        // Numbered `?N` placeholders (not bare `?`) so `pq` can translate them to
+        // `$N` on Postgres; SQLite accepts the numbered form too.
+        let placeholders = (1..=ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        // Own the translated SQL: on SQLite `pq` borrows the `format!` temporary,
+        // so `.to_string()` keeps it alive for the `q` borrow below.
+        let sql =
+            pq(&format!("SELECT label FROM tag WHERE id IN ({placeholders}) ORDER BY id ASC"))
+                .to_string();
         let mut q = sqlx::query(&sql);
         for id in ids {
             q = q.bind(i64::from(*id));
@@ -180,7 +195,7 @@ impl TagRepo {
     }
 }
 
-fn row_to_tag(row: sqlx::sqlite::SqliteRow) -> Result<Tag> {
+fn row_to_tag(row: crate::dialect::DbRow) -> Result<Tag> {
     let id: i64 = row.try_get("id")?;
     let label: String = row.try_get("label")?;
     Ok(Tag {

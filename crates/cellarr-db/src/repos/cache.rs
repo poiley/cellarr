@@ -4,7 +4,7 @@
 //! restart (docs/08-database.md: no Redis). Entries carry an optional RFC3339
 //! expiry; expired rows are treated as absent on read and can be pruned.
 
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use time::OffsetDateTime;
 
@@ -15,12 +15,12 @@ use crate::writer::WriterHandle;
 /// Reads/writes for the persistent cache table.
 #[derive(Clone)]
 pub struct CacheRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl CacheRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -40,10 +40,10 @@ impl CacheRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO cache (cache_key, value, expires_at) VALUES (?1, ?2, ?3)
                          ON CONFLICT(cache_key) DO UPDATE SET
-                            value = excluded.value, expires_at = excluded.expires_at",
+                            value = excluded.value, expires_at = excluded.expires_at"),
                     )
                     .bind(key)
                     .bind(value)
@@ -64,9 +64,9 @@ impl CacheRepo {
         // Compare against now in SQL using string ordering of RFC3339 — only
         // valid because all timestamps are written UTC ('Z') with fixed width.
         let now = format_time(OffsetDateTime::now_utc())?;
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT value FROM cache
-             WHERE cache_key = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
+             WHERE cache_key = ?1 AND (expires_at IS NULL OR expires_at > ?2)"),
         )
         .bind(key)
         .bind(now)
@@ -87,8 +87,8 @@ impl CacheRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
-                        "DELETE FROM cache WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                    sqlx::query(&pq(
+                        "DELETE FROM cache WHERE expires_at IS NOT NULL AND expires_at <= ?1"),
                     )
                     .bind(now)
                     .execute(&mut *conn)

@@ -12,7 +12,7 @@ use cellarr_core::{
     DownloadClientConfig, IndexerConfig, Library, LibraryId, MediaManagement, MediaType,
     NotificationConfig, QualityProfileId, RemotePathMapping, RootFolder,
 };
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::convert::parse_uuid;
@@ -22,12 +22,12 @@ use crate::writer::WriterHandle;
 /// Reads/writes for libraries and integration configuration.
 #[derive(Clone)]
 pub struct ConfigRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl ConfigRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -47,7 +47,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO library
                             (id, media_type, name, root_folders, default_quality_profile)
                          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -55,7 +55,7 @@ impl ConfigRepo {
                             media_type = excluded.media_type,
                             name = excluded.name,
                             root_folders = excluded.root_folders,
-                            default_quality_profile = excluded.default_quality_profile",
+                            default_quality_profile = excluded.default_quality_profile"),
                     )
                     .bind(id)
                     .bind(media_type)
@@ -75,9 +75,9 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_library(&self, id: LibraryId) -> Result<Option<Library>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&pq(
             "SELECT id, media_type, name, root_folders, default_quality_profile
-             FROM library WHERE id = ?1",
+             FROM library WHERE id = ?1"),
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -90,9 +90,9 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_libraries(&self) -> Result<Vec<Library>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT id, media_type, name, root_folders, default_quality_profile
-             FROM library ORDER BY name ASC",
+             FROM library ORDER BY name ASC"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -115,7 +115,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM library WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM library WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -142,14 +142,14 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO root_folder (id, path, name, enabled, body)
                          VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(id) DO UPDATE SET
                             path = excluded.path,
                             name = excluded.name,
                             enabled = excluded.enabled,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(id)
                     .bind(path)
@@ -169,7 +169,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_root_folder(&self, id: &str) -> Result<Option<RootFolder>> {
-        let row = sqlx::query("SELECT body FROM root_folder WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM root_folder WHERE id = ?1"))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -181,7 +181,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_root_folders(&self) -> Result<Vec<RootFolder>> {
-        let rows = sqlx::query("SELECT body FROM root_folder ORDER BY path ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM root_folder ORDER BY path ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_json_body).collect()
@@ -203,7 +203,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM root_folder WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM root_folder WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -232,7 +232,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO indexer
                             (id, name, kind, protocol, enabled, priority, body)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -242,7 +242,7 @@ impl ConfigRepo {
                             protocol = excluded.protocol,
                             enabled = excluded.enabled,
                             priority = excluded.priority,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(id)
                     .bind(name)
@@ -264,7 +264,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_indexer(&self, id: cellarr_core::IndexerId) -> Result<Option<IndexerConfig>> {
-        let row = sqlx::query("SELECT body FROM indexer WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM indexer WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -276,7 +276,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_indexers(&self) -> Result<Vec<IndexerConfig>> {
-        let rows = sqlx::query("SELECT body FROM indexer ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM indexer ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_json_body).collect()
@@ -289,8 +289,8 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_enabled_indexers(&self) -> Result<Vec<IndexerConfig>> {
-        let rows = sqlx::query(
-            "SELECT body FROM indexer WHERE enabled = 1 ORDER BY priority ASC, name ASC",
+        let rows = sqlx::query(&pq(
+            "SELECT body FROM indexer WHERE enabled = 1 ORDER BY priority ASC, name ASC"),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -312,7 +312,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM indexer WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM indexer WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -342,7 +342,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO download_client
                             (id, name, kind, protocol, enabled, priority, category, body)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -353,7 +353,7 @@ impl ConfigRepo {
                             enabled = excluded.enabled,
                             priority = excluded.priority,
                             category = excluded.category,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(id)
                     .bind(name)
@@ -379,7 +379,7 @@ impl ConfigRepo {
         &self,
         id: cellarr_core::DownloadClientId,
     ) -> Result<Option<DownloadClientConfig>> {
-        let row = sqlx::query("SELECT body FROM download_client WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM download_client WHERE id = ?1"))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -391,7 +391,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_download_clients(&self) -> Result<Vec<DownloadClientConfig>> {
-        let rows = sqlx::query("SELECT body FROM download_client ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM download_client ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_json_body).collect()
@@ -412,7 +412,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM download_client WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM download_client WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -439,14 +439,14 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO notification (id, name, kind, enabled, body)
                          VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(id) DO UPDATE SET
                             name = excluded.name,
                             kind = excluded.kind,
                             enabled = excluded.enabled,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(id)
                     .bind(name)
@@ -466,7 +466,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_notification(&self, id: &str) -> Result<Option<NotificationConfig>> {
-        let row = sqlx::query("SELECT body FROM notification WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM notification WHERE id = ?1"))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -478,7 +478,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_notifications(&self) -> Result<Vec<NotificationConfig>> {
-        let rows = sqlx::query("SELECT body FROM notification ORDER BY name ASC")
+        let rows = sqlx::query(&pq("SELECT body FROM notification ORDER BY name ASC"))
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(row_to_json_body).collect()
@@ -494,9 +494,9 @@ impl ConfigRepo {
         &self,
         kind: &str,
     ) -> Result<Vec<NotificationConfig>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT body FROM notification
-             WHERE enabled = 1 AND kind = ?1 ORDER BY name ASC",
+             WHERE enabled = 1 AND kind = ?1 ORDER BY name ASC"),
         )
         .bind(kind)
         .fetch_all(&self.pool)
@@ -520,7 +520,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM notification WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM notification WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -547,7 +547,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO remote_path_mapping
                             (id, host, remote_path, local_path, body)
                          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -555,7 +555,7 @@ impl ConfigRepo {
                             host = excluded.host,
                             remote_path = excluded.remote_path,
                             local_path = excluded.local_path,
-                            body = excluded.body",
+                            body = excluded.body"),
                     )
                     .bind(id)
                     .bind(host)
@@ -575,7 +575,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_remote_path_mapping(&self, id: &str) -> Result<Option<RemotePathMapping>> {
-        let row = sqlx::query("SELECT body FROM remote_path_mapping WHERE id = ?1")
+        let row = sqlx::query(&pq("SELECT body FROM remote_path_mapping WHERE id = ?1"))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -589,7 +589,7 @@ impl ConfigRepo {
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn list_remote_path_mappings(&self) -> Result<Vec<RemotePathMapping>> {
         let rows =
-            sqlx::query("SELECT body FROM remote_path_mapping ORDER BY host ASC, remote_path ASC")
+            sqlx::query(&pq("SELECT body FROM remote_path_mapping ORDER BY host ASC, remote_path ASC"))
                 .fetch_all(&self.pool)
                 .await?;
         rows.into_iter().map(row_to_json_body).collect()
@@ -610,7 +610,7 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query("DELETE FROM remote_path_mapping WHERE id = ?1")
+                    let result = sqlx::query(&pq("DELETE FROM remote_path_mapping WHERE id = ?1"))
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
@@ -630,7 +630,7 @@ impl ConfigRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_media_management(&self) -> Result<MediaManagement> {
-        let row = sqlx::query("SELECT body FROM media_management WHERE id = 1")
+        let row = sqlx::query(&pq("SELECT body FROM media_management WHERE id = 1"))
             .fetch_optional(&self.pool)
             .await?;
         match row {
@@ -649,9 +649,9 @@ impl ConfigRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO media_management (id, body) VALUES (1, ?1)
-                         ON CONFLICT(id) DO UPDATE SET body = excluded.body",
+                         ON CONFLICT(id) DO UPDATE SET body = excluded.body"),
                     )
                     .bind(body)
                     .execute(&mut *conn)
@@ -664,7 +664,7 @@ impl ConfigRepo {
 }
 
 /// Decode a single `body` JSON column into its typed config struct.
-fn row_to_json_body<T: serde::de::DeserializeOwned>(row: sqlx::sqlite::SqliteRow) -> Result<T> {
+fn row_to_json_body<T: serde::de::DeserializeOwned>(row: crate::dialect::DbRow) -> Result<T> {
     let body: String = row.try_get("body")?;
     serde_json::from_str(&body).map_err(DbError::from)
 }
@@ -677,7 +677,7 @@ fn protocol_str(protocol: cellarr_core::Protocol) -> Result<String> {
         .to_string())
 }
 
-fn row_to_library(row: sqlx::sqlite::SqliteRow) -> Result<Library> {
+fn row_to_library(row: crate::dialect::DbRow) -> Result<Library> {
     let id: String = row.try_get("id")?;
     let media_type: String = row.try_get("media_type")?;
     let name: String = row.try_get("name")?;

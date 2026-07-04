@@ -9,7 +9,7 @@
 
 use cellarr_core::blocklist::release_key;
 use cellarr_core::{ContentId, Protocol, Release};
-use sqlx::sqlite::SqlitePool;
+use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::error::Result;
@@ -33,12 +33,12 @@ pub struct PendingRelease {
 /// Reads/writes for delay-profile first-seen bookkeeping.
 #[derive(Clone)]
 pub struct PendingReleaseRepo {
-    pool: SqlitePool,
+    pool: DbPool,
     writer: WriterHandle,
 }
 
 impl PendingReleaseRepo {
-    pub(crate) fn new(pool: SqlitePool, writer: WriterHandle) -> Self {
+    pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
 
@@ -69,11 +69,11 @@ impl PendingReleaseRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(
+                    sqlx::query(&pq(
                         "INSERT INTO pending_release (content_id, release_key, first_seen_at, protocol, title)
                          VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(content_id, release_key) DO UPDATE SET
-                            first_seen_at = MIN(pending_release.first_seen_at, excluded.first_seen_at)",
+                            first_seen_at = MIN(pending_release.first_seen_at, excluded.first_seen_at)"),
                     )
                     .bind(cid_w)
                     .bind(key_w)
@@ -88,8 +88,8 @@ impl PendingReleaseRepo {
             .await?;
 
         // Read back the effective (possibly earlier) first-seen instant.
-        let row = sqlx::query(
-            "SELECT first_seen_at FROM pending_release WHERE content_id = ?1 AND release_key = ?2",
+        let row = sqlx::query(&pq(
+            "SELECT first_seen_at FROM pending_release WHERE content_id = ?1 AND release_key = ?2"),
         )
         .bind(&cid)
         .bind(&key)
@@ -104,9 +104,9 @@ impl PendingReleaseRepo {
     /// # Errors
     /// Returns a [`crate::DbError`] on read failure.
     pub async fn list_for_content(&self, content_id: ContentId) -> Result<Vec<PendingRelease>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&pq(
             "SELECT content_id, release_key, first_seen_at, protocol, title
-             FROM pending_release WHERE content_id = ?1 ORDER BY first_seen_at ASC",
+             FROM pending_release WHERE content_id = ?1 ORDER BY first_seen_at ASC"),
         )
         .bind(content_id.to_string())
         .fetch_all(&self.pool)
@@ -131,8 +131,8 @@ impl PendingReleaseRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    let result = sqlx::query(
-                        "DELETE FROM pending_release WHERE content_id = ?1 AND release_key = ?2",
+                    let result = sqlx::query(&pq(
+                        "DELETE FROM pending_release WHERE content_id = ?1 AND release_key = ?2"),
                     )
                     .bind(cid)
                     .bind(key)
@@ -155,7 +155,7 @@ fn protocol_str(p: Protocol) -> &'static str {
     }
 }
 
-fn row_to_pending(row: sqlx::sqlite::SqliteRow) -> Result<PendingRelease> {
+fn row_to_pending(row: crate::dialect::DbRow) -> Result<PendingRelease> {
     let content_id: String = row.try_get("content_id")?;
     let release_key: String = row.try_get("release_key")?;
     let first: i64 = row.try_get("first_seen_at")?;
