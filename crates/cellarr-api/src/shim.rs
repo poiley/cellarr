@@ -5251,17 +5251,33 @@ fn artwork_present_ids(state: &AppState) -> std::collections::HashSet<String> {
     set
 }
 
-/// [`artwork_images`], gated on a precomputed presence set so the (common) no-artwork
-/// item costs a hash lookup instead of filesystem stats.
+/// The v3 `images[]` for a list row, derived purely from the precomputed presence
+/// set — **no per-item filesystem stat**.
+///
+/// The artwork directory can live on high-latency storage (a network mount). The
+/// per-item probe [`artwork_images`] runs (up to) eight `is_file` calls per row;
+/// across a large library that was tens of thousands of round-trips and made the
+/// list endpoint take 20+ seconds even with a fast (Postgres) database. Here a
+/// single `read_dir` (into `present`) tells us which nodes have a cached-artwork
+/// directory, and we advertise poster+fanart for those without touching the disk
+/// again. The `mediacover` route validates the exact file per request and 404s a
+/// missing kind/extension, so a client never renders a broken cover — it just
+/// isn't fetched.
 fn artwork_images_present(
     state: &AppState,
     content_id: &str,
     present: &std::collections::HashSet<String>,
 ) -> Vec<Value> {
-    if !present.contains(content_id) {
+    if state.artwork_dir.is_none() || !present.contains(content_id) {
         return Vec::new();
     }
-    artwork_images(state, content_id)
+    ["poster", "fanart"]
+        .into_iter()
+        .map(|kind| {
+            let url = format!("/api/v3/mediacover/{content_id}/{kind}");
+            json!({ "coverType": kind, "url": url.clone(), "remoteUrl": url })
+        })
+        .collect()
 }
 
 fn artwork_images(state: &AppState, content_id: &str) -> Vec<Value> {

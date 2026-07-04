@@ -1,0 +1,88 @@
+# Postgres for cellarr on the program (rinzler) k3s cluster.
+#
+# WHY: cellarr's default backend is an embedded SQLite file. On this cluster the
+# config volume is a CIFS/SMB NAS mount, and SQLite over a network filesystem
+# pays a network round-trip per page — the movie/series list endpoints took
+# 10-15s. A Postgres *server* does its own local-disk I/O and returns result
+# sets over TCP, so the SMB mount never sits in the query path.
+#
+# CRITICAL: Postgres's data directory MUST be on node-LOCAL storage, never the
+# CIFS/NFS NAS mount — running the Postgres data dir over a network filesystem
+# reintroduces exactly the latency (and the locking/corruption hazards Postgres
+# explicitly warns about) we are moving off SQLite to escape. Hence the
+# `local-path` StorageClass (rancher local-path provisioner = node-local disk),
+# not `nas-config`. WaitForFirstConsumer binds the volume to whichever node the
+# pod schedules on; the single replica stays pinned there.
+#
+# The password lives in the `cellarr-secrets` Secret (applied separately, not in
+# this public manifest): key POSTGRES_PASSWORD here, and the full
+# CELLARR_DATABASE_URL (postgres://cellarr:<pw>@postgres:5432/cellarr) that the
+# cellarr Deployment reads. cellarr runs its Postgres migrations on boot.
+#
+# Backups: a server DB is backed up out-of-band (pg_dump / the NAS's own backup
+# of a dump), NOT by cellarr's in-process snapshot (that is SQLite-only).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: cellarr
+  labels: { app: postgres }
+spec:
+  type: ClusterIP
+  selector: { app: postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: cellarr
+  labels: { app: postgres }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      # No securityContext: the postgres entrypoint starts as root, chowns the
+      # data dir, then drops to the postgres user — the reliable pattern on a
+      # fresh local-path volume.
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_USER, value: "cellarr" }
+            - { name: POSTGRES_DB, value: "cellarr" }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: cellarr-secrets, key: POSTGRES_PASSWORD } }
+            # initdb into a subdir so the volume root (which may carry a
+            # lost+found) never blocks initialization.
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+            - { name: TZ, value: "America/Los_Angeles" }
+          volumeMounts:
+            - { name: pgdata, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "cellarr", "-d", "cellarr"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "cellarr", "-d", "cellarr"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path # node-local disk — NOT the CIFS NAS mount
+        resources:
+          requests: { storage: 5Gi }
