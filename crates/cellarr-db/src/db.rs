@@ -88,6 +88,83 @@ impl Database {
         })
     }
 
+    /// Connect to a Postgres server, giving this handle a **private, freshly
+    /// migrated `schema`** to work in. Test-only isolation primitive: the caller
+    /// passes a unique `schema` name so every test gets a clean namespace on one
+    /// shared server, with no cross-test contamination and no dependence on run
+    /// order (see the test-support helper).
+    ///
+    /// The schema is created (idempotently) up front, then every pooled
+    /// connection sets its `search_path` to it via `after_connect`, so the
+    /// unqualified table names in `migrations/postgres` — and every subsequent
+    /// repository query — resolve inside `schema` rather than `public`. The
+    /// migration bookkeeping table lands there too, so a fresh schema always runs
+    /// the full migration set from empty.
+    ///
+    /// # Errors
+    /// Returns a [`crate::DbError`] on connect, schema creation, or migration
+    /// failure.
+    #[cfg(feature = "postgres")]
+    #[doc(hidden)]
+    pub async fn connect_test_schema(url: &str, schema: &str) -> Result<Self> {
+        use std::str::FromStr;
+
+        use sqlx::Executor;
+        use sqlx::postgres::PgConnectOptions;
+
+        // A schema name is an identifier, not a bind parameter, so it is
+        // interpolated into DDL below. The test-support helper only ever passes a
+        // generated `test_<n>` name; assert that invariant here rather than open a
+        // SQL-injection surface if a caller passes something arbitrary.
+        assert!(
+            !schema.is_empty()
+                && schema
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "test schema name must match [a-z0-9_]+, got {schema:?}"
+        );
+
+        // Create the schema once on a throwaway connection (still on the default
+        // search_path), dropping anything stale so a reused name starts clean.
+        {
+            let bootstrap = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(url)
+                .await?;
+            bootstrap
+                .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+                .await?;
+            bootstrap
+                .execute(format!("CREATE SCHEMA {schema}").as_str())
+                .await?;
+            bootstrap.close().await;
+        }
+
+        // Every connection in the working pool pins its search_path to the new
+        // schema, so unqualified DDL/DML resolves there.
+        let connect_options = PgConnectOptions::from_str(url)?;
+        let set_search_path = format!("SET search_path TO {schema}");
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .after_connect(move |conn, _meta| {
+                let stmt = set_search_path.clone();
+                Box::pin(async move {
+                    conn.execute(stmt.as_str()).await?;
+                    Ok(())
+                })
+            })
+            .connect_with(connect_options)
+            .await?;
+
+        sqlx::migrate!("./migrations/postgres").run(&pool).await?;
+        let (writer, shutdown) = WriterHandle::spawn(pool.clone(), DEFAULT_WRITER_BOUND);
+        Ok(Self {
+            pool,
+            writer,
+            shutdown: Arc::new(Mutex::new(Some(shutdown))),
+        })
+    }
+
     /// Open (creating if absent) a SQLite database at `path` and run migrations.
     ///
     /// # Errors

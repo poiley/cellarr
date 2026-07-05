@@ -2,6 +2,11 @@
 //!
 //! A snapshot must be a self-contained, valid SQLite database that reflects the
 //! live data at the moment it was taken — `VACUUM INTO` gives us exactly that.
+//!
+//! The single-file snapshot is a SQLite-only concept: on the Postgres backend
+//! the daemon backs up out-of-band (`pg_dump`) and `Database::open` /
+//! `snapshot_to` are not compiled, so this whole file is SQLite-only.
+#![cfg(not(feature = "postgres"))]
 
 use cellarr_db::Database;
 

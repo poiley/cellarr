@@ -69,22 +69,16 @@ lint:
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
 
-# Repository tests against an EPHEMERAL, per-run Postgres (unique container + ephemeral host port).
-# Multiple runs never collide: container is named cellarr-pg-<RUN_ID>.
+# cellarr-db repository tests against an EPHEMERAL, per-run Postgres (unique container + ephemeral
+# host port). Multiple runs never collide: container is named cellarr-pg-<RUN_ID>.
 #
-# DEFERRED in v1: Postgres is a post-v1 opt-in (SQLite is the v1 default — docs/08-database.md,
-# docs/14-roadmap.md). The `postgres` cargo feature currently only enables the sqlx driver; the
-# repository layer is not yet PG-dialect complete, so this harness is gated off by default. Set
-# CELLARR_ENABLE_PG_TESTS=1 once the PG repositories land. The full harness below is kept ready.
+# Each test gets its OWN Postgres schema on this one server (test-support helper mints a unique
+# `test_<pid>_<n>` schema, migrates into it, and pins the pool's search_path there), so the tests
+# stay order-independent and parallelizable — the same tests that run on SQLite under `just test`.
+# Scoped to `-p cellarr-db`: that is the crate whose tests carry the per-schema isolation harness.
 test-pg *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "${CELLARR_ENABLE_PG_TESTS:-0}" != "1" ]; then
-        echo "test-pg: Postgres backend is deferred to post-v1 (SQLite is the v1 default)."
-        echo "         The repository layer is SQLite-only for now; skipping."
-        echo "         Set CELLARR_ENABLE_PG_TESTS=1 to run this once PG repos land."
-        exit 0
-    fi
     if [ ! -f Cargo.toml ]; then echo "no crates yet (pre Phase 0)"; exit 0; fi
     name="cellarr-pg-{{run_id}}"
     trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
@@ -99,7 +93,12 @@ test-pg *ARGS:
     until docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; do sleep 0.5; done
     export CELLARR_TEST_DATABASE_URL="postgres://postgres:cellarr@127.0.0.1:${hostport}/cellarr"
     echo "Postgres for run {{run_id}} at 127.0.0.1:${hostport}"
-    cargo test --workspace --features postgres {{ARGS}}
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        cargo nextest run -p cellarr-db --features postgres {{ARGS}}
+    else
+        echo "note: cargo-nextest not found — falling back to 'cargo test' (run 'just setup' for the faster runner)"
+        cargo test -p cellarr-db --features postgres {{ARGS}}
+    fi
 
 # --- differential oracle (pinned Sonarr/Radarr in Docker) -----------------------------------
 

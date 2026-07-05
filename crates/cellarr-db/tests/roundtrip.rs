@@ -21,18 +21,17 @@ use cellarr_core::{
     ReleaseProfile, ReleaseProfileId, RootFolder, Source,
 };
 use cellarr_db::Database;
-use tempfile::TempDir;
 use time::OffsetDateTime;
 
-/// Open a fresh migrated database under a temp dir; returns the dir so it lives
-/// for the test's duration.
-async fn temp_db() -> (TempDir, Database) {
-    let dir = TempDir::new().expect("temp dir");
-    let path = dir.path().join("cellarr.db");
-    let db = Database::open(path.to_str().expect("utf8 path"))
-        .await
-        .expect("open + migrate");
-    (dir, db)
+mod common;
+
+/// Open a fresh migrated database for a test on the compiled backend. The unit
+/// return keeps the call sites (`let (_dir, db) = temp_db().await;`) unchanged
+/// while the per-backend isolation lives in [`common::test_database`]: a private
+/// SQLite temp file by default, a private Postgres schema under `--features
+/// postgres`.
+async fn temp_db() -> ((), Database) {
+    ((), common::test_database().await)
 }
 
 fn movie_node(library_id: LibraryId, id: ContentId) -> ContentNode {
@@ -1043,11 +1042,15 @@ async fn writer_serializes_concurrent_writes() {
     assert_eq!(count, 50);
 }
 
+// SQLite-specific: exercises reopening the *same on-disk file*, which is the
+// single-file engine's durability story. Postgres has no file to reopen (the
+// server owns durability), and `Database::open` is not compiled on that backend.
+#[cfg(not(feature = "postgres"))]
 #[tokio::test]
 async fn reopen_after_writes_preserves_data() {
     // Crash-safety analogue: write, drop the handle (closing the writer + pool),
     // reopen the same file, and assert the committed data survived.
-    let dir = TempDir::new().unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("persist.db");
     let path_str = path.to_str().unwrap().to_string();
 
