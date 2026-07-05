@@ -206,8 +206,13 @@ async fn content_metadata_round_trips_and_upserts() {
     };
     content.set_metadata(node.id, &revised).await.unwrap();
     assert_eq!(content.metadata(node.id).await.unwrap(), Some(revised));
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_meta WHERE content_id = ?1")
-        .bind(node.id.to_string())
+    // Inline the (UUID, injection-safe) id so this raw assertion query is portable
+    // across both backends — the tests don't have the crate-internal `?N`→`$N`
+    // translator, and a bare `?1` is invalid on Postgres.
+    let rows: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM content_meta WHERE content_id = '{}'",
+        node.id
+    ))
         .fetch_one(db.pool())
         .await
         .unwrap();
@@ -1300,14 +1305,18 @@ async fn delete_movie_removes_node_files_and_links() {
     assert!(content.get(movie.id).await.unwrap().is_none());
     assert!(content.metadata(movie.id).await.unwrap().is_none());
     assert!(media_files.get(file.id).await.unwrap().is_none());
-    let fts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_fts WHERE content_id = ?1")
-        .bind(movie.id.to_string())
+    let fts: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM content_fts WHERE content_id = '{}'",
+        movie.id
+    ))
         .fetch_one(db.pool())
         .await
         .unwrap();
     assert_eq!(fts, 0, "FTS index row must be removed too");
-    let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_file WHERE content_id = ?1")
-        .bind(movie.id.to_string())
+    let links: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM content_file WHERE content_id = '{}'",
+        movie.id
+    ))
         .fetch_one(db.pool())
         .await
         .unwrap();
