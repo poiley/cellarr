@@ -133,7 +133,10 @@ const PosterThumb: React.FC<{ id: string; title: string }> = ({ id, title }) => 
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          display: ok ? 'block' : 'none',
+          // Stay laid out (opacity, not display:none) so `loading="lazy"` still
+          // has a box to observe — a display:none lazy image never enters the
+          // viewport, so it never loads and onLoad never fires.
+          opacity: ok ? 1 : 0,
         }}
       />
     </span>
@@ -159,6 +162,7 @@ const PosterCardImage: React.FC<{ id: string; title: string }> = ({ id, title })
     <div
       aria-hidden="true"
       style={{
+        position: 'relative',
         width: '100%',
         aspectRatio: '2 / 3',
         borderBottom: '1px solid var(--theme-border, var(--theme-text))',
@@ -177,10 +181,17 @@ const PosterCardImage: React.FC<{ id: string; title: string }> = ({ id, title })
         onLoad={() => setState('ok')}
         onError={() => setState('error')}
         style={{
+          // Absolutely fill the (relative) cell and stay laid out via opacity,
+          // not display:none — a display:none `loading="lazy"` image has no box
+          // to observe, so it never loads and onLoad never fires (blank poster).
+          // The ▦ placeholder sits behind and is covered once the poster fades in.
+          position: 'absolute',
+          inset: 0,
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          display: state === 'ok' ? 'block' : 'none',
+          opacity: state === 'ok' ? 1 : 0,
+          transition: 'opacity 120ms ease',
         }}
       />
       {state !== 'ok' ? (
