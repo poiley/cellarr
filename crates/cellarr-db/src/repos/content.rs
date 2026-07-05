@@ -792,12 +792,19 @@ impl ContentRepo {
                             .bind(cid)
                             .execute(&mut *conn)
                             .await?;
-                        sqlx::query(&pq(
-                            "DELETE FROM grab WHERE json_extract(content_ref, '$.id') = ?1"),
-                        )
-                        .bind(cid)
-                        .execute(&mut *conn)
-                        .await?;
+                        // `content_ref` is TEXT holding a JSON ContentRef; extract
+                        // its `id` field. SQLite's json_extract has no Postgres
+                        // twin, so cast to jsonb and use `->>` there.
+                        #[cfg(not(feature = "postgres"))]
+                        let del_grab =
+                            "DELETE FROM grab WHERE json_extract(content_ref, '$.id') = ?1";
+                        #[cfg(feature = "postgres")]
+                        let del_grab =
+                            "DELETE FROM grab WHERE (content_ref::jsonb ->> 'id') = ?1";
+                        sqlx::query(&pq(del_grab))
+                            .bind(cid)
+                            .execute(&mut *conn)
+                            .await?;
                     }
 
                     // 4. Remove the root node. `parent_id ... ON DELETE CASCADE`

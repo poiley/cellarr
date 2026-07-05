@@ -69,12 +69,20 @@ impl PendingReleaseRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(&pq(
-                        "INSERT INTO pending_release (content_id, release_key, first_seen_at, protocol, title)
+                    // Keep the earliest sighting on conflict. SQLite's 2-arg scalar
+                    // `MIN(a, b)` has no Postgres equivalent (there MIN is an
+                    // aggregate); Postgres spells the scalar minimum `LEAST(a, b)`.
+                    #[cfg(not(feature = "postgres"))]
+                    let upsert = "INSERT INTO pending_release (content_id, release_key, first_seen_at, protocol, title)
                          VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(content_id, release_key) DO UPDATE SET
-                            first_seen_at = MIN(pending_release.first_seen_at, excluded.first_seen_at)"),
-                    )
+                            first_seen_at = MIN(pending_release.first_seen_at, excluded.first_seen_at)";
+                    #[cfg(feature = "postgres")]
+                    let upsert = "INSERT INTO pending_release (content_id, release_key, first_seen_at, protocol, title)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(content_id, release_key) DO UPDATE SET
+                            first_seen_at = LEAST(pending_release.first_seen_at, excluded.first_seen_at)";
+                    sqlx::query(&pq(upsert))
                     .bind(cid_w)
                     .bind(key_w)
                     .bind(now)
