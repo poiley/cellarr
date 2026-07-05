@@ -28,6 +28,7 @@
 #       --dry-run=client -o yaml | kubectl apply -f -
 #   kubectl -n cellarr apply -f deploy/k8s/cellarr-secret.yaml
 #   kubectl apply -f deploy/k8s/postgres.yaml     # the database server (node-local disk)
+#   kubectl apply -f deploy/k8s/postgres-backup.yaml # scheduled pg_dump to the NAS
 #   kubectl apply -f deploy/k8s/cellarr.yaml
 # The secret must carry POSTGRES_PASSWORD and the matching CELLARR_DATABASE_URL
 # (postgres://cellarr:<pw>@postgres:5432/cellarr) — see cellarr-secret.example.yaml.

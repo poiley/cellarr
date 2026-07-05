@@ -1,0 +1,111 @@
+# Scheduled pg_dump of cellarr's Postgres, written to the UNAS Pro.
+#
+# WHY: postgres.yaml keeps its data directory on the UNAS Pro's NFS export, but
+# that appliance won't let us set the server-side export flags, so we can't
+# verify `sync` vs `async` — on power loss an `async` export could drop the last
+# committed write(s). A UPS + single writer mitigate that, but the real backstop
+# is an external logical backup. This CronJob pg_dumps the whole database every
+# 6 hours into a separate, durable path on the same NAS and keeps a rolling
+# window of dumps, so any corruption or lost tail can be recovered to the last
+# good dump. Sequential streaming file writes over CIFS/SMB are fine here (it's
+# the per-page random I/O of a live DB that CIFS handles badly, not a linear
+# `pg_dump | gzip >` append).
+#
+# HOW IT WORKS: connects with the same CELLARR_DATABASE_URL DSN cellarr uses
+# (from the cellarr-secrets Secret), streams `pg_dump | gzip` to a timestamped
+# cellarr-<UTC>.sql.gz under the NAS backup dir, then prunes so only the newest
+# ~28 dumps (≈ 7 days at every-6-hours) remain. The prune glob is anchored to
+# the cellarr-*.sql.gz naming so it can only ever delete this job's own dumps.
+#
+# RESTORE: restore into a FRESH/empty database (the plain-SQL dump errors on
+# already-existing objects), e.g. drop+recreate then load:
+#   psql "$CELLARR_DATABASE_URL" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+#   gunzip -c cellarr-20260704T000000Z.sql.gz | psql "$CELLARR_DATABASE_URL"
+# (from a shell with CELLARR_DATABASE_URL set, e.g. `kubectl -n cellarr exec`
+# into the postgres pod, or a one-off postgres:17-alpine pod on the cluster).
+#
+# The backup dir is a hostPath into the same /mnt/unas-services mount cellarr's
+# `config` volume uses (present on all nodes), in a dedicated pg-backups subdir.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: cellarr
+  labels: { app: postgres-backup }
+spec:
+  schedule: "0 */6 * * *"
+  # Never let a slow/hung dump overlap the next scheduled run (one writer at a
+  # time on the backup dir; a stuck dump shouldn't fan out).
+  concurrencyPolicy: Forbid
+  # If the controller was down at the trigger time, only run a missed job if the
+  # cluster catches up within this window; otherwise skip to the next slot
+  # rather than firing a burst of catch-up dumps.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: { app: postgres-backup }
+    spec:
+      template:
+        metadata:
+          labels: { app: postgres-backup }
+        spec:
+          restartPolicy: OnFailure
+          # Match the NAS mount ownership cellarr's config dir uses (1000:1000)
+          # so the written dumps land owned like the rest of that tree.
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: pg-backup
+              image: postgres:17-alpine # ships pg_dump; gzip via busybox sh
+              env:
+                - name: CELLARR_DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: cellarr-secrets, key: CELLARR_DATABASE_URL } }
+                - { name: BACKUP_DIR, value: "/backups" }
+                - { name: KEEP, value: "28" }
+                - { name: TZ, value: "America/Los_Angeles" }
+              # One shell: dump→gzip to a timestamped file (UTC so names sort
+              # lexically = chronologically regardless of TZ), then keep only the
+              # newest $KEEP dumps. `set -e`/`pipefail` so a pg_dump failure fails
+              # the job (OnFailure retries) instead of writing a truncated dump;
+              # the dump goes to a .partial name and is only renamed into place on
+              # success, so a half-written file can't be mistaken for a good backup
+              # or survive the prune as the "newest".
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  set -o pipefail
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  out="$BACKUP_DIR/cellarr-$ts.sql.gz"
+                  echo "dumping cellarr -> $out"
+                  pg_dump "$CELLARR_DATABASE_URL" | gzip -c > "$out.partial"
+                  mv "$out.partial" "$out"
+                  echo "wrote $out"
+                  echo "pruning: keep newest $KEEP cellarr-*.sql.gz in $BACKUP_DIR"
+                  # Sort by NAME descending (`-1r`), not mtime: the UTC timestamped
+                  # names sort chronologically, and lexical order avoids depending on
+                  # CIFS mtime (which can be coarse/skewed). Newest first, so
+                  # `tail -n +$((KEEP+1))` is everything past the newest $KEEP.
+                  ls -1r "$BACKUP_DIR"/cellarr-*.sql.gz 2>/dev/null \
+                    | tail -n +"$((KEEP + 1))" \
+                    | while IFS= read -r old; do
+                        echo "removing $old"
+                        rm -f -- "$old"
+                      done
+                  echo "done"
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+          volumes:
+            # Dedicated backup subdir on the same UNAS /mnt/unas-services mount
+            # cellarr's config volume uses; separate from the live Postgres NFS
+            # data dir so a NAS-side data-dir loss doesn't take the dumps with it.
+            - name: backups
+              hostPath: { path: /mnt/unas-services/configs/cellarr/pg-backups, type: DirectoryOrCreate }
