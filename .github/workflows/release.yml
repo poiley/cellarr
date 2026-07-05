@@ -15,6 +15,32 @@ env:
   IMAGE: ghcr.io/poiley/cellarr
 
 jobs:
+  # Detect whether this push actually touched code/build inputs. Manifest- or
+  # docs-only pushes (deploy/**, docs/**, *.md) don't change the binary or image,
+  # so the ~10-min cross-compile image jobs below skip when `code` is false.
+  # On a first push / missing base ref, paths-filter compares against the repo's
+  # default branch and treats everything as changed, so the image still builds.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'crates/**'
+              - 'web/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Dockerfile'
+              - '.github/workflows/release.yml'
+
   # Validate the opt-in OTLP feature compiles. It is off by default (the image
   # below builds without it), so nothing else exercises it — this native check
   # keeps the exporter path from bitrotting. Non-blocking: it does not gate the
@@ -46,7 +72,59 @@ jobs:
       - name: cargo check --features postgres
         run: cargo check --locked -p cellarr-cli --features postgres
 
+  # Run the cellarr-db repository tests against a REAL Postgres 17. Unlike
+  # pg-check/otlp-check (which only `cargo check`), this actually executes the
+  # test suite, so a Postgres-path regression in a query surfaces here. Each test
+  # isolates itself in a unique Postgres schema (test-support helper), so the
+  # whole suite runs against the one service container without cross-contamination.
+  # Non-blocking: does not gate the image build (mirrors pg-check's role).
+  test-pg:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: cellarr
+          POSTGRES_DB: cellarr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CELLARR_TEST_DATABASE_URL: postgres://postgres:cellarr@127.0.0.1:5432/cellarr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # rust-embed reads this at macro time; the tests don't need the built UI.
+      - name: Stub embedded web assets
+        run: mkdir -p web/dist
+      - name: cargo test -p cellarr-db --features postgres
+        run: cargo test --locked -p cellarr-db --features postgres
+
+  # Run the cellarr-db tests on the DEFAULT (SQLite) backend. `just test` is the
+  # local SQLite gate, but nothing here exercised it — otlp-check/pg-check only
+  # `cargo check` the cli (not the db test target). This validates the SQLite arm
+  # of the shared test harness so a change can't break the default build untested.
+  test-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Stub embedded web assets
+        run: mkdir -p web/dist
+      - name: cargo test -p cellarr-db
+        run: cargo test --locked -p cellarr-db
+
   image:
+    needs: [changes]
+    # Build on any code change, and always on a manual dispatch (a human clicking
+    # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -114,6 +192,10 @@ jobs:
   # deployment whose SQLite file would sit on high-latency network storage runs
   # this image instead, pointed at a Postgres server via CELLARR_DATABASE_URL.
   image-postgres:
+    needs: [changes]
+    # Build on any code change, and always on a manual dispatch (a human clicking
+    # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
