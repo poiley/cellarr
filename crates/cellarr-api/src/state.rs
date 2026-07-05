@@ -5,8 +5,10 @@
 //! configuration. `AppState` is cheap to clone (everything inside is an `Arc` or
 //! a cloneable handle) and is the axum extractor state for all routers.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use cellarr_db::Database;
 
@@ -21,6 +23,38 @@ use crate::metadata::MetadataLookup;
 use crate::queue::QueueDownloadClient;
 use crate::release_search::{ReleaseGrab, ReleaseSearch};
 use crate::tags::TagStore;
+
+/// How long a cached artwork-presence snapshot is trusted before the next list
+/// request rebuilds it. The artwork dir can live on a high-latency mount (CIFS), so
+/// a per-request `read_dir` on the hot list path costs hundreds of ms; a short TTL
+/// amortizes that to at most one `read_dir` per window while staying fresh enough
+/// that newly-cached artwork appears within a few seconds.
+const ARTWORK_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// A time-bounded snapshot of which content ids have a cached-artwork directory.
+///
+/// The list endpoints consult this instead of doing a `read_dir` of the (possibly
+/// network-mounted) MediaCover dir on every request. `built` is `None` until the
+/// first build, so a fresh boot / empty cache is simply "stale" and triggers a
+/// rebuild on first read.
+#[derive(Default)]
+pub struct CachedArtwork {
+    /// The content-id subdirectory names present under the artwork dir at `built`.
+    pub ids: HashSet<String>,
+    /// When `ids` was last rebuilt; `None` before the first build.
+    pub built: Option<Instant>,
+}
+
+impl CachedArtwork {
+    /// Whether the snapshot is missing or older than the TTL and should be rebuilt.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        match self.built {
+            Some(at) => at.elapsed() >= ARTWORK_CACHE_TTL,
+            None => true,
+        }
+    }
+}
 
 /// The injected dependency bundle for the API.
 #[derive(Clone)]
@@ -74,6 +108,13 @@ pub struct AppState {
     /// (the default) disables artwork serving (the route then always 404s) — the
     /// offline/test path; the daemon injects the real dir.
     pub artwork_dir: Option<PathBuf>,
+    /// A short-TTL cache of which content ids have a cached-artwork directory under
+    /// [`artwork_dir`](Self::artwork_dir). The list endpoints read this instead of
+    /// doing a `read_dir` of the (possibly network-mounted) MediaCover dir on every
+    /// request; it is rebuilt lazily when older than the TTL. Shared across clones
+    /// (an `Arc`), so every request sees the same snapshot and only one rebuild runs
+    /// per window. Starts empty/unbuilt, so a fresh boot rebuilds on first read.
+    pub artwork_cache: Arc<RwLock<CachedArtwork>>,
     /// The recycle-bin directory a content delete moves media into instead of
     /// unlinking it (the media-management `recycleBinPath` setting). `None` (the
     /// default) makes a `deleteFiles` delete unlink outright; setting it makes the
@@ -142,6 +183,7 @@ impl AppState {
             import_list_sync: None,
             queue_client: None,
             artwork_dir: None,
+            artwork_cache: Arc::new(RwLock::new(CachedArtwork::default())),
             recycle_bin_path: None,
             backup: None,
             log_files: None,

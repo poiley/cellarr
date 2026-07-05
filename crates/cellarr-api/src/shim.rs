@@ -4932,7 +4932,7 @@ async fn list_resources(fs: &FaceState, surface: MediaType) -> ApiResult<Vec<Val
     let titles = content.all_titles().await?;
     let years = content.all_years().await?;
     let externals = content.all_external_ids(surface).await?;
-    let artwork_present = artwork_present_ids(&fs.state);
+    let artwork_present = artwork_present_ids_cached(&fs.state);
     let mut out = Vec::new();
     for lib in &libs {
         let root = lib.root_folders.first().cloned().unwrap_or_default();
@@ -4958,12 +4958,79 @@ async fn list_resources(fs: &FaceState, surface: MediaType) -> ApiResult<Vec<Val
     Ok(out)
 }
 
-async fn list_series(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
-    Ok(Json(list_resources(&fs, MediaType::Tv).await?))
+/// Optional pagination for the `GET /api/v3/movie` and `GET /api/v3/series` list
+/// endpoints. Radarr/Sonarr's `/movie` and `/series` return a bare array of every
+/// item with no paging, and Bazarr et al. rely on the full array — so both params
+/// are optional and, when **both** are absent, the endpoint returns the full array
+/// byte-identical to before. When present, the response is still a bare array (not
+/// a paged envelope, so *arr clients that do pass params still get an array); it is
+/// just the requested slice.
+#[derive(Debug, Deserialize)]
+struct PageQuery {
+    // Held as strings and parsed leniently (see `paginate`), so a client that
+    // sends a non-numeric `page`/`pageSize` gets the full array rather than a 400
+    // — these endpoints must never reject a query the way the *arr originals never
+    // would. `Option<String>` deserialization cannot fail, so the extractor never
+    // rejects the request.
+    #[serde(default)]
+    page: Option<String>,
+    #[serde(rename = "pageSize", default)]
+    page_size: Option<String>,
 }
 
-async fn list_movies(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
-    Ok(Json(list_resources(&fs, MediaType::Movie).await?))
+/// The largest slice a single paged request may return, so a hostile or careless
+/// `pageSize` cannot force the whole (potentially huge) list into one response.
+const MAX_PAGE_SIZE: u64 = 1000;
+
+/// Apply optional pagination to a fully-built resource list.
+///
+/// When both `page` and `pageSize` are absent the list is returned untouched (the
+/// Radarr/Sonarr-compatible full array). When either is present, the list is sliced
+/// to the requested 1-based page: `page` is clamped to `>= 1`, `pageSize` is clamped
+/// to `1..=MAX_PAGE_SIZE`, and a page past the end yields an empty array. The result
+/// is always a bare array of the same item shape.
+fn paginate(items: Vec<Value>, q: &PageQuery) -> Vec<Value> {
+    // Parse leniently: an unparseable value (a client sending `page=abc`) is treated
+    // as absent, not rejected, so these Radarr/Sonarr-compatible endpoints never 400
+    // on a malformed query — they fall back to the full array.
+    let page = q.page.as_deref().and_then(|s| s.trim().parse::<u64>().ok());
+    let page_size = q.page_size.as_deref().and_then(|s| s.trim().parse::<u64>().ok());
+    // Params-absent (or unparseable) == unchanged: return the full array as before.
+    if page.is_none() && page_size.is_none() {
+        return items;
+    }
+    let page = page.unwrap_or(1).max(1);
+    let page_size = page_size.unwrap_or(MAX_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    // 1-based page: the first item of page N is (N-1)*page_size. Saturate so a huge
+    // page number can't overflow — it just lands past the end and returns empty.
+    let start = page.saturating_sub(1).saturating_mul(page_size);
+    let len = items.len() as u64;
+    if start >= len {
+        return Vec::new();
+    }
+    let end = start.saturating_add(page_size).min(len);
+    // start < len <= usize::MAX and end <= len, so both fit usize.
+    items[start as usize..end as usize].to_vec()
+}
+
+async fn list_series(
+    State(fs): State<FaceState>,
+    Query(q): Query<PageQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    Ok(Json(paginate(
+        list_resources(&fs, MediaType::Tv).await?,
+        &q,
+    )))
+}
+
+async fn list_movies(
+    State(fs): State<FaceState>,
+    Query(q): Query<PageQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    Ok(Json(paginate(
+        list_resources(&fs, MediaType::Movie).await?,
+        &q,
+    )))
 }
 
 /// The `GET /api/v3/episode` query — the addressed series. The *arr clients
@@ -5249,6 +5316,37 @@ fn artwork_present_ids(state: &AppState) -> std::collections::HashSet<String> {
         }
     }
     set
+}
+
+/// The cached-artwork presence set for the list path — a `read_dir` at most once per
+/// TTL window instead of on every request.
+///
+/// The artwork dir can live on a high-latency mount (CIFS), where the per-request
+/// `read_dir` [`artwork_present_ids`] runs cost hundreds of ms on the hot list path.
+/// This consults the shared, short-TTL [`CachedArtwork`](crate::state::CachedArtwork)
+/// snapshot on [`AppState`]: a fresh (or expired) snapshot is rebuilt via
+/// `artwork_present_ids` and stored; an in-window snapshot is returned from memory
+/// with no filesystem touch. A fresh boot starts unbuilt, so the first read rebuilds.
+///
+/// Concurrency: the fast path takes only a read lock. On a miss we rebuild while
+/// holding no lock, then take the write lock briefly to store — so a burst of
+/// concurrent first-requests may each rebuild once, but they converge and never
+/// deadlock or hold the lock across the (slow) `read_dir`. A poisoned lock (a prior
+/// panic while holding it) falls back to a direct read rather than propagating.
+fn artwork_present_ids_cached(state: &AppState) -> std::collections::HashSet<String> {
+    // Fast path: an in-window snapshot is served straight from memory.
+    if let Ok(cache) = state.artwork_cache.read() {
+        if !cache.is_stale() {
+            return cache.ids.clone();
+        }
+    }
+    // Stale or unbuilt: rebuild off-lock (the slow read_dir), then store.
+    let fresh = artwork_present_ids(state);
+    if let Ok(mut cache) = state.artwork_cache.write() {
+        cache.ids = fresh.clone();
+        cache.built = Some(std::time::Instant::now());
+    }
+    fresh
 }
 
 /// The v3 `images[]` for a list row, derived purely from the precomputed presence
