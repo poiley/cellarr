@@ -482,6 +482,91 @@ describe('Library browse screen', () => {
     expect(deleteMovie).not.toHaveBeenCalled();
   });
 
+  // --- virtualized grid (incremental reveal) --------------------------------
+
+  // A big movie library: enough titles that rendering all of them at once is the
+  // slow path the windowing avoids. Each is a distinct, greppable title.
+  const MANY_MOVIES = Array.from({ length: 500 }, (_, i) => ({
+    id: `mm${i}`,
+    title: `Bulk Title ${String(i).padStart(4, '0')}`,
+    year: 2000 + (i % 25),
+    monitored: i % 2 === 0,
+    hasFile: i % 3 === 0,
+    rootFolderPath: '/movies',
+    sizeOnDisk: 1_000_000 * i,
+  }));
+
+  it('renders the full list when IntersectionObserver is unavailable', async () => {
+    // jsdom ships no IntersectionObserver; the reveal hook must fall back to a
+    // complete render so nothing is silently hidden without a way to scroll to it.
+    expect((globalThis as { IntersectionObserver?: unknown }).IntersectionObserver).toBeUndefined();
+    listLibraries.mockResolvedValue(LIBS);
+    listMovies.mockResolvedValue(MANY_MOVIES);
+    searchParams = new URLSearchParams('lib=lib-movies');
+    renderPage();
+
+    await waitFor(() => expect(listMovies).toHaveBeenCalled());
+    // Both the first and last titles are present — the whole list rendered.
+    await waitFor(() => expect(screen.getByText('Bulk Title 0000')).toBeTruthy());
+    expect(screen.getByText('Bulk Title 0499')).toBeTruthy();
+  });
+
+  it('windows the grid to an initial slice and grows it as the sentinel intersects', async () => {
+    // Install a controllable IntersectionObserver so the reveal hook takes its
+    // windowing path (initial slice, then grow on intersection).
+    const observers: Array<{ cb: IntersectionObserverCallback; el: Element | null }> = [];
+    class FakeIO {
+      cb: IntersectionObserverCallback;
+      el: Element | null = null;
+      constructor(cb: IntersectionObserverCallback) {
+        this.cb = cb;
+        observers.push(this);
+      }
+      observe(el: Element) {
+        this.el = el;
+        observers[observers.length - 1] = this;
+      }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+      root = null;
+      rootMargin = '';
+      thresholds = [];
+    }
+    (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver =
+      FakeIO as unknown as typeof IntersectionObserver;
+
+    try {
+      listLibraries.mockResolvedValue(LIBS);
+      listMovies.mockResolvedValue(MANY_MOVIES);
+      searchParams = new URLSearchParams('lib=lib-movies');
+      renderPage();
+
+      // The initial window shows the first slice but NOT a title deep in the list.
+      await waitFor(() => expect(screen.getByText('Bulk Title 0000')).toBeTruthy());
+      expect(screen.queryByText('Bulk Title 0100')).toBeNull();
+
+      // Fire an intersection on the latest sentinel to reveal the next slice, a
+      // few times, and confirm the window grew to include a deeper title.
+      for (let step = 0; step < 4; step += 1) {
+        const io = observers[observers.length - 1];
+        const target = io.el ?? document.createElement('div');
+        io.cb(
+          [{ isIntersecting: true, target } as unknown as IntersectionObserverEntry],
+          io as unknown as IntersectionObserver
+        );
+        // Let React flush the count bump before the next step.
+        await waitFor(() => {});
+      }
+
+      await waitFor(() => expect(screen.getByText('Bulk Title 0100')).toBeTruthy());
+    } finally {
+      delete (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+    }
+  });
+
   it('reports a partial-failure toast when some deletes fail', async () => {
     const { ApiError } = await import('@lib/api/client');
     listLibraries.mockResolvedValue(LIBS);

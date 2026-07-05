@@ -53,6 +53,7 @@ import {
   type SortState,
 } from '@app/library/format';
 import { mediaCoverUrl } from '@app/content/_lib/detail';
+import { useIncrementalReveal } from '@app/library/useIncrementalReveal';
 
 const STATUS_OPTIONS = ['All', 'Monitored', 'Unmonitored'];
 
@@ -125,6 +126,7 @@ const PosterThumb: React.FC<{ id: string; title: string }> = ({ id, title }) => 
       <img
         src={mediaCoverUrl('poster', id)}
         alt={`${title} poster`}
+        loading="lazy"
         onLoad={() => setOk(true)}
         onError={() => setOk(false)}
         style={{
@@ -171,6 +173,7 @@ const PosterCardImage: React.FC<{ id: string; title: string }> = ({ id, title })
         ref={imgRef}
         src={mediaCoverUrl('poster', id)}
         alt={`${title} poster`}
+        loading="lazy"
         onLoad={() => setState('ok')}
         onError={() => setState('error')}
         style={{
@@ -553,6 +556,16 @@ function LibraryBrowser() {
   );
   const allVisibleSelected = filtered.length > 0 && visibleSelected.length === filtered.length;
 
+  // Windowed rendering: only mount the rows/cards near the top, then reveal more
+  // as the sentinel scrolls into view (see useIncrementalReveal). Selection and
+  // bulk actions still operate over the full `filtered` list — only the DOM the
+  // browser has to lay out and paint is bounded. Resetting the window whenever
+  // the active library, filters, sort, or view change means a fresh list always
+  // starts from the top instead of inheriting a stale, deep scroll position.
+  const revealKey = `${activeLib ?? ''}|${view}|${filter}|${status}|${typeFilter}|${sort.key}|${sort.dir}`;
+  const { count: revealCount, hasMore, sentinelRef } = useIncrementalReveal(filtered.length, revealKey);
+  const visible = React.useMemo(() => filtered.slice(0, revealCount), [filtered, revealCount]);
+
   const onSort = (key: SortKey) => {
     setSort((prev) =>
       prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
@@ -869,7 +882,7 @@ function LibraryBrowser() {
                     marginTop: '1ch',
                   }}
                 >
-                  {filtered.map((item) => (
+                  {visible.map((item) => (
                     <LibraryGridCard
                       key={item.id}
                       item={item}
@@ -878,8 +891,20 @@ function LibraryBrowser() {
                       onOpen={onOpen}
                     />
                   ))}
+                  {/* Reveal sentinel: as this scrolls near the viewport the window
+                      grows by another slice. Spans the full grid row so it sits
+                      below the last card; reserves a line of height so there's
+                      always something to intersect before the true bottom. */}
+                  {hasMore ? (
+                    <div
+                      ref={sentinelRef}
+                      aria-hidden="true"
+                      style={{ gridColumn: '1 / -1', minHeight: '1px' }}
+                    />
+                  ) : null}
                 </div>
               ) : (
+                <>
                 <Table>
                   <TableRow>
                     <TableColumn role="columnheader">
@@ -912,7 +937,7 @@ function LibraryBrowser() {
                     />
                     <SortHeader label="Status" col="status" sort={sort} onSort={onSort} />
                   </TableRow>
-                  {filtered.map((item) => {
+                  {visible.map((item) => {
                     const isSelected = selected.has(item.id);
                     const downloaded = item.hasFile;
                     return (
@@ -980,6 +1005,13 @@ function LibraryBrowser() {
                     );
                   })}
                 </Table>
+                {/* Reveal sentinel for the table view — sits just below the last
+                    rendered row and grows the window by another slice when it
+                    scrolls near the viewport. */}
+                {hasMore ? (
+                  <div ref={sentinelRef} aria-hidden="true" style={{ minHeight: '1px' }} />
+                ) : null}
+                </>
               )}
             </>
           ) : null}
