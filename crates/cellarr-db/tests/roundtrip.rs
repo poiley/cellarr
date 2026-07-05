@@ -185,6 +185,9 @@ async fn content_metadata_round_trips_and_upserts() {
         runtime: Some(117),
         air_date: Some("1982-06-25".to_string()),
         digital_date: Some("2007-12-18".to_string()),
+        genres: vec!["Science Fiction".to_string(), "Thriller".to_string()],
+        rating: Some(8.5),
+        rating_votes: Some(14231),
     };
     content.set_metadata(node.id, &meta).await.unwrap();
     assert_eq!(content.metadata(node.id).await.unwrap(), Some(meta));
@@ -197,6 +200,9 @@ async fn content_metadata_round_trips_and_upserts() {
         runtime: Some(118),
         air_date: Some("1982-06-25".to_string()),
         digital_date: None,
+        genres: vec!["Science Fiction".to_string()],
+        rating: None,
+        rating_votes: None,
     };
     content.set_metadata(node.id, &revised).await.unwrap();
     assert_eq!(content.metadata(node.id).await.unwrap(), Some(revised));
@@ -1257,6 +1263,9 @@ async fn delete_movie_removes_node_files_and_links() {
                 runtime: Some(117),
                 air_date: None,
                 digital_date: None,
+                genres: Vec::new(),
+                rating: None,
+                rating_votes: None,
             },
         )
         .await
