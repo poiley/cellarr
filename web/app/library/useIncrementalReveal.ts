@@ -19,7 +19,22 @@ import * as React from 'react';
 
 /** How many items to show before the user scrolls, and how many to add per step. */
 export const REVEAL_INITIAL = 60;
-export const REVEAL_STEP = 60;
+// Add a smallish slice per reveal so mounting a batch is a sub-frame amount of
+// work — a large batch (60+) mounting synchronously drops a frame and the scroll
+// hitches. Smaller, more frequent reveals (each well ahead of the viewport via
+// the observer's rootMargin below) keep the scroll smooth.
+export const REVEAL_STEP = 30;
+
+/**
+ * How far below the viewport the sentinel triggers the next reveal. Scaled to the
+ * viewport (~1.5 screens ahead) rather than a fixed px so a fast scroll on a tall
+ * display can't outrun it: the next batch mounts and its posters start loading
+ * well before the user reaches them, off the moment they're looking at.
+ */
+function prefetchRootMargin(): string {
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  return `${Math.round(vh * 1.5)}px 0px`;
+}
 
 export interface IncrementalReveal {
   /** How many of the list's items to render right now. */
@@ -78,9 +93,10 @@ export function useIncrementalReveal(total: number, resetKey: string): Increment
             if (entry.isIntersecting) grow();
           }
         },
-        // Start loading the next slice a little before the sentinel is on screen,
-        // so posters have a head start and scrolling feels seamless.
-        { rootMargin: '600px 0px' }
+        // Reveal the next slice well before the sentinel is on screen (scaled to
+        // the viewport), so the batch mounts and its posters load ahead of the
+        // user rather than at the moment they scroll to the bottom.
+        { rootMargin: prefetchRootMargin() }
       );
       observer.observe(node);
       observerRef.current = observer;
