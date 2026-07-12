@@ -365,6 +365,9 @@ async fn grab_create_and_get_round_trip() {
             request: request.clone(),
             download_id: None,
             status: GrabStatus::Pending,
+            // created_at is stamped at create() time; echo it back so the
+            // structural comparison covers every other field.
+            created_at: fetched.created_at,
         }
     );
 

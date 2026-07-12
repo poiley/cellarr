@@ -7,7 +7,7 @@ use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use time::OffsetDateTime;
 
-use crate::convert::format_time;
+use crate::convert::{format_time, parse_time};
 use crate::error::{DbError, Result};
 use crate::writer::WriterHandle;
 
@@ -108,7 +108,7 @@ impl GrabRepository for GrabRepo {
     async fn get(&self, id: GrabId) -> Result<Option<Grab>> {
         let row = sqlx::query(&pq(
             "SELECT content_ref, release, indexer_id, client_id, category, download_id, status,
-                    release_type
+                    release_type, created_at
              FROM grab WHERE id = ?1"),
         )
         .bind(id.to_string())
@@ -125,6 +125,7 @@ impl GrabRepository for GrabRepo {
         let download_id: Option<String> = row.try_get("download_id")?;
         let status: String = row.try_get("status")?;
         let release_type: Option<String> = row.try_get("release_type")?;
+        let created_at: String = row.try_get("created_at")?;
 
         let content_ref: ContentRef = serde_json::from_str(&content_ref)?;
         let release: Release = serde_json::from_str(&release)?;
@@ -134,6 +135,7 @@ impl GrabRepository for GrabRepo {
             serde_json::from_value(serde_json::Value::String(client_id)).map_err(DbError::from)?;
         let status = status_from_str(&status)?;
         let release_type = release_type_from_str(release_type)?;
+        let created_at = parse_time("created_at", &created_at)?;
 
         Ok(Some(Grab {
             id,
@@ -147,13 +149,14 @@ impl GrabRepository for GrabRepo {
             },
             download_id,
             status,
+            created_at,
         }))
     }
 
     async fn list(&self) -> Result<Vec<Grab>> {
         let rows = sqlx::query(&pq(
             "SELECT id, content_ref, release, indexer_id, client_id, category, download_id, status,
-                    release_type
+                    release_type, created_at
              FROM grab ORDER BY created_at DESC"),
         )
         .fetch_all(&self.pool)
@@ -169,6 +172,7 @@ impl GrabRepository for GrabRepo {
             let download_id: Option<String> = row.try_get("download_id")?;
             let status: String = row.try_get("status")?;
             let release_type: Option<String> = row.try_get("release_type")?;
+            let created_at: String = row.try_get("created_at")?;
 
             let id =
                 serde_json::from_value(serde_json::Value::String(id_str)).map_err(DbError::from)?;
@@ -180,6 +184,7 @@ impl GrabRepository for GrabRepo {
                 .map_err(DbError::from)?;
             let status = status_from_str(&status)?;
             let release_type = release_type_from_str(release_type)?;
+            let created_at = parse_time("created_at", &created_at)?;
 
             out.push(Grab {
                 id,
@@ -193,6 +198,7 @@ impl GrabRepository for GrabRepo {
                 },
                 download_id,
                 status,
+                created_at,
             });
         }
         Ok(out)

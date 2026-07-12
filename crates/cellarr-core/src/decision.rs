@@ -185,6 +185,12 @@ pub struct Grab {
     pub download_id: Option<String>,
     /// Where the grab is in its lifecycle.
     pub status: GrabStatus,
+    /// When the grab was created (UTC). Lets a reconcile sweep age a grab —
+    /// e.g. a download stuck with no peers for far longer than any real transfer
+    /// takes is dead, not slow. Serialized RFC3339, mirroring the other durable
+    /// timestamps in core (history, blocklist).
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
 }
 
 /// One file move within an import plan.
