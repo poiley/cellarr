@@ -6735,14 +6735,31 @@ async fn queue(State(fs): State<FaceState>) -> ApiResult<Json<Value>> {
     // queue reflects what the download is actually doing — not the release's
     // advertised size and the coarse stored grab status. A client that is down or
     // no longer knows an id degrades to the stored status (never fails the list).
-    let mut records = Vec::with_capacity(live_grabs.len());
-    for g in live_grabs {
-        let live = match (fs.state.queue_client.as_ref(), g.download_id.as_deref()) {
-            (Some(client), Some(id)) => client.progress(id).await.ok().flatten(),
-            _ => None,
-        };
-        records.push(v3_queue_item(g, live.as_ref()));
-    }
+    // A client that is down or slow must not stall the list. Poll every download
+    // CONCURRENTLY, each with a short timeout, and degrade to the stored status on
+    // error/timeout (never fails the list). Serial, un-timed polls once made this
+    // endpoint hang for tens of seconds — one full HTTP timeout per grab — when the
+    // client was unreachable.
+    const QUEUE_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    let live_progress = futures::future::join_all(live_grabs.iter().map(|g| {
+        let client = fs.state.queue_client.as_deref();
+        let id = g.download_id.as_deref();
+        async move {
+            match (client, id) {
+                (Some(client), Some(id)) => tokio::time::timeout(QUEUE_POLL_TIMEOUT, client.progress(id))
+                    .await
+                    .ok() // Elapsed -> None (client too slow)
+                    .and_then(|r| r.ok().flatten()), // client error -> None
+                _ => None,
+            }
+        }
+    }))
+    .await;
+    let records: Vec<Value> = live_grabs
+        .iter()
+        .zip(live_progress)
+        .map(|(g, live)| v3_queue_item(g, live.as_ref()))
+        .collect();
     Ok(Json(paged(records, "timeleft")))
 }
 
