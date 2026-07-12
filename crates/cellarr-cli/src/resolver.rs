@@ -28,6 +28,12 @@ use cellarr_meta::{Fetcher, Image, Metadata, ReqwestFetcher, TheTvdbSource, Tmdb
 
 use crate::config::Config;
 
+/// How many times to attempt an artwork image download before treating it as a
+/// miss. One initial try plus two retries turns most transient CDN blips (a TMDB
+/// 5xx or connection reset under load) into a hit, so a freshly added film is not
+/// left posterless until the next daily refresh.
+const ARTWORK_FETCH_ATTEMPTS: u32 = 3;
+
 /// The resolver's error: a genuine provider/repository failure the refresh caller
 /// logs and moves past (a metadata refresh never blocks acquisition).
 #[derive(Debug, thiserror::Error)]
@@ -134,7 +140,14 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
 
     /// Cache the poster/fanart bytes under `<artwork_dir>/<content_id>/<kind>.jpg`
     /// and return which kinds were successfully cached. Best-effort: a failed
-    /// download or write is skipped (logged), never an error.
+    /// download or write is skipped, never an error.
+    ///
+    /// The image fetch is **retried** ([`ARTWORK_FETCH_ATTEMPTS`]) before giving
+    /// up: a single transient blip from the image CDN otherwise means a freshly
+    /// added film silently has no poster until the next daily refresh — the
+    /// "added a film, artwork never showed up" gap. A genuine miss (every attempt
+    /// failed, or the provider offered no art) is logged at `warn`, not swallowed
+    /// at `debug`, so a persistent problem is visible.
     async fn cache_artwork(&self, content_id: &str, images: &[Image]) -> Vec<ArtworkKind> {
         let mut kinds = Vec::new();
         let dir = self.artwork_dir.join(content_id);
@@ -144,16 +157,9 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
                 "fanart" => ArtworkKind::Fanart,
                 _ => continue,
             };
-            let bytes = match self.artwork_fetcher.get(&image.url, &[]).await {
-                Ok(resp) if (200..300).contains(&resp.status) && !resp.body.is_empty() => resp.body,
-                Ok(resp) => {
-                    tracing::debug!(url = %image.url, status = resp.status, "artwork fetch non-200");
-                    continue;
-                }
-                Err(e) => {
-                    tracing::debug!(url = %image.url, error = %e, "artwork fetch failed");
-                    continue;
-                }
+            let Some(bytes) = self.fetch_artwork_bytes(&image.url).await else {
+                tracing::warn!(url = %image.url, kind = %kind.slug(), content = %content_id, "artwork fetch gave up after retries");
+                continue;
             };
             if let Err(e) = tokio::fs::create_dir_all(&dir).await {
                 tracing::debug!(dir = %dir.display(), error = %e, "artwork dir create failed");
@@ -163,11 +169,37 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
             match tokio::fs::write(&path, &bytes).await {
                 Ok(()) => kinds.push(kind),
                 Err(e) => {
-                    tracing::debug!(path = %path.display(), error = %e, "artwork write failed")
+                    tracing::warn!(path = %path.display(), error = %e, "artwork write failed")
                 }
             }
         }
         kinds
+    }
+
+    /// Fetch one artwork image's bytes, retrying a transient failure (network
+    /// error, non-2xx, empty body) up to [`ARTWORK_FETCH_ATTEMPTS`] with a short
+    /// backoff. Returns `None` only when every attempt failed — the caller treats
+    /// that as a (logged) miss. Image CDNs (TMDB) occasionally 5xx or reset under
+    /// load; one retry turns most of those into a hit.
+    async fn fetch_artwork_bytes(&self, url: &str) -> Option<Vec<u8>> {
+        for attempt in 1..=ARTWORK_FETCH_ATTEMPTS {
+            match self.artwork_fetcher.get(url, &[]).await {
+                Ok(resp) if (200..300).contains(&resp.status) && !resp.body.is_empty() => {
+                    return Some(resp.body);
+                }
+                Ok(resp) => {
+                    tracing::debug!(url = %url, status = resp.status, attempt, "artwork fetch non-2xx/empty");
+                }
+                Err(e) => {
+                    tracing::debug!(url = %url, error = %e, attempt, "artwork fetch failed");
+                }
+            }
+            if attempt < ARTWORK_FETCH_ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * u64::from(attempt)))
+                    .await;
+            }
+        }
+        None
     }
 }
 
