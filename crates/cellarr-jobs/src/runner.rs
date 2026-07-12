@@ -43,7 +43,7 @@ use cellarr_core::{
     decision::Verdict,
     history::{DecisionLogRecord, HistoryEvent, HistoryRecord},
     pipeline::{Stage, Transition, TransitionKind},
-    ContentMatch, ContentRef, CustomFormat, Decision, DownloadState, GrabId, GrabRequest,
+    ContentMatch, ContentRef, CustomFormat, Decision, DownloadState, Grab, GrabId, GrabRequest,
     GrabStatus, IndexerId, NamingTokens, ParsedRelease, PipelineRunId, PlannedMove, QualityProfile,
     QualityRanking, Release, Score,
 };
@@ -1988,6 +1988,47 @@ where
             self.write_nfo_sidecars(matched_ref, &destinations).await;
         }
 
+        Ok(destinations)
+    }
+
+    /// Finalize a download the client reports **complete** but whose files a prior
+    /// run never imported — the orphaned Track→Import a run leaves when it ends
+    /// early (a transient client fault, a process restart). Runs the same
+    /// crash-safe stage→verify→commit [`import`](Self::import) + media-file
+    /// persistence the inline pipeline does, then marks the grab `Imported`, and
+    /// returns the imported destinations.
+    ///
+    /// This is the recovery entry the reconcile sweep drives; the normal pipeline
+    /// imports inline inside `grab_track_import`. Persistence is ordered before the
+    /// status flip so a persist failure leaves the grab in its prior state for the
+    /// next cycle to retry, rather than a grab marked Imported with no file rows.
+    /// The import (Download) webhook fires best-effort for media-server parity.
+    #[tracing::instrument(
+        name = "pipeline.import_completed",
+        skip_all,
+        fields(grab_id = %grab.id, content_id = %grab.request.content_ref.id)
+    )]
+    pub async fn import_completed(
+        &self,
+        grab: &Grab,
+        content_path: &str,
+    ) -> std::result::Result<Vec<String>, String> {
+        // Re-parse the release title for naming + quality/release-type, exactly as
+        // the inline Import stage does (the file path is the second parse, inside
+        // `import`).
+        let parsed = cellarr_parse::parse_title(&grab.request.release.title);
+        let release_type = cellarr_core::ReleaseType::from_parsed(&parsed);
+        let matched_ref = &grab.request.content_ref;
+
+        let destinations = self.import(grab.id, matched_ref, &parsed, content_path).await?;
+        self.persist_imported_files(matched_ref, &parsed, release_type, &destinations)
+            .await
+            .map_err(|e| format!("persist imported files: {e}"))?;
+        self.set_grab_status(grab.id, GrabStatus::Imported)
+            .await
+            .map_err(|e| format!("set imported: {e}"))?;
+        self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
+            .await;
         Ok(destinations)
     }
 

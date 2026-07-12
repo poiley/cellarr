@@ -628,7 +628,6 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     /// Best-effort per grab: one grab's error is logged and skipped, never failing
     /// the whole sweep.
     async fn run_reconcile_downloads(&self) -> JobResult {
-        use cellarr_core::blocklist::{BlocklistEntry, BlocklistRepository};
         use cellarr_core::repo::{GrabRepository, MediaFileRepository};
         use cellarr_core::{DownloadState, GrabStatus};
 
@@ -672,57 +671,139 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 continue;
             }
 
-            // Not satisfied: poll the client to detect a dead download.
+            // Not satisfied: resolve the environment and poll the client to decide
+            // the grab's fate — finalize a completed-but-unimported download, or
+            // clean a dead one (hard-failed, gone from the client, or long-stalled
+            // with no peers).
             let Some(dl) = g.download_id.as_deref() else {
                 continue; // never handed to a client (no download to reconcile)
             };
-            let client = match self.env.resolve(&g.request.content_ref).await {
-                Ok(Some((_, client, _))) => client,
+            let (indexer, client, config) = match self.env.resolve(&g.request.content_ref).await {
+                Ok(Some(tuple)) => tuple,
                 Ok(None) => continue, // no client configured
                 Err(e) => {
                     tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: resolve failed");
                     continue;
                 }
             };
-            let dead_reason = match client.status(dl).await {
+            match client.status(dl).await {
+                // Hard failure on the client: dead → blocklist + remove.
                 Ok(status) if matches!(status.state, DownloadState::Failed) => {
-                    Some("download failed on client".to_string())
+                    if self
+                        .blocklist_dead_grab(&g, &client, "download failed on client".into())
+                        .await
+                    {
+                        cleaned += 1;
+                    }
                 }
-                // Healthy / in-progress / completed-but-unimported: leave it.
-                Ok(_) => None,
+                // Completed on the client but never imported — the orphaned
+                // Track→Import a prior run left when it ended early. Finalize it
+                // through the same crash-safe import the live pipeline runs; on a
+                // held/failed import, leave the grab for a human (never blocklist a
+                // download whose bytes are on disk).
+                Ok(status) if matches!(status.state, DownloadState::Completed) => {
+                    let Some(path) = status.content_path.as_deref() else {
+                        continue; // completed but no importable path yet — leave
+                    };
+                    let runner = PipelineRunner::new(
+                        &indexer,
+                        &client,
+                        &self.registry,
+                        &self.db,
+                        &self.clock,
+                        &config,
+                    );
+                    match runner.import_completed(&g, path).await {
+                        Ok(destinations) => {
+                            tracing::info!(grab = %g.id, count = destinations.len(), "reconcile-downloads: finalized completed import");
+                            let _ = client.remove(dl, true).await; // best-effort
+                            cleaned += 1;
+                        }
+                        Err(e) => {
+                            tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: finalize import failed");
+                        }
+                    }
+                }
+                // Still queued/downloading. A torrent reporting zero peers that has
+                // aged past the stall window will never complete — clean it as
+                // dead. A download with peers (or an unknown peer count, e.g.
+                // Usenet, which reports `None`) is or may still be progressing: leave it.
+                Ok(status) => {
+                    let age = time::OffsetDateTime::now_utc() - g.created_at;
+                    let dead_stall = status.peers == Some(0) && age > STALL_MIN_AGE;
+                    if dead_stall
+                        && self
+                            .blocklist_dead_grab(
+                                &g,
+                                &client,
+                                "download stalled with no peers".into(),
+                            )
+                            .await
+                    {
+                        tracing::info!(grab = %g.id, age_hours = age.whole_hours(), "reconcile-downloads: cleaned dead stalled download");
+                        cleaned += 1;
+                    }
+                }
+                // The client no longer knows this download — gone → blocklist.
                 Err(e) if is_download_gone(&e) => {
-                    Some("download no longer known to client".to_string())
+                    if self
+                        .blocklist_dead_grab(
+                            &g,
+                            &client,
+                            "download no longer known to client".into(),
+                        )
+                        .await
+                    {
+                        cleaned += 1;
+                    }
                 }
                 // A transient client fault: leave it for the next cycle.
-                Err(_) => None,
-            };
-            if let Some(reason) = dead_reason {
-                if let Err(e) = self
-                    .db
-                    .grabs()
-                    .set_status(g.id, GrabStatus::Blocklisted)
-                    .await
-                {
-                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: set blocklisted failed");
-                    continue;
-                }
-                let entry = BlocklistEntry::from_release(
-                    cid,
-                    &g.request.release,
-                    reason,
-                    time::OffsetDateTime::now_utc(),
-                );
-                if let Err(e) = self.db.blocklist().add(&entry).await {
-                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: blocklist add failed");
-                }
-                let _ = client.remove(dl, true).await; // best-effort: remove the dead download
-                cleaned += 1;
+                Err(_) => {}
             }
         }
         if cleaned > 0 {
             tracing::info!(cleaned, "reconcile-downloads: finalized/cleaned in-flight grabs");
         }
         JobResult::Success
+    }
+
+    /// Blocklist a dead grab: mark it `Blocklisted`, record a blocklist entry so
+    /// the failed release is not re-grabbed, and best-effort remove the dead
+    /// download (with its data) from the client. Returns whether the grab was
+    /// blocklisted (the caller counts it as cleaned). Shared by the reconcile
+    /// sweep's hard-failure, gone, and stalled paths.
+    async fn blocklist_dead_grab(
+        &self,
+        g: &cellarr_core::Grab,
+        client: &E::Client,
+        reason: String,
+    ) -> bool {
+        use cellarr_core::blocklist::{BlocklistEntry, BlocklistRepository};
+        use cellarr_core::repo::GrabRepository;
+        use cellarr_core::GrabStatus;
+        let cid = g.request.content_ref.id;
+        if let Err(e) = self
+            .db
+            .grabs()
+            .set_status(g.id, GrabStatus::Blocklisted)
+            .await
+        {
+            tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: set blocklisted failed");
+            return false;
+        }
+        let entry = BlocklistEntry::from_release(
+            cid,
+            &g.request.release,
+            reason,
+            time::OffsetDateTime::now_utc(),
+        );
+        if let Err(e) = self.db.blocklist().add(&entry).await {
+            tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: blocklist add failed");
+        }
+        if let Some(dl) = g.download_id.as_deref() {
+            let _ = client.remove(dl, true).await; // best-effort: remove the dead download
+        }
+        true
     }
 }
 
@@ -889,6 +970,13 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::ManualSearch { .. } => "ManualSearch",
     }
 }
+
+/// How old a grab must be before the reconcile sweep treats a peer-less,
+/// unfinished download as dead. Guards against killing a just-added download that
+/// momentarily reports zero peers (client warming up, tracker not yet announced):
+/// a real transfer finds peers long before a day passes, and a torrent with none
+/// for a full day is not going to complete.
+const STALL_MIN_AGE: time::Duration = time::Duration::hours(24);
 
 /// Whether a download-client error means the download is GONE — the client no
 /// longer knows the id (removed out of band, never resumed) — a dead download to
