@@ -120,6 +120,29 @@ enum TrackOutcome {
     Failed(String),
 }
 
+/// Whether a download-client error is a **transient / infrastructure** fault —
+/// the client is unreachable, timing out, mis-authed, or misconfigured — rather
+/// than a fault with the *release itself*.
+///
+/// This is the classification [`cellarr_download::DownloadError`] was designed
+/// for (its docs: `Transport`/`Api` are retryable client faults; `DownloadFailed`
+/// / `NotFound` are release failures). A transient client fault must NEVER
+/// blocklist a good release — a brief download-client blip once burned real
+/// releases because the runner treated every poll error as a download failure.
+/// A non-`DownloadError` error (e.g. a test fake's own error type) is treated as
+/// a release fault, preserving the prior conservative behaviour.
+fn is_transient_client_fault<E>(err: &E) -> bool
+where
+    E: std::error::Error + 'static,
+{
+    use cellarr_download::DownloadError as De;
+    let dyn_err: &(dyn std::error::Error + 'static) = err;
+    matches!(
+        dyn_err.downcast_ref::<De>(),
+        Some(De::Transport(_) | De::Api(_) | De::Auth(_) | De::Config(_))
+    )
+}
+
 /// One candidate that passed Parse/Identify/Decide and is ready to grab.
 struct PickedCandidate {
     matched_ref: ContentRef,
@@ -1554,21 +1577,34 @@ where
             .advance_with_decision(run_id, *stage, Some(decision))
             .await?; // -> Grab
 
-        let download_id = match self.client.add(&request).await {
-            Ok(id) => id,
-            Err(e) => {
-                // The client never accepted the grab, so there is nothing to
-                // remove from it. Blocklist the release so grab-next moves past it.
-                return self
-                    .fail_grab(
-                        run_id,
-                        content.id,
-                        grab_id,
-                        None,
-                        format!("grab failed: {e}"),
-                        release,
-                    )
-                    .await;
+        // The client can be momentarily unreachable at grab time (a VPN blip, a
+        // client restart). Retry a transient client fault a few times before giving
+        // up, so a brief blip doesn't burn a good release. A real fault (or a
+        // sustained outage) falls through to fail_grab.
+        const GRAB_ADD_RETRIES: u32 = 3;
+        let mut add_attempt: u32 = 0;
+        let download_id = loop {
+            match self.client.add(&request).await {
+                Ok(id) => break id,
+                Err(e) if is_transient_client_fault(&e) && add_attempt < GRAB_ADD_RETRIES => {
+                    add_attempt += 1;
+                    tracing::warn!(error = %e, attempt = add_attempt, "grab send failed transiently; retrying");
+                    self.wait_between_polls().await;
+                }
+                Err(e) => {
+                    // The client never accepted the grab, so there is nothing to
+                    // remove from it. Blocklist the release so grab-next moves past it.
+                    return self
+                        .fail_grab(
+                            run_id,
+                            content.id,
+                            grab_id,
+                            None,
+                            format!("grab failed: {e}"),
+                            release,
+                        )
+                        .await;
+                }
             }
         };
         self.set_grab_status(grab_id, GrabStatus::Sent).await?;
@@ -1750,6 +1786,16 @@ where
         for poll_index in 0..self.config.max_track_polls {
             let status = match self.client.status(download_id).await {
                 Ok(s) => s,
+                Err(e) if is_transient_client_fault(&e) => {
+                    // The download client is momentarily unreachable/faulted — a
+                    // transient infra issue, not a bad release. Do NOT blocklist:
+                    // skip this poll and retry after the interval so a brief client
+                    // blip is absorbed and the download keeps tracking. A sustained
+                    // outage still exhausts the poll budget ("tracking timed out").
+                    tracing::warn!(error = %e, "download-client poll failed transiently; retrying");
+                    self.wait_between_polls().await;
+                    continue;
+                }
                 Err(e) => return TrackOutcome::Failed(format!("status poll failed: {e}")),
             };
             match status.state {
@@ -1797,21 +1843,25 @@ where
                         stagnant_no_peer_polls = 0;
                     }
                     last_progress = last_progress.max(status.progress);
-                    // Event-driven progress is preferred (docs/03-pipeline.md);
-                    // absent a webhook, poll with the (logical) clock advancing.
-                    let _ = self.clock.now_secs();
-                    // Wait between polls so the poll budget spans a real,
-                    // multi-minute download. Zero in tests (no real sleep); a
-                    // few seconds in the live daemon.
-                    if self.config.track_poll_interval.is_zero() {
-                        tokio::task::yield_now().await;
-                    } else {
-                        tokio::time::sleep(self.config.track_poll_interval).await;
-                    }
+                    self.wait_between_polls().await;
                 }
             }
         }
         TrackOutcome::Failed("tracking timed out".into())
+    }
+
+    /// Sleep one poll interval, advancing the logical clock. Event-driven
+    /// progress is preferred (docs/03-pipeline.md); absent a webhook, the runner
+    /// polls with the clock advancing so tests never sleep. The interval is zero
+    /// in tests (a `yield_now`) and a few seconds in the live daemon, so the poll
+    /// budget spans a real, multi-minute download.
+    async fn wait_between_polls(&self) {
+        let _ = self.clock.now_secs();
+        if self.config.track_poll_interval.is_zero() {
+            tokio::task::yield_now().await;
+        } else {
+            tokio::time::sleep(self.config.track_poll_interval).await;
+        }
     }
 
     /// Build and execute the import plan for one completed download.

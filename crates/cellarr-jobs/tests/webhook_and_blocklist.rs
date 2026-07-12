@@ -442,6 +442,52 @@ impl cellarr_core::traits::DownloadClient for MidDownloadPeerBlipClient {
     }
 }
 
+/// A client that is momentarily unreachable: its status poll returns a transport
+/// error (a real `DownloadError::Transport`, as the production adapters do) for
+/// the first few polls, then recovers and reports the download complete. The
+/// runner must ride out the blip by retrying the poll and import — NOT treat the
+/// unreachable client as a bad release and blocklist it.
+struct TransportBlipClient {
+    completed_path: String,
+    polls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl cellarr_core::traits::DownloadClient for TransportBlipClient {
+    type Error = cellarr_download::DownloadError;
+    fn name(&self) -> &str {
+        "transport-blip-client"
+    }
+    async fn add(&self, _grab: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+        Ok("dl-blip".to_string())
+    }
+    async fn status(
+        &self,
+        _download_id: &str,
+    ) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+        let n = self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // A brief download-client outage: the first few polls fail at the transport
+        // layer (client unreachable), then it recovers and reports completion.
+        if n < 4 {
+            return Err(cellarr_download::DownloadError::Transport(
+                "connection refused (client blip)".into(),
+            ));
+        }
+        Ok(cellarr_core::DownloadStatus {
+            state: cellarr_core::DownloadState::Completed,
+            progress: 1.0,
+            content_path: Some(self.completed_path.clone()),
+            ratio: Some(1.0),
+            seeding_time_secs: Some(1),
+            peers: Some(2),
+            error_string: None,
+        })
+    }
+    async fn remove(&self, _download_id: &str, _delete_data: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct MockContentLookup {
     candidate: ContentCandidate,
 }
@@ -1118,6 +1164,47 @@ async fn a_mid_download_peer_drop_is_not_killed_by_the_stall_detector() {
             .await
             .unwrap(),
         "a download that reached 50% must not be blocklisted on a peer blip"
+    );
+}
+
+#[tokio::test]
+async fn a_transient_download_client_blip_is_retried_not_blocklisted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let file = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GOOD.mkv");
+    std::fs::write(&file, b"good bytes").unwrap();
+
+    let node = seed_movie_node(&db, "The Matrix").await;
+    let registry = movie_registry(&node, "The Matrix");
+    let mut config = runner_config(library_root.clone());
+    config.max_track_polls = 20; // headroom past the 4-poll transport blip
+
+    let release = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GOOD", "guid-good");
+    let indexer = FakeIndexer {
+        releases: vec![release.clone()],
+    };
+    let client = TransportBlipClient {
+        completed_path: file.to_string_lossy().into_owned(),
+        polls: std::sync::atomic::AtomicU32::new(0),
+    };
+    let clock = LogicalClock::new(0);
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    match outcome {
+        RunOutcome::Imported { .. } => {}
+        other => panic!("a transient client blip must be retried, not failed: {other:?}"),
+    }
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &release)
+            .await
+            .unwrap(),
+        "a transient download-client transport error must not blocklist the release"
     );
 }
 

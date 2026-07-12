@@ -117,8 +117,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Stub embedded web assets
         run: mkdir -p web/dist
-      - name: cargo test -p cellarr-db
-        run: cargo test --locked -p cellarr-db
+      # cellarr-db (repo layer) + cellarr-jobs (the acquisition pipeline: grab /
+      # track / self-heal / import). Both run on the default SQLite backend with
+      # no services, so a pipeline regression (e.g. blocklisting on a transient
+      # client fault) surfaces in CI.
+      - name: cargo test (db + jobs)
+        run: cargo test --locked -p cellarr-db -p cellarr-jobs
 
   image:
     needs: [changes]
