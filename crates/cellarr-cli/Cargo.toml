@@ -72,3 +72,7 @@ tokio = { workspace = true }
 tempfile = "3"
 reqwest = { workspace = true }
 serde_json.workspace = true
+# The reconcile tests seed grabs then backdate one `created_at` directly — via a
+# second sqlx handle to the same SQLite file — to exercise the age-gated cleanup
+# of a long-stalled, peer-less download.
+sqlx = { workspace = true }
