@@ -441,6 +441,20 @@ async fn register_recurring(state: &AppState) -> Result<()> {
         .add_cron(JobKind::RescanLibrary, "@daily", RetryPolicy::default())
         .await
         .context("registering RescanLibrary")?;
+    // Reconcile in-flight grabs against the download client every few minutes:
+    // mark redundant grabs (content already imported by another grab) terminal and
+    // clean genuinely-dead downloads (failed / gone from the client). Without it a
+    // grab whose run ended early lingers forever as "downloading"/"importing" and a
+    // dead download is never removed. Frequent + cheap (a client poll per in-flight
+    // grab), so a short cadence keeps the queue honest.
+    scheduler
+        .add_cron(
+            JobKind::ReconcileDownloads,
+            "*/5 * * * *",
+            RetryPolicy::default(),
+        )
+        .await
+        .context("registering ReconcileDownloads")?;
     Ok(())
 }
 

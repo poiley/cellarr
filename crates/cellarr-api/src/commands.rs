@@ -89,6 +89,7 @@ pub fn command_name(kind: &JobKind) -> &'static str {
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
         JobKind::RescanLibrary => "RescanLibrary",
+        JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
     }
 }
@@ -115,6 +116,10 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
             Some(JobKind::MetadataRefresh)
         }
         "diskspacecheck" => Some(JobKind::DiskSpaceCheck),
+        // Reconcile in-flight grabs (clean redundant/dead downloads); also a cron.
+        "reconciledownloads" | "reconcilegrabs" | "reconcile" => {
+            Some(JobKind::ReconcileDownloads)
+        }
         // Reconcile the library in place. cellarr's native name plus the *arr
         // rescan commands (a whole-library disk rescan) so ecosystem clients and the
         // UI's "Rescan" action all resolve to it.
@@ -140,7 +145,7 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
 /// # Errors
 /// Returns the store error as a string on failure.
 pub async fn submit(scheduler: &ApiScheduler, kind: JobKind) -> Result<String, String> {
-    let defer = matches!(kind, JobKind::RescanLibrary);
+    let defer = matches!(kind, JobKind::RescanLibrary | JobKind::ReconcileDownloads);
     let id = scheduler
         .submit_now(kind, RetryPolicy::default())
         .await

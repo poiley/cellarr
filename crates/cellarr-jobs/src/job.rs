@@ -32,6 +32,12 @@ pub enum JobKind {
     /// files the scanner confidently identifies, and surface the rest for manual
     /// import. The in-place counterpart to import-time adopt.
     RescanLibrary,
+    /// Reconcile in-flight grabs against reality: finalize or clean the downloads a
+    /// pipeline run left non-terminal (a run that ended before its download
+    /// resolved, or a duplicate grab for content another grab already satisfied).
+    /// Without it such grabs linger forever as "downloading"/"importing" and a dead
+    /// download is never removed from the client.
+    ReconcileDownloads,
     /// An on-demand manual search for a specific content node.
     ManualSearch {
         /// The content node (UUID string) to search for.
@@ -54,6 +60,8 @@ impl JobKind {
             // A rescan is filesystem-bound (scan + in-place adopt), sharing no third
             // party — its own bucket keeps it off the indexer/metadata budgets.
             JobKind::RescanLibrary => "filesystem",
+            // Reconcile polls the download client, so share its bucket.
+            JobKind::ReconcileDownloads => "download",
         }
     }
 
@@ -67,6 +75,7 @@ impl JobKind {
             JobKind::MetadataRefresh => "metadata_refresh".into(),
             JobKind::DiskSpaceCheck => "disk_space_check".into(),
             JobKind::RescanLibrary => "rescan_library".into(),
+            JobKind::ReconcileDownloads => "reconcile_downloads".into(),
             JobKind::ManualSearch { content_id } => format!("manual_search:{content_id}"),
         }
     }

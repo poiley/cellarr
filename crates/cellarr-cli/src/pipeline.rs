@@ -608,6 +608,122 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             tracing::warn!(content = %id, error = %e, "auto-onboard: rollback delete failed");
         }
     }
+
+    /// Reconcile in-flight grabs against reality (the [`JobKind::ReconcileDownloads`]
+    /// sweep). A pipeline run drives one grab to a terminal state, but a run that
+    /// ends early (a client blip, a restart) or a duplicate grab for content another
+    /// grab already satisfied leaves grabs stuck non-terminal — lingering forever in
+    /// the queue as "downloading"/"importing", with a dead download never removed
+    /// from the client. This periodic sweep fixes that. For each non-terminal grab:
+    ///
+    /// - **Redundant** (the content already has a file, satisfied by another grab's
+    ///   import): mark the grab `Imported` and best-effort remove its duplicate
+    ///   download from the client.
+    /// - else **poll the client**: a download that FAILED, or that the client no
+    ///   longer knows (removed out of band / never resumed), is **dead** — blocklist
+    ///   the release, mark the grab `Blocklisted`, and remove it from the client. A
+    ///   transient client fault or a still-healthy / in-progress download is left for
+    ///   the next cycle (never condemned on a blip).
+    ///
+    /// Best-effort per grab: one grab's error is logged and skipped, never failing
+    /// the whole sweep.
+    async fn run_reconcile_downloads(&self) -> JobResult {
+        use cellarr_core::blocklist::{BlocklistEntry, BlocklistRepository};
+        use cellarr_core::repo::{GrabRepository, MediaFileRepository};
+        use cellarr_core::{DownloadState, GrabStatus};
+
+        let grabs = match self.db.grabs().list().await {
+            Ok(g) => g,
+            Err(e) => {
+                return JobResult::Retryable {
+                    detail: format!("reconcile-downloads: list grabs failed: {e}"),
+                };
+            }
+        };
+        let mut cleaned = 0usize;
+        for g in grabs {
+            if matches!(
+                g.status,
+                GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
+            ) {
+                continue;
+            }
+            let cid = g.request.content_ref.id;
+
+            // Redundant: content already satisfied by another grab's import.
+            let satisfied = match self.db.media_files().list_for_content(cid).await {
+                Ok(files) => !files.is_empty(),
+                Err(e) => {
+                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: file lookup failed");
+                    continue;
+                }
+            };
+            if satisfied {
+                if let Some(dl) = g.download_id.as_deref() {
+                    if let Ok(Some((_, client, _))) = self.env.resolve(&g.request.content_ref).await {
+                        let _ = client.remove(dl, true).await; // best-effort: drop the duplicate
+                    }
+                }
+                if let Err(e) = self.db.grabs().set_status(g.id, GrabStatus::Imported).await {
+                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: set imported failed");
+                    continue;
+                }
+                cleaned += 1;
+                continue;
+            }
+
+            // Not satisfied: poll the client to detect a dead download.
+            let Some(dl) = g.download_id.as_deref() else {
+                continue; // never handed to a client (no download to reconcile)
+            };
+            let client = match self.env.resolve(&g.request.content_ref).await {
+                Ok(Some((_, client, _))) => client,
+                Ok(None) => continue, // no client configured
+                Err(e) => {
+                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: resolve failed");
+                    continue;
+                }
+            };
+            let dead_reason = match client.status(dl).await {
+                Ok(status) if matches!(status.state, DownloadState::Failed) => {
+                    Some("download failed on client".to_string())
+                }
+                // Healthy / in-progress / completed-but-unimported: leave it.
+                Ok(_) => None,
+                Err(e) if is_download_gone(&e) => {
+                    Some("download no longer known to client".to_string())
+                }
+                // A transient client fault: leave it for the next cycle.
+                Err(_) => None,
+            };
+            if let Some(reason) = dead_reason {
+                if let Err(e) = self
+                    .db
+                    .grabs()
+                    .set_status(g.id, GrabStatus::Blocklisted)
+                    .await
+                {
+                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: set blocklisted failed");
+                    continue;
+                }
+                let entry = BlocklistEntry::from_release(
+                    cid,
+                    &g.request.release,
+                    reason,
+                    time::OffsetDateTime::now_utc(),
+                );
+                if let Err(e) = self.db.blocklist().add(&entry).await {
+                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: blocklist add failed");
+                }
+                let _ = client.remove(dl, true).await; // best-effort: remove the dead download
+                cleaned += 1;
+            }
+        }
+        if cleaned > 0 {
+            tracing::info!(cleaned, "reconcile-downloads: finalized/cleaned in-flight grabs");
+        }
+        JobResult::Success
+    }
 }
 
 /// The native external id `(scheme, value)` of a lookup candidate — tvdb for TV,
@@ -752,6 +868,8 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
             JobKind::MetadataRefresh => self.refresh_metadata().await,
             // Reconcile on-disk files against the DB: adopt what parses, surface the rest.
             JobKind::RescanLibrary => self.run_rescan().await,
+            // Reconcile in-flight grabs against reality: clean redundant/dead ones.
+            JobKind::ReconcileDownloads => self.run_reconcile_downloads().await,
             // Not pipeline work: a benign success so the scheduler keeps its cadence.
             JobKind::DiskSpaceCheck => JobResult::Success,
         }
@@ -767,8 +885,24 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
         JobKind::RescanLibrary => "RescanLibrary",
+        JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
     }
+}
+
+/// Whether a download-client error means the download is GONE — the client no
+/// longer knows the id (removed out of band, never resumed) — a dead download to
+/// clean, versus a transient fault to retry next cycle. Non-[`cellarr_download::DownloadError`]
+/// errors are treated as transient (not gone), the conservative default.
+fn is_download_gone<E>(err: &E) -> bool
+where
+    E: std::error::Error + 'static,
+{
+    let dyn_err: &(dyn std::error::Error + 'static) = err;
+    matches!(
+        dyn_err.downcast_ref::<cellarr_download::DownloadError>(),
+        Some(cellarr_download::DownloadError::NotFound(_))
+    )
 }
 
 // ---------------------------------------------------------------------------
