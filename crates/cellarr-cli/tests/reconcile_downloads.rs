@@ -90,7 +90,12 @@ impl cellarr_core::DownloadClient for ReconcileClient {
     }
 }
 
-struct FakeIndexer;
+/// A FAKE indexer that offers the given release on every search (or nothing when
+/// `offer` is `None`). The concurrency-cap tests hand it a grabbable release so a
+/// run would grab absent the cap.
+struct FakeIndexer {
+    offer: Option<Release>,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("fake indexer error")]
@@ -103,10 +108,10 @@ impl Indexer for FakeIndexer {
         "fake-indexer"
     }
     async fn search(&self, _terms: &SearchTerms) -> Result<Vec<Release>, Self::Error> {
-        Ok(Vec::new())
+        Ok(self.offer.clone().into_iter().collect())
     }
     async fn latest(&self) -> Result<Vec<Release>, Self::Error> {
-        Ok(Vec::new())
+        Ok(self.offer.clone().into_iter().collect())
     }
 }
 
@@ -116,6 +121,7 @@ struct FakeEnv {
     completed_path: String,
     library_root: PathBuf,
     profile: QualityProfile,
+    offer: Option<Release>,
 }
 
 #[async_trait]
@@ -154,7 +160,9 @@ impl PipelineEnv for FakeEnv {
             indexer_criteria: Default::default(),
         };
         Ok(Some((
-            FakeIndexer,
+            FakeIndexer {
+                offer: self.offer.clone(),
+            },
             ReconcileClient {
                 completed_path: self.completed_path.clone(),
             },
@@ -312,12 +320,27 @@ async fn seed_grab(db: &Database, content: &ContentRef, download_id: &str) -> ce
     id
 }
 
-/// Build the handler over the fake env, with the completed-download file at `completed_path`.
+/// Build the handler over the fake env, with the completed-download file at
+/// `completed_path`. No release offered, no download cap.
 fn handler(db: &Database, node: &ContentRef, completed_path: String, library_root: PathBuf) -> impl JobHandler {
+    handler_with(db, node, completed_path, library_root, None, None)
+}
+
+/// Build the handler with an indexer that offers `offer` and an in-flight
+/// download `cap` — for exercising the sweep's grab + concurrency-cap paths.
+fn handler_with(
+    db: &Database,
+    node: &ContentRef,
+    completed_path: String,
+    library_root: PathBuf,
+    offer: Option<Release>,
+    cap: Option<u32>,
+) -> impl JobHandler {
     let env = FakeEnv {
         completed_path,
         library_root,
         profile: permissive_profile(),
+        offer,
     };
     LivePipelineHandler::new(
         db.clone(),
@@ -325,6 +348,7 @@ fn handler(db: &Database, node: &ContentRef, completed_path: String, library_roo
         cellarr_api::events::EventBus::default(),
         env,
     )
+    .with_max_active_downloads(cap)
 }
 
 async fn status_of(db: &Database, id: cellarr_core::GrabId) -> GrabStatus {
@@ -524,6 +548,85 @@ async fn reconcile_blocklists_old_peerless_stalled_download() {
         "a long-stalled peer-less download is cleaned as dead"
     );
     assert_eq!(db.blocklist().list().await.unwrap().len(), 1);
+}
+
+/// A grabbable movie release that the movie registry identifies to the seeded node.
+fn matrix_release() -> Release {
+    Release {
+        indexer_id: IndexerId::new(),
+        title: "The.Matrix.1999.1080p.BluRay.x264-GROUP".into(),
+        download_url: "magnet:?xt=urn:btih:matrix".into(),
+        guid: Some("the-matrix-1999".into()),
+        protocol: Protocol::Torrent,
+        size: Some(8_000_000_000),
+        seeders: Some(100),
+        indexer_flags: Vec::new(),
+    }
+}
+
+/// How many non-terminal grabs exist for `content`.
+async fn open_grabs_for(db: &Database, content: cellarr_core::ContentId) -> usize {
+    db.grabs()
+        .list()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|g| {
+            (g.request.content_ref.id == content)
+                && !matches!(
+                    g.status,
+                    GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
+                )
+        })
+        .count()
+}
+
+/// Under the cap, the sweep grabs a missing item as normal.
+#[tokio::test]
+async fn sweep_grabs_when_under_the_concurrency_cap() {
+    let (tmp, db, node) = fresh_db_with_movie().await;
+    let h = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(matrix_release()),
+        Some(1), // cap 1, nothing in flight yet → under cap
+    );
+    let _ = h.handle(&JobKind::MissingItemSearch).await;
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        1,
+        "a missing item is grabbed when in-flight downloads are below the cap"
+    );
+}
+
+/// At the cap, the sweep grabs NOTHING new — even a grabbable missing item is
+/// deferred to a later sweep (after the reconcile drains completions).
+#[tokio::test]
+async fn sweep_stops_grabbing_at_the_concurrency_cap() {
+    let (tmp, db, node) = fresh_db_with_movie().await;
+    // One download already in flight (for other content) → active == cap (1).
+    let other = seed_movie(&db).await;
+    let _existing = seed_grab(&db, &other, "healthy-dl").await;
+
+    let h = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(matrix_release()),
+        Some(1),
+    );
+    let _ = h.handle(&JobKind::MissingItemSearch).await;
+
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        0,
+        "at the concurrency cap, a grabbable missing item is NOT grabbed"
+    );
+    // The pre-existing in-flight grab is untouched (the cap only gates NEW grabs).
+    assert_eq!(open_grabs_for(&db, other.id).await, 1);
 }
 
 // ---------------------------------------------------------------------------

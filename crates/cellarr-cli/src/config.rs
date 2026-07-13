@@ -68,6 +68,15 @@ pub struct Config {
     /// `CELLARR_MANAGED_CONFIG_PATH` (or the config file's `managed_config_path`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_config_path: Option<PathBuf>,
+    /// Cap on how many downloads may be **in flight at once** (grabbed but not yet
+    /// imported). The acquisition sweep stops grabbing new releases once this many
+    /// are active, letting the `ReconcileDownloads` job drain completions before
+    /// more are started — back-pressure that keeps a large missing backlog from
+    /// flooding the download client / VPN / disk with hundreds of simultaneous
+    /// downloads. `None` (the default) is **unlimited** (unchanged behaviour).
+    /// From `CELLARR_MAX_ACTIVE_DOWNLOADS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_active_downloads: Option<u32>,
 }
 
 /// Media-management file-handling configuration.
@@ -205,6 +214,7 @@ impl Default for Config {
             tmdb: TmdbConfig::default(),
             media_management: MediaManagementConfig::default(),
             managed_config_path: None,
+            max_active_downloads: None,
         }
     }
 }

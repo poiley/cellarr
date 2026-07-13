@@ -78,6 +78,11 @@ spec:
             # disk); capped per pass so a huge first scan stages in batches.
             - { name: CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD, value: "true" }
             - { name: CELLARR_MEDIA_MANAGEMENT__AUTO_ONBOARD_LIMIT, value: "2000" }
+            # Cap simultaneous in-flight downloads so the acquisition sweep can't
+            # flood Transmission/the VPN with a whole missing backlog at once. The
+            # sweep grabs up to this many, then waits for the reconcile to drain
+            # completions before grabbing more. Unset = unlimited (the code default).
+            - { name: CELLARR_MAX_ACTIVE_DOWNLOADS, value: "10" }
             # Config-as-code: reconcile the DB from this file on boot.
             - { name: CELLARR_MANAGED_CONFIG_PATH, value: "/config/managed-config.yaml" }
             # API key for /api/v3 (the API is reachable via the ingress, so it must

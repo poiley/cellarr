@@ -118,6 +118,10 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// Cap on nodes created per onboard pass (`None` = unbounded) — for a staged
     /// first batch of a large library.
     auto_onboard_limit: Option<usize>,
+    /// Cap on downloads in flight at once (grabbed, not yet imported). The sweep
+    /// stops grabbing new releases once this many are active. `None` (the default)
+    /// is unlimited. See [`Config::max_active_downloads`](crate::config::Config).
+    max_active_downloads: Option<u32>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -135,7 +139,18 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             metadata: None,
             auto_onboard: false,
             auto_onboard_limit: None,
+            max_active_downloads: None,
         }
+    }
+
+    /// Set the in-flight download cap: the acquisition sweep stops grabbing new
+    /// releases once this many downloads are active (grabbed, not yet imported), so
+    /// a large backlog doesn't flood the client/VPN/disk at once. `None` (the
+    /// default) is unlimited.
+    #[must_use]
+    pub fn with_max_active_downloads(mut self, cap: Option<u32>) -> Self {
+        self.max_active_downloads = cap;
+        self
     }
 
     /// Attach the metadata-lookup seam and enable the opt-in auto-onboard: a rescan
@@ -259,8 +274,10 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     }
 
     /// Drive one content node through the full runner, publishing the matching
-    /// domain events. Returns `true` if a run actually executed (the environment
-    /// was ready), `false` if it was a no-op (no client configured).
+    /// domain events. Returns `true` if a new download was **grabbed** (a fresh
+    /// in-flight download the concurrency cap counts), `false` otherwise (the
+    /// environment was not ready, or the run rejected / found nothing / imported
+    /// inline).
     async fn run_node(&self, content: &ContentRef) -> Result<bool, String> {
         let Some((indexer, client, config)) = self.env.resolve(content).await? else {
             return Ok(false);
@@ -312,7 +329,8 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .await
             .map_err(|e| format!("pipeline run failed: {e}"))?;
         self.publish_outcome(content, &outcome);
-        Ok(true)
+        // A `Grabbed` outcome is a new in-flight download the concurrency cap counts.
+        Ok(matches!(outcome, RunOutcome::Grabbed { .. }))
     }
 
     /// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the
@@ -357,15 +375,37 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     std::collections::HashSet::new()
                 }
             };
+        // Back-pressure: stop grabbing new releases once `max_active_downloads` are
+        // in flight, so a large missing backlog doesn't flood the download client /
+        // VPN / disk with hundreds of simultaneous downloads. The count starts from
+        // the grabs already in flight and rises as this sweep grabs more; the
+        // remaining missing nodes wait for a later sweep, after the reconcile drains
+        // completions. `None` is unlimited (unchanged behaviour).
+        let cap = self.max_active_downloads.map(|c| c as usize);
+        let mut active = in_flight.len();
         for node in &nodes {
             if in_flight.contains(&node.id) {
                 continue; // already grabbed and downloading; reconcile finalizes it
             }
+            if let Some(cap) = cap {
+                if active >= cap {
+                    tracing::info!(
+                        active,
+                        cap,
+                        "download concurrency cap reached; deferring remaining missing items to a later sweep"
+                    );
+                    break;
+                }
+            }
             // One node failing (a flaky indexer, a transient write) must not abort
             // the whole sweep; record it and move on. The next tick retries the
             // still-missing nodes.
-            if let Err(detail) = self.run_node(node).await {
-                tracing::warn!(content = %node.id, error = %detail, "pipeline run failed for node; continuing");
+            match self.run_node(node).await {
+                Ok(true) => active += 1, // a new download was grabbed — count it toward the cap
+                Ok(false) => {}
+                Err(detail) => {
+                    tracing::warn!(content = %node.id, error = %detail, "pipeline run failed for node; continuing");
+                }
             }
         }
         JobResult::Success

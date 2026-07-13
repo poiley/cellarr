@@ -193,6 +193,9 @@ impl Daemon {
         let handler_metadata = std::sync::Arc::clone(&metadata);
         let auto_onboard = config.media_management.auto_onboard;
         let auto_onboard_limit = config.media_management.auto_onboard_limit;
+        // Back-pressure for the acquisition sweep: cap simultaneous in-flight
+        // downloads (unlimited when unset).
+        let max_active_downloads = config.max_active_downloads;
 
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
@@ -207,7 +210,8 @@ impl Daemon {
                 )
                 .with_scene_provider(handler_scene_provider)
                 .with_resolver(handler_resolver)
-                .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit),
+                .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit)
+                .with_max_active_downloads(max_active_downloads),
             )
         })
         .with_metadata(metadata)
