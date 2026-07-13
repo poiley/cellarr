@@ -48,6 +48,8 @@ use cellarr_media::{
 /// - `gone-dl`      → `NotFound` error (gone → blocklist).
 /// - `healthy-dl`   → Downloading with peers (leave).
 /// - `peerless-dl`  → Downloading with zero peers (leave if young, blocklist if aged).
+/// - `reacquired-dl`→ Completed (the download a re-acquire grab starts; add() hands
+///   back this id, so a re-grabbed release imports and satisfies the node).
 struct ReconcileClient {
     completed_path: String,
 }
@@ -61,7 +63,8 @@ impl cellarr_core::DownloadClient for ReconcileClient {
         "reconcile-fake"
     }
     async fn add(&self, _grab: &GrabRequest) -> Result<String, Self::Error> {
-        Ok("dl".into())
+        // A grab from a re-acquire run gets this id; its status (below) completes.
+        Ok("reacquired-dl".into())
     }
     async fn status(&self, id: &str) -> Result<DownloadStatus, Self::Error> {
         let base = |state, progress, peers| DownloadStatus {
@@ -74,9 +77,9 @@ impl cellarr_core::DownloadClient for ReconcileClient {
             error_string: None,
         };
         match id {
-            "completed-dl" => Ok(DownloadStatus {
+            "completed-dl" | "reacquired-dl" => Ok(DownloadStatus {
                 content_path: Some(self.completed_path.clone()),
-                ..base(DownloadState::Completed, 1.0, Some(0))
+                ..base(DownloadState::Completed, 1.0, Some(5))
             }),
             "failed-dl" => Ok(base(DownloadState::Failed, 0.0, Some(1))),
             "gone-dl" => Err(cellarr_download::DownloadError::NotFound(id.into())),
@@ -90,7 +93,13 @@ impl cellarr_core::DownloadClient for ReconcileClient {
     }
 }
 
-struct FakeIndexer;
+/// A FAKE indexer that offers the given release for every search (or nothing when
+/// `offer` is `None`, the default that keeps a re-acquire run a no-op). The
+/// re-acquire test hands it a *different* release from the blocklisted one so the
+/// runner's Decide has something grabbable to pick.
+struct FakeIndexer {
+    offer: Option<Release>,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("fake indexer error")]
@@ -103,10 +112,10 @@ impl Indexer for FakeIndexer {
         "fake-indexer"
     }
     async fn search(&self, _terms: &SearchTerms) -> Result<Vec<Release>, Self::Error> {
-        Ok(Vec::new())
+        Ok(self.offer.clone().into_iter().collect())
     }
     async fn latest(&self) -> Result<Vec<Release>, Self::Error> {
-        Ok(Vec::new())
+        Ok(self.offer.clone().into_iter().collect())
     }
 }
 
@@ -116,6 +125,7 @@ struct FakeEnv {
     completed_path: String,
     library_root: PathBuf,
     profile: QualityProfile,
+    offer: Option<Release>,
 }
 
 #[async_trait]
@@ -154,7 +164,9 @@ impl PipelineEnv for FakeEnv {
             indexer_criteria: Default::default(),
         };
         Ok(Some((
-            FakeIndexer,
+            FakeIndexer {
+                offer: self.offer.clone(),
+            },
             ReconcileClient {
                 completed_path: self.completed_path.clone(),
             },
@@ -312,12 +324,33 @@ async fn seed_grab(db: &Database, content: &ContentRef, download_id: &str) -> ce
     id
 }
 
-/// Build the handler over the fake env, with the completed-download file at `completed_path`.
-fn handler(db: &Database, node: &ContentRef, completed_path: String, library_root: PathBuf) -> impl JobHandler {
+/// Build the handler over the fake env, with the completed-download file at
+/// `completed_path`. No release is offered, so a re-acquire run is a no-op (the
+/// existing cases assert cleanup, not re-grab).
+fn handler(
+    db: &Database,
+    node: &ContentRef,
+    completed_path: String,
+    library_root: PathBuf,
+) -> impl JobHandler {
+    handler_with_offer(db, node, completed_path, library_root, None)
+}
+
+/// Build the handler with an indexer that offers `offer` on search — so a
+/// reconcile that blocklists a dead grab can re-acquire the content by grabbing
+/// the offered release.
+fn handler_with_offer(
+    db: &Database,
+    node: &ContentRef,
+    completed_path: String,
+    library_root: PathBuf,
+    offer: Option<Release>,
+) -> impl JobHandler {
     let env = FakeEnv {
         completed_path,
         library_root,
         profile: permissive_profile(),
+        offer,
     };
     LivePipelineHandler::new(
         db.clone(),
@@ -524,6 +557,73 @@ async fn reconcile_blocklists_old_peerless_stalled_download() {
         "a long-stalled peer-less download is cleaned as dead"
     );
     assert_eq!(db.blocklist().list().await.unwrap().len(), 1);
+}
+
+/// The full self-heal loop: a dead download is not just cleaned but **replaced**
+/// in the same sweep. After blocklisting the failed grab, the reconcile
+/// re-acquires the still-monitored-missing node — grabbing a *different* offered
+/// release (the blocklisted one is skipped), which completes and imports — so the
+/// node ends satisfied with a real file, without waiting for the next RssSync.
+#[tokio::test]
+async fn reconcile_reacquires_content_after_cleaning_a_dead_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+
+    // The file the re-grabbed download completes with.
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.2160p.BluRay.x265-REGRAB.mkv");
+    std::fs::write(&downloaded, b"re-grabbed movie bytes").unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_movie(&db).await;
+    // A dead grab whose release will be blocklisted.
+    let dead = seed_grab(&db, &node, "failed-dl").await;
+
+    // The indexer offers a DIFFERENT release than the one about to be blocklisted,
+    // so the re-acquire run has something grabbable to pick.
+    let offer = Release {
+        indexer_id: IndexerId::new(),
+        title: "The.Matrix.1999.2160p.BluRay.x265-REGRAB".into(),
+        download_url: "magnet:?xt=urn:btih:regrab".into(),
+        guid: Some("the-matrix-1999-regrab".into()),
+        protocol: Protocol::Torrent,
+        size: Some(20_000_000_000),
+        seeders: Some(50),
+        indexer_flags: Vec::new(),
+    };
+
+    let h = handler_with_offer(
+        &db,
+        &node,
+        downloaded.to_string_lossy().into_owned(),
+        library_root.clone(),
+        Some(offer),
+    );
+    assert!(matches!(
+        h.handle(&JobKind::ReconcileDownloads).await,
+        JobResult::Success
+    ));
+
+    // The dead grab was blocklisted...
+    assert_eq!(status_of(&db, dead).await, GrabStatus::Blocklisted);
+    // ...and the node was re-acquired in the same sweep: a real file landed and a
+    // media_file now satisfies the node.
+    let imported = find_one_file(&library_root).expect("the re-grabbed file was imported");
+    assert_eq!(std::fs::read(&imported).unwrap(), b"re-grabbed movie bytes");
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(files.len(), 1, "the re-acquired download imported and satisfies the node");
+    // A second, non-dead grab exists for the re-grab.
+    let grabs = db.grabs().list().await.unwrap();
+    assert!(
+        grabs
+            .iter()
+            .any(|g| g.id != dead && g.status == GrabStatus::Imported),
+        "the re-acquire created a fresh grab that imported"
+    );
 }
 
 // ---------------------------------------------------------------------------
