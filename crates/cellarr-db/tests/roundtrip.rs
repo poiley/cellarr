@@ -324,6 +324,61 @@ async fn monitored_missing_excludes_nodes_with_files_and_containers() {
 }
 
 #[tokio::test]
+async fn monitored_missing_rotates_order_so_no_head_can_starve_the_rest() {
+    // A stable order would let a permanently-unsatisfiable head monopolize the
+    // bounded acquisition sweep and starve everything behind it. monitored_missing
+    // returns a RANDOM order so successive runs rotate across the whole backlog.
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // Enough nodes that two identical random orderings are astronomically unlikely.
+    let mut seeded = std::collections::BTreeSet::new();
+    for _ in 0..30 {
+        let node = movie_node(library.id, ContentId::new());
+        content.upsert(&node).await.unwrap();
+        seeded.insert(node.id);
+    }
+
+    let order_a: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    let order_b: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+
+    // Both runs still return the COMPLETE set (rotation must not drop or duplicate
+    // any node) — only the order differs.
+    assert_eq!(
+        order_a.iter().copied().collect::<std::collections::BTreeSet<_>>(),
+        seeded,
+        "every monitored-missing node is returned"
+    );
+    assert_eq!(order_a.len(), 30);
+    assert_eq!(order_b.len(), 30);
+    assert_ne!(
+        order_a, order_b,
+        "the order must rotate between runs so the sweep covers the whole backlog"
+    );
+}
+
+#[tokio::test]
 async fn grab_create_and_get_round_trip() {
     let (_dir, db) = temp_db().await;
     let grabs = db.grabs();

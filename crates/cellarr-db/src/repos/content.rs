@@ -932,6 +932,18 @@ impl ContentRepository for ContentRepo {
         // Monitored nodes with no linked media_file are "missing". Containers
         // (series/season/artist/album/author) are excluded: only leaf, grabbable
         // nodes are acquisition targets.
+        //
+        // Returned in RANDOM order. The acquisition sweep (RssSync/MissingItemSearch)
+        // takes only the first N per run (bounded to protect the indexers), so a
+        // STABLE order lets a permanently-unsatisfiable head — a handful of
+        // monitored-missing items whose every release is rejected (below-min-seeders,
+        // quality-not-allowed), re-searched fruitlessly every cycle — monopolize the
+        // budget and STARVE everything behind it (e.g. a large TV backlog never
+        // reached because a few stuck movies are always first). Randomizing rotates
+        // coverage across the whole backlog over successive runs so no doomed head can
+        // block the rest. `RANDOM()` is portable across SQLite and Postgres; the query
+        // returns the full set (callers that need membership, not a sample, still get
+        // every row — only order changes).
         let rows = sqlx::query(&pq(
             "SELECT c.id, c.library_id, c.media_type, c.parent_id, c.kind, c.series_type, c.coords,
                     c.monitored, c.title_id
@@ -940,7 +952,8 @@ impl ContentRepository for ContentRepo {
                AND c.kind IN ('movie', 'episode', 'track', 'book')
                AND NOT EXISTS (
                    SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
-               )"),
+               )
+             ORDER BY RANDOM()"),
         )
         .fetch_all(&self.pool)
         .await?;
