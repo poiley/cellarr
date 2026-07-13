@@ -186,7 +186,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         let Some(resolver) = self.resolver.as_ref() else {
             return JobResult::Success;
         };
-        let libraries = match self.db.config().list_libraries().await {
+        let mut libraries = match self.db.config().list_libraries().await {
             Ok(l) => l,
             Err(detail) => {
                 return JobResult::Retryable {
@@ -194,6 +194,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 }
             }
         };
+        // Process TV libraries first. A series' grabbable episode tree is populated
+        // as a side effect of resolving the series node (series expansion), so
+        // doing TV before a large movie library makes a freshly-added show's
+        // episodes appear promptly instead of waiting behind a full movie
+        // re-resolve. `false` (is TV) sorts ahead of `true`.
+        libraries.sort_by_key(|l| l.media_type != MediaType::Tv);
         let content = self.db.content();
         for lib in libraries {
             let mut stack = match content.roots(lib.id).await {
