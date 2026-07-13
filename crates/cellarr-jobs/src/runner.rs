@@ -79,6 +79,11 @@ use cellarr_core::{
 /// Default 3 cycles.
 const STALL_MAX_STAGNANT_POLLS: u32 = 3;
 
+/// Maximum time to wait for a single download-client status poll before treating
+/// it as a transient fault (skip + retry). Bounds a hung client request so it can
+/// never freeze the run — and, in the daemon, the single-threaded job loop.
+const TRACK_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// A download at or above this fraction is treated as **near-complete** and is
 /// exempt from the stall detector. At a torrent's end-game the client commonly
 /// reports `progress ≈ 0.999` (the final piece is still verifying) while its peer
@@ -203,6 +208,18 @@ pub enum RunOutcome {
     },
     /// No acceptable release was found at Discover.
     NothingFound,
+    /// A release was grabbed and handed to the download client, and the run
+    /// **deferred tracking** to the periodic [`ReconcileDownloads`] job rather
+    /// than blocking on the (up-to-24h) inline Track loop. Used by the bulk
+    /// acquisition sweep so it keeps moving through the backlog instead of
+    /// serializing on one download; reconcile imports it on completion and
+    /// blocklists+re-acquires it on failure/stall.
+    ///
+    /// [`ReconcileDownloads`]: cellarr_jobs::JobKind::ReconcileDownloads
+    Grabbed {
+        /// The grab now in-flight in the download client.
+        grab_id: GrabId,
+    },
 }
 
 /// One ranked candidate from an **interactive (manual) release search** — the
@@ -481,6 +498,12 @@ where
     /// persisted at Identify — the offline/test path — and acquisition proceeds
     /// unaffected (metadata persistence is best-effort, never a pipeline gate).
     metadata_resolver: Option<Arc<dyn cellarr_media::DynMetadataResolver>>,
+    /// Defer tracking to the periodic ReconcileDownloads job instead of blocking
+    /// the run on the inline Track loop. `false` (the default) tracks inline
+    /// (grab→track→import). The bulk sweep opts in via
+    /// [`with_deferred_tracking`](Self::with_deferred_tracking) so it doesn't
+    /// serialize on one download. See [`RunOutcome::Grabbed`].
+    defer_tracking: bool,
 }
 
 impl<'a, I, D, C> PipelineRunner<'a, I, D, C>
@@ -509,7 +532,19 @@ where
             provider_notifier: None,
             scene_provider: None,
             metadata_resolver: None,
+            defer_tracking: false,
         }
+    }
+
+    /// Defer download tracking to the periodic `ReconcileDownloads` job: a
+    /// successful Grab ends the run at [`RunOutcome::Grabbed`] rather than blocking
+    /// on the inline Track loop. Builder form so the base [`PipelineRunner::new`]
+    /// keeps the inline grab→track→import path; the bulk acquisition sweep opts in
+    /// so it can keep grabbing the backlog instead of serializing on one download.
+    #[must_use]
+    pub fn with_deferred_tracking(mut self) -> Self {
+        self.defer_tracking = true;
+        self
     }
 
     /// Attach a content-metadata resolver so a confidently-identified node has its
@@ -1626,6 +1661,18 @@ where
         self.fire_provider_grab(matched_ref, release, &grab_quality)
             .await;
 
+        // Defer-tracking (the bulk sweep): the download is now running in the
+        // client. Do NOT block this single-threaded run tracking it to completion
+        // — hand off to the periodic ReconcileDownloads job, which imports it on
+        // completion and blocklists+re-acquires it on failure/stall. The run ends
+        // at Grab (accurate: it grabbed and deferred; `HistoryEvent::Grabbed` was
+        // already recorded above), which keeps the sweep moving through the backlog
+        // rather than serializing on one multi-minute/hour download.
+        if self.defer_tracking {
+            tracing::info!(content = %content.id, grab = %grab_id, "grabbed; tracking deferred to reconcile");
+            return Ok(GrabTrackResult::Done(RunOutcome::Grabbed { grab_id }));
+        }
+
         *stage = self.advance(run_id, *stage, None).await?; // -> Track
 
         // --- Track: poll to completion, terminal failure, or stall --------
@@ -1784,20 +1831,35 @@ where
         let mut last_progress = f32::NEG_INFINITY;
         let mut stagnant_no_peer_polls: u32 = 0;
         for poll_index in 0..self.config.max_track_polls {
-            let status = match self.client.status(download_id).await {
-                Ok(s) => s,
-                Err(e) if is_transient_client_fault(&e) => {
-                    // The download client is momentarily unreachable/faulted — a
-                    // transient infra issue, not a bad release. Do NOT blocklist:
-                    // skip this poll and retry after the interval so a brief client
-                    // blip is absorbed and the download keeps tracking. A sustained
-                    // outage still exhausts the poll budget ("tracking timed out").
-                    tracing::warn!(error = %e, "download-client poll failed transiently; retrying");
-                    self.wait_between_polls().await;
-                    continue;
-                }
-                Err(e) => return TrackOutcome::Failed(format!("status poll failed: {e}")),
-            };
+            // Bound each poll: a download client can hang a request indefinitely
+            // (a VPN blip), and an un-timed-out await would freeze the run (and, in
+            // the daemon, the single-threaded job loop). A timeout is treated like a
+            // transient fault — skip, wait, retry — so a sustained hang exhausts the
+            // poll budget rather than blocking forever.
+            let status =
+                match tokio::time::timeout(TRACK_POLL_TIMEOUT, self.client.status(download_id))
+                    .await
+                {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) if is_transient_client_fault(&e) => {
+                        // The download client is momentarily unreachable/faulted — a
+                        // transient infra issue, not a bad release. Do NOT blocklist:
+                        // skip this poll and retry after the interval so a brief client
+                        // blip is absorbed and the download keeps tracking. A sustained
+                        // outage still exhausts the poll budget ("tracking timed out").
+                        tracing::warn!(error = %e, "download-client poll failed transiently; retrying");
+                        self.wait_between_polls().await;
+                        continue;
+                    }
+                    Ok(Err(e)) => {
+                        return TrackOutcome::Failed(format!("status poll failed: {e}"))
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!("download-client poll timed out; retrying");
+                        self.wait_between_polls().await;
+                        continue;
+                    }
+                };
             match status.state {
                 DownloadState::Completed => return TrackOutcome::Completed(status.content_path),
                 DownloadState::Failed => {
@@ -2013,11 +2075,21 @@ where
         grab: &Grab,
         content_path: &str,
     ) -> std::result::Result<Vec<String>, String> {
-        // Re-parse the release title for naming + quality/release-type, exactly as
-        // the inline Import stage does (the file path is the second parse, inside
-        // `import`).
-        let parsed = cellarr_parse::parse_title(&grab.request.release.title);
-        let release_type = cellarr_core::ReleaseType::from_parsed(&parsed);
+        // Re-parse the release title for quality/naming, as the inline Import stage
+        // does. But the grab's content_ref is the CONFIRMED target the pipeline
+        // already identified — and, for anime, remapped from the absolute number to
+        // a concrete season/episode. A fresh title parse alone loses that remap, so
+        // its coordinates (an absolute number) would disagree with the remapped
+        // S02E01 file at the second-parse verify and the finalize would be rejected.
+        // Align the parsed coordinates with the grab's committed identity so the
+        // verify checks the file against the right episode. The durable release type
+        // is likewise taken from the grab (recorded at Grab) rather than re-derived.
+        let mut parsed = cellarr_parse::parse_title(&grab.request.release.title);
+        parsed.coordinates = vec![grab.request.content_ref.coords.clone()];
+        let release_type = grab
+            .request
+            .release_type
+            .unwrap_or_else(|| cellarr_core::ReleaseType::from_parsed(&parsed));
         let matched_ref = &grab.request.content_ref;
 
         let destinations = self.import(grab.id, matched_ref, &parsed, content_path).await?;
@@ -2027,6 +2099,16 @@ where
         self.set_grab_status(grab.id, GrabStatus::Imported)
             .await
             .map_err(|e| format!("set imported: {e}"))?;
+        // Record the import in history (parity with the inline path) so the activity
+        // view shows a reconcile-finalized import too. This finalization is its own
+        // unit of work, keyed by a fresh run id.
+        self.append_history(
+            PipelineRunId::new(),
+            matched_ref.id,
+            HistoryEvent::Imported { grab_id: grab.id },
+        )
+        .await
+        .map_err(|e| format!("history append: {e}"))?;
         self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
             .await;
         Ok(destinations)

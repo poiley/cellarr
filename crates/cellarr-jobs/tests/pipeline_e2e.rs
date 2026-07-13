@@ -433,6 +433,75 @@ async fn movie_release_drives_discover_to_imported_and_lands_on_disk() {
 }
 
 #[tokio::test]
+async fn deferred_tracking_grabs_and_hands_off_without_blocking_on_track() {
+    // The bulk sweep opts into deferred tracking so it never blocks the
+    // single-threaded job loop tracking a download to completion. The run must
+    // GRAB (download handed to the client, grab recorded Sent with a download id)
+    // and end at RunOutcome::Grabbed — NOT track/import inline — leaving the import
+    // to the ReconcileDownloads job.
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+    // The fake client would report Completed immediately — so if the run tracked
+    // inline it WOULD import. Deferred tracking must skip that entirely.
+    let downloaded = tmp.path().join("downloads/x.mkv");
+    std::fs::create_dir_all(downloaded.parent().unwrap()).unwrap();
+    std::fs::write(&downloaded, b"bytes").unwrap();
+
+    let node = seed_node(&db, MediaType::Movie, cellarr_core::ContentKind::Movie, Coordinates::Movie).await;
+    let registry = registry_for(
+        &node,
+        Some(MovieMeta {
+            title: "The Matrix".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        None,
+        "The Matrix",
+    );
+    let indexer = FakeIndexer {
+        releases: vec![movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config)
+        .with_deferred_tracking();
+    let outcome = runner.run(&node).await.unwrap();
+
+    // The run ends at Grabbed — no inline track/import.
+    let grab_id = match outcome {
+        RunOutcome::Grabbed { grab_id } => grab_id,
+        other => panic!("expected Grabbed (deferred), got {other:?}"),
+    };
+    // Nothing was imported to disk (the reconcile would do that later) — the
+    // library root stays empty (no rendered "Title (Year)" folder was created).
+    assert!(
+        std::fs::read_dir(&library_root).unwrap().next().is_none(),
+        "deferred tracking must not import inline"
+    );
+    // The grab is in-flight: Sent, with the client's download id recorded, so the
+    // ReconcileDownloads job can find and finalize it.
+    let grab = GrabRepository::get(&db.grabs(), grab_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grab.status, GrabStatus::Sent, "grabbed, not imported");
+    assert!(grab.download_id.is_some(), "the download was handed to the client");
+}
+
+#[tokio::test]
 async fn tv_episode_release_drives_discover_to_imported_and_lands_on_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("cellarr.sqlite");

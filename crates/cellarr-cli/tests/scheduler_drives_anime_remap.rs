@@ -454,6 +454,14 @@ async fn anime_series_absolute_release_remaps_through_live_handler() {
     let state = run_manual_search(&scheduler, &node).await;
     assert_eq!(state, JobState::Done, "the anime ManualSearch succeeded");
 
+    // The search grabs (against the REMAPPED S02E01 node) and defers tracking; the
+    // ReconcileDownloads job finalizes the import. Drive it so the file lands.
+    scheduler
+        .submit_now(JobKind::ReconcileDownloads, RetryPolicy::default())
+        .await
+        .unwrap();
+    scheduler.tick().await.unwrap();
+
     // THE PROOF: a real file landed under the library at the REMAPPED S02E01.
     let imported = find_one_file(&library_root).expect("an imported file under the library root");
     assert!(imported.starts_with(&library_root));

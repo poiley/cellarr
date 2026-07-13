@@ -342,6 +342,21 @@ async fn missing_item_search_through_scheduler_imports_the_file() {
     let job = scheduler.store().get(&job_id).await.unwrap().unwrap();
     assert_eq!(job.state, JobState::Done, "the MissingItemSearch succeeded");
 
+    // The sweep GRABS and defers tracking (it must not block the job loop tracking
+    // a download to completion). The download is handed to the client; the import
+    // is finalized by the ReconcileDownloads job — so drive that too and assert the
+    // file lands. This exercises the real daemon flow: sweep→grab→defer→reconcile.
+    let reconcile = scheduler
+        .submit_now(JobKind::ReconcileDownloads, RetryPolicy::default())
+        .await
+        .unwrap();
+    scheduler.tick().await.unwrap();
+    assert_eq!(
+        scheduler.store().get(&reconcile).await.unwrap().unwrap().state,
+        JobState::Done,
+        "the ReconcileDownloads finalized the deferred download"
+    );
+
     // THE PROOF: a real file was imported on disk under the library root.
     let imported = find_one_file(&library_root);
     let imported = imported.expect("an imported file must exist under the library root");

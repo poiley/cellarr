@@ -298,7 +298,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 self.db.clone(),
                 cellarr_api::default_senders(),
                 NOTIFICATION_INSTANCE_NAME,
-            ));
+            ))
+            // The daemon's acquisition runs are driven by a single-threaded job
+            // loop, and the inline Track budget spans a whole download (hours). So
+            // grab and hand off to the periodic ReconcileDownloads job rather than
+            // blocking the loop tracking one download to completion — otherwise a
+            // large backlog is worked one-download-at-a-time (and a hung client
+            // poll freezes the loop). Reconcile imports on completion and
+            // blocklists+re-acquires on failure/stall.
+            .with_deferred_tracking();
         let outcome = runner
             .run(content)
             .await
@@ -318,11 +326,41 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     /// both `MissingItemSearch` and `RssSync` — both want to acquire the gaps; the
     /// runner's Discover handles RSS-vs-search at the indexer level.
     async fn run_missing(&self) -> JobResult {
+        use cellarr_core::repo::GrabRepository;
+        use cellarr_core::GrabStatus;
+
         let nodes = match self.missing_nodes().await {
             Ok(n) => n,
             Err(detail) => return JobResult::Retryable { detail },
         };
+        // Content that already has a grab in flight (non-terminal): skip it. The
+        // download is running in the client and ReconcileDownloads will finalize it
+        // — re-grabbing here would start a DUPLICATE download. This matters
+        // especially with deferred tracking, where a grabbed node stays
+        // monitored-missing until its import lands, so every sweep would otherwise
+        // re-grab it. A grab-load failure just means we don't skip (never a false
+        // skip of a genuinely un-grabbed node).
+        let in_flight: std::collections::HashSet<cellarr_core::ContentId> =
+            match self.db.grabs().list().await {
+                Ok(grabs) => grabs
+                    .into_iter()
+                    .filter(|g| {
+                        !matches!(
+                            g.status,
+                            GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
+                        )
+                    })
+                    .map(|g| g.request.content_ref.id)
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "run-missing: loading grabs failed; not skipping in-flight");
+                    std::collections::HashSet::new()
+                }
+            };
         for node in &nodes {
+            if in_flight.contains(&node.id) {
+                continue; // already grabbed and downloading; reconcile finalizes it
+            }
             // One node failing (a flaky indexer, a transient write) must not abort
             // the whole sweep; record it and move on. The next tick retries the
             // still-missing nodes.
@@ -692,7 +730,19 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     continue;
                 }
             };
-            match client.status(dl).await {
+            // Bound the client poll: the download client (e.g. Transmission behind
+            // a VPN) can hang a request indefinitely, and this reconcile runs on the
+            // single-threaded job loop — an un-timed-out poll would freeze the whole
+            // daemon. On timeout, leave the grab for the next cycle.
+            let status_poll =
+                match tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.status(dl)).await {
+                    Ok(r) => r,
+                    Err(_elapsed) => {
+                        tracing::warn!(grab = %g.id, "reconcile-downloads: client status poll timed out; leaving for next cycle");
+                        continue;
+                    }
+                };
+            match status_poll {
                 // Hard failure on the client: dead → blocklist + remove.
                 Ok(status) if matches!(status.state, DownloadState::Failed) => {
                     if self
@@ -722,6 +772,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     match runner.import_completed(&g, path).await {
                         Ok(destinations) => {
                             tracing::info!(grab = %g.id, count = destinations.len(), "reconcile-downloads: finalized completed import");
+                            // Surface the import onto the push bus so the UI updates,
+                            // exactly as an inline import does (deferred-tracking
+                            // grabs are finalized here rather than in the run).
+                            for dest in &destinations {
+                                self.events.publish(DomainEvent::ImportCompleted {
+                                    content_id: cid.to_string(),
+                                    path: dest.clone(),
+                                });
+                            }
                             let _ = client.remove(dl, true).await; // best-effort
                             cleaned += 1;
                         }
@@ -925,6 +984,16 @@ fn publish_outcome(events: &EventBus, content: &ContentRef, outcome: &RunOutcome
                 note: "no releases found".to_string(),
             });
         }
+        RunOutcome::Grabbed { grab_id } => {
+            // Grabbed and handed to the client; tracking deferred to reconcile.
+            // Surface it as in-flight queue progress so the UI shows the download
+            // starting (reconcile will publish the import when it completes).
+            events.publish(DomainEvent::QueueProgress {
+                grab_id: grab_id.to_string(),
+                status: "downloading".to_string(),
+                progress: Some(0.0),
+            });
+        }
     }
 }
 
@@ -983,6 +1052,12 @@ fn command_label(kind: &JobKind) -> &'static str {
 /// a real transfer finds peers long before a day passes, and a torrent with none
 /// for a full day is not going to complete.
 const STALL_MIN_AGE: time::Duration = time::Duration::hours(24);
+
+/// How long to wait for a single download-client status poll in the reconcile
+/// sweep before giving up and leaving the grab for the next cycle. The client can
+/// hang a request indefinitely (a VPN blip); this reconcile runs on the
+/// single-threaded job loop, so an un-timed-out poll would freeze the daemon.
+const RECONCILE_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Whether a download-client error means the download is GONE — the client no
 /// longer knows the id (removed out of band, never resumed) — a dead download to
