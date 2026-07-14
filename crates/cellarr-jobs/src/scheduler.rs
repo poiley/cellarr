@@ -110,13 +110,24 @@ impl ConcurrencyCaps {
     }
 }
 
+/// The default per-job execution timeout: a backstop that reaps a job whose
+/// handler never returns (a hung download-client call, a wedged external service),
+/// freeing its lease so the same kind can run again. Well above the slowest
+/// legitimate job (a full `RefreshMetadata`/`RescanLibrary` over a large library is
+/// minutes, not tens of minutes), so it never cuts real work short — it exists
+/// only to break a true hang.
+pub const DEFAULT_JOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// The scheduler.
 ///
 /// Generic over its [`Clock`], [`JobStore`], and [`JobHandler`] so production
 /// wiring and tests share one implementation. It is driven by [`Scheduler::tick`]:
-/// each tick runs every job that is due at the current clock time, respecting
-/// dedup and concurrency caps. Production calls `tick` from a `tokio::time`
-/// interval; tests call it directly after advancing a [`crate::clock::LogicalClock`].
+/// each tick **spawns** every due job onto its own background task (bounded by the
+/// per-resource concurrency caps) and returns immediately, so a long-running or
+/// hung job never blocks the tick loop or starves a time-sensitive job (e.g. the
+/// download reconcile). Production calls `tick` from a `tokio::time` interval; tests
+/// call it after advancing a [`crate::clock::LogicalClock`], then
+/// [`join_in_flight`](Self::join_in_flight) to await the spawned work.
 pub struct Scheduler<C, S, H>
 where
     C: Clock,
@@ -128,6 +139,30 @@ where
     handler: Arc<H>,
     caps: ConcurrencyCaps,
     in_flight: Arc<tokio::sync::Mutex<InFlight>>,
+    /// Handles to the currently-running job tasks. Finished tasks are reaped at the
+    /// start of each tick; [`join_in_flight`](Self::join_in_flight) awaits them all.
+    tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>,
+    /// Per-job execution timeout (the hung-job backstop).
+    job_timeout: std::time::Duration,
+}
+
+impl<C, S, H> Clone for Scheduler<C, S, H>
+where
+    C: Clock,
+    S: JobStore,
+    H: JobHandler,
+{
+    fn clone(&self) -> Self {
+        Self {
+            clock: Arc::clone(&self.clock),
+            store: Arc::clone(&self.store),
+            handler: Arc::clone(&self.handler),
+            caps: self.caps.clone(),
+            in_flight: Arc::clone(&self.in_flight),
+            tasks: Arc::clone(&self.tasks),
+            job_timeout: self.job_timeout,
+        }
+    }
 }
 
 impl<C, S, H> Scheduler<C, S, H>
@@ -136,7 +171,7 @@ where
     S: JobStore + 'static,
     H: JobHandler + 'static,
 {
-    /// Build a scheduler over its seams.
+    /// Build a scheduler over its seams, with the default per-job timeout.
     pub fn new(clock: Arc<C>, store: Arc<S>, handler: Arc<H>, caps: ConcurrencyCaps) -> Self {
         Self {
             clock,
@@ -144,7 +179,16 @@ where
             handler,
             caps,
             in_flight: Arc::new(tokio::sync::Mutex::new(InFlight::default())),
+            tasks: Arc::new(tokio::sync::Mutex::new(tokio::task::JoinSet::new())),
+            job_timeout: DEFAULT_JOB_TIMEOUT,
         }
+    }
+
+    /// Override the per-job execution timeout (mainly for tests).
+    #[must_use]
+    pub fn with_job_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.job_timeout = timeout;
+        self
     }
 
     /// The job store, for reading state in tests/callers.
@@ -246,18 +290,28 @@ where
         self.store.delete(id).await
     }
 
-    /// Run every job that is due at the current clock time.
+    /// Spawn every job that is due at the current clock time onto its own task.
     ///
-    /// Returns the number of jobs that were actually dispatched this tick (i.e.
-    /// not skipped by dedup or a concurrency cap). Jobs are run sequentially
-    /// within a tick for determinism; concurrency *across* ticks is what the caps
-    /// bound, which is what tests assert by interleaving ticks.
+    /// Returns the number of jobs **dispatched** this tick (leased + spawned; not
+    /// skipped by dedup or the concurrency cap). Unlike a sequential runner, this
+    /// returns as soon as the due jobs are spawned — it never awaits a handler — so
+    /// a slow or hung job cannot block the tick loop or starve a time-sensitive job.
+    /// The spawned work is bounded by the per-resource caps (a job over its cap is
+    /// left for a later tick) and reaped here as it finishes; tests await it via
+    /// [`join_in_flight`](Self::join_in_flight).
     ///
     /// # Errors
-    /// Propagates store errors (a handler's failure is recorded on the job, not
-    /// returned).
+    /// Propagates store errors from loading/leasing (a handler's failure is recorded
+    /// on the job by its own task, not returned).
     #[tracing::instrument(name = "scheduler.tick", skip_all)]
     pub async fn tick(&self) -> Result<usize, S::Error> {
+        // Reap any finished job tasks first so the set does not grow unbounded (the
+        // daemon only ever joins on shutdown).
+        {
+            let mut set = self.tasks.lock().await;
+            while set.try_join_next().is_some() {}
+        }
+
         let now = self.clock.now_secs();
         let mut jobs = self.store.load_all().await?;
         // Deterministic order: by due time then id, so logical-clock tests are
@@ -276,13 +330,18 @@ where
         Ok(dispatched)
     }
 
-    /// Attempt to run one due job, respecting dedup and the concurrency cap.
-    /// Returns `true` if it ran, `false` if skipped.
-    #[tracing::instrument(
-        name = "scheduler.job",
-        skip_all,
-        fields(job_kind = ?job.kind, job_id = %job.id)
-    )]
+    /// Await every currently-running job task to completion. Used by tests (to
+    /// observe a spawned job's effects) and available for a graceful drain. Not
+    /// called on the daemon's normal shutdown path, which abandons in-flight tasks
+    /// rather than block shutdown on a slow job (the per-job timeout bounds them).
+    pub async fn join_in_flight(&self) {
+        let mut set = self.tasks.lock().await;
+        while set.join_next().await.is_some() {}
+    }
+
+    /// Lease a due job (dedup + concurrency cap) and, if acquired, mark it running
+    /// and SPAWN its execution on a background task. Returns `true` if dispatched,
+    /// `false` if skipped by dedup or the cap. Never awaits the handler.
     async fn try_dispatch(&self, mut job: Job) -> Result<bool, S::Error> {
         let resource = job.kind.resource();
         let dedup_key = job.dedup_key();
@@ -303,12 +362,47 @@ where
             *guard.per_resource.entry(resource).or_insert(0) += 1;
         }
 
-        // Mark running and persist (so a restart sees the lease).
+        // Mark running and persist BEFORE spawning: a `Running` job is not `is_due`,
+        // so a subsequent tick will not re-dispatch it while its task runs (the
+        // persistence-level dedup, independent of the in-memory lease).
         job.state = JobState::Running;
         self.store.upsert(&job).await?;
 
-        // --- Execute -----------------------------------------------------
-        let result = self.handler.handle(&job.kind).await;
+        // --- Spawn the execution on its own task -------------------------
+        let sched = self.clone();
+        let mut set = self.tasks.lock().await;
+        set.spawn(async move {
+            sched.execute(job, resource, dedup_key).await;
+        });
+        Ok(true)
+    }
+
+    /// Run one leased job to completion on its own task: invoke the handler (bounded
+    /// by the per-job timeout), release the lease, and persist the outcome. Store
+    /// errors here are logged, not propagated — a background task cannot return them.
+    #[tracing::instrument(
+        name = "scheduler.job",
+        skip_all,
+        fields(job_kind = ?job.kind, job_id = %job.id)
+    )]
+    async fn execute(&self, mut job: Job, resource: &'static str, dedup_key: String) {
+        // The per-job timeout is the hung-job backstop: a handler that never returns
+        // (a wedged download client, a dead external service) is reaped so its lease
+        // frees and the kind can run again, instead of holding a slot forever.
+        let result =
+            match tokio::time::timeout(self.job_timeout, self.handler.handle(&job.kind)).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    tracing::error!(
+                        job_id = %job.id,
+                        timeout_secs = self.job_timeout.as_secs(),
+                        "job execution timed out; reaping and retrying"
+                    );
+                    JobResult::Retryable {
+                        detail: "job execution timed out".to_string(),
+                    }
+                }
+            };
 
         // --- Release the lease -------------------------------------------
         {
@@ -320,8 +414,9 @@ where
         }
 
         // --- Apply the result to the job's lifecycle ---------------------
-        self.apply_result(&mut job, result).await?;
-        Ok(true)
+        if let Err(e) = self.apply_result(&mut job, result).await {
+            tracing::error!(job_id = %job.id, error = %e, "persisting job result failed");
+        }
     }
 
     /// Transition a job after a run completes, scheduling the next fire or a
