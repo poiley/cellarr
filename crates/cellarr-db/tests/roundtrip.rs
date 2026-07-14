@@ -213,9 +213,9 @@ async fn content_metadata_round_trips_and_upserts() {
         "SELECT COUNT(*) FROM content_meta WHERE content_id = '{}'",
         node.id
     ))
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
     assert_eq!(rows, 1, "set_metadata must upsert, not duplicate");
 }
 
@@ -324,6 +324,83 @@ async fn monitored_missing_excludes_nodes_with_files_and_containers() {
 }
 
 #[tokio::test]
+async fn upgrade_candidates_are_monitored_leaves_with_files_least_recently_searched_first() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // A monitored, file-less movie is MISSING, not an upgrade candidate.
+    let missing = movie_node(library.id, ContentId::new());
+    content.upsert(&missing).await.unwrap();
+
+    // Two monitored movies that each already have a file — upgrade candidates.
+    let mut with_file = |path: &str| {
+        let node = movie_node(library.id, ContentId::new());
+        let file = MediaFile {
+            id: MediaFileId::new(),
+            path: path.to_string(),
+            size: 100,
+            quality: Quality::new("WEBDL-720p", 5),
+            languages: vec![],
+            media_info: None,
+            custom_format_score: None,
+            release_type: Some(cellarr_core::ReleaseType::Movie),
+        };
+        (node, file)
+    };
+    let (a, fa) = with_file("/data/a.mkv");
+    let (b, fb) = with_file("/data/b.mkv");
+    content.upsert(&a).await.unwrap();
+    content.upsert(&b).await.unwrap();
+    media_files.create(&fa).await.unwrap();
+    media_files.link(a.id, fa.id).await.unwrap();
+    media_files.create(&fb).await.unwrap();
+    media_files.link(b.id, fb.id).await.unwrap();
+
+    // Both surface; the file-less node never does.
+    let ids: Vec<ContentId> = content
+        .upgrade_candidates(10)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert!(ids.contains(&a.id) && ids.contains(&b.id));
+    assert!(
+        !ids.contains(&missing.id),
+        "a file-less node is missing, not an upgrade candidate"
+    );
+
+    // Mark `a` searched: the never-searched `b` must now sort ahead of it.
+    content.mark_upgrade_searched(vec![a.id]).await.unwrap();
+    let order: Vec<ContentId> = content
+        .upgrade_candidates(10)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    let pos = |id: ContentId| order.iter().position(|x| *x == id).unwrap();
+    assert!(
+        pos(b.id) < pos(a.id),
+        "never-searched b must sort before recently-searched a: {order:?}"
+    );
+
+    // The bound is honored.
+    assert_eq!(content.upgrade_candidates(1).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn monitored_missing_rotates_order_so_no_head_can_starve_the_rest() {
     // A stable order would let a permanently-unsatisfiable head monopolize the
     // bounded acquisition sweep and starve everything behind it. monitored_missing
@@ -366,7 +443,10 @@ async fn monitored_missing_rotates_order_so_no_head_can_starve_the_rest() {
     // Both runs still return the COMPLETE set (rotation must not drop or duplicate
     // any node) — only the order differs.
     assert_eq!(
-        order_a.iter().copied().collect::<std::collections::BTreeSet<_>>(),
+        order_a
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
         seeded,
         "every monitored-missing node is returned"
     );
@@ -1367,17 +1447,17 @@ async fn delete_movie_removes_node_files_and_links() {
         "SELECT COUNT(*) FROM content_fts WHERE content_id = '{}'",
         movie.id
     ))
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
     assert_eq!(fts, 0, "FTS index row must be removed too");
     let links: i64 = sqlx::query_scalar(&format!(
         "SELECT COUNT(*) FROM content_file WHERE content_id = '{}'",
         movie.id
     ))
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
     assert_eq!(links, 0, "content_file link must cascade away");
 }
 
@@ -2115,7 +2195,11 @@ async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
         .unwrap();
 
     let after = media_files.scan_dir_mtimes().await.unwrap();
-    assert_eq!(after.len(), 4, "stale tv row dropped, movies intact: {after:?}");
+    assert_eq!(
+        after.len(),
+        4,
+        "stale tv row dropped, movies intact: {after:?}"
+    );
     assert_eq!(after.get("/media/tv"), Some(&101), "changed mtime updated");
     assert!(
         after.get("/media/tv/Show/Season 01").is_none(),

@@ -122,6 +122,12 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// stops grabbing new releases once this many are active. `None` (the default)
     /// is unlimited. See [`Config::max_active_downloads`](crate::config::Config).
     max_active_downloads: Option<u32>,
+    /// Automatic quality-upgrade sweep: on each `RssSync`, after filling gaps,
+    /// consider up to this many monitored-with-a-file nodes for an upgrade (the
+    /// decision still respects the profile cutoff). `None` (the default) disables
+    /// it — upgrades then happen only via a user's manual search. Bounded + rotated
+    /// (least-recently-searched first) so it never re-hammers the same nodes.
+    upgrade_search_limit: Option<usize>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -140,7 +146,18 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             auto_onboard: false,
             auto_onboard_limit: None,
             max_active_downloads: None,
+            upgrade_search_limit: None,
         }
+    }
+
+    /// Enable the automatic quality-upgrade sweep with a per-`RssSync` bound: after
+    /// filling gaps, that many monitored-with-a-file nodes are considered for an
+    /// upgrade (least-recently-searched first, so it rotates the backlog). `None`
+    /// (the default) disables it — upgrades then happen only via manual search.
+    #[must_use]
+    pub fn with_upgrade_search(mut self, limit: Option<usize>) -> Self {
+        self.upgrade_search_limit = limit;
+        self
     }
 
     /// Set the in-flight download cap: the acquisition sweep stops grabbing new
@@ -363,13 +380,92 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         publish_outcome(&self.events, content, outcome);
     }
 
+    /// The content ids with a NON-terminal grab in flight — a download running in
+    /// the client that ReconcileDownloads will finalize. Both sweeps skip these so
+    /// they never start a DUPLICATE download (with deferred tracking a grabbed node
+    /// stays a candidate until its import lands). A load failure returns an empty
+    /// set — we then don't skip anything (never a false skip of an un-grabbed node).
+    async fn in_flight_content(&self) -> std::collections::HashSet<cellarr_core::ContentId> {
+        use cellarr_core::repo::GrabRepository;
+        use cellarr_core::GrabStatus;
+        match self.db.grabs().list().await {
+            Ok(grabs) => grabs
+                .into_iter()
+                .filter(|g| {
+                    !matches!(
+                        g.status,
+                        GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
+                    )
+                })
+                .map(|g| g.request.content_ref.id)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "sweep: loading grabs failed; not skipping in-flight");
+                std::collections::HashSet::new()
+            }
+        }
+    }
+
+    /// The automatic quality-UPGRADE sweep: consider up to `limit` monitored nodes
+    /// that already have a file (least-recently-searched first) for a better
+    /// release. Runs each through the same decision path as the gap-fill sweep — the
+    /// decision returns Upgrade only when a genuinely better release exists within
+    /// the profile (cutoff-respecting), else rejects (a no-op). Shares the in-flight
+    /// download cap with the gap-fill sweep so upgrades never flood the client, and
+    /// records which nodes were considered so the next run rotates onward.
+    async fn run_upgrades(&self, limit: usize) -> JobResult {
+        let candidates = match self.db.content().upgrade_candidates(limit).await {
+            Ok(c) => c,
+            Err(detail) => {
+                return JobResult::Retryable {
+                    detail: format!("loading upgrade candidates failed: {detail}"),
+                }
+            }
+        };
+        if candidates.is_empty() {
+            return JobResult::Success;
+        }
+        let in_flight = self.in_flight_content().await;
+        let cap = self.max_active_downloads.map(|c| c as usize);
+        let mut active = in_flight.len();
+        // Nodes we actually CONSIDERED this run (attempted or already-in-flight) —
+        // marked searched so the rotation moves past them. Nodes deferred because the
+        // download cap was already saturated are NOT marked, so they are retried once
+        // there is download headroom.
+        let mut considered: Vec<cellarr_core::ContentId> = Vec::new();
+        for node in &candidates {
+            if let Some(cap) = cap {
+                if active >= cap {
+                    tracing::info!(
+                        active,
+                        cap,
+                        "upgrade sweep: download cap reached; deferring remaining upgrade candidates"
+                    );
+                    break;
+                }
+            }
+            considered.push(node.id);
+            if in_flight.contains(&node.id) {
+                continue; // an upgrade grab is already downloading for this node
+            }
+            match self.run_node(node).await {
+                Ok(true) => active += 1, // an upgrade download was grabbed — count it
+                Ok(false) => {}
+                Err(detail) => {
+                    tracing::warn!(content = %node.id, error = %detail, "upgrade sweep: run failed for node; continuing");
+                }
+            }
+        }
+        if let Err(e) = self.db.content().mark_upgrade_searched(considered).await {
+            tracing::warn!(error = %e, "upgrade sweep: recording searched nodes failed");
+        }
+        JobResult::Success
+    }
+
     /// Drive every monitored-missing node (bounded) through the runner. Used by
     /// both `MissingItemSearch` and `RssSync` — both want to acquire the gaps; the
     /// runner's Discover handles RSS-vs-search at the indexer level.
     async fn run_missing(&self) -> JobResult {
-        use cellarr_core::repo::GrabRepository;
-        use cellarr_core::GrabStatus;
-
         let nodes = match self.missing_nodes().await {
             Ok(n) => n,
             Err(detail) => return JobResult::Retryable { detail },
@@ -381,23 +477,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // monitored-missing until its import lands, so every sweep would otherwise
         // re-grab it. A grab-load failure just means we don't skip (never a false
         // skip of a genuinely un-grabbed node).
-        let in_flight: std::collections::HashSet<cellarr_core::ContentId> =
-            match self.db.grabs().list().await {
-                Ok(grabs) => grabs
-                    .into_iter()
-                    .filter(|g| {
-                        !matches!(
-                            g.status,
-                            GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
-                        )
-                    })
-                    .map(|g| g.request.content_ref.id)
-                    .collect(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "run-missing: loading grabs failed; not skipping in-flight");
-                    std::collections::HashSet::new()
-                }
-            };
+        let in_flight = self.in_flight_content().await;
         // Back-pressure: stop grabbing new releases once `max_active_downloads` are
         // in flight, so a large missing backlog doesn't flood the download client /
         // VPN / disk with hundreds of simultaneous downloads. The count starts from
@@ -543,68 +623,73 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                             .scan_manual_import(Some(&config.library_root), remaining, true, false)
                             .await
                         {
-                        Ok(candidates) => {
-                            for c in candidates {
-                                if self.auto_onboard_limit.is_some_and(|n| onboarded >= n) {
-                                    break;
-                                }
-                                if c.suggested.is_some() {
-                                    continue; // an existing node fits — the adopt pass handled it.
-                                }
-                                let parsed = cellarr_parse::parse_title(&c.name);
-                                let Some(title) = parsed.clean_title.clone() else {
-                                    continue;
-                                };
-                                let results = match meta.search(library.media_type, &title).await {
-                                    Ok(cellarr_api::LookupOutcome::Resolved(r)) => r,
-                                    // Unavailable / errored source → skip; try next run.
-                                    _ => continue,
-                                };
-                                let Some(chosen) =
-                                    pick_confident_candidate(&results, &title, parsed.year)
-                                else {
-                                    continue; // no unambiguous match — leave for manual import.
-                                };
-                                let (node_id, created) =
-                                    match self.create_content_node(&library, chosen).await {
+                            Ok(candidates) => {
+                                for c in candidates {
+                                    if self.auto_onboard_limit.is_some_and(|n| onboarded >= n) {
+                                        break;
+                                    }
+                                    if c.suggested.is_some() {
+                                        continue; // an existing node fits — the adopt pass handled it.
+                                    }
+                                    let parsed = cellarr_parse::parse_title(&c.name);
+                                    let Some(title) = parsed.clean_title.clone() else {
+                                        continue;
+                                    };
+                                    let results =
+                                        match meta.search(library.media_type, &title).await {
+                                            Ok(cellarr_api::LookupOutcome::Resolved(r)) => r,
+                                            // Unavailable / errored source → skip; try next run.
+                                            _ => continue,
+                                        };
+                                    let Some(chosen) =
+                                        pick_confident_candidate(&results, &title, parsed.year)
+                                    else {
+                                        continue; // no unambiguous match — leave for manual import.
+                                    };
+                                    let (node_id, created) = match self
+                                        .create_content_node(&library, chosen)
+                                        .await
+                                    {
                                         Ok(v) => v,
                                         Err(detail) => {
                                             tracing::warn!(title = %title, error = %detail, "auto-onboard: create failed");
                                             continue;
                                         }
                                     };
-                                let adopt = runner
-                                    .import_manual(&[cellarr_jobs::runner::ManualImportRequest {
-                                        path: c.path.clone(),
-                                        content_id: node_id,
-                                    }])
-                                    .await;
-                                let failed = match adopt {
-                                    Ok((_imported, errs)) if errs.is_empty() => {
-                                        onboarded += 1;
-                                        false
+                                    let adopt = runner
+                                        .import_manual(&[
+                                            cellarr_jobs::runner::ManualImportRequest {
+                                                path: c.path.clone(),
+                                                content_id: node_id,
+                                            },
+                                        ])
+                                        .await;
+                                    let failed = match adopt {
+                                        Ok((_imported, errs)) if errs.is_empty() => {
+                                            onboarded += 1;
+                                            false
+                                        }
+                                        Ok((_imported, errs)) => {
+                                            tracing::warn!(path = %c.path, ?errs, "auto-onboard: adopt failed after create");
+                                            true
+                                        }
+                                        Err(detail) => {
+                                            tracing::warn!(path = %c.path, error = %detail, "auto-onboard: adopt errored");
+                                            true
+                                        }
+                                    };
+                                    // Roll back a node WE just created if its file could
+                                    // not be adopted, so a failed onboard leaves no empty
+                                    // orphan node (the file falls to manual instead). A
+                                    // reused existing node is never deleted.
+                                    if failed && created {
+                                        self.rollback_node(&library, node_id).await;
                                     }
-                                    Ok((_imported, errs)) => {
-                                        tracing::warn!(path = %c.path, ?errs, "auto-onboard: adopt failed after create");
-                                        true
-                                    }
-                                    Err(detail) => {
-                                        tracing::warn!(path = %c.path, error = %detail, "auto-onboard: adopt errored");
-                                        true
-                                    }
-                                };
-                                // Roll back a node WE just created if its file could
-                                // not be adopted, so a failed onboard leaves no empty
-                                // orphan node (the file falls to manual instead). A
-                                // reused existing node is never deleted.
-                                if failed && created {
-                                    self.rollback_node(&library, node_id).await;
                                 }
                             }
-                        }
-                        Err(detail) => {
-                            tracing::warn!(library = %library.id, error = %detail, "auto-onboard: scan failed");
-                        }
+                            Err(detail) => {
+                                tracing::warn!(library = %library.id, error = %detail, "auto-onboard: scan failed");
+                            }
                         }
                     }
                 }
@@ -634,7 +719,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         {
             tracing::warn!(error = %e, "rescan: recording unmatched files failed");
         }
-        tracing::info!(adopted, unmatched, errors, pruned, onboarded, recorded_unmatched = newly, "library rescan complete");
+        tracing::info!(
+            adopted,
+            unmatched,
+            errors,
+            pruned,
+            onboarded,
+            recorded_unmatched = newly,
+            "library rescan complete"
+        );
         JobResult::Success
     }
 
@@ -791,7 +884,8 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             };
             if satisfied {
                 if let Some(dl) = g.download_id.as_deref() {
-                    if let Ok(Some((_, client, _))) = self.env.resolve(&g.request.content_ref).await {
+                    if let Ok(Some((_, client, _))) = self.env.resolve(&g.request.content_ref).await
+                    {
                         let _ = client.remove(dl, true).await; // best-effort: drop the duplicate
                     }
                 }
@@ -822,14 +916,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // a VPN) can hang a request indefinitely, and this reconcile runs on the
             // single-threaded job loop — an un-timed-out poll would freeze the whole
             // daemon. On timeout, leave the grab for the next cycle.
-            let status_poll =
-                match tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.status(dl)).await {
-                    Ok(r) => r,
-                    Err(_elapsed) => {
-                        tracing::warn!(grab = %g.id, "reconcile-downloads: client status poll timed out; leaving for next cycle");
-                        continue;
-                    }
-                };
+            let status_poll = match tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.status(dl))
+                .await
+            {
+                Ok(r) => r,
+                Err(_elapsed) => {
+                    tracing::warn!(grab = %g.id, "reconcile-downloads: client status poll timed out; leaving for next cycle");
+                    continue;
+                }
+            };
             match status_poll {
                 // Hard failure on the client: dead → blocklist + remove.
                 Ok(status) if matches!(status.state, DownloadState::Failed) => {
@@ -898,12 +993,19 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                         path: dest,
                                     });
                                     let _ = client.remove(dl, true).await; // drop the duplicate
-                                    match self.db.grabs().set_status(g.id, GrabStatus::Imported).await {
+                                    match self
+                                        .db
+                                        .grabs()
+                                        .set_status(g.id, GrabStatus::Imported)
+                                        .await
+                                    {
                                         Ok(()) => {
                                             tracing::info!(grab = %g.id, "reconcile-downloads: adopted existing file for redundant download");
                                             cleaned += 1;
                                         }
-                                        Err(se) => tracing::warn!(grab = %g.id, error = %se, "reconcile-downloads: set imported failed"),
+                                        Err(se) => {
+                                            tracing::warn!(grab = %g.id, error = %se, "reconcile-downloads: set imported failed")
+                                        }
                                     }
                                     continue;
                                 }
@@ -950,7 +1052,10 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             }
         }
         if cleaned > 0 {
-            tracing::info!(cleaned, "reconcile-downloads: finalized/cleaned in-flight grabs");
+            tracing::info!(
+                cleaned,
+                "reconcile-downloads: finalized/cleaned in-flight grabs"
+            );
         }
         JobResult::Success
     }
@@ -1034,8 +1139,10 @@ fn pick_confident_candidate<'a>(
             .collect()
     }
     let want = normalize(parsed_title);
-    let title_matches: Vec<&cellarr_api::LookupCandidate> =
-        results.iter().filter(|c| normalize(&c.title) == want).collect();
+    let title_matches: Vec<&cellarr_api::LookupCandidate> = results
+        .iter()
+        .filter(|c| normalize(&c.title) == want)
+        .collect();
 
     // No parsed year → a single title match is confident.
     let Some(py) = parsed_year else {
@@ -1130,7 +1237,17 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
             name: command_label(kind).to_string(),
         });
         match kind {
-            JobKind::MissingItemSearch | JobKind::RssSync => self.run_missing().await,
+            // Both fill gaps; RssSync additionally runs the automatic upgrade sweep
+            // (when enabled) — it is the "catch better releases" job, so upgrades ride
+            // its cadence rather than the pure gap-fill of MissingItemSearch.
+            JobKind::MissingItemSearch => self.run_missing().await,
+            JobKind::RssSync => {
+                let missing = self.run_missing().await;
+                if let Some(limit) = self.upgrade_search_limit {
+                    let _ = self.run_upgrades(limit).await;
+                }
+                missing
+            }
             JobKind::ManualSearch { content_id } => match self.one_node(content_id).await {
                 Ok(Some(node)) => match self.run_node(&node).await {
                     Ok(_) => JobResult::Success,
@@ -2014,7 +2131,12 @@ impl cellarr_api::manual_import::ManualImport for LiveManualImport {
         // background rescan job reconciles the rest, unbounded).
         const MANUAL_IMPORT_SCAN_CAP: usize = 500;
         let candidates = runner
-            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP), false, false)
+            .scan_manual_import(
+                folder.map(std::path::Path::new),
+                Some(MANUAL_IMPORT_SCAN_CAP),
+                false,
+                false,
+            )
             .await
             .map_err(|e| format!("manual-import scan failed: {e}"))?;
         Ok(ManualImportOutcome::Found(candidates))
@@ -2330,13 +2452,23 @@ mod auto_onboard_tests {
 
     #[test]
     fn native_external_id_prefers_the_media_type_namespace() {
-        let tv = cand("Show", Some(2010), &[("tmdb", "1"), ("tvdb", "2"), ("imdb", "tt3")]);
+        let tv = cand(
+            "Show",
+            Some(2010),
+            &[("tmdb", "1"), ("tvdb", "2"), ("imdb", "tt3")],
+        );
         assert_eq!(native_external_id(&tv, MediaType::Tv), Some(("tvdb", "2")));
-        assert_eq!(native_external_id(&tv, MediaType::Movie), Some(("tmdb", "1")));
+        assert_eq!(
+            native_external_id(&tv, MediaType::Movie),
+            Some(("tmdb", "1"))
+        );
 
         // Falls back to imdb when no numeric id is present.
         let only_imdb = cand("Movie", None, &[("imdb", "tt9")]);
-        assert_eq!(native_external_id(&only_imdb, MediaType::Movie), Some(("imdb", "tt9")));
+        assert_eq!(
+            native_external_id(&only_imdb, MediaType::Movie),
+            Some(("imdb", "tt9"))
+        );
 
         // No ids at all → None.
         let none = cand("Bare", None, &[]);

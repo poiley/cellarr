@@ -58,14 +58,9 @@ impl Daemon {
         // are handled out-of-band).
         let db_path = config.database_path();
         let db_target = config.database_target();
-        let db = Database::connect(&db_target)
-            .await
-            .with_context(|| {
-                format!(
-                    "opening database at {}",
-                    config.database_target_redacted()
-                )
-            })?;
+        let db = Database::connect(&db_target).await.with_context(|| {
+            format!("opening database at {}", config.database_target_redacted())
+        })?;
         info!(target = %config.database_target_redacted(), "database open; migrations applied");
 
         // 1b. Managed config (config-as-code). If a path is configured, reconcile
@@ -196,6 +191,9 @@ impl Daemon {
         // Back-pressure for the acquisition sweep: cap simultaneous in-flight
         // downloads (unlimited when unset).
         let max_active_downloads = config.max_active_downloads;
+        // Automatic quality-upgrade sweep bound (None/0 = disabled → upgrades only
+        // via manual search).
+        let upgrade_search_limit = config.upgrade_search_limit.filter(|&n| n > 0);
 
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
@@ -211,7 +209,8 @@ impl Daemon {
                 .with_scene_provider(handler_scene_provider)
                 .with_resolver(handler_resolver)
                 .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit)
-                .with_max_active_downloads(max_active_downloads),
+                .with_max_active_downloads(max_active_downloads)
+                .with_upgrade_search(upgrade_search_limit),
             )
         })
         .with_metadata(metadata)

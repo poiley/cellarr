@@ -77,6 +77,14 @@ pub struct Config {
     /// From `CELLARR_MAX_ACTIVE_DOWNLOADS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_active_downloads: Option<u32>,
+    /// How many monitored-with-a-file nodes each `RssSync` considers for an
+    /// automatic quality UPGRADE (least-recently-searched first, sharing the
+    /// in-flight download cap). `None` (the default) **disables** the automatic
+    /// upgrade sweep — upgrades then happen only via a user's manual search. From
+    /// `CELLARR_UPGRADE_SEARCH_LIMIT` (a positive integer enables it; `0` or unset
+    /// leaves it off). Bounded + rotated so it never re-hammers the same nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_search_limit: Option<usize>,
 }
 
 /// Media-management file-handling configuration.
@@ -215,6 +223,7 @@ impl Default for Config {
             media_management: MediaManagementConfig::default(),
             managed_config_path: None,
             max_active_downloads: None,
+            upgrade_search_limit: None,
         }
     }
 }

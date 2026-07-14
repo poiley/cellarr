@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::dialect::{pq, DbPool};
 use async_trait::async_trait;
 use cellarr_core::repo::{ContentRepository, DeletedContent};
 use cellarr_core::{
     ContentId, ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, LibraryId,
     MediaType, SeriesType, TitleId,
 };
-use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::convert::parse_uuid;
@@ -27,6 +27,70 @@ impl ContentRepo {
         Self { pool, writer }
     }
 
+    /// The bounded set of QUALITY-UPGRADE candidates: monitored leaf nodes that
+    /// already HAVE a linked media_file (so they are not "missing" — that is
+    /// [`ContentRepository::monitored_missing`]'s job) and may have a better release
+    /// available. Ordered least-recently-searched first — a node never searched
+    /// (no `upgrade_search` row) sorts ahead of any that have — so successive runs
+    /// rotate through the whole backlog instead of re-hammering the same head, then
+    /// bounded to `limit` per run to protect the indexers. The decision engine still
+    /// decides per node whether a real upgrade exists (respecting the profile
+    /// cutoff); this only supplies the candidates.
+    ///
+    /// The `(searched_at IS NULL) DESC, searched_at ASC` ordering puts never-searched
+    /// nodes first, then oldest-searched, identically on SQLite and Postgres (whose
+    /// default NULL ordering differs).
+    pub async fn upgrade_candidates(&self, limit: usize) -> Result<Vec<ContentRef>> {
+        let rows = sqlx::query(&pq(
+            "SELECT c.id, c.library_id, c.media_type, c.parent_id, c.kind, c.series_type, c.coords,
+                    c.monitored, c.title_id
+             FROM content c
+             LEFT JOIN upgrade_search u ON u.content_id = c.id
+             WHERE c.monitored = 1
+               AND c.kind IN ('movie', 'episode', 'track', 'book')
+               AND EXISTS (
+                   SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
+               )
+             ORDER BY (u.searched_at IS NULL) DESC, u.searched_at ASC
+             LIMIT ?1",
+        ))
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| row_to_node(r).map(|n| n.as_ref()))
+            .collect()
+    }
+
+    /// Record that `ids` were just considered for an upgrade, so the next sweep
+    /// moves on to the next least-recently-searched slice. Upserts each node's
+    /// `searched_at` to now. Best-effort ordering bookkeeping — a write failure only
+    /// costs fairness on the next run, never correctness.
+    pub async fn mark_upgrade_searched(&self, ids: Vec<ContentId>) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    for id in ids {
+                        sqlx::query(&pq(
+                            "INSERT INTO upgrade_search (content_id, searched_at)
+                             VALUES (?1, ?2)
+                             ON CONFLICT(content_id) DO UPDATE SET searched_at = excluded.searched_at",
+                        ))
+                        .bind(id.to_string())
+                        .bind(&now)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Index (or re-index) a node's searchable title in the FTS table.
     ///
     /// # Errors
@@ -41,11 +105,13 @@ impl ContentRepo {
                         .bind(&id)
                         .execute(&mut *conn)
                         .await?;
-                    sqlx::query(&pq("INSERT INTO content_fts (content_id, title) VALUES (?1, ?2)"))
-                        .bind(&id)
-                        .bind(&title)
-                        .execute(&mut *conn)
-                        .await?;
+                    sqlx::query(&pq(
+                        "INSERT INTO content_fts (content_id, title) VALUES (?1, ?2)",
+                    ))
+                    .bind(&id)
+                    .bind(&title)
+                    .execute(&mut *conn)
+                    .await?;
                     Ok(())
                 })
             })
@@ -128,15 +194,20 @@ impl ContentRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn all_years(&self) -> Result<std::collections::HashMap<ContentId, u16>> {
-        let rows = sqlx::query(&pq("SELECT content_id, year FROM content_meta WHERE year IS NOT NULL"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&pq(
+            "SELECT content_id, year FROM content_meta WHERE year IS NOT NULL",
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         let mut map = std::collections::HashMap::with_capacity(rows.len());
         for r in rows {
             let id: String = r.try_get("content_id")?;
             let year: Option<i64> = r.try_get("year")?;
             if let Some(y) = year {
-                map.insert(ContentId::from_uuid(parse_uuid("content_id", &id)?), y as u16);
+                map.insert(
+                    ContentId::from_uuid(parse_uuid("content_id", &id)?),
+                    y as u16,
+                );
             }
         }
         Ok(map)
@@ -312,11 +383,9 @@ impl ContentRepo {
         // back yet (returning an empty set is safe — it only relaxes de-dup).
         let rows = match media_type {
             MediaType::Movie => {
-                sqlx::query(&pq(
-                    "SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
+                sqlx::query(&pq("SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
                      FROM content c JOIN movie_meta m ON m.title_id = c.title_id
-                     WHERE c.media_type = 'movie'"),
-                )
+                     WHERE c.media_type = 'movie'"))
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -324,8 +393,8 @@ impl ContentRepo {
                 sqlx::query(&pq(
                     "SELECT s.tmdb_id AS tmdb_id, s.imdb_id AS imdb_id, s.tvdb_id AS tvdb_id
                      FROM content c JOIN series_meta s ON s.title_id = c.title_id
-                     WHERE c.media_type = 'tv'"),
-                )
+                     WHERE c.media_type = 'tv'",
+                ))
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -364,24 +433,24 @@ impl ContentRepo {
         media_type: MediaType,
     ) -> Result<Option<(String, String)>> {
         let row = match media_type {
-            MediaType::Movie => sqlx::query(&pq(
-                "SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
+            MediaType::Movie => {
+                sqlx::query(&pq("SELECT m.tmdb_id AS tmdb_id, m.imdb_id AS imdb_id
                  FROM content c JOIN movie_meta m ON m.title_id = c.title_id
-                 WHERE c.id = ?1"),
-            )
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|r| {
-                let tmdb: Option<i64> = r.try_get("tmdb_id").unwrap_or(None);
-                let imdb: Option<String> = r.try_get("imdb_id").unwrap_or(None);
-                (tmdb, None::<i64>, imdb)
-            }),
+                 WHERE c.id = ?1"))
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|r| {
+                    let tmdb: Option<i64> = r.try_get("tmdb_id").unwrap_or(None);
+                    let imdb: Option<String> = r.try_get("imdb_id").unwrap_or(None);
+                    (tmdb, None::<i64>, imdb)
+                })
+            }
             MediaType::Tv => sqlx::query(&pq(
                 "SELECT s.tvdb_id AS tvdb_id, s.tmdb_id AS tmdb_id, s.imdb_id AS imdb_id
                  FROM content c JOIN series_meta s ON s.title_id = c.title_id
-                 WHERE c.id = ?1"),
-            )
+                 WHERE c.id = ?1",
+            ))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?
@@ -434,11 +503,9 @@ impl ContentRepo {
         let row = match (media_type, scheme.as_str()) {
             (MediaType::Movie, "tmdb") => match numeric {
                 Some(n) => {
-                    sqlx::query(&pq(
-                        "SELECT c.id AS id FROM content c
+                    sqlx::query(&pq("SELECT c.id AS id FROM content c
                          JOIN movie_meta m ON m.title_id = c.title_id
-                         WHERE m.tmdb_id = ?1 LIMIT 1"),
-                    )
+                         WHERE m.tmdb_id = ?1 LIMIT 1"))
                     .bind(n)
                     .fetch_optional(&self.pool)
                     .await?
@@ -446,22 +513,18 @@ impl ContentRepo {
                 None => None,
             },
             (MediaType::Movie, "imdb") => {
-                sqlx::query(&pq(
-                    "SELECT c.id AS id FROM content c
+                sqlx::query(&pq("SELECT c.id AS id FROM content c
                      JOIN movie_meta m ON m.title_id = c.title_id
-                     WHERE m.imdb_id = ?1 LIMIT 1"),
-                )
+                     WHERE m.imdb_id = ?1 LIMIT 1"))
                 .bind(value)
                 .fetch_optional(&self.pool)
                 .await?
             }
             (MediaType::Tv, "tvdb") => match numeric {
                 Some(n) => {
-                    sqlx::query(&pq(
-                        "SELECT c.id AS id FROM content c
+                    sqlx::query(&pq("SELECT c.id AS id FROM content c
                          JOIN series_meta s ON s.title_id = c.title_id
-                         WHERE s.tvdb_id = ?1 LIMIT 1"),
-                    )
+                         WHERE s.tvdb_id = ?1 LIMIT 1"))
                     .bind(n)
                     .fetch_optional(&self.pool)
                     .await?
@@ -470,11 +533,9 @@ impl ContentRepo {
             },
             (MediaType::Tv, "tmdb") => match numeric {
                 Some(n) => {
-                    sqlx::query(&pq(
-                        "SELECT c.id AS id FROM content c
+                    sqlx::query(&pq("SELECT c.id AS id FROM content c
                          JOIN series_meta s ON s.title_id = c.title_id
-                         WHERE s.tmdb_id = ?1 LIMIT 1"),
-                    )
+                         WHERE s.tmdb_id = ?1 LIMIT 1"))
                     .bind(n)
                     .fetch_optional(&self.pool)
                     .await?
@@ -576,10 +637,12 @@ impl ContentRepo {
         const MAX_DEPTH: usize = 8;
         let mut current = id;
         for _ in 0..MAX_DEPTH {
-            let row = sqlx::query(&pq("SELECT parent_id, series_type FROM content WHERE id = ?1"))
-                .bind(current.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
+            let row = sqlx::query(&pq(
+                "SELECT parent_id, series_type FROM content WHERE id = ?1",
+            ))
+            .bind(current.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
             let Some(row) = row else {
                 return Ok(SeriesType::Standard);
             };
@@ -615,8 +678,8 @@ impl ContentRepo {
         let row = sqlx::query(&pq(
             "SELECT title, year, overview, runtime, air_date, digital_date,
                     genres, rating, rating_votes
-             FROM content_meta WHERE content_id = ?1"),
-        )
+             FROM content_meta WHERE content_id = ?1",
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -649,11 +712,12 @@ impl ContentRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn get_tags(&self, id: ContentId) -> Result<Vec<u32>> {
-        let rows =
-            sqlx::query(&pq("SELECT tag_id FROM content_tag WHERE content_id = ?1 ORDER BY tag_id ASC"))
-                .bind(id.to_string())
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(&pq(
+            "SELECT tag_id FROM content_tag WHERE content_id = ?1 ORDER BY tag_id ASC",
+        ))
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|r| {
                 let v: i64 = r.try_get("tag_id")?;
@@ -682,11 +746,9 @@ impl ContentRepo {
                         .execute(&mut *conn)
                         .await?;
                     for tag_id in &ids {
-                        sqlx::query(&pq(
-                            "INSERT INTO content_tag (content_id, tag_id)
+                        sqlx::query(&pq("INSERT INTO content_tag (content_id, tag_id)
                              VALUES (?1, ?2)
-                             ON CONFLICT (content_id, tag_id) DO NOTHING"),
-                        )
+                             ON CONFLICT (content_id, tag_id) DO NOTHING"))
                         .bind(&content_id)
                         .bind(tag_id)
                         .execute(&mut *conn)
@@ -744,10 +806,11 @@ impl ContentRepo {
                     let mut ids: Vec<String> = vec![id_str.clone()];
                     let mut frontier: Vec<String> = vec![id_str.clone()];
                     while let Some(parent) = frontier.pop() {
-                        let children = sqlx::query(&pq("SELECT id FROM content WHERE parent_id = ?1"))
-                            .bind(&parent)
-                            .fetch_all(&mut *conn)
-                            .await?;
+                        let children =
+                            sqlx::query(&pq("SELECT id FROM content WHERE parent_id = ?1"))
+                                .bind(&parent)
+                                .fetch_all(&mut *conn)
+                                .await?;
                         for c in children {
                             let cid: String = c.try_get("id")?;
                             if !ids.contains(&cid) {
@@ -762,12 +825,10 @@ impl ContentRepo {
                     let mut media_ids: Vec<String> = Vec::new();
                     let mut media_paths: Vec<String> = Vec::new();
                     for cid in &ids {
-                        let rows = sqlx::query(&pq(
-                            "SELECT mf.id AS id, mf.path AS path
+                        let rows = sqlx::query(&pq("SELECT mf.id AS id, mf.path AS path
                              FROM content_file cf
                              JOIN media_file mf ON mf.id = cf.media_file_id
-                             WHERE cf.content_id = ?1"),
-                        )
+                             WHERE cf.content_id = ?1"))
                         .bind(cid)
                         .fetch_all(&mut *conn)
                         .await?;
@@ -799,8 +860,7 @@ impl ContentRepo {
                         let del_grab =
                             "DELETE FROM grab WHERE json_extract(content_ref, '$.id') = ?1";
                         #[cfg(feature = "postgres")]
-                        let del_grab =
-                            "DELETE FROM grab WHERE (content_ref::jsonb ->> 'id') = ?1";
+                        let del_grab = "DELETE FROM grab WHERE (content_ref::jsonb ->> 'id') = ?1";
                         sqlx::query(&pq(del_grab))
                             .bind(cid)
                             .execute(&mut *conn)
@@ -953,8 +1013,8 @@ impl ContentRepository for ContentRepo {
                AND NOT EXISTS (
                    SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
                )
-             ORDER BY RANDOM()"),
-        )
+             ORDER BY RANDOM()",
+        ))
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
@@ -1057,8 +1117,7 @@ impl ContentRepository for ContentRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(&pq(
-                        "INSERT INTO content_meta
+                    sqlx::query(&pq("INSERT INTO content_meta
                             (content_id, title, year, overview, runtime, air_date, digital_date,
                              genres, rating, rating_votes)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -1071,8 +1130,7 @@ impl ContentRepository for ContentRepo {
                             digital_date = excluded.digital_date,
                             genres       = excluded.genres,
                             rating       = excluded.rating,
-                            rating_votes = excluded.rating_votes"),
-                    )
+                            rating_votes = excluded.rating_votes"))
                     .bind(id)
                     .bind(title)
                     .bind(year)
