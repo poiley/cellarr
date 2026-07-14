@@ -66,23 +66,27 @@ async fn recurring_job_fires_once_per_interval_on_schedule() {
         .await
         .unwrap();
 
-    // t=0: due, fires.
+    // t=0: due, fires. (tick dispatches; join awaits the spawned run.)
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 1);
 
     // t=30: not yet due again.
     clock.set(30);
     assert_eq!(sched.tick().await.unwrap(), 0);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 1);
 
     // t=60: due again.
     clock.set(60);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 2);
 
     // t=125: one more interval elapsed -> exactly one more fire.
     clock.set(125);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 3);
 }
 
@@ -104,6 +108,7 @@ async fn on_demand_job_runs_promptly_then_is_done() {
         .unwrap();
 
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 1);
 
     let job = store.get(&id).await.unwrap().unwrap();
@@ -133,6 +138,7 @@ async fn identical_in_flight_jobs_are_deduplicated() {
     assert_eq!(store.load_all().await.unwrap().len(), 1);
 
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 1);
 }
 
@@ -163,6 +169,7 @@ async fn failing_job_retries_with_bounded_exponential_backoff_then_fails() {
 
     // Attempt 1 at t=0 -> backoff 1s, due at t=1, state Retrying.
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     let job = store.get(&id).await.unwrap().unwrap();
     assert_eq!(job.attempts, 1);
     assert_eq!(job.state, JobState::Retrying);
@@ -174,16 +181,19 @@ async fn failing_job_retries_with_bounded_exponential_backoff_then_fails() {
     // t=1: attempt 2 -> backoff 2s -> due t=3.
     clock.set(1);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(store.get(&id).await.unwrap().unwrap().due_at, 3);
 
     // t=3: attempt 3 -> backoff 4s -> due t=7.
     clock.set(3);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(store.get(&id).await.unwrap().unwrap().due_at, 7);
 
     // t=7: attempt 4 == max_attempts -> permanently Failed (recorded, not dropped).
     clock.set(7);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     let job = store.get(&id).await.unwrap().unwrap();
     assert_eq!(job.attempts, 4);
     assert_eq!(job.state, JobState::Failed);
@@ -210,6 +220,7 @@ async fn retry_then_success_resets_attempts() {
 
     // First fire fails -> retrying.
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     assert_eq!(
         store.get(&id).await.unwrap().unwrap().state,
         JobState::Retrying
@@ -220,6 +231,7 @@ async fn retry_then_success_resets_attempts() {
     let due = store.get(&id).await.unwrap().unwrap().due_at;
     clock.set(due);
     assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
     let job = store.get(&id).await.unwrap().unwrap();
     assert_eq!(job.attempts, 0);
     assert_eq!(job.state, JobState::Scheduled);
@@ -229,15 +241,19 @@ async fn retry_then_success_resets_attempts() {
 
 #[tokio::test]
 async fn per_resource_concurrency_cap_is_never_exceeded() {
-    // A handler that records the max number of concurrent in-flight calls.
+    // A handler that records the max number of concurrent in-flight calls and the
+    // total number of runs. Each call holds a gated "slot" so overlap would be
+    // observable if the cap allowed it.
     struct ConcurrencyProbe {
         active: AtomicU32,
         max_seen: AtomicU32,
+        total: AtomicU32,
         gate: tokio::sync::Semaphore,
     }
     #[async_trait]
     impl JobHandler for ConcurrencyProbe {
         async fn handle(&self, _kind: &JobKind) -> JobResult {
+            self.total.fetch_add(1, Ordering::SeqCst);
             let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_seen.fetch_max(now, Ordering::SeqCst);
             // Hold the slot until released, to force overlap if the cap allowed it.
@@ -252,15 +268,11 @@ async fn per_resource_concurrency_cap_is_never_exceeded() {
     let probe = Arc::new(ConcurrencyProbe {
         active: AtomicU32::new(0),
         max_seen: AtomicU32::new(0),
+        total: AtomicU32::new(0),
         gate: tokio::sync::Semaphore::new(0),
     });
     // Cap the "indexer" bucket at 1 concurrent run.
-    let sched = Arc::new(Scheduler::new(
-        clock.clone(),
-        store.clone(),
-        probe.clone(),
-        caps(1),
-    ));
+    let sched = Scheduler::new(clock.clone(), store.clone(), probe.clone(), caps(1));
 
     // Two distinct indexer-bucket jobs, both due now.
     sched
@@ -282,24 +294,138 @@ async fn per_resource_concurrency_cap_is_never_exceeded() {
         .await
         .unwrap();
 
-    // Run two ticks concurrently; the cap must serialize them.
-    let s1 = sched.clone();
-    let s2 = sched.clone();
-    let t1 = tokio::spawn(async move { s1.tick().await });
-    let t2 = tokio::spawn(async move { s2.tick().await });
-
-    // Give both ticks a moment to reach the gate, then release one at a time.
+    // The first tick spawns exactly ONE job (the cap of 1); the other is deferred.
+    assert_eq!(
+        sched.tick().await.unwrap(),
+        1,
+        "cap of 1 dispatches one job"
+    );
+    // Let the spawned handler reach its gated slot.
     tokio::task::yield_now().await;
-    // Release enough permits for both handler bodies to finish.
-    probe.gate.add_permits(2);
+    assert_eq!(probe.active.load(Ordering::SeqCst), 1);
+    // A second tick cannot start the other while the first holds the only slot.
+    assert_eq!(
+        sched.tick().await.unwrap(),
+        0,
+        "the cap keeps the second job deferred while the first runs"
+    );
 
-    let r1 = t1.await.unwrap().unwrap();
-    let r2 = t2.await.unwrap().unwrap();
-    assert_eq!(r1 + r2, 2, "both jobs eventually dispatch");
+    // Release the first; it finishes and frees the slot.
+    probe.gate.add_permits(2);
+    sched.join_in_flight().await;
+
+    // Now the deferred job can run.
+    assert_eq!(sched.tick().await.unwrap(), 1, "the deferred job runs next");
+    sched.join_in_flight().await;
+
+    assert_eq!(
+        probe.total.load(Ordering::SeqCst),
+        2,
+        "both jobs eventually ran"
+    );
     assert_eq!(
         probe.max_seen.load(Ordering::SeqCst),
         1,
         "never more than one indexer job ran at once"
+    );
+}
+
+#[tokio::test]
+async fn a_hung_job_does_not_block_independent_jobs() {
+    // The core property of the concurrent scheduler: one job that never returns (a
+    // wedged download client) must not freeze the tick loop or stop other jobs from
+    // running — the bug that froze the whole daemon.
+    struct Blocker {
+        others_ran: AtomicU32,
+        gate: tokio::sync::Semaphore,
+    }
+    #[async_trait]
+    impl JobHandler for Blocker {
+        async fn handle(&self, kind: &JobKind) -> JobResult {
+            if matches!(kind, JobKind::ReconcileDownloads) {
+                // Hang forever (a never-released gate) — the "download client is
+                // unreachable" case.
+                let _ = self.gate.acquire().await;
+                JobResult::Success
+            } else {
+                self.others_ran.fetch_add(1, Ordering::SeqCst);
+                JobResult::Success
+            }
+        }
+    }
+
+    let clock = Arc::new(LogicalClock::new(0));
+    let store = Arc::new(MemoryJobStore::new());
+    let h = Arc::new(Blocker {
+        others_ran: AtomicU32::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let sched = Scheduler::new(clock, store, h.clone(), caps(4));
+    // A job that will hang, and an independent one (different resource bucket).
+    sched
+        .submit_now(JobKind::ReconcileDownloads, RetryPolicy::default())
+        .await
+        .unwrap();
+    sched
+        .submit_now(JobKind::RssSync, RetryPolicy::default())
+        .await
+        .unwrap();
+
+    // The tick dispatches BOTH and returns promptly — it never awaits the hung one.
+    assert_eq!(sched.tick().await.unwrap(), 2);
+    // The independent job completes despite the other being wedged.
+    for _ in 0..50 {
+        if h.others_ran.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        h.others_ran.load(Ordering::SeqCst),
+        1,
+        "a hung job must not block an independent one"
+    );
+    // (ReconcileDownloads is still hung; the scheduler drops it at test end. We do
+    // NOT join_in_flight here — that would block forever, which is exactly the point:
+    // the tick loop never awaits it.)
+}
+
+#[tokio::test]
+async fn a_hung_job_is_reaped_by_the_per_job_timeout() {
+    // A handler that never returns; the per-job timeout must reap it so its lease
+    // frees and the job is retried, rather than stuck Running forever.
+    struct Hang {
+        gate: tokio::sync::Semaphore,
+    }
+    #[async_trait]
+    impl JobHandler for Hang {
+        async fn handle(&self, _kind: &JobKind) -> JobResult {
+            let _ = self.gate.acquire().await; // never released
+            JobResult::Success
+        }
+    }
+
+    let clock = Arc::new(LogicalClock::new(0));
+    let store = Arc::new(MemoryJobStore::new());
+    let h = Arc::new(Hang {
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    // A tiny per-job timeout so the test is fast (real time; the handler hangs).
+    let sched = Scheduler::new(clock, store.clone(), h, caps(4))
+        .with_job_timeout(std::time::Duration::from_millis(50));
+
+    let id = sched
+        .submit_now(JobKind::ReconcileDownloads, RetryPolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(sched.tick().await.unwrap(), 1);
+    // Awaiting the task returns once the timeout reaps the hung handler.
+    sched.join_in_flight().await;
+    let job = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(
+        job.state,
+        JobState::Retrying,
+        "a hung job is reaped by the timeout and retried, never left Running"
     );
 }
 
@@ -327,8 +453,12 @@ async fn jobs_survive_a_simulated_restart() {
             )
             .await
             .unwrap();
-        // Fire both; the manual one goes Retrying, the rss one reschedules.
+        // Fire both; the manual one goes Retrying, the rss one reschedules. Await the
+        // spawned runs to completion before the "process exit" so their outcomes are
+        // persisted (a real crash mid-run is moot here: production uses an in-memory
+        // store that resets on restart, so no job is ever left Running across a boot).
         sched.tick().await.unwrap();
+        sched.join_in_flight().await;
         // scheduler dropped here -> "process exit"
     }
 
@@ -344,6 +474,7 @@ async fn jobs_survive_a_simulated_restart() {
     // pending work without any re-registration.
     clock.set(100_000);
     let dispatched = sched2.tick().await.unwrap();
+    sched2.join_in_flight().await;
     assert!(dispatched >= 1, "resumed scheduler runs persisted due jobs");
     assert!(handler2.call_count() >= 1);
 }
@@ -364,6 +495,7 @@ async fn cancelling_a_job_prevents_future_runs() {
 
     clock.set(120);
     assert_eq!(sched.tick().await.unwrap(), 0);
+    sched.join_in_flight().await;
     assert_eq!(handler.call_count(), 0);
 }
 

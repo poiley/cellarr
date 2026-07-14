@@ -886,7 +886,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 if let Some(dl) = g.download_id.as_deref() {
                     if let Ok(Some((_, client, _))) = self.env.resolve(&g.request.content_ref).await
                     {
-                        let _ = client.remove(dl, true).await; // best-effort: drop the duplicate
+                        let _ =
+                            tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.remove(dl, true))
+                                .await; // best-effort: drop the duplicate
                     }
                 }
                 if let Err(e) = self.db.grabs().set_status(g.id, GrabStatus::Imported).await {
@@ -965,7 +967,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     path: dest.clone(),
                                 });
                             }
-                            let _ = client.remove(dl, true).await; // best-effort
+                            let _ = tokio::time::timeout(
+                                RECONCILE_POLL_TIMEOUT,
+                                client.remove(dl, true),
+                            )
+                            .await; // best-effort
                             let _ = self.db.grabs().clear_download_progress(g.id).await;
                             cleaned += 1;
                         }
@@ -994,7 +1000,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                         content_id: cid.to_string(),
                                         path: dest,
                                     });
-                                    let _ = client.remove(dl, true).await; // drop the duplicate
+                                    let _ = tokio::time::timeout(
+                                        RECONCILE_POLL_TIMEOUT,
+                                        client.remove(dl, true),
+                                    )
+                                    .await; // drop the duplicate
                                     match self
                                         .db
                                         .grabs()
@@ -1143,7 +1153,8 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: blocklist add failed");
         }
         if let Some(dl) = g.download_id.as_deref() {
-            let _ = client.remove(dl, true).await; // best-effort: remove the dead download
+            let _ = tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.remove(dl, true)).await;
+            // best-effort: remove the dead download
         }
         // Terminal now — drop any progress-tracking row so the table doesn't
         // accumulate dead entries.
