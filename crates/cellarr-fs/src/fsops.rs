@@ -127,6 +127,50 @@ fn copy_durable_blocking(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Place `src` at `dst`, **replacing** whatever file is already there, such that
+/// `dst` only ever names a complete file — never absent, never partial.
+///
+/// Unlike [`hardlink_or_copy`] (which refuses an occupied destination), this is
+/// for callers that intend to overwrite: the new file is placed at a temporary
+/// sibling and made durable, then a single atomic `rename` replaces the old file.
+/// A crash before the rename leaves the old file intact (only the temp is lost);
+/// after it, `dst` is the new file. When `dst` does not exist, this is just a
+/// durable place.
+///
+/// # Errors
+/// - [`FsError::MissingPath`] if `src` does not exist.
+/// - [`FsError::Io`] for any underlying filesystem failure; the temporary is
+///   removed so no debris is left beside `dst`.
+pub async fn replace_durable(
+    src: impl Into<PathBuf>,
+    dst: impl Into<PathBuf>,
+) -> Result<LinkOutcome> {
+    let src = src.into();
+    let dst = dst.into();
+    spawn_blocking(move || replace_durable_blocking(&src, &dst)).await
+}
+
+fn replace_durable_blocking(src: &Path, dst: &Path) -> Result<LinkOutcome> {
+    if !src.exists() {
+        return Err(FsError::MissingPath {
+            path: src.to_path_buf(),
+        });
+    }
+    // Stage the new file beside the destination (hardlink when possible, else a
+    // durable copy), then atomically rename it over the old file.
+    let staged = temp_sibling(dst);
+    let cleanup = TempCleanup {
+        path: Some(staged.clone()),
+    };
+    let outcome = hardlink_or_copy_blocking(src, &staged)?;
+    fs::rename(&staged, dst).map_err(|e| FsError::io(dst, e))?;
+    if let Some(parent) = dst.parent() {
+        fsync_dir(parent)?;
+    }
+    cleanup.disarm();
+    Ok(outcome)
+}
+
 /// Remove a file durably: the file is unlinked and its parent directory fsynced
 /// so the removal survives a crash. Used at Cleanup to drop replaced files only
 /// after their replacements are durable.
@@ -433,6 +477,53 @@ mod tests {
         write_file(&dst, b"y");
         let err = hardlink_or_copy(&src, &dst).await.unwrap_err();
         assert!(matches!(err, FsError::UnexpectedDestination { .. }));
+    }
+
+    #[tokio::test]
+    async fn replace_durable_overwrites_existing_and_leaves_no_debris() {
+        let dir = tmpdir();
+        let src = dir.path().join("new.srt");
+        let dst = dir.path().join("sub.srt");
+        write_file(&src, b"the new subtitle");
+        write_file(&dst, b"the old subtitle");
+
+        let outcome = replace_durable(&src, &dst).await.unwrap();
+        // Same tempdir/filesystem, so a hardlink is used.
+        assert_eq!(outcome, LinkOutcome::Hardlinked);
+        assert_eq!(
+            fs::read(&dst).unwrap(),
+            b"the new subtitle",
+            "dst now holds new"
+        );
+        assert!(src.exists(), "the source (seeding copy) is preserved");
+        assert!(
+            !has_temp_debris(dir.path()),
+            "no staging debris left behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_durable_places_when_destination_absent() {
+        let dir = tmpdir();
+        let src = dir.path().join("new.srt");
+        let dst = dir.path().join("sub.srt");
+        write_file(&src, b"content");
+        // dst does not exist — replace still places it durably.
+        replace_durable(&src, &dst).await.unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"content");
+        assert!(!has_temp_debris(dir.path()));
+    }
+
+    #[tokio::test]
+    async fn replace_durable_errors_on_missing_source() {
+        let dir = tmpdir();
+        let src = dir.path().join("nope.srt");
+        let dst = dir.path().join("sub.srt");
+        write_file(&dst, b"old");
+        let err = replace_durable(&src, &dst).await.unwrap_err();
+        assert!(matches!(err, FsError::MissingPath { .. }));
+        // The existing destination is untouched by a failed replace.
+        assert_eq!(fs::read(&dst).unwrap(), b"old");
     }
 
     #[tokio::test]

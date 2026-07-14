@@ -38,7 +38,8 @@ mod scan;
 pub use error::{FsError, Result};
 pub use extras::{import_extras, ExtraOutcome};
 pub use fsops::{
-    create_dir_all, file_size, hardlink_or_copy, remove_durable, same_filesystem, LinkOutcome,
+    create_dir_all, file_size, hardlink_or_copy, remove_durable, replace_durable, same_filesystem,
+    LinkOutcome,
 };
 pub use health::{check_same_filesystem, FilesystemWarning};
 pub use import::{

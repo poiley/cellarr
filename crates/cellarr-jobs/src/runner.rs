@@ -1631,9 +1631,14 @@ where
         // reconcile) reads this back instead of re-parsing the title.
         let release_type = cellarr_core::ReleaseType::from_parsed(parsed);
         // Whether this grab replaces an existing file (an upgrade) decides which
-        // notification event the eventual import fires (`Upgrade` vs `Import`).
-        // Captured before `decision` is moved into the Grab transition below.
+        // notification event the eventual import fires (`Upgrade` vs `Import`), and
+        // — via `replacing` — which media_file the import supersedes. Captured
+        // before `decision` is moved into the Grab transition below.
         let is_upgrade = matches!(decision.verdict, Verdict::Upgrade { .. });
+        let replacing = match &decision.verdict {
+            Verdict::Upgrade { replacing, .. } => Some(*replacing),
+            _ => None,
+        };
         // The quality name the grab was graded on, surfaced to text notifications.
         let grab_quality = cellarr_core::resolve_quality(parsed, &self.config.ranking)
             .name
@@ -1774,8 +1779,24 @@ where
         *stage = self.advance(run_id, *stage, None).await?; // -> Import
 
         // --- Import: stage -> verify -> commit -> log (cellarr-fs) --------
+        // An upgrade supersedes the file the decision picked (`replacing`); resolve
+        // its current path now so the import plans a replacement (and drops the old
+        // row). Resolved here, at import time, from the id captured at decide.
+        let replaced = match replacing {
+            Some(id) => {
+                use cellarr_core::repo::MediaFileRepository;
+                match self.db.media_files().get(id).await {
+                    Ok(Some(f)) => Some((id, f.path)),
+                    // The file vanished between decide and import (a concurrent
+                    // rescan prune); fall back to a plain import.
+                    Ok(None) => None,
+                    Err(e) => return Err(JobError::Persistence(Box::new(e))),
+                }
+            }
+            None => None,
+        };
         match self
-            .import(grab_id, matched_ref, parsed, &content_path)
+            .import(grab_id, matched_ref, parsed, &content_path, replaced)
             .await
         {
             Ok(destinations) => {
@@ -1992,6 +2013,11 @@ where
         matched_ref: &ContentRef,
         title_parsed: &ParsedRelease,
         content_path: &str,
+        // On a quality upgrade, the existing file this import supersedes: its
+        // media_file id and current on-disk path. The single-file move is planned
+        // as a replacement (cellarr-fs swaps in place or removes the old path), and
+        // the stale row is dropped after commit so the new quality is recorded.
+        replaced: Option<(cellarr_core::MediaFileId, String)>,
     ) -> std::result::Result<Vec<String>, ImportFailure> {
         let src = std::path::Path::new(content_path);
         if !src.exists() {
@@ -2040,7 +2066,19 @@ where
             // untracked orphan case, which is exactly the "destination already
             // exists and is not a planned replacement" failure.
             let occupied = tokio::fs::try_exists(&dest).await.unwrap_or(false);
-            let adopt = occupied
+            // A quality upgrade of single-file content (movie / single episode)
+            // replaces the existing file: the move carries the old row id + path so
+            // cellarr-fs swaps atomically (same path) or removes the old file
+            // (distinct path), new-before-old. Only wired for a single source — a
+            // multi-file upgrade maps one `replacing` id ambiguously across moves, so
+            // it keeps the prior (non-replacing) behavior. A replacement is never
+            // also an adopt.
+            let (replaces, replaced_path) = match &replaced {
+                Some((id, path)) if sources.len() == 1 => (Some(*id), Some(path.clone())),
+                _ => (None, None),
+            };
+            let adopt = replaces.is_none()
+                && occupied
                 && self
                     .db
                     .media_files()
@@ -2052,8 +2090,8 @@ where
                 source_path: source.to_string_lossy().into_owned(),
                 destination_path: dest_str,
                 content_ids: vec![matched_ref.id],
-                replaces: None,
-                replaced_path: None,
+                replaces,
+                replaced_path,
                 hardlink: false,
                 adopt,
             });
@@ -2089,18 +2127,38 @@ where
             .map(|m| m.destination_path.to_string_lossy().into_owned())
             .collect();
 
+        // A completed replacement supersedes the old file: cellarr-fs has already
+        // swapped it in place (same path) or removed the old path (distinct), so its
+        // media_file row is now stale. Drop it — ON DELETE CASCADE clears the
+        // content_file link — so the caller's `persist_imported_files` records the
+        // NEW quality/size as a fresh row instead of reusing the old one (which would
+        // re-flag the node as still needing the same upgrade). Only when a
+        // replacement move was actually planned.
+        if let Some((old_id, _)) = replaced.filter(|_| sources.len() == 1) {
+            self.db
+                .media_files()
+                .delete(old_id)
+                .await
+                .map_err(|e| format!("remove replaced media_file row: {e}"))?;
+        }
+
         // Post-commit, best-effort, never library-critical: import sibling extra
         // files (subtitles, .nfo, …) and apply the chmod/chown permission policy.
         // All of this runs after the media is durably committed, so a failure is
         // logged and swallowed — it never rolls back or corrupts the import.
         // `sources` and `destinations` are in the same plan order.
         for (src, dst) in plan.moves.iter().zip(destinations.iter()) {
+            // A move that replaces an existing library file (an upgrade) also
+            // supersedes that file's extras; a fresh/adopt move leaves any existing
+            // extra in place.
+            let replace_extras = src.replaces.is_some();
             apply_post_commit(
                 &self.config.extra_files,
                 &self.config.permissions,
                 std::path::Path::new(&src.source_path),
                 std::path::Path::new(dst),
                 &self.config.library_root,
+                replace_extras,
             )
             .await;
         }
@@ -2154,7 +2212,11 @@ where
             .unwrap_or_else(|| cellarr_core::ReleaseType::from_parsed(&parsed));
         let matched_ref = &grab.request.content_ref;
 
-        let destinations = self.import(grab.id, matched_ref, &parsed, content_path).await?;
+        // Reconcile finalization is never an upgrade (it imports a completed
+        // download onto a node); no file is being replaced.
+        let destinations = self
+            .import(grab.id, matched_ref, &parsed, content_path, None)
+            .await?;
         self.persist_imported_files(matched_ref, &parsed, release_type, &destinations)
             .await
             .map_err(|e| format!("persist imported files: {e}"))?;
@@ -3087,6 +3149,7 @@ where
                 src,
                 std::path::Path::new(&destination_path),
                 &self.config.library_root,
+                false, // manual/adopt import never clobbers an existing extra
             )
             .await;
         }
@@ -3276,10 +3339,14 @@ async fn apply_post_commit(
     source: &std::path::Path,
     destination: &std::path::Path,
     library_root: &std::path::Path,
+    replace_extras: bool,
 ) {
-    // 1) Sibling extra files (subtitles, .nfo, …) next to the renamed media.
+    // 1) Sibling extra files (subtitles, .nfo, …) next to the renamed media. On an
+    // upgrade (`replace_extras`) the new release's extras supersede the old ones,
+    // mirroring the media replacement; otherwise an already-present extra is left
+    // untouched.
     let mut extra_dests: Vec<std::path::PathBuf> = Vec::new();
-    for o in cellarr_fs::import_extras(source, destination, extra_files).await {
+    for o in cellarr_fs::import_extras(source, destination, extra_files, replace_extras).await {
         match o {
             cellarr_fs::ExtraOutcome::Imported { destination, .. } => {
                 extra_dests.push(destination);

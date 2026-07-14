@@ -20,9 +20,10 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use cellarr_core::{
-    repo::{GrabRepository, HistoryRepository},
-    ContentId, ContentRef, Coordinates, CustomFormat, GrabStatus, LibraryId, MediaType, Protocol,
-    QualityProfile, QualityProfileId, QualityRanking, Release, SearchTerms,
+    repo::{GrabRepository, HistoryRepository, MediaFileRepository},
+    ContentId, ContentRef, Coordinates, CustomFormat, ExtraFileImport, GrabStatus, LibraryId,
+    MediaFile, MediaFileId, MediaType, Protocol, Quality, QualityProfile, QualityProfileId,
+    QualityRanking, Release, ReleaseType, SearchTerms,
 };
 use cellarr_db::Database;
 use cellarr_decide::ProperRepackPolicy;
@@ -432,6 +433,153 @@ async fn movie_release_drives_discover_to_imported_and_lands_on_disk() {
     );
 }
 
+/// A quality upgrade drives Discover→Upgrade→Grab→Import and REPLACES the existing
+/// file end to end: the old media file (and its subtitle) is superseded on disk by
+/// the new release, the old media_file row is dropped, and a fresh row records the
+/// new quality — so the node is not re-flagged for the same upgrade next cycle.
+#[tokio::test]
+async fn upgrade_replaces_existing_file_row_and_subtitle_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_node(
+        &db,
+        MediaType::Movie,
+        cellarr_core::ContentKind::Movie,
+        Coordinates::Movie,
+    )
+    .await;
+
+    // An existing, LOW-quality copy already on disk at its scheme path, with a
+    // sibling subtitle — tracked by a media_file row the decision reads as on-disk.
+    let movie_dir = library_root.join("The Matrix (1999)");
+    std::fs::create_dir_all(&movie_dir).unwrap();
+    let existing_media = movie_dir.join("The Matrix.mkv");
+    std::fs::write(&existing_media, b"OLD 720p bytes").unwrap();
+    let existing_sub = movie_dir.join("The Matrix.en.srt");
+    std::fs::write(&existing_sub, b"old subtitle").unwrap();
+    let old_file = MediaFile {
+        id: MediaFileId::new(),
+        path: existing_media.to_string_lossy().into_owned(),
+        size: 14,
+        quality: Quality::new("WEBDL-720p", 2), // rank 2: well below the 1080p release
+        languages: vec!["en".into()],
+        media_info: None,
+        custom_format_score: None,
+        release_type: Some(ReleaseType::Movie),
+    };
+    db.media_files().create(&old_file).await.unwrap();
+    db.media_files().link(node.id, old_file.id).await.unwrap();
+
+    // The fresh, higher-quality download the client will point at, with its own
+    // subtitle sibling.
+    let download_dir = tmp.path().join("downloads/movie");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"NEW 1080p bytes").unwrap();
+    std::fs::write(
+        download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.en.srt"),
+        b"new subtitle",
+    )
+    .unwrap();
+
+    let registry = registry_for(
+        &node,
+        Some(MovieMeta {
+            title: "The Matrix".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        None,
+        "The Matrix",
+    );
+    let indexer = FakeIndexer {
+        releases: vec![movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let mut config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+    );
+    config.extra_files = ExtraFileImport {
+        enabled: true,
+        ..Default::default()
+    };
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    let destinations = match outcome {
+        RunOutcome::Imported { destinations, .. } => destinations,
+        other => panic!("expected Imported, got {other:?}"),
+    };
+
+    // Same quality-less scheme path → the upgrade overwrote the old file in place.
+    assert_eq!(destinations.len(), 1);
+    assert_eq!(PathBuf::from(&destinations[0]), existing_media);
+    assert_eq!(
+        std::fs::read(&existing_media).unwrap(),
+        b"NEW 1080p bytes",
+        "the on-disk media was replaced by the upgrade"
+    );
+    // The subtitle was replaced too (upgrade supersedes extras).
+    assert_eq!(
+        std::fs::read(&existing_sub).unwrap(),
+        b"new subtitle",
+        "the old subtitle was replaced by the new release's"
+    );
+
+    // The stale old row is gone; exactly one row (the new quality) tracks the node.
+    assert!(
+        db.media_files().get(old_file.id).await.unwrap().is_none(),
+        "the superseded media_file row must be deleted"
+    );
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(
+        files.len(),
+        1,
+        "node tracks exactly the new file: {files:?}"
+    );
+    assert_ne!(
+        files[0].id, old_file.id,
+        "it is a fresh row, not the old one"
+    );
+    assert!(
+        files[0].quality.rank > 2,
+        "the new row records the upgraded quality (rank {} > 2)",
+        files[0].quality.rank
+    );
+    assert_eq!(files[0].path, existing_media.to_string_lossy());
+
+    // The decision explaining the grab was an Upgrade.
+    let history = HistoryRepository::for_content(&db.history(), node.id)
+        .await
+        .unwrap();
+    let run_id = history
+        .iter()
+        .find_map(|h| match h.event {
+            cellarr_core::history::HistoryEvent::Grabbed { .. } => Some(h.run_id),
+            _ => None,
+        })
+        .unwrap();
+    let records = db.decision_log().for_run(run_id).await.unwrap();
+    assert!(
+        records.iter().any(|r| matches!(
+            r.decision.as_ref().map(|d| &d.verdict),
+            Some(cellarr_core::Verdict::Upgrade { .. })
+        )),
+        "decision_log must contain an Upgrade verdict"
+    );
+}
+
 #[tokio::test]
 async fn deferred_tracking_grabs_and_hands_off_without_blocking_on_track() {
     // The bulk sweep opts into deferred tracking so it never blocks the
@@ -451,7 +599,13 @@ async fn deferred_tracking_grabs_and_hands_off_without_blocking_on_track() {
     std::fs::create_dir_all(downloaded.parent().unwrap()).unwrap();
     std::fs::write(&downloaded, b"bytes").unwrap();
 
-    let node = seed_node(&db, MediaType::Movie, cellarr_core::ContentKind::Movie, Coordinates::Movie).await;
+    let node = seed_node(
+        &db,
+        MediaType::Movie,
+        cellarr_core::ContentKind::Movie,
+        Coordinates::Movie,
+    )
+    .await;
     let registry = registry_for(
         &node,
         Some(MovieMeta {
@@ -498,7 +652,10 @@ async fn deferred_tracking_grabs_and_hands_off_without_blocking_on_track() {
         .unwrap()
         .unwrap();
     assert_eq!(grab.status, GrabStatus::Sent, "grabbed, not imported");
-    assert!(grab.download_id.is_some(), "the download was handed to the client");
+    assert!(
+        grab.download_id.is_some(),
+        "the download was handed to the client"
+    );
 }
 
 #[tokio::test]
