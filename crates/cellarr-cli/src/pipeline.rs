@@ -41,7 +41,7 @@ use async_trait::async_trait;
 
 use cellarr_api::events::{DomainEvent, EventBus};
 use cellarr_core::repo::{ContentRepository, ProfileRepository};
-use cellarr_core::{ContentRef, DownloadClient, Indexer, MediaType};
+use cellarr_core::{ContentKind, ContentMetadata, ContentRef, DownloadClient, Indexer, MediaType};
 use cellarr_db::Database;
 use cellarr_decide::ProperRepackPolicy;
 use cellarr_indexers::HostRateLimiter;
@@ -226,15 +226,38 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             };
             while let Some(node) = stack.pop() {
                 let node_ref = node.as_ref();
-                match resolver.resolve(&node_ref).await {
-                    Ok(Some(resolved)) if !resolved.meta.is_empty() => {
-                        if let Err(e) = content.set_metadata(node.id, &resolved.meta).await {
-                            tracing::warn!(content = %node.id, error = %e, "refresh: persisting metadata failed");
+                // Incremental refresh: only re-fetch from the provider when it's
+                // actually needed, so a whole-library refresh doesn't re-resolve
+                // (and re-download artwork for) thousands of already-known movies
+                // every run — which took ~15 min and starved the single-threaded
+                // job loop (the reconcile / acquisition sweep). Season/Episode nodes
+                // never resolve (no own external id); an enriched leaf's facts are
+                // stable; a Series is always re-resolved so `expand_series` picks up
+                // newly-aired episodes. See [`refresh_should_resolve`].
+                let enriched = if matches!(
+                    node.kind,
+                    ContentKind::Series | ContentKind::Season | ContentKind::Episode
+                ) {
+                    false // not consulted for these kinds
+                } else {
+                    content
+                        .metadata(node.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|m| metadata_is_enriched(&m))
+                };
+                if refresh_should_resolve(node.kind, enriched) {
+                    match resolver.resolve(&node_ref).await {
+                        Ok(Some(resolved)) if !resolved.meta.is_empty() => {
+                            if let Err(e) = content.set_metadata(node.id, &resolved.meta).await {
+                                tracing::warn!(content = %node.id, error = %e, "refresh: persisting metadata failed");
+                            }
                         }
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!(content = %node.id, error = %e, "refresh: resolve failed");
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(content = %node.id, error = %e, "refresh: resolve failed");
+                        }
                     }
                 }
                 match content.children(node.id).await {
@@ -1083,6 +1106,32 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::RescanLibrary => "RescanLibrary",
         JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
+    }
+}
+
+/// Whether a node's metadata already carries resolver-provided **enrichment** —
+/// any field beyond the bare title/year an add writes. This is the signal the
+/// incremental `RefreshMetadata` uses to skip re-fetching a node it has already
+/// resolved (its facts are stable), instead of re-resolving the whole library
+/// every run.
+fn metadata_is_enriched(m: &ContentMetadata) -> bool {
+    m.overview.is_some() || m.runtime.is_some() || m.rating.is_some() || !m.genres.is_empty()
+}
+
+/// Whether `RefreshMetadata` should re-resolve a node from the provider.
+///
+/// - **Series** → always: `expand_series` (a side effect of resolving) must run
+///   each pass so newly-aired episodes are added to the tree.
+/// - **Season / Episode** → never: they have no own external id, so a resolve is
+///   always a no-op.
+/// - **Any other leaf** (movie / book / …) → only when NOT already `enriched`, so a
+///   large library of known titles isn't re-fetched (and its artwork re-downloaded)
+///   every run.
+fn refresh_should_resolve(kind: ContentKind, enriched: bool) -> bool {
+    match kind {
+        ContentKind::Season | ContentKind::Episode => false,
+        ContentKind::Series => true,
+        _ => !enriched,
     }
 }
 
@@ -2108,6 +2157,50 @@ impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
             peers: status.peers,
             error: status.error_string,
         }))
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::{metadata_is_enriched, refresh_should_resolve};
+    use cellarr_core::{ContentKind, ContentMetadata};
+
+    #[test]
+    fn enrichment_is_any_resolver_field_beyond_title_and_year() {
+        // A bare add (title + year only) is NOT enriched — it still needs a resolve.
+        let bare = ContentMetadata {
+            title: Some("The Matrix".into()),
+            year: Some(1999),
+            ..Default::default()
+        };
+        assert!(!metadata_is_enriched(&bare));
+        assert!(!metadata_is_enriched(&ContentMetadata::default()));
+        // Any resolver-provided field marks it enriched.
+        assert!(metadata_is_enriched(&ContentMetadata {
+            overview: Some("...".into()),
+            ..bare.clone()
+        }));
+        assert!(metadata_is_enriched(&ContentMetadata {
+            genres: vec!["Sci-Fi".into()],
+            ..bare.clone()
+        }));
+        assert!(metadata_is_enriched(&ContentMetadata {
+            runtime: Some(136),
+            ..bare
+        }));
+    }
+
+    #[test]
+    fn refresh_resolves_series_and_unenriched_leaves_only() {
+        // Series always re-resolve (so expand_series catches new episodes).
+        assert!(refresh_should_resolve(ContentKind::Series, true));
+        assert!(refresh_should_resolve(ContentKind::Series, false));
+        // Season/Episode never resolve (no own external id).
+        assert!(!refresh_should_resolve(ContentKind::Season, false));
+        assert!(!refresh_should_resolve(ContentKind::Episode, false));
+        // A leaf is re-resolved only when not already enriched.
+        assert!(refresh_should_resolve(ContentKind::Movie, false));
+        assert!(!refresh_should_resolve(ContentKind::Movie, true));
     }
 }
 
