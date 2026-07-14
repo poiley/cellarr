@@ -2070,3 +2070,60 @@ async fn tag_vocabulary_and_content_tag_association_round_trip() {
     );
     assert!(tags.get(anime.id).await.expect("get").is_none());
 }
+
+#[tokio::test]
+async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
+    use std::collections::HashMap;
+    let (_dir, db) = temp_db().await;
+    let media_files = db.media_files();
+
+    // Empty to start.
+    assert!(media_files.scan_dir_mtimes().await.unwrap().is_empty());
+
+    // Record a tree under /media/tv.
+    let mut tv = HashMap::new();
+    tv.insert("/media/tv".to_string(), 100);
+    tv.insert("/media/tv/Show".to_string(), 200);
+    tv.insert("/media/tv/Show/Season 01".to_string(), 300);
+    media_files
+        .replace_scan_dirs("/media/tv".to_string(), tv.clone())
+        .await
+        .unwrap();
+
+    // And a separate tree under /media/movies.
+    let mut movies = HashMap::new();
+    movies.insert("/media/movies".to_string(), 400);
+    movies.insert("/media/movies/Film (2020)".to_string(), 500);
+    media_files
+        .replace_scan_dirs("/media/movies".to_string(), movies.clone())
+        .await
+        .unwrap();
+
+    let all = media_files.scan_dir_mtimes().await.unwrap();
+    assert_eq!(all.len(), 5, "both trees are recorded: {all:?}");
+    assert_eq!(all.get("/media/tv/Show/Season 01"), Some(&300));
+    assert_eq!(all.get("/media/movies/Film (2020)"), Some(&500));
+
+    // Re-recording /media/tv (Season 01 gone, mtime bumped) replaces only the
+    // tv subtree — the movies rows are untouched — and updates changed mtimes.
+    let mut tv2 = HashMap::new();
+    tv2.insert("/media/tv".to_string(), 101);
+    tv2.insert("/media/tv/Show".to_string(), 200);
+    media_files
+        .replace_scan_dirs("/media/tv".to_string(), tv2)
+        .await
+        .unwrap();
+
+    let after = media_files.scan_dir_mtimes().await.unwrap();
+    assert_eq!(after.len(), 4, "stale tv row dropped, movies intact: {after:?}");
+    assert_eq!(after.get("/media/tv"), Some(&101), "changed mtime updated");
+    assert!(
+        after.get("/media/tv/Show/Season 01").is_none(),
+        "a directory no longer present under the root is forgotten"
+    );
+    assert_eq!(
+        after.get("/media/movies/Film (2020)"),
+        Some(&500),
+        "the other root's directories are untouched by a scoped replace"
+    );
+}

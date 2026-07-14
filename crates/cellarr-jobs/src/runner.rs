@@ -2546,6 +2546,7 @@ where
         folder: Option<&std::path::Path>,
         limit: Option<usize>,
         skip_unmatched: bool,
+        incremental: bool,
     ) -> Result<Vec<ManualImportCandidate>> {
         use cellarr_core::repo::MediaFileRepository;
 
@@ -2595,6 +2596,26 @@ where
         }
         let tracked = std::sync::Arc::new(skip);
 
+        // The background rescan's adopt pass walks incrementally: it loads the
+        // directory mtimes recorded on the last run and only `read_dir`s directories
+        // whose mtime changed, reconstructing unchanged subtrees from the map. This
+        // turns a steady-state rescan from ~14k NFS round-trips into a stat sweep
+        // plus a handful of changed-directory reads. Only this one pass reads and
+        // rewrites the shared `scan_dir` table — the interactive screen and the
+        // auto-onboard pass keep the plain walk (a bounded walk when a limit is set;
+        // the incremental walk has no bound, so it is used only when `limit` is
+        // `None`), so they still see every untracked file.
+        let use_incremental = incremental && limit.is_none();
+        let known_dirs = if use_incremental {
+            self.db
+                .media_files()
+                .scan_dir_mtimes()
+                .await
+                .map_err(|e| JobError::Persistence(Box::new(e)))?
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let mut out = Vec::new();
         for root in roots {
             // Interactive scans (the screen's auto-surface) cap the candidate count
@@ -2621,11 +2642,38 @@ where
             // A configured root that is missing/unreadable must not fail the whole
             // scan — especially the no-folder library sweep, where one bad root would
             // 500 the auto-surface. Skip it and carry on.
-            let inventory = match cellarr_fs::scan_filtered(root.clone(), keep, remaining).await {
-                Ok(inv) => inv,
-                Err(e) => {
-                    tracing::warn!(root = %root.display(), error = %e, "manual-import scan: skipping unreadable root");
-                    continue;
+            let inventory = if use_incremental {
+                // Incremental walk: only changed directories are re-read. Persist the
+                // fresh directory→mtime map so the next rescan can skip what didn't
+                // change. `remaining` is always `None` on this path (the rescan job
+                // never caps), so the incremental walk needs no bound.
+                match cellarr_fs::scan_incremental(root.clone(), keep, known_dirs.clone()).await {
+                    Ok((inv, current_dirs)) => {
+                        if let Err(e) = self
+                            .db
+                            .media_files()
+                            .replace_scan_dirs(root.to_string_lossy().into_owned(), current_dirs)
+                            .await
+                        {
+                            // A failed mtime persist only costs us the incremental
+                            // speedup next run (a full walk) — not correctness. Log and
+                            // keep the candidates we found.
+                            tracing::warn!(root = %root.display(), error = %e, "rescan: could not persist directory mtimes");
+                        }
+                        inv
+                    }
+                    Err(e) => {
+                        tracing::warn!(root = %root.display(), error = %e, "manual-import scan: skipping unreadable root");
+                        continue;
+                    }
+                }
+            } else {
+                match cellarr_fs::scan_filtered(root.clone(), keep, remaining).await {
+                    Ok(inv) => inv,
+                    Err(e) => {
+                        tracing::warn!(root = %root.display(), error = %e, "manual-import scan: skipping unreadable root");
+                        continue;
+                    }
                 }
             };
             for entry in &inventory.entries {
@@ -2788,7 +2836,7 @@ where
         // Skip files remembered as unmatched (the incremental rescan) so a large
         // library's never-placeable extras/samples are not re-walked every run.
         let candidates = self
-            .scan_manual_import(Some(&self.config.library_root), None, true)
+            .scan_manual_import(Some(&self.config.library_root), None, true, true)
             .await?;
         let mut requests = Vec::new();
         let mut unmatched = 0;

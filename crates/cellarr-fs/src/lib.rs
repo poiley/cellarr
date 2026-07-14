@@ -53,4 +53,4 @@ pub use rename::{
     render_preview, sample_tokens, token_vocabulary, ColonReplacement, MultiEpisodeStyle,
     NamingToken, RenderOptions, TargetPlatform,
 };
-pub use scan::{scan, scan_filtered, Inventory, InventoryEntry};
+pub use scan::{scan, scan_filtered, scan_incremental, Inventory, InventoryEntry};

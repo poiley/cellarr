@@ -69,6 +69,66 @@ impl MediaFileRepo {
             .await
     }
 
+    /// Every remembered directory modification time (the `scan_dir` table),
+    /// keyed by absolute directory path. Loaded once per rescan so the
+    /// mtime-incremental walk can skip directories whose mtime is unchanged.
+    pub async fn scan_dir_mtimes(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let rows = sqlx::query(&pq("SELECT path, mtime FROM scan_dir"))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>("path")?,
+                    row.try_get::<i64, _>("mtime")?,
+                ))
+            })
+            .collect::<std::result::Result<_, sqlx::Error>>()
+            .map_err(DbError::from)
+    }
+
+    /// Replace the recorded directory mtimes under `root` with a fresh map from a
+    /// just-completed walk. Scoped to `root` (delete every row at or beneath it,
+    /// then insert the new set) so rescanning one library root does not disturb
+    /// another's recorded directories. Run in a single writer transaction.
+    pub async fn replace_scan_dirs(
+        &self,
+        root: String,
+        dirs: std::collections::HashMap<String, i64>,
+    ) -> Result<()> {
+        // Match `root` itself and everything beneath it. Escape LIKE wildcards in
+        // the prefix so a stray `%`/`_` in a path can't widen the delete.
+        let like_prefix = format!(
+            "{}/%",
+            root.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(
+                        "DELETE FROM scan_dir WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+                    ))
+                    .bind(&root)
+                    .bind(&like_prefix)
+                    .execute(&mut *conn)
+                    .await?;
+                    for (path, mtime) in dirs {
+                        sqlx::query(&pq(
+                            "INSERT INTO scan_dir (path, mtime)
+                             VALUES (?1, ?2)
+                             ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime",
+                        ))
+                        .bind(path)
+                        .bind(mtime)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Link a media file to a content node (one edge of the many-to-many
     /// relationship). Idempotent: re-linking the same pair is a no-op.
     ///

@@ -505,10 +505,17 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 &self.clock,
                 &config,
             );
+            // The adopt pass walks incrementally; its no-suggestion count tells the
+            // auto-onboard pass whether a second (full) walk is worth doing. In steady
+            // state every untracked file is already tracked or remembered-unmatched, so
+            // this is 0 and the auto-onboard walk is skipped entirely — leaving a
+            // single incremental walk per rescan instead of two full ones.
+            let mut library_unmatched = 0usize;
             match runner.rescan().await {
                 Ok(report) => {
                     adopted += report.adopted;
                     unmatched += report.unmatched;
+                    library_unmatched = report.unmatched;
                     errors += report.errors.len();
                     newly_unmatched.extend(report.unmatched_paths);
                 }
@@ -523,7 +530,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // movie/series and adopt the file onto it. Off unless configured; a
             // no-confidence / ambiguous file is left for the manual-import screen —
             // content is never created from a guess.
-            if self.auto_onboard {
+            if self.auto_onboard && library_unmatched > 0 {
                 if let Some(meta) = self.metadata.clone() {
                     // A staged first batch caps how many nodes are created; the scan
                     // is bounded to match so a huge library is not fully walked just
@@ -533,7 +540,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         // Cap already reached in an earlier library this pass.
                     } else {
                         match runner
-                            .scan_manual_import(Some(&config.library_root), remaining, true)
+                            .scan_manual_import(Some(&config.library_root), remaining, true, false)
                             .await
                         {
                         Ok(candidates) => {
@@ -1972,7 +1979,7 @@ impl cellarr_api::manual_import::ManualImport for LiveManualImport {
         // background rescan job reconciles the rest, unbounded).
         const MANUAL_IMPORT_SCAN_CAP: usize = 500;
         let candidates = runner
-            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP), false)
+            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP), false, false)
             .await
             .map_err(|e| format!("manual-import scan failed: {e}"))?;
         Ok(ManualImportOutcome::Found(candidates))

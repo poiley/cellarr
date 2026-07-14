@@ -159,6 +159,128 @@ fn scan_blocking_filtered<F: Fn(&Path) -> bool>(
     Ok(Inventory { entries })
 }
 
+/// An **incremental** filtered scan: like [`scan_filtered`] but skips `read_dir`
+/// for any directory whose modification time is unchanged since the last scan
+/// (passed in `known_dirs` as `path → unix-mtime-secs`), reconstructing that
+/// directory's subtree from the recorded set instead of listing it from disk.
+///
+/// A directory's mtime changes when a direct child is added, removed, or renamed —
+/// so an unchanged directory has no new files, and only new/changed directories
+/// are read from disk. On a large tree that barely changes between runs this turns
+/// a full walk (a `read_dir` per directory over the network) into a set of cheap
+/// `stat`s plus a handful of `read_dir`s.
+///
+/// Returns the files found (new/untracked media under changed directories, per
+/// `keep`) plus the CURRENT `path → mtime` map, which the caller persists for the
+/// next run. The first run (empty `known_dirs`) reads everything and records the
+/// tree; subsequent runs read only what changed. Directories that vanished are
+/// simply absent from the returned map.
+pub async fn scan_incremental<F>(
+    root: impl Into<PathBuf>,
+    keep: F,
+    known_dirs: std::collections::HashMap<String, i64>,
+) -> Result<(Inventory, std::collections::HashMap<String, i64>)>
+where
+    F: Fn(&Path) -> bool + Send + 'static,
+{
+    let root = root.into();
+    match tokio::task::spawn_blocking(move || {
+        scan_incremental_blocking(&root, &keep, &known_dirs)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => Err(FsError::TaskJoin(e.to_string())),
+    }
+}
+
+fn scan_incremental_blocking<F: Fn(&Path) -> bool>(
+    root: &Path,
+    keep: &F,
+    known: &std::collections::HashMap<String, i64>,
+) -> Result<(Inventory, std::collections::HashMap<String, i64>)> {
+    use std::collections::HashMap;
+    if !root.exists() {
+        return Err(FsError::MissingPath {
+            path: root.to_path_buf(),
+        });
+    }
+    // Reconstruct the recorded subtree (parent → child dirs) so an UNCHANGED
+    // directory can enqueue its subdirectories without a `read_dir`.
+    let mut children: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for d in known.keys() {
+        if let Some(parent) = Path::new(d).parent() {
+            children
+                .entry(parent.to_string_lossy().into_owned())
+                .or_default()
+                .push(PathBuf::from(d));
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut current: HashMap<String, i64> = HashMap::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        let dir_str = dir.to_string_lossy().into_owned();
+        let Some(mtime) = dir_mtime_nanos(&dir) else {
+            continue; // gone/unreadable since it was recorded — drop it
+        };
+        current.insert(dir_str.clone(), mtime);
+
+        if known.get(&dir_str) == Some(&mtime) {
+            // Unchanged: no direct entries changed → no new files here. Descend
+            // into the recorded subdirectories (each is re-checked in turn).
+            if let Some(subs) = children.get(&dir_str) {
+                queue.extend(subs.iter().cloned());
+            }
+            continue;
+        }
+
+        // New or changed: list it, emit new media files, enqueue real subdirs.
+        let read = fs::read_dir(&dir).map_err(|e| FsError::io(&dir, e))?;
+        for item in read {
+            let item = item.map_err(|e| FsError::io(&dir, e))?;
+            let path = item.path();
+            if is_hidden(&path) {
+                continue;
+            }
+            let file_type = item.file_type().map_err(|e| FsError::io(&path, e))?;
+            if file_type.is_dir() {
+                queue.push_back(path);
+            } else if file_type.is_file() && keep(&path) {
+                let meta = item.metadata().map_err(|e| FsError::io(&path, e))?;
+                entries.push(InventoryEntry {
+                    path,
+                    size: meta.len(),
+                    link_count: link_count(&meta),
+                });
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((Inventory { entries }, current))
+}
+
+/// A directory's modification time as Unix nanoseconds, or `None` if it cannot
+/// be read (vanished / permission).
+///
+/// We use nanosecond precision — not seconds — so a file added in the same wall
+/// second as the previous scan still bumps the recorded mtime and is detected on
+/// the next pass. On a filesystem that only records second granularity the nanos
+/// are zero-padded, so this degrades cleanly to second precision. Nanoseconds
+/// since the epoch stay well within `i64` (`~1.8e18 < 9.2e18`) until year 2262.
+fn dir_mtime_nanos(dir: &Path) -> Option<i64> {
+    let modified = fs::metadata(dir).ok()?.modified().ok()?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    i64::try_from(nanos).ok()
+}
+
 /// Whether a path's final component begins with a dot. We skip dotfiles and
 /// dot-directories (e.g. `.DS_Store`, `.unpack`) — they are never library media.
 fn is_hidden(path: &Path) -> bool {
@@ -188,6 +310,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, FsError::MissingPath { .. }));
+    }
+
+    #[tokio::test]
+    async fn incremental_scan_reads_only_changed_directories() {
+        use std::collections::{HashMap, HashSet};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("A/Season 01")).unwrap();
+        std::fs::create_dir_all(root.join("B")).unwrap();
+        std::fs::write(root.join("A/Season 01/ep1.mkv"), b"abc").unwrap();
+        std::fs::write(root.join("B/movie.mkv"), b"defg").unwrap();
+
+        // First run (no known dirs): reads everything, finds both files, records
+        // the directory tree.
+        let keep = |p: &std::path::Path| {
+            p.extension().and_then(|e| e.to_str()) == Some("mkv")
+        };
+        let (inv1, dirs1) = scan_incremental(root.to_path_buf(), keep, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(inv1.entries.len(), 2, "first run finds both files");
+        assert!(dirs1.len() >= 4, "root + A + A/Season 01 + B are recorded");
+
+        // Second run with the recorded tree and nothing changed on disk: finds NO
+        // files (every directory's mtime is unchanged, so none are re-read).
+        let keep2 = |p: &std::path::Path| {
+            p.extension().and_then(|e| e.to_str()) == Some("mkv")
+        };
+        let (inv2, dirs2) = scan_incremental(root.to_path_buf(), keep2, dirs1.clone())
+            .await
+            .unwrap();
+        assert!(
+            inv2.entries.is_empty(),
+            "an unchanged tree yields no candidates: {:?}",
+            inv2.entries
+        );
+        assert_eq!(
+            dirs2.keys().collect::<HashSet<_>>(),
+            dirs1.keys().collect::<HashSet<_>>(),
+            "the recorded directory set is stable"
+        );
+
+        // Add a new file under one directory: only that directory's mtime changed,
+        // so only it is re-read. A re-read directory surfaces ALL its files (the
+        // caller dedups already-seen ones), but the untouched B/ is skipped
+        // entirely — so we see A's two episodes and nothing from B.
+        std::fs::write(root.join("A/Season 01/ep2.mkv"), b"hij").unwrap();
+        let keep3 = |p: &std::path::Path| {
+            p.extension().and_then(|e| e.to_str()) == Some("mkv")
+        };
+        let (inv3, _dirs3) = scan_incremental(root.to_path_buf(), keep3, dirs2)
+            .await
+            .unwrap();
+        let paths: Vec<_> = inv3.entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            inv3.entries.len(),
+            2,
+            "the changed directory re-surfaces both its episodes: {paths:?}"
+        );
+        assert!(paths.iter().any(|p| p.ends_with("ep1.mkv")));
+        assert!(paths.iter().any(|p| p.ends_with("ep2.mkv")));
+        assert!(
+            !paths.iter().any(|p| p.ends_with("movie.mkv")),
+            "the untouched B/ directory is not re-read"
+        );
     }
 
     #[tokio::test]

@@ -274,7 +274,7 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let config = runner_config(lib_root.clone());
     let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
 
-    let candidates = runner.scan_manual_import(Some(&loose), None, false).await.unwrap();
+    let candidates = runner.scan_manual_import(Some(&loose), None, false, false).await.unwrap();
     assert_eq!(
         candidates.len(),
         2,
@@ -282,7 +282,7 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     );
 
     // The interactive cap truncates: asking for one candidate returns exactly one.
-    let capped = runner.scan_manual_import(Some(&loose), Some(1), false).await.unwrap();
+    let capped = runner.scan_manual_import(Some(&loose), Some(1), false, false).await.unwrap();
     assert_eq!(capped.len(), 1, "the limit caps the candidate count");
 
     // The identifiable file suggests the seeded movie node, carries its parsed
@@ -933,7 +933,7 @@ async fn recorded_unmatched_files_are_skipped_by_the_background_rescan() {
     // The manual-import screen (skip_unmatched = false) still surfaces it, so a
     // user can place it by hand.
     let manual = runner
-        .scan_manual_import(Some(&lib_root), None, false)
+        .scan_manual_import(Some(&lib_root), None, false, false)
         .await
         .unwrap();
     assert_eq!(manual.len(), 1, "the manual screen still shows the unmatched file");
