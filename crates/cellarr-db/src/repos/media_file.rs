@@ -94,24 +94,28 @@ impl MediaFileRepo {
         root: String,
         dirs: std::collections::HashMap<String, i64>,
     ) -> Result<()> {
-        // Delete `root` itself plus everything beneath it, as an index RANGE on the
-        // PRIMARY KEY rather than a `LIKE`/`OR` (which the planner can't serve from
-        // the btree — a full scan that measured ~2s over a few thousand rows). Every
-        // descendant path starts with `root/`; that prefix's rows are exactly the
-        // half-open range `[root + "/", root + "0")` because '0' is the byte after
-        // '/'. A sibling like `root-old` is NOT in that range (it sorts below
-        // `root/`), so the scope stays exact. Both `=` and the range are btree seeks.
-        let under = format!("{root}/");
-        let upper = format!("{root}0");
+        // Match `root` itself and everything beneath it. `LIKE 'root/%'` matches
+        // character-by-character, so it is correct regardless of the database
+        // collation. (A byte-range trick — `path >= root||'/' AND path < root||'0'`
+        // — is only exact under BINARY/"C" collation; on Postgres's default locale
+        // collation, spaces/punctuation don't sort by byte value, so a descendant
+        // like `.../Season 01` fell outside the range and survived. Correctness over
+        // shaving a once-daily rescan's delete.) Escape LIKE wildcards in the prefix
+        // so a stray `%`/`_` in a path can't widen the delete.
+        let like_prefix = format!(
+            "{}/%",
+            root.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
                     sqlx::query(&pq(
-                        "DELETE FROM scan_dir WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+                        "DELETE FROM scan_dir WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
                     ))
                     .bind(&root)
-                    .bind(&under)
-                    .bind(&upper)
+                    .bind(&like_prefix)
                     .execute(&mut *conn)
                     .await?;
                     for (path, mtime) in dirs {
