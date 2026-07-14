@@ -668,7 +668,10 @@ where
         // Metric: one pipeline run. The `monotonic_counter.*` field is turned into
         // an OTLP counter by the metrics layer when the `otlp` feature exports; with
         // no exporter it is an ordinary (rare, one-per-run) log line.
-        tracing::info!(monotonic_counter.cellarr_pipeline_runs = 1_u64, "pipeline run");
+        tracing::info!(
+            monotonic_counter.cellarr_pipeline_runs = 1_u64,
+            "pipeline run"
+        );
         let mut stage = Stage::Discover;
 
         // --- Discover -----------------------------------------------------
@@ -1010,10 +1013,7 @@ where
 
         // A blocklisted release previously failed for this node; refuse it even on
         // a manual grab (grab-next blocklisted it for a reason).
-        if self
-            .is_blocklisted(matched.content_ref.id, release)
-            .await?
-        {
+        if self.is_blocklisted(matched.content_ref.id, release).await? {
             let reason = "release is blocklisted".to_string();
             self.log(
                 run_id,
@@ -1907,30 +1907,30 @@ where
             // the daemon, the single-threaded job loop). A timeout is treated like a
             // transient fault — skip, wait, retry — so a sustained hang exhausts the
             // poll budget rather than blocking forever.
-            let status =
-                match tokio::time::timeout(TRACK_POLL_TIMEOUT, self.client.status(download_id))
-                    .await
-                {
-                    Ok(Ok(s)) => s,
-                    Ok(Err(e)) if is_transient_client_fault(&e) => {
-                        // The download client is momentarily unreachable/faulted — a
-                        // transient infra issue, not a bad release. Do NOT blocklist:
-                        // skip this poll and retry after the interval so a brief client
-                        // blip is absorbed and the download keeps tracking. A sustained
-                        // outage still exhausts the poll budget ("tracking timed out").
-                        tracing::warn!(error = %e, "download-client poll failed transiently; retrying");
-                        self.wait_between_polls().await;
-                        continue;
-                    }
-                    Ok(Err(e)) => {
-                        return TrackOutcome::Failed(format!("status poll failed: {e}"))
-                    }
-                    Err(_elapsed) => {
-                        tracing::warn!("download-client poll timed out; retrying");
-                        self.wait_between_polls().await;
-                        continue;
-                    }
-                };
+            let status = match tokio::time::timeout(
+                TRACK_POLL_TIMEOUT,
+                self.client.status(download_id),
+            )
+            .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) if is_transient_client_fault(&e) => {
+                    // The download client is momentarily unreachable/faulted — a
+                    // transient infra issue, not a bad release. Do NOT blocklist:
+                    // skip this poll and retry after the interval so a brief client
+                    // blip is absorbed and the download keeps tracking. A sustained
+                    // outage still exhausts the poll budget ("tracking timed out").
+                    tracing::warn!(error = %e, "download-client poll failed transiently; retrying");
+                    self.wait_between_polls().await;
+                    continue;
+                }
+                Ok(Err(e)) => return TrackOutcome::Failed(format!("status poll failed: {e}")),
+                Err(_elapsed) => {
+                    tracing::warn!("download-client poll timed out; retrying");
+                    self.wait_between_polls().await;
+                    continue;
+                }
+            };
             match status.state {
                 DownloadState::Completed => return TrackOutcome::Completed(status.content_path),
                 DownloadState::Failed => {
@@ -2121,6 +2121,15 @@ where
                 dest,
             }
         })?;
+        // Whether the (single) replacement move actually placed a new file. A move
+        // whose destination was already satisfied (`AlreadyPresent` — a resume, or
+        // the rare case where the new file is byte-for-byte the same size as the old
+        // and the resume check treats it as done) did NOT change the on-disk file, so
+        // the old row must be kept, not dropped.
+        let replaced_in_place = result
+            .moves
+            .iter()
+            .any(|m| !matches!(m.outcome, cellarr_fs::PlacedAs::AlreadyPresent));
         let destinations: Vec<String> = result
             .moves
             .into_iter()
@@ -2133,8 +2142,8 @@ where
         // content_file link — so the caller's `persist_imported_files` records the
         // NEW quality/size as a fresh row instead of reusing the old one (which would
         // re-flag the node as still needing the same upgrade). Only when a
-        // replacement move was actually planned.
-        if let Some((old_id, _)) = replaced.filter(|_| sources.len() == 1) {
+        // replacement move was actually planned AND actually placed a new file.
+        if let Some((old_id, _)) = replaced.filter(|_| sources.len() == 1 && replaced_in_place) {
             self.db
                 .media_files()
                 .delete(old_id)

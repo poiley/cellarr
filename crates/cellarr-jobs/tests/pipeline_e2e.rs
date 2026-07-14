@@ -580,6 +580,95 @@ async fn upgrade_replaces_existing_file_row_and_subtitle_end_to_end() {
     );
 }
 
+/// Safety guard: when the replacement move is a no-op because the on-disk file is
+/// byte-for-byte the same SIZE as the new one (the size-based resume check treats
+/// the destination as already satisfied, so nothing is swapped), the old row must
+/// be KEPT — never dropped for a fresh row that would then claim the new quality
+/// over an unchanged file.
+#[tokio::test]
+async fn same_size_upgrade_that_does_not_swap_keeps_the_old_row_and_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_node(
+        &db,
+        MediaType::Movie,
+        cellarr_core::ContentKind::Movie,
+        Coordinates::Movie,
+    )
+    .await;
+
+    let movie_dir = library_root.join("The Matrix (1999)");
+    std::fs::create_dir_all(&movie_dir).unwrap();
+    let existing_media = movie_dir.join("The Matrix.mkv");
+    // Existing file and the new download are the SAME size (5 bytes), so the
+    // size-based resume check will treat the destination as already satisfied.
+    std::fs::write(&existing_media, b"AAAAA").unwrap();
+    let old_file = MediaFile {
+        id: MediaFileId::new(),
+        path: existing_media.to_string_lossy().into_owned(),
+        size: 5,
+        quality: Quality::new("WEBDL-720p", 2),
+        languages: vec!["en".into()],
+        media_info: None,
+        custom_format_score: None,
+        release_type: Some(ReleaseType::Movie),
+    };
+    db.media_files().create(&old_file).await.unwrap();
+    db.media_files().link(node.id, old_file.id).await.unwrap();
+
+    let download_dir = tmp.path().join("downloads/movie");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"BBBBB").unwrap(); // same 5-byte size
+
+    let registry = registry_for(
+        &node,
+        Some(MovieMeta {
+            title: "The Matrix".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        None,
+        "The Matrix",
+    );
+    let indexer = FakeIndexer {
+        releases: vec![movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let _ = runner.run(&node).await.unwrap();
+
+    // The on-disk file was NOT changed (same-size resume), and — crucially — the
+    // old row is intact, so the row never lies about the file's quality.
+    assert_eq!(std::fs::read(&existing_media).unwrap(), b"AAAAA");
+    assert!(
+        db.media_files().get(old_file.id).await.unwrap().is_some(),
+        "the old row must be kept when no swap happened"
+    );
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(files.len(), 1, "still exactly one row: {files:?}");
+    assert_eq!(files[0].id, old_file.id, "it is still the original row");
+    assert_eq!(
+        files[0].quality.rank, 2,
+        "quality still reflects the on-disk file"
+    );
+}
+
 #[tokio::test]
 async fn deferred_tracking_grabs_and_hands_off_without_blocking_on_track() {
     // The bulk sweep opts into deferred tracking so it never blocks the
