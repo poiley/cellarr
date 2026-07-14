@@ -274,7 +274,7 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     let config = runner_config(lib_root.clone());
     let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
 
-    let candidates = runner.scan_manual_import(Some(&loose), None).await.unwrap();
+    let candidates = runner.scan_manual_import(Some(&loose), None, false).await.unwrap();
     assert_eq!(
         candidates.len(),
         2,
@@ -282,7 +282,7 @@ async fn scan_returns_parsed_and_identified_candidates_and_moves_nothing() {
     );
 
     // The interactive cap truncates: asking for one candidate returns exactly one.
-    let capped = runner.scan_manual_import(Some(&loose), Some(1)).await.unwrap();
+    let capped = runner.scan_manual_import(Some(&loose), Some(1), false).await.unwrap();
     assert_eq!(capped.len(), 1, "the limit caps the candidate count");
 
     // The identifiable file suggests the seeded movie node, carries its parsed
@@ -888,6 +888,56 @@ async fn rescan_adopts_confident_in_library_files_and_surfaces_the_rest() {
         1,
         "no duplicate row on re-run"
     );
+}
+
+#[tokio::test]
+async fn recorded_unmatched_files_are_skipped_by_the_background_rescan() {
+    // The incremental rescan: a file that could not be placed is remembered in
+    // `unmatched_scan`; subsequent background scans skip it (so a large library's
+    // never-placeable extras are not re-walked every run), while the manual-import
+    // screen still surfaces it.
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    let junk = lib_root.join("Random.Junk.File.2024.1080p.mkv");
+    std::fs::write(&junk, b"junk-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    // First pass: the junk file is unmatched and reported for recording.
+    let report = runner.rescan().await.unwrap();
+    assert_eq!(report.unmatched, 1);
+    assert_eq!(report.unmatched_paths.len(), 1, "the unplaceable file is reported for recording");
+
+    // Record it (what the RescanLibrary handler does at the end of the pass).
+    db.media_files()
+        .record_unmatched_scan(report.unmatched_paths)
+        .await
+        .unwrap();
+
+    // Second pass: the recorded file is now SKIPPED — not re-walked, not reported.
+    let again = runner.rescan().await.unwrap();
+    assert_eq!(again.unmatched, 0, "a recorded-unmatched file is skipped next pass");
+    assert_eq!(again.unmatched_paths.len(), 0);
+
+    // The manual-import screen (skip_unmatched = false) still surfaces it, so a
+    // user can place it by hand.
+    let manual = runner
+        .scan_manual_import(Some(&lib_root), None, false)
+        .await
+        .unwrap();
+    assert_eq!(manual.len(), 1, "the manual screen still shows the unmatched file");
+    assert!(junk.exists(), "the file itself is never touched");
 }
 
 #[tokio::test]

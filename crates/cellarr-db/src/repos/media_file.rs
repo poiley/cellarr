@@ -29,6 +29,46 @@ impl MediaFileRepo {
         Self { pool, writer }
     }
 
+    /// Every remembered-unmatched file path (the `unmatched_scan` table). Loaded
+    /// once per rescan into a set so the scan can skip these never-placeable files
+    /// the same way it skips already-tracked ones.
+    pub async fn unmatched_scan_paths(&self) -> Result<std::collections::HashSet<String>> {
+        let rows = sqlx::query(&pq("SELECT path FROM unmatched_scan"))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| row.try_get::<String, _>("path").map_err(DbError::from))
+            .collect()
+    }
+
+    /// Remember files a rescan could not place, so subsequent scans skip them.
+    /// Idempotent — an already-recorded path keeps its original `first_seen`.
+    pub async fn record_unmatched_scan(&self, entries: Vec<(String, u64)>) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    for (path, size) in entries {
+                        sqlx::query(&pq(
+                            "INSERT INTO unmatched_scan (path, size, first_seen)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT(path) DO NOTHING",
+                        ))
+                        .bind(path)
+                        .bind(i64::try_from(size).unwrap_or(i64::MAX))
+                        .bind(&now)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Link a media file to a content node (one edge of the many-to-many
     /// relationship). Idempotent: re-linking the same pair is a no-op.
     ///

@@ -463,6 +463,10 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
 
         let (mut adopted, mut unmatched, mut errors, mut pruned, mut onboarded) =
             (0usize, 0usize, 0usize, 0usize, 0usize);
+        // Files this pass could not place — remembered afterwards so the next
+        // rescan skips them (recorded AFTER auto-onboard, so a file onboarded on
+        // its first sighting is not needlessly recorded).
+        let mut newly_unmatched: Vec<(String, u64)> = Vec::new();
         let mut pruned_once = false;
         for library in libraries {
             // A synthetic node ref scoped to this library lets the env build the
@@ -506,6 +510,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     adopted += report.adopted;
                     unmatched += report.unmatched;
                     errors += report.errors.len();
+                    newly_unmatched.extend(report.unmatched_paths);
                 }
                 Err(detail) => {
                     tracing::warn!(library = %library.id, error = %detail, "rescan: library failed; continuing");
@@ -528,7 +533,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         // Cap already reached in an earlier library this pass.
                     } else {
                         match runner
-                            .scan_manual_import(Some(&config.library_root), remaining)
+                            .scan_manual_import(Some(&config.library_root), remaining, true)
                             .await
                         {
                         Ok(candidates) => {
@@ -609,7 +614,20 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 }
             }
         }
-        tracing::info!(adopted, unmatched, errors, pruned, onboarded, "library rescan complete");
+        // Remember the files that could not be placed this pass so subsequent
+        // rescans skip them (the incremental rescan). Recorded after auto-onboard,
+        // so a file onboarded on first sighting is now tracked and its entry — if
+        // any — is harmless (the tracked-file skip covers it). Best-effort.
+        let newly = newly_unmatched.len();
+        if let Err(e) = self
+            .db
+            .media_files()
+            .record_unmatched_scan(newly_unmatched)
+            .await
+        {
+            tracing::warn!(error = %e, "rescan: recording unmatched files failed");
+        }
+        tracing::info!(adopted, unmatched, errors, pruned, onboarded, recorded_unmatched = newly, "library rescan complete");
         JobResult::Success
     }
 
@@ -1954,7 +1972,7 @@ impl cellarr_api::manual_import::ManualImport for LiveManualImport {
         // background rescan job reconciles the rest, unbounded).
         const MANUAL_IMPORT_SCAN_CAP: usize = 500;
         let candidates = runner
-            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP))
+            .scan_manual_import(folder.map(std::path::Path::new), Some(MANUAL_IMPORT_SCAN_CAP), false)
             .await
             .map_err(|e| format!("manual-import scan failed: {e}"))?;
         Ok(ManualImportOutcome::Found(candidates))

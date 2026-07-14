@@ -334,6 +334,11 @@ pub struct RescanReport {
     /// Per-file failures while adopting a confident match (one string each); the
     /// rest of the batch still proceeds.
     pub errors: Vec<String>,
+    /// The `(path, size)` of every file the scan could not place this pass. The
+    /// caller records these in `unmatched_scan` so subsequent rescans skip them
+    /// (they are never-placeable extras/samples/foreign-named media). Excludes any
+    /// file already skipped via that table — only newly-seen unplaceable files.
+    pub unmatched_paths: Vec<(String, u64)>,
 }
 
 /// Everything the runner needs that is *not* a live integration seam: the
@@ -2540,6 +2545,7 @@ where
         &self,
         folder: Option<&std::path::Path>,
         limit: Option<usize>,
+        skip_unmatched: bool,
     ) -> Result<Vec<ManualImportCandidate>> {
         use cellarr_core::repo::MediaFileRepository;
 
@@ -2566,15 +2572,28 @@ where
         // in-memory set lookup, not a query per file — a library is tens of
         // thousands of files, and a per-file query made the whole-library sweep
         // time out. Shared into each root's walk predicate via an Arc.
-        let tracked: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
-            self.db
-                .media_files()
-                .all_paths()
-                .await
-                .map_err(|e| JobError::Persistence(Box::new(e)))?
-                .into_iter()
-                .collect(),
-        );
+        let mut skip: std::collections::HashSet<String> = self
+            .db
+            .media_files()
+            .all_paths()
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?
+            .into_iter()
+            .collect();
+        // The background rescan additionally skips files remembered as UNMATCHED —
+        // never-placeable extras/samples/foreign-named media — so a large library
+        // is not re-walked and re-looked-up every run. The manual-import screen
+        // passes `false` so a user can still see and hand-place these files.
+        if skip_unmatched {
+            skip.extend(
+                self.db
+                    .media_files()
+                    .unmatched_scan_paths()
+                    .await
+                    .map_err(|e| JobError::Persistence(Box::new(e)))?,
+            );
+        }
+        let tracked = std::sync::Arc::new(skip);
 
         let mut out = Vec::new();
         for root in roots {
@@ -2766,18 +2785,24 @@ where
     /// `errors`, not errored.
     pub async fn rescan(&self) -> Result<RescanReport> {
         // Unbounded: the background job reconciles the whole root, not a preview.
+        // Skip files remembered as unmatched (the incremental rescan) so a large
+        // library's never-placeable extras/samples are not re-walked every run.
         let candidates = self
-            .scan_manual_import(Some(&self.config.library_root), None)
+            .scan_manual_import(Some(&self.config.library_root), None, true)
             .await?;
         let mut requests = Vec::new();
         let mut unmatched = 0;
+        let mut unmatched_paths = Vec::new();
         for candidate in &candidates {
             match &candidate.suggested {
                 Some(suggestion) => requests.push(ManualImportRequest {
                     path: candidate.path.clone(),
                     content_id: suggestion.content_id,
                 }),
-                None => unmatched += 1,
+                None => {
+                    unmatched += 1;
+                    unmatched_paths.push((candidate.path.clone(), candidate.size));
+                }
             }
         }
         let (imported, errors) = self.import_manual(&requests).await?;
@@ -2785,6 +2810,7 @@ where
             adopted: imported.len(),
             unmatched,
             errors,
+            unmatched_paths,
         })
     }
 
