@@ -893,6 +893,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: set imported failed");
                     continue;
                 }
+                let _ = self.db.grabs().clear_download_progress(g.id).await;
                 cleaned += 1;
                 continue;
             }
@@ -965,6 +966,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                 });
                             }
                             let _ = client.remove(dl, true).await; // best-effort
+                            let _ = self.db.grabs().clear_download_progress(g.id).await;
                             cleaned += 1;
                         }
                         Err(e) => {
@@ -1000,6 +1002,8 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                         .await
                                     {
                                         Ok(()) => {
+                                            let _ =
+                                                self.db.grabs().clear_download_progress(g.id).await;
                                             tracing::info!(grab = %g.id, "reconcile-downloads: adopted existing file for redundant download");
                                             cleaned += 1;
                                         }
@@ -1014,24 +1018,69 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         }
                     }
                 }
-                // Still queued/downloading. A torrent reporting zero peers that has
-                // aged past the stall window will never complete — clean it as
-                // dead. A download with peers (or an unknown peer count, e.g.
-                // Usenet, which reports `None`) is or may still be progressing: leave it.
+                // Still queued/downloading. Two ways a download is dead: it made no
+                // PROGRESS for the stall window (a torrent limping with a peer or two
+                // that never completes — the common cap-hogging case), or it reports
+                // zero peers and has aged past the coarse day-long window. A transfer
+                // whose progress is ticking up (or that only just appeared) is left
+                // alone. Usenet reports an unknown peer count (`None`) and so is only
+                // ever caught by the progress check, never the zero-peer one.
                 Ok(status) => {
-                    let age = time::OffsetDateTime::now_utc() - g.created_at;
+                    let now = time::OffsetDateTime::now_utc();
+                    let age = now - g.created_at;
+                    // Track the high-water progress mark and detect a stall against it.
+                    let stalled_no_progress = match self.db.grabs().download_progress(g.id).await {
+                        Ok(Some((prev, last_advance))) => {
+                            if f64::from(status.progress) > prev + PROGRESS_EPSILON {
+                                // Advanced — reset the high-water mark and the timer.
+                                if let Err(e) = self
+                                    .db
+                                    .grabs()
+                                    .record_download_progress(g.id, f64::from(status.progress))
+                                    .await
+                                {
+                                    tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: recording progress failed");
+                                }
+                                false
+                            } else {
+                                now - last_advance > NO_PROGRESS_STALL
+                            }
+                        }
+                        // First time we see this download — start tracking, never
+                        // condemn on the first sighting.
+                        Ok(None) => {
+                            if let Err(e) = self
+                                .db
+                                .grabs()
+                                .record_download_progress(g.id, f64::from(status.progress))
+                                .await
+                            {
+                                tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: recording progress failed");
+                            }
+                            false
+                        }
+                        Err(e) => {
+                            tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: reading progress failed");
+                            false
+                        }
+                    };
                     let dead_stall = status.peers == Some(0) && age > STALL_MIN_AGE;
-                    if dead_stall
-                        && self
-                            .blocklist_dead_grab(
-                                &g,
-                                &client,
-                                "download stalled with no peers".into(),
-                            )
-                            .await
-                    {
-                        tracing::info!(grab = %g.id, age_hours = age.whole_hours(), "reconcile-downloads: cleaned dead stalled download");
-                        cleaned += 1;
+                    if stalled_no_progress || dead_stall {
+                        let reason = if stalled_no_progress {
+                            "download made no progress within the stall window".to_string()
+                        } else {
+                            "download stalled with no peers".to_string()
+                        };
+                        if self.blocklist_dead_grab(&g, &client, reason).await {
+                            tracing::info!(
+                                grab = %g.id,
+                                age_hours = age.whole_hours(),
+                                no_progress = stalled_no_progress,
+                                progress = status.progress,
+                                "reconcile-downloads: cleaned dead download"
+                            );
+                            cleaned += 1;
+                        }
                     }
                 }
                 // The client no longer knows this download — gone → blocklist.
@@ -1096,6 +1145,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         if let Some(dl) = g.download_id.as_deref() {
             let _ = client.remove(dl, true).await; // best-effort: remove the dead download
         }
+        // Terminal now — drop any progress-tracking row so the table doesn't
+        // accumulate dead entries.
+        let _ = self.db.grabs().clear_download_progress(g.id).await;
         true
     }
 }
@@ -1318,6 +1370,20 @@ fn refresh_should_resolve(kind: ContentKind, enriched: bool) -> bool {
 /// a real transfer finds peers long before a day passes, and a torrent with none
 /// for a full day is not going to complete.
 const STALL_MIN_AGE: time::Duration = time::Duration::hours(24);
+
+/// How long a download may make **no progress** before the reconcile treats it as
+/// dead — regardless of peer count. Catches the case the 0-peer/24h rule misses: a
+/// torrent limping with a peer or two that never completes, holding a download slot
+/// for a full day and throttling all new acquisition (and the upgrade sweep) behind
+/// it. Measured from the last time its progress fraction ADVANCED, so a genuinely
+/// downloading transfer (progress ticking up) is never touched; only a truly stuck
+/// one is. Deliberately well short of [`STALL_MIN_AGE`] so the download cap frees
+/// up in hours, not a day.
+const NO_PROGRESS_STALL: time::Duration = time::Duration::hours(3);
+
+/// The smallest progress increase counted as real forward movement (guards against
+/// float jitter in a client's reported fraction).
+const PROGRESS_EPSILON: f64 = 0.001;
 
 /// How long to wait for a single download-client status poll in the reconcile
 /// sweep before giving up and leaving the grab for the next cycle. The client can
