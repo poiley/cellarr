@@ -83,6 +83,13 @@ spec:
             # sweep grabs up to this many, then waits for the reconcile to drain
             # completions before grabbing more. Unset = unlimited (the code default).
             - { name: CELLARR_MAX_ACTIVE_DOWNLOADS, value: "10" }
+            # Automatic quality-upgrade sweep: each RssSync (*/15) considers this
+            # many monitored-with-a-file nodes for a better release, least-recently-
+            # searched first (rotating the whole backlog over time). Shares the
+            # in-flight download cap above, so upgrades never flood the client. A
+            # conservative bound keeps indexer load modest on the first rollout.
+            # Unset/0 = off (upgrades only via manual search).
+            - { name: CELLARR_UPGRADE_SEARCH_LIMIT, value: "20" }
             # Config-as-code: reconcile the DB from this file on boot.
             - { name: CELLARR_MANAGED_CONFIG_PATH, value: "/config/managed-config.yaml" }
             # API key for /api/v3 (the API is reachable via the ingress, so it must
