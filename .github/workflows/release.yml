@@ -123,8 +123,12 @@ jobs:
       # sweep). All run on the default SQLite backend with no services, so a
       # pipeline regression (e.g. blocklisting on a transient client fault, or the
       # reconcile mishandling a completed/stalled/dead download) surfaces in CI.
-      - name: cargo test (db + jobs + cli)
-        run: cargo test --locked -p cellarr-db -p cellarr-jobs -p cellarr-cli
+      # cellarr-api is included so the `/api/v3`+`/api/v1` surface (auth gate,
+      # config, shim) is covered — its tests are hermetic (loopback HTTP + SQLite,
+      # no Docker/network). It was previously untested in CI, which let several
+      # tests silently rot against intended behaviour changes.
+      - name: cargo test (db + jobs + cli + api)
+        run: cargo test --locked -p cellarr-db -p cellarr-jobs -p cellarr-cli -p cellarr-api
 
   image:
     needs: [changes]

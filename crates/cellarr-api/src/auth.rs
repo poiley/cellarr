@@ -87,6 +87,12 @@ fn presented_key(req: &Request) -> Option<String> {
 /// can read but never write. The two arms keep ecosystem clients and the SPA both
 /// working without weakening an enforced install (an anonymous caller with no key
 /// and no session is still rejected).
+///
+/// Note on the security model: **web-auth (Forms/Basic) is the write lock**, not
+/// the API key. An install with web-auth `none` is intentionally *open* — a keyless
+/// write succeeds — so setting only an API key does not secure writes; enable
+/// web-auth to enforce them. This is the deliberate, test-pinned behaviour
+/// (`v3_write_accepts_apikey_or_web_auth`).
 pub async fn require_api_key(
     State(state): State<AppState>,
     req: Request,

@@ -264,7 +264,8 @@ async fn media_management_blob_round_trips_and_merges_per_card() {
     let server = start_open().await;
     let client = server.client();
 
-    // Defaults: naming present, extras disabled, no permission policy.
+    // Defaults: naming present, extra-file (subtitle) import ON by default, no
+    // permission policy.
     let mm: Value = client
         .get(server.url("/api/v3/config/mediamanagement"))
         .send()
@@ -277,7 +278,11 @@ async fn media_management_blob_round_trips_and_merges_per_card() {
         mm["naming"]["movieFileFormat"],
         "{Movie Title} ({Release Year})/{Movie Title}.{Extension}"
     );
-    assert_eq!(mm["extraFiles"]["enabled"], json!(false));
+    assert_eq!(
+        mm["extraFiles"]["enabled"],
+        json!(true),
+        "subtitle/extra-file import defaults ON"
+    );
 
     // The Permissions card saves only `permissions` — it must not clobber naming.
     let after_perms: Value = client
