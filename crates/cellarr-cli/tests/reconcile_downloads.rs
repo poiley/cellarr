@@ -322,12 +322,18 @@ async fn seed_grab(db: &Database, content: &ContentRef, download_id: &str) -> ce
 
 /// Build the handler over the fake env, with the completed-download file at
 /// `completed_path`. No release offered, no download cap.
-fn handler(db: &Database, node: &ContentRef, completed_path: String, library_root: PathBuf) -> impl JobHandler {
-    handler_with(db, node, completed_path, library_root, None, None)
+fn handler(
+    db: &Database,
+    node: &ContentRef,
+    completed_path: String,
+    library_root: PathBuf,
+) -> impl JobHandler {
+    handler_with(db, node, completed_path, library_root, None, None, None)
 }
 
-/// Build the handler with an indexer that offers `offer` and an in-flight
-/// download `cap` — for exercising the sweep's grab + concurrency-cap paths.
+/// Build the handler with an indexer that offers `offer`, an in-flight download
+/// `cap`, and an automatic-upgrade sweep bound `upgrade_limit` (`None` disables it)
+/// — for exercising the sweep's grab + concurrency-cap + upgrade paths.
 fn handler_with(
     db: &Database,
     node: &ContentRef,
@@ -335,6 +341,7 @@ fn handler_with(
     library_root: PathBuf,
     offer: Option<Release>,
     cap: Option<u32>,
+    upgrade_limit: Option<usize>,
 ) -> impl JobHandler {
     let env = FakeEnv {
         completed_path,
@@ -349,6 +356,7 @@ fn handler_with(
         env,
     )
     .with_max_active_downloads(cap)
+    .with_upgrade_search(upgrade_limit)
 }
 
 async fn status_of(db: &Database, id: cellarr_core::GrabId) -> GrabStatus {
@@ -510,7 +518,10 @@ async fn reconcile_adopts_existing_file_when_duplicate_download_collides() {
     );
     let files = db.media_files().list_for_content(node.id).await.unwrap();
     assert_eq!(files.len(), 1, "the existing file is re-linked to the node");
-    assert_eq!(files[0].path, dest_str, "adopted the on-disk file, in place");
+    assert_eq!(
+        files[0].path, dest_str,
+        "adopted the on-disk file, in place"
+    );
     assert_eq!(
         std::fs::read(&dest).unwrap(),
         b"library copy",
@@ -668,6 +679,7 @@ async fn sweep_grabs_when_under_the_concurrency_cap() {
         tmp.path().to_path_buf(),
         Some(matrix_release()),
         Some(1), // cap 1, nothing in flight yet → under cap
+        None,
     );
     let _ = h.handle(&JobKind::MissingItemSearch).await;
     assert_eq!(
@@ -693,6 +705,7 @@ async fn sweep_stops_grabbing_at_the_concurrency_cap() {
         tmp.path().to_path_buf(),
         Some(matrix_release()),
         Some(1),
+        None,
     );
     let _ = h.handle(&JobKind::MissingItemSearch).await;
 
@@ -703,6 +716,88 @@ async fn sweep_stops_grabbing_at_the_concurrency_cap() {
     );
     // The pre-existing in-flight grab is untouched (the cap only gates NEW grabs).
     assert_eq!(open_grabs_for(&db, other.id).await, 1);
+}
+
+/// Seed a movie node that already has a LOW-quality file — an upgrade candidate.
+async fn seed_movie_with_low_quality_file(db: &Database) -> ContentRef {
+    let node = seed_movie(db).await;
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: format!("/data/{}.mkv", node.id),
+        size: 100,
+        quality: Quality::new("WEBDL-720p", 5), // below the 1080p release (rank 14)
+        languages: vec!["en".into()],
+        media_info: None,
+        custom_format_score: None,
+        release_type: Some(ReleaseType::Movie),
+    };
+    db.media_files().create(&file).await.unwrap();
+    db.media_files().link(node.id, file.id).await.unwrap();
+    node
+}
+
+/// With the upgrade sweep enabled, an `RssSync` grabs a better release for a node
+/// that already has a (lower-quality) file — the automatic-upgrade path.
+#[tokio::test]
+async fn rss_sync_upgrade_sweep_grabs_a_better_release() {
+    let (tmp, db, _) = fresh_db_with_movie().await;
+    let node = seed_movie_with_low_quality_file(&db).await;
+    let h = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(matrix_release()), // Bluray-1080p (rank 14) > on-disk WEBDL-720p (rank 5)
+        None,
+        Some(10), // upgrade sweep enabled
+    );
+    let _ = h.handle(&JobKind::RssSync).await;
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        1,
+        "RssSync's upgrade sweep grabs a better release for a node with a file"
+    );
+}
+
+/// The upgrade sweep is OPT-IN and only rides `RssSync`: disabled (the default) it
+/// never upgrades, and `MissingItemSearch` never upgrades even when enabled.
+#[tokio::test]
+async fn upgrade_sweep_is_opt_in_and_only_on_rss_sync() {
+    // Disabled (None): RssSync must not grab an upgrade.
+    let (tmp, db, _) = fresh_db_with_movie().await;
+    let node = seed_movie_with_low_quality_file(&db).await;
+    let off = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(matrix_release()),
+        None,
+        None, // upgrade sweep disabled
+    );
+    let _ = off.handle(&JobKind::RssSync).await;
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        0,
+        "with the upgrade sweep off, RssSync does not upgrade a node that has a file"
+    );
+
+    // Enabled, but MissingItemSearch is gap-fill only — it must not upgrade.
+    let missing = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(matrix_release()),
+        None,
+        Some(10),
+    );
+    let _ = missing.handle(&JobKind::MissingItemSearch).await;
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        0,
+        "MissingItemSearch never runs the upgrade sweep (a node with a file is not missing)"
+    );
 }
 
 // ---------------------------------------------------------------------------
