@@ -207,6 +207,9 @@ async fn import_list_sync_command_syncs_all() {
 #[tokio::test]
 async fn import_list_sync_command_requires_api_key() {
     let server = start_authed().await;
+    // Web-auth is the write lock; enforce it so a keyless, session-less write is
+    // rejected (an open `none` install would admit a keyless write).
+    common::enforce_basic_auth(&server.base_url).await;
     let resp = server
         .client()
         .post(server.url("/api/v3/command"))

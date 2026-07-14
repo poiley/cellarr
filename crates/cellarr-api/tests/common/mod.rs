@@ -41,6 +41,29 @@ pub async fn start_authed() -> TestServer {
     start_with(AuthConfig::with_key(TEST_API_KEY)).await
 }
 
+/// Turn on enforced **Basic web-auth** on a running server (via the admin
+/// endpoints, so the password is hashed the real way). Web-auth — not the API key
+/// — is the write lock: with it enforced, a request bearing neither the apikey nor
+/// a credential is rejected. Use this to prove a specific write route is gated (an
+/// open `none` install would admit a keyless write, per `require_api_key`).
+pub async fn enforce_basic_auth(base_url: &str) {
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!("{base_url}/api/v1/auth/credential"))
+        .json(&serde_json::json!({ "username": "admin", "password": "test-pass-123" }))
+        .send()
+        .await
+        .expect("set credential");
+    assert_eq!(r.status(), 200, "credential setup should succeed");
+    let r = client
+        .put(format!("{base_url}/api/v1/auth/config"))
+        .json(&serde_json::json!({ "method": "basic" }))
+        .send()
+        .await
+        .expect("set method");
+    assert_eq!(r.status(), 200, "enabling basic auth should succeed");
+}
+
 /// Spin up an open server with a metadata-lookup source attached, so the v3
 /// lookup resources resolve real identities through it.
 pub async fn start_with_metadata(

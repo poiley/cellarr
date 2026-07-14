@@ -307,8 +307,11 @@ async fn series_lookup_returns_sonarr_shaped_results() {
 async fn add_movie_requires_api_key() {
     let server = start_authed().await;
     seed_library(&server.state, cellarr_core::MediaType::Movie, "Movies").await;
+    // Web-auth is the write lock; enforce it so a keyless, session-less write is
+    // rejected (an open `none` install would admit a keyless write).
+    common::enforce_basic_auth(&server.base_url).await;
 
-    // Missing key → 401.
+    // Missing key (and no session) under an enforced install → 401.
     let resp = server
         .client()
         .post(server.url("/api/v3/movie"))

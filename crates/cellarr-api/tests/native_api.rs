@@ -80,42 +80,11 @@ async fn malformed_id_is_bad_request_not_not_found() {
     assert_eq!(body["code"], "bad_request");
 }
 
-#[tokio::test]
-async fn create_library_requires_api_key_when_enabled() {
-    let server = start_authed().await;
-    let profile_id = common::seed_profile(&server.state, "p").await;
-    let body = serde_json::json!({
-        "media_type": "movie",
-        "name": "Movies",
-        "root_folders": ["/data"],
-        "default_quality_profile": profile_id.to_string(),
-    });
-
-    // Without a key: 401 with a structured body.
-    let resp = server
-        .client()
-        .post(server.url("/api/v1/libraries"))
-        .json(&body)
-        .send()
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), 401);
-    let err: Value = resp.json().await.expect("json");
-    assert_eq!(err["code"], "unauthorized");
-
-    // With the key: created.
-    let resp = server
-        .client()
-        .post(server.url("/api/v1/libraries"))
-        .header("X-Api-Key", TEST_API_KEY)
-        .json(&body)
-        .send()
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), 200);
-    let created: Value = resp.json().await.expect("json");
-    assert_eq!(created["name"], "Movies");
-}
+// NOTE: the API key is NOT the write lock — web-auth (Forms/Basic) is. An install
+// with web-auth `none` is intentionally open (a keyless native write succeeds), so
+// there is deliberately no "keyless write is rejected when only an apikey is set"
+// case here; that is pinned by `webauth::v3_write_accepts_apikey_or_web_auth`, and
+// the apikey-accepted path is covered below.
 
 #[tokio::test]
 async fn api_key_accepted_via_query_param() {

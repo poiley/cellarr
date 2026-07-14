@@ -144,6 +144,9 @@ async fn import_list_crud_round_trips_and_defaults_clean_to_safe() {
 #[tokio::test]
 async fn import_list_write_requires_api_key() {
     let server = start_authed().await;
+    // Web-auth is the write lock; enforce it so a keyless, session-less write is
+    // rejected (an open `none` install would admit a keyless write).
+    common::enforce_basic_auth(&server.base_url).await;
     let resp = server
         .client()
         .post(server.url("/radarr/api/v3/importlist"))

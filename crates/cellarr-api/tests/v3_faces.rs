@@ -112,10 +112,10 @@ async fn version_header_present_per_face() {
     }
 }
 
-// --- both auth modes --------------------------------------------------------
+// --- apikey accepted via header + query -------------------------------------
 
 #[tokio::test]
-async fn both_auth_modes_accepted_when_key_set() {
+async fn apikey_accepted_via_header_and_query_on_v3() {
     let server = start_authed().await;
     seed_library(&server.state, cellarr_core::MediaType::Movie, "Movies").await;
 
@@ -140,15 +140,10 @@ async fn both_auth_modes_accepted_when_key_set() {
         .expect("request");
     assert_eq!(r2.status(), 200, "?apikey= should authorize");
 
-    // No key → 401.
-    let r3 = server
-        .client()
-        .post(server.url("/api/v3/tag"))
-        .json(&serde_json::json!({ "label": "nope" }))
-        .send()
-        .await
-        .expect("request");
-    assert_eq!(r3.status(), 401);
+    // NB: the "keyless write is rejected" case belongs to an ENFORCED (web-auth
+    // Forms/Basic) install — under the default `none` method the install is open
+    // and a keyless write succeeds. That per-method matrix is pinned by
+    // `webauth::v3_write_accepts_apikey_or_web_auth`, not asserted here.
 }
 
 // --- system/status full field set vs fixtures ------------------------------

@@ -485,7 +485,10 @@ async fn manual_import_degrades_when_no_pipeline_is_wired() {
 }
 
 #[tokio::test]
-async fn manual_import_scan_requires_a_folder() {
+async fn manual_import_scan_without_a_folder_scans_roots_and_never_errors() {
+    // `folder` is optional: omitting it scans the library roots for untracked
+    // in-place files (orphans) instead of erroring. With no pipeline seam wired
+    // (offline/test) it degrades to an empty array — never a 400/500.
     let server = start_open().await;
     let resp = server
         .client()
@@ -493,5 +496,7 @@ async fn manual_import_scan_requires_a_folder() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400, "a folder query parameter is required");
+    assert_eq!(resp.status(), 200, "no folder is not an error");
+    let rows: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(rows, serde_json::json!([]), "degrades to an empty list");
 }
