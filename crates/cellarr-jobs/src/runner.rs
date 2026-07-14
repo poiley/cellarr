@@ -2793,12 +2793,19 @@ where
         let mut requests = Vec::new();
         let mut unmatched = 0;
         let mut unmatched_paths = Vec::new();
+        // Sizes of candidates that matched a node, so a match that then fails to
+        // import can be recorded too (below).
+        let mut suggested_sizes: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         for candidate in &candidates {
             match &candidate.suggested {
-                Some(suggestion) => requests.push(ManualImportRequest {
-                    path: candidate.path.clone(),
-                    content_id: suggestion.content_id,
-                }),
+                Some(suggestion) => {
+                    requests.push(ManualImportRequest {
+                        path: candidate.path.clone(),
+                        content_id: suggestion.content_id,
+                    });
+                    suggested_sizes.insert(candidate.path.clone(), candidate.size);
+                }
                 None => {
                     unmatched += 1;
                     unmatched_paths.push((candidate.path.clone(), candidate.size));
@@ -2806,6 +2813,20 @@ where
             }
         }
         let (imported, errors) = self.import_manual(&requests).await?;
+        // A file that matched a node but could NOT be imported (most often a
+        // duplicate whose destination is already occupied by a tracked file) is
+        // effectively unplaceable and will fail identically every run. Record these
+        // too so subsequent rescans skip them rather than re-attempting the whole
+        // import each pass. The manual-import screen still surfaces them (it does
+        // not consult this table), so a file skipped in error is recoverable.
+        let imported_paths: std::collections::HashSet<&str> =
+            imported.iter().map(|r| r.source_path.as_str()).collect();
+        for req in &requests {
+            if !imported_paths.contains(req.path.as_str()) {
+                let size = suggested_sizes.get(&req.path).copied().unwrap_or(0);
+                unmatched_paths.push((req.path.clone(), size));
+            }
+        }
         Ok(RescanReport {
             adopted: imported.len(),
             unmatched,
