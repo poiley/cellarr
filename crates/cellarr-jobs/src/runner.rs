@@ -3284,6 +3284,20 @@ async fn apply_post_commit(
             cellarr_fs::ExtraOutcome::Imported { destination, .. } => {
                 extra_dests.push(destination);
             }
+            // The extra was already in place (re-import / adopt-in-place / upgrade).
+            // Benign and expected — never clobbered — so it is not a failure. Debug
+            // only; the file was placed (and permissioned) by the import that first
+            // put it there, so it is not re-permissioned here.
+            cellarr_fs::ExtraOutcome::Skipped {
+                destination,
+                identical,
+            } => {
+                tracing::debug!(
+                    destination = %destination.display(),
+                    identical,
+                    "extra file already present; left in place"
+                );
+            }
             cellarr_fs::ExtraOutcome::Failed { source, reason } => {
                 tracing::warn!(
                     source = %source.display(),
