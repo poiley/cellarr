@@ -172,6 +172,9 @@ async fn list_episodes_returns_the_series_episode_set() {
                 runtime: None,
                 air_date: Some("2020-04-01".into()),
                 digital_date: None,
+                genres: Vec::new(),
+                rating: None,
+                rating_votes: None,
             },
         )
         .await
