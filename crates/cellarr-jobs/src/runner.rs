@@ -341,6 +341,47 @@ pub struct RescanReport {
     pub unmatched_paths: Vec<(String, u64)>,
 }
 
+/// Why an [`import`](PipelineRunner::import) attempt did not place its files.
+///
+/// Carries the human-readable `detail` (logged, shown as a hold reason) plus a
+/// `redundant` flag: the destination was already occupied by a file the plan did
+/// not mark as a replacement. That distinguishes a *duplicate* download — the
+/// content is already satisfied on disk, so re-downloading it will fail this way
+/// forever — from a transient fault worth retrying, and (crucially) from a
+/// legitimate quality upgrade, which the planner marks as a replacement and so
+/// never trips this. The reconcile sweep uses the flag to discard a redundant
+/// download instead of retrying its import every cycle.
+#[derive(Debug, Clone)]
+pub struct ImportFailure {
+    /// Human-readable failure detail.
+    pub detail: String,
+    /// The destination already held an unexpected (non-replacement) file.
+    pub redundant: bool,
+    /// For a `redundant` failure, the already-occupied destination path — the
+    /// correctly-named file for this content that is on disk but not yet linked to
+    /// its node. The reconcile sweep adopts this file onto the node to satisfy it.
+    pub dest: Option<String>,
+}
+
+impl std::fmt::Display for ImportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+/// Any error string becomes a non-redundant failure, so the existing
+/// `?`-propagated `format!(...)` error sites inside `import` keep working
+/// unchanged (only the destination-collision site sets `redundant`).
+impl From<String> for ImportFailure {
+    fn from(detail: String) -> Self {
+        Self {
+            detail,
+            redundant: false,
+            dest: None,
+        }
+    }
+}
+
 /// Everything the runner needs that is *not* a live integration seam: the
 /// decision inputs and the on-disk naming/target configuration.
 ///
@@ -1784,11 +1825,15 @@ where
                     destinations,
                 }))
             }
-            Err(detail) => {
+            Err(failure) => {
                 // import-failed -> hold for review (never silently drop, never
                 // force-fit a destructive write). A held import is NOT a grab-next
                 // trigger: the bytes are on disk and need a human, not another
-                // grab.
+                // grab. (A redundant collision is rare on the inline path — the grab
+                // was just made because the content was missing — so it holds like
+                // any other failure; the reconcile sweep is where redundant
+                // duplicates are recognized and discarded.)
+                let detail = failure.detail;
                 self.log(
                     run_id,
                     Stage::Import,
@@ -1947,18 +1992,16 @@ where
         matched_ref: &ContentRef,
         title_parsed: &ParsedRelease,
         content_path: &str,
-    ) -> std::result::Result<Vec<String>, String> {
+    ) -> std::result::Result<Vec<String>, ImportFailure> {
         let src = std::path::Path::new(content_path);
         if !src.exists() {
-            return Err(format!(
-                "download content path does not exist: {content_path}"
-            ));
+            return Err(format!("download content path does not exist: {content_path}").into());
         }
         // Collect the source file(s). A single-file download is the file itself;
         // a directory is walked for its media files.
         let sources = collect_sources(src).map_err(|e| format!("scan source: {e}"))?;
         if sources.is_empty() {
-            return Err(format!("no importable files under {content_path}"));
+            return Err(format!("no importable files under {content_path}").into());
         }
 
         // The second parse: re-parse the actual file name and verify it does not
@@ -2023,9 +2066,23 @@ where
         let plan = cellarr_fs::plan_import(grab_id, moves)
             .await
             .map_err(|e| format!("plan import: {e}"))?;
-        let result = cellarr_fs::execute_import(&plan)
-            .await
-            .map_err(|e| format!("execute import: {e}"))?;
+        let result = cellarr_fs::execute_import(&plan).await.map_err(|e| {
+            // A collision with a file the plan did not mark as a replacement means
+            // the correctly-named file for this content is already on disk — flag it
+            // (and carry the occupied path) so the reconcile sweep can adopt that
+            // file onto the node instead of retrying a doomed re-download forever.
+            let dest = match &e {
+                cellarr_fs::FsError::UnexpectedDestination { path } => {
+                    Some(path.to_string_lossy().into_owned())
+                }
+                _ => None,
+            };
+            ImportFailure {
+                detail: format!("execute import: {e}"),
+                redundant: dest.is_some(),
+                dest,
+            }
+        })?;
         let destinations: Vec<String> = result
             .moves
             .into_iter()
@@ -2079,7 +2136,7 @@ where
         &self,
         grab: &Grab,
         content_path: &str,
-    ) -> std::result::Result<Vec<String>, String> {
+    ) -> std::result::Result<Vec<String>, ImportFailure> {
         // Re-parse the release title for quality/naming, as the inline Import stage
         // does. But the grab's content_ref is the CONFIRMED target the pipeline
         // already identified — and, for anime, remapped from the absolute number to

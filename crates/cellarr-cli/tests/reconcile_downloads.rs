@@ -446,6 +446,82 @@ async fn reconcile_imports_redundant_grab_when_content_already_satisfied() {
     );
 }
 
+/// A duplicate download whose correctly-named file is ALREADY on disk — but not
+/// linked to its node (an earlier import whose media_file row was lost) — must not
+/// loop forever failing the import with "destination already exists". The
+/// reconcile adopts the existing file onto the node (no byte moved) to satisfy it,
+/// marks the grab Imported, and drops the duplicate — never blocklisting.
+#[tokio::test]
+async fn reconcile_adopts_existing_file_when_duplicate_download_collides() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+
+    let node = seed_movie(&db).await;
+
+    // Let a completed download import normally so the destination file lands at the
+    // exact scheme path — then drop only its media_file row (the file stays on
+    // disk) to reproduce the lost-link state a duplicate would collide with.
+    let dl1 = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&dl1, b"library copy").unwrap();
+    let grab1 = seed_grab(&db, &node, "completed-dl").await;
+    let h1 = handler(
+        &db,
+        &node,
+        dl1.to_string_lossy().into_owned(),
+        library_root.clone(),
+    );
+    let _ = h1.handle(&JobKind::ReconcileDownloads).await;
+    assert_eq!(status_of(&db, grab1).await, GrabStatus::Imported);
+    let dest = find_one_file(&library_root).expect("imported file under the library root");
+    let dest_str = dest.to_string_lossy().into_owned();
+    db.media_files().delete_by_path(&dest_str).await.unwrap();
+    assert!(
+        db.media_files()
+            .list_for_content(node.id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the node is now unlinked while its file remains on disk"
+    );
+
+    // A NEW duplicate download of the same movie completes; its import collides
+    // with the on-disk file. The reconcile must adopt it, not loop.
+    let dl2 = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-OTHER.mkv");
+    std::fs::write(&dl2, b"duplicate download copy").unwrap();
+    let grab2 = seed_grab(&db, &node, "completed-dl").await;
+    let h2 = handler(
+        &db,
+        &node,
+        dl2.to_string_lossy().into_owned(),
+        library_root.clone(),
+    );
+    let _ = h2.handle(&JobKind::ReconcileDownloads).await;
+
+    assert_eq!(
+        status_of(&db, grab2).await,
+        GrabStatus::Imported,
+        "the duplicate grab is finalized by adopting the existing file"
+    );
+    let files = db.media_files().list_for_content(node.id).await.unwrap();
+    assert_eq!(files.len(), 1, "the existing file is re-linked to the node");
+    assert_eq!(files[0].path, dest_str, "adopted the on-disk file, in place");
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        b"library copy",
+        "adopt-in-place kept the original file; the duplicate bytes never overwrote it"
+    );
+    assert!(
+        db.blocklist().list().await.unwrap().is_empty(),
+        "adopting a duplicate never blocklists the release"
+    );
+}
+
 /// A hard-failed download is dead: blocklist it (so the release is not
 /// re-grabbed) and mark the grab Blocklisted.
 #[tokio::test]
