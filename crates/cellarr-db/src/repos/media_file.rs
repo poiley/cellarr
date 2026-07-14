@@ -6,11 +6,11 @@
 //! lives in the `content_file` table; [`MediaFileRepo::link`] writes that edge and
 //! [`MediaFileRepository::list_for_content`] resolves through it.
 
+use crate::dialect::{pq, DbPool};
 use async_trait::async_trait;
 use cellarr_core::profile::Quality;
 use cellarr_core::repo::MediaFileRepository;
 use cellarr_core::{ContentId, MediaFile, MediaFileId};
-use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 
 use crate::convert::parse_uuid;
@@ -52,11 +52,9 @@ impl MediaFileRepo {
             .submit(move |conn| {
                 Box::pin(async move {
                     for (path, size) in entries {
-                        sqlx::query(&pq(
-                            "INSERT INTO unmatched_scan (path, size, first_seen)
+                        sqlx::query(&pq("INSERT INTO unmatched_scan (path, size, first_seen)
                              VALUES (?1, ?2, ?3)
-                             ON CONFLICT(path) DO NOTHING",
-                        ))
+                             ON CONFLICT(path) DO NOTHING"))
                         .bind(path)
                         .bind(i64::try_from(size).unwrap_or(i64::MAX))
                         .bind(&now)
@@ -96,28 +94,30 @@ impl MediaFileRepo {
         root: String,
         dirs: std::collections::HashMap<String, i64>,
     ) -> Result<()> {
-        // Match `root` itself and everything beneath it. Escape LIKE wildcards in
-        // the prefix so a stray `%`/`_` in a path can't widen the delete.
-        let like_prefix = format!(
-            "{}/%",
-            root.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
-        );
+        // Delete `root` itself plus everything beneath it, as an index RANGE on the
+        // PRIMARY KEY rather than a `LIKE`/`OR` (which the planner can't serve from
+        // the btree — a full scan that measured ~2s over a few thousand rows). Every
+        // descendant path starts with `root/`; that prefix's rows are exactly the
+        // half-open range `[root + "/", root + "0")` because '0' is the byte after
+        // '/'. A sibling like `root-old` is NOT in that range (it sorts below
+        // `root/`), so the scope stays exact. Both `=` and the range are btree seeks.
+        let under = format!("{root}/");
+        let upper = format!("{root}0");
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
                     sqlx::query(&pq(
-                        "DELETE FROM scan_dir WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+                        "DELETE FROM scan_dir WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
                     ))
                     .bind(&root)
-                    .bind(&like_prefix)
+                    .bind(&under)
+                    .bind(&upper)
                     .execute(&mut *conn)
                     .await?;
                     for (path, mtime) in dirs {
-                        sqlx::query(&pq(
-                            "INSERT INTO scan_dir (path, mtime)
+                        sqlx::query(&pq("INSERT INTO scan_dir (path, mtime)
                              VALUES (?1, ?2)
-                             ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime",
-                        ))
+                             ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime"))
                         .bind(path)
                         .bind(mtime)
                         .execute(&mut *conn)
@@ -140,11 +140,9 @@ impl MediaFileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(&pq(
-                        "INSERT INTO content_file (content_id, media_file_id)
+                    sqlx::query(&pq("INSERT INTO content_file (content_id, media_file_id)
                          VALUES (?1, ?2)
-                         ON CONFLICT(content_id, media_file_id) DO NOTHING"),
-                    )
+                         ON CONFLICT(content_id, media_file_id) DO NOTHING"))
                     .bind(content)
                     .bind(file)
                     .execute(&mut *conn)
@@ -167,8 +165,8 @@ impl MediaFileRepo {
         let rows = sqlx::query(&pq(
             "SELECT cf.content_id AS content_id, m.id, m.path, m.size, m.languages,
                     m.quality, m.media_info, m.custom_format_score, m.release_type
-             FROM content_file cf JOIN media_file m ON m.id = cf.media_file_id"),
-        )
+             FROM content_file cf JOIN media_file m ON m.id = cf.media_file_id",
+        ))
         .fetch_all(&self.pool)
         .await?;
         let mut map: std::collections::HashMap<ContentId, Vec<cellarr_core::MediaFile>> =
@@ -191,10 +189,12 @@ impl MediaFileRepo {
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
     pub async fn content_ids_for_file(&self, file: MediaFileId) -> Result<Vec<ContentId>> {
-        let rows = sqlx::query(&pq("SELECT content_id FROM content_file WHERE media_file_id = ?1"))
-            .bind(file.to_string())
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&pq(
+            "SELECT content_id FROM content_file WHERE media_file_id = ?1",
+        ))
+        .bind(file.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|row| {
                 let id: String = row.try_get("content_id")?;
@@ -258,12 +258,10 @@ impl MediaFileRepository for MediaFileRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(&pq(
-                        "INSERT INTO media_file
+                    sqlx::query(&pq("INSERT INTO media_file
                             (id, path, size, languages, quality, quality_rank,
                              media_info, custom_format_score, release_type)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
-                    )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"))
                     .bind(id)
                     .bind(path)
                     .bind(size)
@@ -285,8 +283,8 @@ impl MediaFileRepository for MediaFileRepo {
         let row = sqlx::query(&pq(
             "SELECT id, path, size, languages, quality, media_info, custom_format_score,
                     release_type
-             FROM media_file WHERE id = ?1"),
-        )
+             FROM media_file WHERE id = ?1",
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -297,8 +295,8 @@ impl MediaFileRepository for MediaFileRepo {
         let row = sqlx::query(&pq(
             "SELECT id, path, size, languages, quality, media_info, custom_format_score,
                     release_type
-             FROM media_file WHERE path = ?1"),
-        )
+             FROM media_file WHERE path = ?1",
+        ))
         .bind(path)
         .fetch_optional(&self.pool)
         .await?;
@@ -321,8 +319,8 @@ impl MediaFileRepository for MediaFileRepo {
              FROM media_file m
              JOIN content_file cf ON cf.media_file_id = m.id
              WHERE cf.content_id = ?1
-             ORDER BY m.path ASC"),
-        )
+             ORDER BY m.path ASC",
+        ))
         .bind(content.to_string())
         .fetch_all(&self.pool)
         .await?;
