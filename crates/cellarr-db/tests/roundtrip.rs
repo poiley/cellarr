@@ -2211,3 +2211,53 @@ async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
         "the other root's directories are untouched by a scoped replace"
     );
 }
+
+#[tokio::test]
+async fn download_progress_round_trips_and_clears() {
+    let (_dir, db) = temp_db().await;
+    let grabs = db.grabs();
+
+    let request = GrabRequest {
+        content_ref: ContentRef {
+            id: ContentId::new(),
+            library_id: LibraryId::new(),
+            media_type: MediaType::Movie,
+            coords: Coordinates::Movie,
+        },
+        release: Release {
+            indexer_id: IndexerId::new(),
+            title: "Some.Movie.2024.1080p.BluRay.x264-GROUP".to_string(),
+            download_url: "magnet:?xt=urn:btih:prog".to_string(),
+            guid: Some("guid-prog".to_string()),
+            protocol: Protocol::Torrent,
+            size: Some(8_000_000_000),
+            seeders: Some(20),
+            indexer_flags: vec![],
+        },
+        indexer_id: IndexerId::new(),
+        client_id: DownloadClientId::new(),
+        category: "cellarr".to_string(),
+        release_type: Some(cellarr_core::ReleaseType::Movie),
+    };
+    let grab = grabs.create(&request).await.unwrap();
+
+    // No row initially.
+    assert!(grabs.download_progress(grab).await.unwrap().is_none());
+
+    // Record, then read back the progress; updated_at is recent.
+    grabs.record_download_progress(grab, 0.25).await.unwrap();
+    let (p1, t1) = grabs.download_progress(grab).await.unwrap().unwrap();
+    assert!((p1 - 0.25).abs() < 1e-9, "progress round-trips: {p1}");
+    let age = time::OffsetDateTime::now_utc() - t1;
+    assert!(age >= time::Duration::ZERO && age < time::Duration::minutes(5));
+
+    // Re-recording upserts the high-water mark.
+    grabs.record_download_progress(grab, 0.6).await.unwrap();
+    let (p2, _) = grabs.download_progress(grab).await.unwrap().unwrap();
+    assert!((p2 - 0.6).abs() < 1e-9, "progress upserts: {p2}");
+
+    // Clearing removes the row (idempotently).
+    grabs.clear_download_progress(grab).await.unwrap();
+    assert!(grabs.download_progress(grab).await.unwrap().is_none());
+    grabs.clear_download_progress(grab).await.unwrap(); // no-op on missing
+}

@@ -1,9 +1,9 @@
 //! The `grab` repository.
 
+use crate::dialect::{pq, DbPool};
 use async_trait::async_trait;
 use cellarr_core::repo::GrabRepository;
 use cellarr_core::{ContentRef, Grab, GrabId, GrabRequest, GrabStatus, Release, ReleaseType};
-use crate::dialect::{pq, DbPool};
 use sqlx::Row;
 use time::OffsetDateTime;
 
@@ -58,6 +58,68 @@ impl GrabRepo {
     pub(crate) fn new(pool: DbPool, writer: WriterHandle) -> Self {
         Self { pool, writer }
     }
+
+    /// The last recorded high-water download progress for `grab` and when it last
+    /// advanced: `(progress, updated_at)`. `None` if the grab has not been observed
+    /// downloading yet. The reconcile sweep uses this to detect a stalled download.
+    pub async fn download_progress(&self, grab: GrabId) -> Result<Option<(f64, OffsetDateTime)>> {
+        let row = sqlx::query(&pq(
+            "SELECT progress, updated_at FROM download_progress WHERE grab_id = ?1",
+        ))
+        .bind(grab.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(r) => {
+                let progress: f64 = r.try_get("progress")?;
+                let updated_at: String = r.try_get("updated_at")?;
+                Ok(Some((progress, parse_time("updated_at", &updated_at)?)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Record `grab`'s current download progress as the new high-water mark,
+    /// stamping `updated_at` to now. Called when a download first appears or when
+    /// its progress ADVANCES, so `updated_at` marks the last forward movement.
+    pub async fn record_download_progress(&self, grab: GrabId, progress: f64) -> Result<()> {
+        let now = format_time(OffsetDateTime::now_utc())?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(
+                        "INSERT INTO download_progress (grab_id, progress, updated_at)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(grab_id) DO UPDATE
+                             SET progress = excluded.progress, updated_at = excluded.updated_at",
+                    ))
+                    .bind(grab.to_string())
+                    .bind(progress)
+                    .bind(&now)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// Drop `grab`'s progress row once it reaches a terminal state (imported,
+    /// blocklisted, failed), so the tracking table does not accumulate dead rows.
+    /// Idempotent — a missing row is a no-op.
+    pub async fn clear_download_progress(&self, grab: GrabId) -> Result<()> {
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq("DELETE FROM download_progress WHERE grab_id = ?1"))
+                        .bind(grab.to_string())
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
 }
 
 #[async_trait]
@@ -81,12 +143,10 @@ impl GrabRepository for GrabRepo {
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
-                    sqlx::query(&pq(
-                        "INSERT INTO grab
+                    sqlx::query(&pq("INSERT INTO grab
                             (id, content_ref, release, indexer_id, client_id, category,
                              download_id, status, created_at, release_type)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)"),
-                    )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)"))
                     .bind(id_str)
                     .bind(content_ref)
                     .bind(release)
@@ -109,8 +169,8 @@ impl GrabRepository for GrabRepo {
         let row = sqlx::query(&pq(
             "SELECT content_ref, release, indexer_id, client_id, category, download_id, status,
                     release_type, created_at
-             FROM grab WHERE id = ?1"),
-        )
+             FROM grab WHERE id = ?1",
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -157,8 +217,8 @@ impl GrabRepository for GrabRepo {
         let rows = sqlx::query(&pq(
             "SELECT id, content_ref, release, indexer_id, client_id, category, download_id, status,
                     release_type, created_at
-             FROM grab ORDER BY created_at DESC"),
-        )
+             FROM grab ORDER BY created_at DESC",
+        ))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());

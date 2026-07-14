@@ -637,6 +637,95 @@ async fn reconcile_blocklists_old_peerless_stalled_download() {
     assert_eq!(db.blocklist().list().await.unwrap().len(), 1);
 }
 
+/// Backdate a grab's recorded download-progress `updated_at` (its last-advance
+/// time) via a second handle to the same SQLite file, so a test can simulate a
+/// download that has made no progress for a while without waiting.
+async fn backdate_progress(db_path: &std::path::Path, grab: cellarr_core::GrabId, hours_ago: i64) {
+    let old = (time::OffsetDateTime::now_utc() - time::Duration::hours(hours_ago))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE download_progress SET updated_at = ?1 WHERE grab_id = ?2")
+        .bind(&old)
+        .bind(grab.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+/// A download that has made NO progress for longer than the stall window is
+/// cleaned as dead — even though it reports peers (so the coarse zero-peer/24h rule
+/// would never touch it). This is the cap-hogging case the fast drain targets.
+#[tokio::test]
+async fn reconcile_blocklists_a_download_that_made_no_progress() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+    let node = seed_movie(&db).await;
+    // "healthy-dl": Downloading, progress 0.5, peers 10 (never a zero-peer stall).
+    let grab = seed_grab(&db, &node, "healthy-dl").await;
+
+    let h = handler(&db, &node, String::new(), tmp.path().to_path_buf());
+    // First reconcile: records the high-water progress (0.5); nothing is cleaned.
+    let _ = h.handle(&JobKind::ReconcileDownloads).await;
+    assert_eq!(
+        status_of(&db, grab).await,
+        GrabStatus::Sent,
+        "a freshly-tracked download is never condemned on first sighting"
+    );
+
+    // Age the last-advance time past the stall window; progress is still 0.5.
+    backdate_progress(&db_path, grab, 4).await; // 4h > NO_PROGRESS_STALL (3h)
+    let _ = h.handle(&JobKind::ReconcileDownloads).await;
+    assert_eq!(
+        status_of(&db, grab).await,
+        GrabStatus::Blocklisted,
+        "a download stuck at the same progress past the stall window is cleaned"
+    );
+    assert_eq!(db.blocklist().list().await.unwrap().len(), 1);
+}
+
+/// A download whose progress ADVANCES is left alone: the stall timer resets to the
+/// new high-water mark, so a slow-but-live transfer is never killed.
+#[tokio::test]
+async fn reconcile_leaves_a_download_that_is_still_progressing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("cellarr.sqlite");
+    let db = Database::open(db_path.to_str().unwrap()).await.unwrap();
+    let node = seed_movie(&db).await;
+    let grab = seed_grab(&db, &node, "healthy-dl").await; // reports progress 0.5
+
+    // Seed a LOWER high-water mark, aged past the window: the client now reports a
+    // higher progress (0.5), so the download HAS advanced and must be left.
+    db.grabs()
+        .record_download_progress(grab, 0.3)
+        .await
+        .unwrap();
+    backdate_progress(&db_path, grab, 4).await;
+
+    let h = handler(&db, &node, String::new(), tmp.path().to_path_buf());
+    let _ = h.handle(&JobKind::ReconcileDownloads).await;
+
+    assert_eq!(
+        status_of(&db, grab).await,
+        GrabStatus::Sent,
+        "a download that advanced its progress is not cleaned, even aged"
+    );
+    assert!(
+        db.blocklist().list().await.unwrap().is_empty(),
+        "a progressing download is never blocklisted"
+    );
+    // The high-water mark was bumped to the new progress.
+    let (progress, _) = db.grabs().download_progress(grab).await.unwrap().unwrap();
+    assert!(
+        progress >= 0.5,
+        "the high-water progress advanced to 0.5: {progress}"
+    );
+}
+
 /// A grabbable movie release that the movie registry identifies to the seeded node.
 fn matrix_release() -> Release {
     Release {
