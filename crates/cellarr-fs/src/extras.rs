@@ -32,7 +32,22 @@ pub enum ExtraOutcome {
         /// Whether it was hardlinked (vs. copied).
         hardlinked: bool,
     },
-    /// Importing this extra failed; the media import is unaffected. Logged.
+    /// The extra was **not** placed because its destination already exists, and we
+    /// never clobber (subtitles are best-effort; the media path's no-clobber safety
+    /// applies here too). This is the benign, expected case on a re-import, an
+    /// adopt-in-place (the source directory *is* the library directory), or a
+    /// quality upgrade — not a failure.
+    Skipped {
+        /// The destination that was left untouched.
+        destination: PathBuf,
+        /// Whether the existing destination is already the very same file as the
+        /// source (identical bytes / a shared inode) versus a different file that
+        /// happens to occupy the target name. Both are left in place; this only
+        /// distinguishes the log detail.
+        identical: bool,
+    },
+    /// Importing this extra failed for a real reason (a filesystem error creating
+    /// the directory or copying); the media import is unaffected. Logged at warn.
     Failed {
         /// The source extra that could not be placed.
         source: PathBuf,
@@ -70,6 +85,21 @@ pub async fn import_extras(
 
     let mut outcomes = Vec::with_capacity(plan.len());
     for (source, destination) in plan {
+        // Idempotent + safe: if the extra is already at its destination, never
+        // clobber it — report Skipped, not Failed. This is the common, benign case
+        // on a re-import, an adopt-in-place (the plan's source *is* the library
+        // file, so its sibling subtitle is already correctly named beside it), and
+        // a quality upgrade. Distinguish "already the same file" from "a different
+        // file occupies the name" only for the log; both are left in place, matching
+        // the media path's no-clobber guarantee.
+        if destination.exists() {
+            let identical = files_are_identical(&source, &destination);
+            outcomes.push(ExtraOutcome::Skipped {
+                destination,
+                identical,
+            });
+            continue;
+        }
         // The media destination directory already exists (the media landed there),
         // but a defensive create keeps this independent of placement order.
         if let Some(parent) = destination.parent() {
@@ -97,6 +127,37 @@ pub async fn import_extras(
         }
     }
     outcomes
+}
+
+/// Whether `a` and `b` are the same file or hold identical content — used only to
+/// label a [`ExtraOutcome::Skipped`] (both are left untouched regardless).
+///
+/// Cheap and best-effort: the same path or a shared inode is decisive without
+/// reading bytes; otherwise, equal-length files are compared by content (extras
+/// are small — subtitles, `.nfo`). Any stat/read error is treated as "not
+/// identical" (the conservative label), never propagated.
+fn files_are_identical(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            // A shared inode on one device is literally one file (a prior hardlink
+            // import); differing sizes cannot be identical.
+            if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
+                return true;
+            }
+            if ma.len() != mb.len() {
+                return false;
+            }
+        }
+    }
+    match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// Compute the (source → destination) pairs for the extras belonging to
@@ -297,6 +358,97 @@ mod tests {
         // The renamed subtitle exists on disk with the right content.
         let placed = dest.parent().unwrap().join("Movie (2021).en.srt");
         assert_eq!(std::fs::read(placed).unwrap(), b"subs");
+    }
+
+    #[tokio::test]
+    async fn already_present_identical_extra_is_skipped_not_failed() {
+        // A re-import where the subtitle is already correctly placed at its
+        // destination (same content) must be a benign Skip, never a Failed — this
+        // is the noise the reconcile adopt path surfaced.
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("download");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("Movie.2021.1080p.mkv");
+        std::fs::write(&src, b"media").unwrap();
+        std::fs::write(src_dir.join("Movie.2021.1080p.en.srt"), b"subs").unwrap();
+
+        let dest_dir = dir.path().join("library/Movie (2021)");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("Movie (2021).mkv");
+        std::fs::write(&dest, b"media").unwrap();
+        // The subtitle already sits at its destination with identical content.
+        let placed = dest_dir.join("Movie (2021).en.srt");
+        std::fs::write(&placed, b"subs").unwrap();
+
+        let out = import_extras(&src, &dest, &policy()).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(
+            out[0],
+            ExtraOutcome::Skipped {
+                destination: placed.clone(),
+                identical: true,
+            },
+            "an already-present identical subtitle is skipped, not failed"
+        );
+        // Untouched.
+        assert_eq!(std::fs::read(&placed).unwrap(), b"subs");
+    }
+
+    #[tokio::test]
+    async fn adopt_in_place_skips_its_own_sibling_subtitle() {
+        // Adopt-in-place: the media source IS the library file, so its sibling
+        // subtitle is already correctly named beside it. Importing must not try to
+        // place the subtitle onto itself and report a failure — it is skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("library/Show/Season 01");
+        std::fs::create_dir_all(&lib).unwrap();
+        let media = lib.join("Show - S01E01.mkv");
+        std::fs::write(&media, b"media").unwrap();
+        let sub = lib.join("Show - S01E01.en.srt");
+        std::fs::write(&sub, b"subs").unwrap();
+
+        // source == destination (adopt-in-place).
+        let out = import_extras(&media, &media, &policy()).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            matches!(&out[0], ExtraOutcome::Skipped { destination, identical: true } if *destination == sub),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&sub).unwrap(), b"subs", "left in place");
+    }
+
+    #[tokio::test]
+    async fn a_different_file_at_the_destination_is_never_clobbered() {
+        // Safety: if a *different* file already occupies the subtitle's target name,
+        // it is left in place (not overwritten) and reported as a non-identical Skip.
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("download");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("Movie.2021.1080p.mkv");
+        std::fs::write(&src, b"media").unwrap();
+        std::fs::write(src_dir.join("Movie.2021.1080p.en.srt"), b"new subtitle").unwrap();
+
+        let dest_dir = dir.path().join("library/Movie (2021)");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("Movie (2021).mkv");
+        std::fs::write(&dest, b"media").unwrap();
+        let placed = dest_dir.join("Movie (2021).en.srt");
+        std::fs::write(&placed, b"a pre-existing, different subtitle").unwrap();
+
+        let out = import_extras(&src, &dest, &policy()).await;
+        assert_eq!(
+            out[0],
+            ExtraOutcome::Skipped {
+                destination: placed.clone(),
+                identical: false,
+            },
+            "{out:?}"
+        );
+        assert_eq!(
+            std::fs::read(&placed).unwrap(),
+            b"a pre-existing, different subtitle",
+            "the existing file must never be clobbered"
+        );
     }
 
     #[tokio::test]
