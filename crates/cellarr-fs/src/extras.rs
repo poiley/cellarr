@@ -66,10 +66,17 @@ pub enum ExtraOutcome {
 ///
 /// Never returns an error: the media import already succeeded, so any per-extra
 /// failure is folded into [`ExtraOutcome::Failed`] for the caller to log.
+/// `replace` selects the collision policy when the destination already exists:
+/// - `false` (a fresh import / adopt): never clobber — the existing extra is left
+///   in place ([`ExtraOutcome::Skipped`]).
+/// - `true` (a quality upgrade, where the media itself is being replaced): the new
+///   release's extra atomically supersedes the old one, mirroring the media. An
+///   already-identical file is still skipped (nothing to do).
 pub async fn import_extras(
     media_source: impl AsRef<Path>,
     media_destination: impl AsRef<Path>,
     policy: &ExtraFileImport,
+    replace: bool,
 ) -> Vec<ExtraOutcome> {
     if !policy.enabled {
         return Vec::new();
@@ -94,6 +101,26 @@ pub async fn import_extras(
         // the media path's no-clobber guarantee.
         if destination.exists() {
             let identical = files_are_identical(&source, &destination);
+            // On an upgrade we replace the old extra with the new release's — unless
+            // it is already the same file (nothing to do). Otherwise (fresh import /
+            // adopt, or an identical file) never clobber: leave it in place.
+            if replace && !identical {
+                match fsops::replace_durable(&source, &destination).await {
+                    Ok(LinkOutcome::Hardlinked) => outcomes.push(ExtraOutcome::Imported {
+                        destination,
+                        hardlinked: true,
+                    }),
+                    Ok(LinkOutcome::Copied) => outcomes.push(ExtraOutcome::Imported {
+                        destination,
+                        hardlinked: false,
+                    }),
+                    Err(e) => outcomes.push(ExtraOutcome::Failed {
+                        source,
+                        reason: e.to_string(),
+                    }),
+                }
+                continue;
+            }
             outcomes.push(ExtraOutcome::Skipped {
                 destination,
                 identical,
@@ -315,7 +342,13 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let out = import_extras(&src, dir.path().join("dest/Movie (2021).mkv"), &disabled).await;
+        let out = import_extras(
+            &src,
+            dir.path().join("dest/Movie (2021).mkv"),
+            &disabled,
+            false,
+        )
+        .await;
         assert!(out.is_empty());
     }
 
@@ -335,7 +368,7 @@ mod tests {
         std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
         std::fs::write(&dest, b"media").unwrap();
 
-        let out = import_extras(&src, &dest, &policy()).await;
+        let out = import_extras(&src, &dest, &policy(), false).await;
         assert_eq!(out.len(), 2, "{out:?}");
         let dests: Vec<_> = out
             .iter()
@@ -380,7 +413,7 @@ mod tests {
         let placed = dest_dir.join("Movie (2021).en.srt");
         std::fs::write(&placed, b"subs").unwrap();
 
-        let out = import_extras(&src, &dest, &policy()).await;
+        let out = import_extras(&src, &dest, &policy(), false).await;
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(
             out[0],
@@ -408,7 +441,7 @@ mod tests {
         std::fs::write(&sub, b"subs").unwrap();
 
         // source == destination (adopt-in-place).
-        let out = import_extras(&media, &media, &policy()).await;
+        let out = import_extras(&media, &media, &policy(), false).await;
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(
             matches!(&out[0], ExtraOutcome::Skipped { destination, identical: true } if *destination == sub),
@@ -435,7 +468,7 @@ mod tests {
         let placed = dest_dir.join("Movie (2021).en.srt");
         std::fs::write(&placed, b"a pre-existing, different subtitle").unwrap();
 
-        let out = import_extras(&src, &dest, &policy()).await;
+        let out = import_extras(&src, &dest, &policy(), false).await;
         assert_eq!(
             out[0],
             ExtraOutcome::Skipped {
@@ -448,6 +481,72 @@ mod tests {
             std::fs::read(&placed).unwrap(),
             b"a pre-existing, different subtitle",
             "the existing file must never be clobbered"
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_replaces_the_old_subtitle_with_the_new_release() {
+        // On an upgrade (replace = true), the new release's subtitle supersedes the
+        // old one at the same destination — mirroring the media replacement.
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("download");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("Movie.2021.2160p.mkv");
+        std::fs::write(&src, b"media").unwrap();
+        std::fs::write(
+            src_dir.join("Movie.2021.2160p.en.srt"),
+            b"upgraded subtitle",
+        )
+        .unwrap();
+
+        let dest_dir = dir.path().join("library/Movie (2021)");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("Movie (2021).mkv");
+        std::fs::write(&dest, b"media").unwrap();
+        let placed = dest_dir.join("Movie (2021).en.srt");
+        std::fs::write(&placed, b"the old subtitle").unwrap();
+
+        let out = import_extras(&src, &dest, &policy(), true).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            matches!(&out[0], ExtraOutcome::Imported { destination, .. } if *destination == placed),
+            "the subtitle is (re)placed on an upgrade: {out:?}"
+        );
+        assert_eq!(
+            std::fs::read(&placed).unwrap(),
+            b"upgraded subtitle",
+            "the old subtitle was replaced by the new release's"
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_with_an_identical_subtitle_is_a_no_op_skip() {
+        // Even with replace = true, an already-identical subtitle needs no work and
+        // is skipped (no needless rewrite).
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("download");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("Movie.2021.2160p.mkv");
+        std::fs::write(&src, b"media").unwrap();
+        std::fs::write(src_dir.join("Movie.2021.2160p.en.srt"), b"same subtitle").unwrap();
+
+        let dest_dir = dir.path().join("library/Movie (2021)");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("Movie (2021).mkv");
+        std::fs::write(&dest, b"media").unwrap();
+        let placed = dest_dir.join("Movie (2021).en.srt");
+        std::fs::write(&placed, b"same subtitle").unwrap();
+
+        let out = import_extras(&src, &dest, &policy(), true).await;
+        assert!(
+            matches!(
+                &out[0],
+                ExtraOutcome::Skipped {
+                    identical: true,
+                    ..
+                }
+            ),
+            "{out:?}"
         );
     }
 
@@ -466,7 +565,7 @@ mod tests {
         std::fs::write(&blocker, b"file-not-dir").unwrap();
         let dest = blocker.join("Movie (2021).mkv");
 
-        let out = import_extras(&src, &dest, &policy()).await;
+        let out = import_extras(&src, &dest, &policy(), false).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], ExtraOutcome::Failed { .. }), "{out:?}");
     }
