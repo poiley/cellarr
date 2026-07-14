@@ -873,6 +873,41 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                             cleaned += 1;
                         }
                         Err(e) => {
+                            // The correctly-named file for this content is already on
+                            // disk but not linked to its node (a duplicate download,
+                            // or an earlier import whose media_file row was lost), so
+                            // the import collides with it every cycle. Adopt that
+                            // existing file onto the node — no byte moved — to satisfy
+                            // it, which stops both the reconcile-retry loop and the
+                            // re-grab loop, then drop the redundant download. Only when
+                            // the failure is that specific redundant collision; any
+                            // other import error still holds for the next cycle.
+                            if let (true, Some(dest)) = (e.redundant, e.dest.clone()) {
+                                let adopted = matches!(
+                                    runner
+                                        .import_manual(&[cellarr_jobs::runner::ManualImportRequest {
+                                            path: dest.clone(),
+                                            content_id: cid,
+                                        }])
+                                        .await,
+                                    Ok((imported, errs)) if !imported.is_empty() && errs.is_empty()
+                                );
+                                if adopted {
+                                    self.events.publish(DomainEvent::ImportCompleted {
+                                        content_id: cid.to_string(),
+                                        path: dest,
+                                    });
+                                    let _ = client.remove(dl, true).await; // drop the duplicate
+                                    match self.db.grabs().set_status(g.id, GrabStatus::Imported).await {
+                                        Ok(()) => {
+                                            tracing::info!(grab = %g.id, "reconcile-downloads: adopted existing file for redundant download");
+                                            cleaned += 1;
+                                        }
+                                        Err(se) => tracing::warn!(grab = %g.id, error = %se, "reconcile-downloads: set imported failed"),
+                                    }
+                                    continue;
+                                }
+                            }
                             tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: finalize import failed");
                         }
                     }
