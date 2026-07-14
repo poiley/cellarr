@@ -337,6 +337,8 @@ async fn missing_item_search_through_scheduler_imports_the_file() {
         .unwrap();
     let dispatched = scheduler.tick().await.unwrap();
     assert_eq!(dispatched, 1, "the submitted job was dispatched this tick");
+    // The scheduler spawns jobs; await the run before reading its terminal state.
+    scheduler.join_in_flight().await;
 
     // The job completed (the chain ran to a terminal outcome).
     let job = scheduler.store().get(&job_id).await.unwrap().unwrap();
@@ -351,6 +353,7 @@ async fn missing_item_search_through_scheduler_imports_the_file() {
         .await
         .unwrap();
     scheduler.tick().await.unwrap();
+    scheduler.join_in_flight().await;
     assert_eq!(
         scheduler.store().get(&reconcile).await.unwrap().unwrap().state,
         JobState::Done,

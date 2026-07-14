@@ -416,6 +416,8 @@ async fn run_manual_search(
         .unwrap();
     let dispatched = scheduler.tick().await.unwrap();
     assert_eq!(dispatched, 1, "the submitted job dispatched");
+    // The scheduler spawns jobs; await the run before reading its terminal state.
+    scheduler.join_in_flight().await;
     scheduler.store().get(&job_id).await.unwrap().unwrap().state
 }
 
@@ -461,6 +463,7 @@ async fn anime_series_absolute_release_remaps_through_live_handler() {
         .await
         .unwrap();
     scheduler.tick().await.unwrap();
+    scheduler.join_in_flight().await;
 
     // THE PROOF: a real file landed under the library at the REMAPPED S02E01.
     let imported = find_one_file(&library_root).expect("an imported file under the library root");
