@@ -2179,8 +2179,31 @@ async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
         .await
         .unwrap();
 
+    // A SIBLING whose name extends the /media/tv prefix but is NOT under it
+    // (`/media/tv-old`, `/media/tvshows`) — the scoped delete must never touch it.
+    let mut sibling = HashMap::new();
+    sibling.insert("/media/tv-old".to_string(), 700);
+    sibling.insert("/media/tvshows".to_string(), 800);
+    media_files
+        .replace_scan_dirs("/media/tv-old".to_string(), {
+            let mut m = HashMap::new();
+            m.insert("/media/tv-old".to_string(), 700);
+            m
+        })
+        .await
+        .unwrap();
+    media_files
+        .replace_scan_dirs("/media/tvshows".to_string(), {
+            let mut m = HashMap::new();
+            m.insert("/media/tvshows".to_string(), 800);
+            m
+        })
+        .await
+        .unwrap();
+    let _ = sibling;
+
     let all = media_files.scan_dir_mtimes().await.unwrap();
-    assert_eq!(all.len(), 5, "both trees are recorded: {all:?}");
+    assert_eq!(all.len(), 7, "all trees + siblings are recorded: {all:?}");
     assert_eq!(all.get("/media/tv/Show/Season 01"), Some(&300));
     assert_eq!(all.get("/media/movies/Film (2020)"), Some(&500));
 
@@ -2197,8 +2220,8 @@ async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
     let after = media_files.scan_dir_mtimes().await.unwrap();
     assert_eq!(
         after.len(),
-        4,
-        "stale tv row dropped, movies intact: {after:?}"
+        6,
+        "stale tv row dropped, everything else intact: {after:?}"
     );
     assert_eq!(after.get("/media/tv"), Some(&101), "changed mtime updated");
     assert!(
@@ -2210,6 +2233,14 @@ async fn scan_dir_mtimes_round_trip_and_replace_is_root_scoped() {
         Some(&500),
         "the other root's directories are untouched by a scoped replace"
     );
+    // The prefix-sibling directories survive: the range delete is exact, never
+    // catching `/media/tv-old` or `/media/tvshows` when replacing `/media/tv`.
+    assert_eq!(
+        after.get("/media/tv-old"),
+        Some(&700),
+        "a sibling whose name extends the root prefix must not be deleted"
+    );
+    assert_eq!(after.get("/media/tvshows"), Some(&800));
 }
 
 #[tokio::test]
