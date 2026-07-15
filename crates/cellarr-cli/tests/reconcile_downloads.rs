@@ -552,6 +552,42 @@ async fn reconcile_blocklists_hard_failed_download() {
     );
 }
 
+/// After blocklisting a dead download, the sweep RE-ACQUIRES the content in the
+/// same cycle (the self-heal loop) instead of waiting for the next RssSync — it
+/// grabs the next-best release, not the blocklisted one.
+#[tokio::test]
+async fn reconcile_reacquires_content_after_blocklisting_a_dead_download() {
+    let (tmp, db, node) = fresh_db_with_movie().await;
+    let grab = seed_grab(&db, &node, "failed-dl").await;
+    // A DIFFERENT release than the (about-to-be-blocklisted) failed one, so the
+    // immediate re-acquire has a next-best to grab.
+    let alt = Release {
+        title: "The.Matrix.1999.2160p.WEB-DL.x265-ALT".into(),
+        download_url: "magnet:?xt=urn:btih:alt".into(),
+        guid: Some("alt-guid".into()),
+        ..matrix_release()
+    };
+    let h = handler_with(
+        &db,
+        &node,
+        String::new(),
+        tmp.path().to_path_buf(),
+        Some(alt),
+        None,
+        None,
+    );
+    let _ = h.handle(&JobKind::ReconcileDownloads).await;
+
+    // The dead download is blocklisted AND the content is re-acquired: a fresh
+    // non-terminal grab exists for it (the next-best release).
+    assert_eq!(status_of(&db, grab).await, GrabStatus::Blocklisted);
+    assert_eq!(
+        open_grabs_for(&db, node.id).await,
+        1,
+        "content is re-acquired in the same sweep after its dead download is cleaned"
+    );
+}
+
 /// A download the client no longer knows (a `NotFound` error) is gone: blocklist it.
 #[tokio::test]
 async fn reconcile_blocklists_download_gone_from_client() {

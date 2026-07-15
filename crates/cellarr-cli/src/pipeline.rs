@@ -955,7 +955,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     /// Best-effort per grab: one grab's error is logged and skipped, never failing
     /// the whole sweep.
     async fn run_reconcile_downloads(&self) -> JobResult {
-        use cellarr_core::repo::{GrabRepository, MediaFileRepository};
+        use cellarr_core::repo::{ContentRepository, GrabRepository, MediaFileRepository};
         use cellarr_core::{DownloadState, GrabStatus};
 
         let grabs = match self.db.grabs().list().await {
@@ -967,6 +967,10 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             }
         };
         let mut cleaned = 0usize;
+        // Content whose dead download we blocklisted this sweep — re-acquired at the
+        // end so recovery is immediate rather than waiting for the next RssSync /
+        // MissingItemSearch tick, closing the self-heal loop.
+        let mut to_reacquire: Vec<cellarr_core::ContentRef> = Vec::new();
         for g in grabs {
             if matches!(
                 g.status,
@@ -1038,6 +1042,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         .await
                     {
                         cleaned += 1;
+                        to_reacquire.push(g.request.content_ref.clone());
                     }
                 }
                 // Completed on the client but never imported — the orphaned
@@ -1195,6 +1200,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                 "reconcile-downloads: cleaned dead download"
                             );
                             cleaned += 1;
+                            to_reacquire.push(g.request.content_ref.clone());
                         }
                     }
                 }
@@ -1209,6 +1215,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         .await
                     {
                         cleaned += 1;
+                        to_reacquire.push(g.request.content_ref.clone());
                     }
                 }
                 // A transient client fault: leave it for the next cycle.
@@ -1220,6 +1227,33 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 cleaned,
                 "reconcile-downloads: finalized/cleaned in-flight grabs"
             );
+        }
+        // Immediately re-acquire the content whose dead download we just cleaned,
+        // rather than waiting for the next RssSync/MissingItemSearch. `run_node`
+        // drives Discover→Decide→Grab over the REMAINING releases — the dead one is
+        // now blocklisted, so the pipeline skips it and grabs the next-best, exactly
+        // as the in-run self-heal loop does. Guarded through the canonical
+        // `monitored_missing` filter so a node is re-acquired only if it is still
+        // monitored AND still missing (a concurrent import may have satisfied it, or
+        // the user may have unmonitored it). Best-effort: a failure is logged and the
+        // sweep still succeeds — the daily MissingItemSearch remains the backstop.
+        if !to_reacquire.is_empty() {
+            let missing: std::collections::HashSet<cellarr_core::ContentId> =
+                match self.db.content().monitored_missing().await {
+                    Ok(nodes) => nodes.into_iter().map(|n| n.id).collect(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "reconcile-downloads: monitored-missing load failed; skipping re-acquire");
+                        std::collections::HashSet::new()
+                    }
+                };
+            for content in to_reacquire {
+                if !missing.contains(&content.id) {
+                    continue; // satisfied or unmonitored since — nothing to re-acquire.
+                }
+                if let Err(detail) = self.run_node(&content).await {
+                    tracing::warn!(content = %content.id, error = %detail, "reconcile-downloads: immediate re-acquire failed");
+                }
+            }
         }
         JobResult::Success
     }
