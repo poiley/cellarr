@@ -246,6 +246,15 @@ impl Daemon {
             std::sync::Arc::new(crate::pipeline::LiveQueueClient::new(state.db.clone()));
         let state = state.with_queue_client(queue_client);
 
+        // The live download-client reachability probe backing the
+        // `download-client-unreachable` health check: builds + pings each configured
+        // client so an unreachable client (the silent failure that lets completed
+        // downloads pile up unimported) surfaces on /api/v3/health.
+        let dc_probe = std::sync::Arc::new(crate::pipeline::LiveDownloadClientProbe::new(
+            state.db.clone(),
+        ));
+        let state = state.with_download_client_probe(dc_probe);
+
         // Wire the (already-created) artwork cache dir into the API state so the v3
         // `mediacover/{id}/{kind}` route serves the bytes the resolver caches.
         let state = state.with_artwork_dir(artwork_dir.clone());

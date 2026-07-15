@@ -2419,6 +2419,69 @@ impl cellarr_api::queue::QueueDownloadClient for LiveQueueClient {
     }
 }
 
+/// Whether a download-client error is a TRANSPORT/connection failure (the client
+/// is unreachable) rather than a server that responded (not-found, auth, api,
+/// unexpected-response — all mean the client answered). Mirrors
+/// [`is_download_gone`]'s downcast approach.
+fn is_client_unreachable<E>(err: &E) -> bool
+where
+    E: std::error::Error + 'static,
+{
+    let dyn_err: &(dyn std::error::Error + 'static) = err;
+    matches!(
+        dyn_err.downcast_ref::<cellarr_download::DownloadError>(),
+        Some(cellarr_download::DownloadError::Transport(_))
+    )
+}
+
+/// The [`DownloadClientProbe`](cellarr_api::health::DownloadClientProbe) backing the
+/// `download-client-unreachable` health check: builds each configured, enabled
+/// download client and pings it with a bounded `status` on a sentinel id. A
+/// transport failure or a timeout marks it unreachable; a server that responds —
+/// even "download not found" — is reachable. A client whose config cannot even be
+/// built is skipped here (a misconfiguration, distinct from unreachability).
+pub struct LiveDownloadClientProbe {
+    db: Database,
+}
+
+impl LiveDownloadClientProbe {
+    /// Build the probe over the persistence handle.
+    #[must_use]
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl cellarr_api::health::DownloadClientProbe for LiveDownloadClientProbe {
+    async fn unreachable_clients(&self) -> Vec<String> {
+        use cellarr_core::DownloadClient;
+        const SENTINEL: &str = "__cellarr_health_probe__";
+        let clients = self
+            .db
+            .config()
+            .list_download_clients()
+            .await
+            .unwrap_or_default();
+        let mut unreachable = Vec::new();
+        for c in clients.into_iter().filter(|c| c.enabled) {
+            let Ok(client) = ConfiguredDownloadClient::from_config(&c) else {
+                continue; // a build/config error is a separate concern from reachability
+            };
+            let reachable =
+                match tokio::time::timeout(RECONCILE_POLL_TIMEOUT, client.status(SENTINEL)).await {
+                    Err(_elapsed) => false,                   // the probe hung → unreachable
+                    Ok(Ok(_)) => true,                        // the client answered
+                    Ok(Err(e)) => !is_client_unreachable(&e), // transport error → unreachable
+                };
+            if !reachable {
+                unreachable.push(c.name);
+            }
+        }
+        unreachable
+    }
+}
+
 #[cfg(test)]
 mod refresh_tests {
     use super::{metadata_is_enriched, refresh_should_resolve};
