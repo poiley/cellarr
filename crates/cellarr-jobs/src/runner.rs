@@ -307,6 +307,11 @@ pub struct ManualImportRequest {
     pub path: String,
     /// The content node the user chose to import the file onto.
     pub content_id: cellarr_core::ContentId,
+    /// Adopt the file at its EXISTING path instead of renaming it to the naming
+    /// scheme — record it in place, no byte moved. Used to onboard a pre-existing
+    /// library without reorganizing the user's on-disk layout. When false the file
+    /// is moved/renamed to its computed destination as usual.
+    pub in_place: bool,
 }
 
 /// The outcome of importing one [`ManualImportRequest`]: where the file landed
@@ -2963,7 +2968,7 @@ where
                 }
                 Err(e) => return Err(JobError::Persistence(Box::new(e))),
             };
-            match self.import_one_manual(&node, &req.path).await {
+            match self.import_one_manual(&node, &req.path, req.in_place).await {
                 Ok(result) => imported.push(result),
                 Err(detail) => errors.push(format!("{}: {detail}", req.path)),
             }
@@ -3014,6 +3019,9 @@ where
                     requests.push(ManualImportRequest {
                         path: candidate.path.clone(),
                         content_id: suggestion.content_id,
+                        // The rescan adopt pass keeps the scheme: a correctly-named
+                        // in-library file adopts in place, others reorganize as today.
+                        in_place: false,
                     });
                     suggested_sizes.insert(candidate.path.clone(), candidate.size);
                 }
@@ -3107,51 +3115,63 @@ where
         &self,
         matched_ref: &ContentRef,
         source_path: &str,
+        in_place: bool,
     ) -> std::result::Result<ManualImportResult, String> {
         let src = std::path::Path::new(source_path);
         if !src.is_file() {
             return Err(format!("source file does not exist: {source_path}"));
         }
 
-        // The second parse: the on-disk file name is the source of truth. Render the
-        // destination from the media module's naming tokens + the file extension.
+        // The second parse: the on-disk file name is the source of truth.
         let file_parsed = cellarr_parse::parse_title(
             src.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
         );
-        let module = self
-            .module_for(matched_ref)
-            .map_err(|e| format!("module: {e}"))?;
-        let tokens = module
-            .naming_tokens(matched_ref)
-            .await
-            .map_err(|e| format!("naming tokens: {e}"))?;
-        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-        // The naming format must match the *matched node's* media type, not the
-        // config's (a manual import scans one config across a mixed library set, so
-        // the config's format — derived from whichever library sorted first — can be
-        // the wrong shape for this node). Render against the node's media-type
-        // format so a TV node renders with the series format even when a movie
-        // library was picked to build the config, and vice-versa.
-        let naming_format = naming_format_for_node(
-            &self.config.naming_format,
-            &self.config.anime_naming_format,
-            self.config.series_type,
-            matched_ref.media_type,
-            &tokens,
-        );
-        let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
-            .map_err(|e| format!("render name: {e}"))?;
-        let dest = self.config.library_root.join(&rel);
-        let dest_string = dest.to_string_lossy().into_owned();
+        // The destination. When `in_place` (onboarding a pre-existing library), the
+        // file is recorded exactly where it lives — the user's on-disk layout is
+        // preserved, no byte moved. Otherwise render it from the media module's
+        // naming tokens + extension, moving/renaming to the scheme as usual.
+        let dest_string = if in_place {
+            source_path.to_string()
+        } else {
+            let module = self
+                .module_for(matched_ref)
+                .map_err(|e| format!("module: {e}"))?;
+            let tokens = module
+                .naming_tokens(matched_ref)
+                .await
+                .map_err(|e| format!("naming tokens: {e}"))?;
+            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+            // The naming format must match the *matched node's* media type, not the
+            // config's (a manual import scans one config across a mixed library set,
+            // so the config's format — derived from whichever library sorted first —
+            // can be the wrong shape for this node). Render against the node's
+            // media-type format so a TV node renders with the series format even when
+            // a movie library was picked to build the config, and vice-versa.
+            let naming_format = naming_format_for_node(
+                &self.config.naming_format,
+                &self.config.anime_naming_format,
+                self.config.series_type,
+                matched_ref.media_type,
+                &tokens,
+            );
+            let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
+                .map_err(|e| format!("render name: {e}"))?;
+            self.config
+                .library_root
+                .join(&rel)
+                .to_string_lossy()
+                .into_owned()
+        };
         // In-place ADOPTION: the chosen file already sits exactly at its computed
-        // library destination — a rescan of a correctly-named file already under
-        // the library root. Record it without moving a byte. Anything else (a loose
-        // file elsewhere, or an in-library file whose name does not match the
-        // scheme) is moved/renamed to its destination as usual. Keyed on the paths
-        // being equal, NOT merely "destination occupied", so a manual import never
-        // discards the user's chosen source for a coincidental orphan already at the
-        // target — the destination-is-evidence shortcut is for the automatic path,
-        // where the source is a fresh download, not a user's explicit pick.
+        // library destination — an explicit `in_place` onboard, or a rescan of a
+        // correctly-named file already under the library root. Record it without
+        // moving a byte. Anything else (a loose file elsewhere, or an in-library
+        // file whose name does not match the scheme) is moved/renamed to its
+        // destination as usual. Keyed on the paths being equal, NOT merely
+        // "destination occupied", so a manual import never discards the user's chosen
+        // source for a coincidental orphan already at the target — the
+        // destination-is-evidence shortcut is for the automatic path, where the
+        // source is a fresh download, not a user's explicit pick.
         let adopt_in_place = source_path == dest_string;
 
         // Verify the file's parse does not contradict the chosen node's coordinates

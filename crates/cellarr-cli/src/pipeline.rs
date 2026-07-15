@@ -712,6 +712,10 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                             cellarr_jobs::runner::ManualImportRequest {
                                                 path: c.path.clone(),
                                                 content_id: target_id,
+                                                // Onboard a pre-existing library WITHOUT
+                                                // reorganizing it: record each file where
+                                                // it already lives on disk.
+                                                in_place: true,
                                             },
                                         ])
                                         .await;
@@ -1043,6 +1047,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                         .import_manual(&[cellarr_jobs::runner::ManualImportRequest {
                                             path: dest.clone(),
                                             content_id: cid,
+                                            // The file already sits at its scheme path;
+                                            // rendering yields source==dest → adopt in place.
+                                            in_place: false,
                                         }])
                                         .await,
                                     Ok((imported, errs)) if !imported.is_empty() && errs.is_empty()

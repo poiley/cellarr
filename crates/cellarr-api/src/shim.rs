@@ -6395,6 +6395,8 @@ async fn manual_import_commit(
         requests.push(cellarr_jobs::ManualImportRequest {
             path: path.to_string(),
             content_id,
+            // Explicit user-driven import: place the file by the naming scheme.
+            in_place: false,
         });
     }
 
@@ -7068,7 +7070,7 @@ async fn queue_grab(
 
     use crate::manual_import::ManualImportCommitOutcome;
     let outcome = mi
-        .commit(vec![cellarr_jobs::ManualImportRequest { path, content_id }])
+        .commit(vec![cellarr_jobs::ManualImportRequest { path, content_id, in_place: false }])
         .await
         .map_err(|e| ApiError::Internal(format!("queue grab-import failed: {e}")))?;
     let body = match outcome {

@@ -345,6 +345,7 @@ async fn commit_imports_a_chosen_file_through_the_crash_safe_path() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: node.id,
+        in_place: false,
     };
     let (imported, errors) = runner
         .import_manual(std::slice::from_ref(&request))
@@ -425,6 +426,66 @@ async fn commit_imports_a_chosen_file_through_the_crash_safe_path() {
     );
 }
 
+#[tokio::test]
+async fn in_place_import_adopts_a_non_scheme_named_file_where_it_lives() {
+    // Onboarding a pre-existing library: a file already under the library root but
+    // NOT named to cellarr's scheme must be recorded exactly where it lives — no
+    // byte moved, the user's layout preserved — when `in_place` is set.
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    let node = seed_movie_node(&db, lib_root.to_str().unwrap()).await;
+    let registry = registry_for(&node, "The Matrix");
+
+    // A file the user already organized their OWN way, under the library root but
+    // not matching cellarr's naming format.
+    let existing_dir = lib_root.join("The Matrix (1999)");
+    std::fs::create_dir_all(&existing_dir).unwrap();
+    let existing = existing_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP - custom cut.mkv");
+    std::fs::write(&existing, b"movie-bytes").unwrap();
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    let request = ManualImportRequest {
+        path: existing.to_string_lossy().into_owned(),
+        content_id: node.id,
+        in_place: true,
+    };
+    let (imported, errors) = runner
+        .import_manual(std::slice::from_ref(&request))
+        .await
+        .unwrap();
+    assert!(errors.is_empty(), "no per-file errors: {errors:?}");
+    assert_eq!(imported.len(), 1);
+
+    // Recorded at its EXISTING path — not renamed to the scheme.
+    assert_eq!(
+        imported[0].destination_path,
+        existing.to_string_lossy(),
+        "in-place adoption records the file where it lives"
+    );
+    assert!(existing.exists(), "the original file is untouched");
+    // The media_file row points at the original path.
+    let files = MediaFileRepository::list_for_content(&db.media_files(), node.id)
+        .await
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, existing.to_string_lossy());
+    // No scheme-named copy was created elsewhere under the root.
+    assert!(
+        !lib_root.join("The Matrix (1999)/The Matrix.mkv").exists(),
+        "in-place adoption must not create a renamed copy"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn commit_imports_extra_files_and_applies_permissions() {
@@ -467,6 +528,7 @@ async fn commit_imports_extra_files_and_applies_permissions() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: node.id,
+        in_place: false,
     };
     let (imported, errors) = runner
         .import_manual(std::slice::from_ref(&request))
@@ -529,6 +591,7 @@ async fn a_failing_chmod_does_not_roll_back_the_media_import() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: node.id,
+        in_place: false,
     };
     let (imported, errors) = runner
         .import_manual(std::slice::from_ref(&request))
@@ -650,6 +713,7 @@ async fn movie_with_no_known_year_still_imports_via_graceful_token() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: node.id,
+        in_place: false,
     };
     let (imported, errors) = runner.import_manual(&[request]).await.unwrap();
     assert!(
@@ -755,6 +819,7 @@ async fn tv_node_imports_even_when_a_movie_library_sorts_first() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: ep_id,
+        in_place: false,
     };
     let (imported, errors) = runner.import_manual(&[request]).await.unwrap();
     assert!(
@@ -803,6 +868,7 @@ async fn commit_reports_error_for_an_unknown_content_node() {
     let request = ManualImportRequest {
         path: source.to_string_lossy().into_owned(),
         content_id: ContentId::new(),
+        in_place: false,
     };
     let (imported, errors) = runner.import_manual(&[request]).await.unwrap();
     assert!(imported.is_empty());
