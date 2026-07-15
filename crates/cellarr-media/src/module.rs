@@ -262,14 +262,23 @@ where
         let norm_query = normalize_title(query);
 
         // The episode coordinates the parse advertises. A multi-episode parse
-        // carries several; each must find its own node. Absolute/Daily/SeasonPack
-        // are *not* matched here — Identify normalizes those to Episode first
-        // (see `crate::identify`); a parse that still carries them addresses no
-        // canonical node yet, so it yields no match (surfaced upstream).
+        // carries several; each must find its own node. `Episode` is matched on
+        // season+episode; `Absolute` is matched on the episode node's absolute
+        // number (the on-disk adopt path has no Identify step to normalize anime
+        // absolute numbering to Episode first, so an "[Group] Naruto - 001" file
+        // arrives here still absolute-addressed — it must land on the node
+        // `expand_series` stamped with that absolute number, not go unmatched).
+        // Daily/SeasonPack still address no canonical single node here and are
+        // dropped (surfaced upstream / handled by Identify on the grab path).
         let wanted: Vec<&Coordinates> = parsed
             .coordinates
             .iter()
-            .filter(|c| matches!(c, Coordinates::Episode { .. }))
+            .filter(|c| {
+                matches!(
+                    c,
+                    Coordinates::Episode { .. } | Coordinates::Absolute { .. }
+                )
+            })
             .collect();
 
         let mut matches = Vec::new();
@@ -386,6 +395,18 @@ fn episode_coords_match(a: &Coordinates, b: &Coordinates) -> bool {
                 ..
             },
         ) => sa == sb && ea == eb,
+        // An absolute-numbered file (anime, `[Group] Show - 001`) matches the
+        // episode node carrying that absolute number — how `expand_series` records
+        // TVDB's `absoluteNumber`. This is the adopt-path counterpart to the grab
+        // path's Identify-time absolute→Episode normalization. `a` is always the
+        // parse (file) and `b` the candidate node.
+        (
+            Coordinates::Absolute { number },
+            Coordinates::Episode {
+                absolute: Some(abs),
+                ..
+            },
+        ) => number == abs,
         _ => false,
     }
 }
@@ -472,6 +493,33 @@ mod tests {
             absolute: None,
         };
         assert!(!episode_coords_match(&a, &c));
+    }
+
+    #[test]
+    fn absolute_file_matches_episode_node_by_absolute_number() {
+        // An anime "[Group] Show - 014" file parses to Absolute{14}; on adopt it
+        // must land on the episode node expand_series stamped with absolute 14.
+        let file = Coordinates::Absolute { number: 14 };
+        let node = Coordinates::Episode {
+            season: 1,
+            episode: 2,
+            absolute: Some(14),
+        };
+        assert!(episode_coords_match(&file, &node));
+        // A different absolute number does not match.
+        let other = Coordinates::Episode {
+            season: 1,
+            episode: 3,
+            absolute: Some(15),
+        };
+        assert!(!episode_coords_match(&file, &other));
+        // A node with no absolute number is never matched by an absolute file.
+        let no_abs = Coordinates::Episode {
+            season: 1,
+            episode: 2,
+            absolute: None,
+        };
+        assert!(!episode_coords_match(&file, &no_abs));
     }
 
     #[test]

@@ -3622,6 +3622,14 @@ fn coords_agree(
             Co::SeasonPack { season: ts } => u32::from(*ts) == *season,
             _ => false,
         }),
+        // An absolute-numbered file (anime, "[Group] Show - 001") agrees with the
+        // episode node carrying that absolute number — the intent the on-disk adopt
+        // path resolved it to (a node `expand_series` stamped with TVDB's
+        // `absoluteNumber`). Without this the coordinate guard would reject the very
+        // adoption the matcher just chose.
+        Co::Absolute { number } => title_coords.iter().any(|tc| {
+            matches!(tc, Co::Episode { absolute: Some(abs), .. } if abs == number)
+        }),
         other => title_coords.contains(&other),
     }
 }
@@ -3855,6 +3863,32 @@ mod tests {
             !coords_agree(&refs, &ep(3, 1)),
             "an episode of a DIFFERENT season must not agree with the pack intent"
         );
+    }
+
+    #[test]
+    fn coords_agree_absolute_file_matches_episode_node_by_absolute_number() {
+        // An anime file re-parses as Absolute{14}; the adopt intent is the episode
+        // node the matcher chose, which carries absolute 14. They must AGREE so the
+        // coordinate guard does not reject the adoption the matcher just made.
+        let title = [Co::Episode {
+            season: 1,
+            episode: 2,
+            absolute: Some(14),
+        }];
+        let refs: Vec<&Co> = title.iter().collect();
+        assert!(coords_agree(&refs, &Co::Absolute { number: 14 }));
+        assert!(
+            !coords_agree(&refs, &Co::Absolute { number: 15 }),
+            "a different absolute number disagrees"
+        );
+        // With no absolute on the node, an absolute file cannot be confirmed.
+        let no_abs = [Co::Episode {
+            season: 1,
+            episode: 2,
+            absolute: None,
+        }];
+        let no_abs_refs: Vec<&Co> = no_abs.iter().collect();
+        assert!(!coords_agree(&no_abs_refs, &Co::Absolute { number: 14 }));
     }
 
     #[test]
