@@ -2050,42 +2050,56 @@ where
             &tokens,
         );
         use cellarr_core::repo::MediaFileRepository;
+        // `replaced` being set means the decision graded this grab an UPGRADE.
+        let is_upgrade = replaced.is_some();
         let mut moves = Vec::with_capacity(sources.len());
+        // The superseded rows to drop after commit: `(path-to-match, old id)`. For a
+        // same-path replacement the path is the move destination (guarded by whether
+        // that move actually placed a new file); for a distinct-path one it is the
+        // old file's own path.
+        let mut replaced_rows: Vec<(String, cellarr_core::MediaFileId)> = Vec::new();
         for source in &sources {
             let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
             let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
                 .map_err(|e| format!("render name: {e}"))?;
             let dest = self.config.library_root.join(&rel);
             let dest_str = dest.to_string_lossy().into_owned();
-            // If the destination is already occupied by an ORPHANED on-disk file
-            // (present, but with no media_file row — the drift a "keep files" delete
-            // or an interrupted import leaves), ADOPT it in place instead of
-            // hard-failing: the existing file is recorded, nothing is written or
-            // overwritten. A file that IS tracked keeps today's behavior
-            // (upgrade-by-distinct-name / already-satisfied) — we only reconcile the
-            // untracked orphan case, which is exactly the "destination already
-            // exists and is not a planned replacement" failure.
             let occupied = tokio::fs::try_exists(&dest).await.unwrap_or(false);
-            // A quality upgrade of single-file content (movie / single episode)
-            // replaces the existing file: the move carries the old row id + path so
-            // cellarr-fs swaps atomically (same path) or removes the old file
-            // (distinct path), new-before-old. Only wired for a single source — a
-            // multi-file upgrade maps one `replacing` id ambiguously across moves, so
-            // it keeps the prior (non-replacing) behavior. A replacement is never
-            // also an adopt.
-            let (replaces, replaced_path) = match &replaced {
-                Some((id, path)) if sources.len() == 1 => (Some(*id), Some(path.clone())),
-                _ => (None, None),
-            };
-            let adopt = replaces.is_none()
-                && occupied
-                && self
-                    .db
-                    .media_files()
-                    .find_by_path(&dest_str)
-                    .await
-                    .map_err(|e| format!("media_file lookup: {e}"))?
-                    .is_none();
+            // The TRACKED media_file already at this destination, if any (one lookup,
+            // reused below for both the replace and the adopt decisions).
+            let existing = self
+                .db
+                .media_files()
+                .find_by_path(&dest_str)
+                .await
+                .map_err(|e| format!("media_file lookup: {e}"))?;
+
+            // On an upgrade, this move REPLACES the file it supersedes so cellarr-fs
+            // swaps atomically (same path) or removes the old file (distinct path),
+            // new-before-old, and the stale row is dropped after commit.
+            //   * A tracked file already at THIS destination is replaced in place —
+            //     covers single-file (movie / episode) AND multi-file (a season pack
+            //     superseding each existing episode) under same-path naming.
+            //   * Otherwise, a SINGLE-file upgrade whose old file sits at a DISTINCT
+            //     path (renamed by quality/codec tokens) is driven by the decision's
+            //     captured `replaced`.
+            // A replacement is never also an adopt (which is only for an UNtracked
+            // orphan at the destination — a "keep files" delete / interrupted import).
+            let (mut replaces, mut replaced_path) = (None, None);
+            if is_upgrade {
+                if let Some(f) = &existing {
+                    replaces = Some(f.id);
+                    replaced_path = Some(dest_str.clone());
+                    replaced_rows.push((dest_str.clone(), f.id));
+                } else if sources.len() == 1 {
+                    if let Some((id, path)) = &replaced {
+                        replaces = Some(*id);
+                        replaced_path = Some(path.clone());
+                        replaced_rows.push((path.clone(), *id));
+                    }
+                }
+            }
+            let adopt = replaces.is_none() && occupied && existing.is_none();
             moves.push(PlannedMove {
                 source_path: source.to_string_lossy().into_owned(),
                 destination_path: dest_str,
@@ -2121,34 +2135,44 @@ where
                 dest,
             }
         })?;
-        // Whether the (single) replacement move actually placed a new file. A move
-        // whose destination was already satisfied (`AlreadyPresent` — a resume, or
-        // the rare case where the new file is byte-for-byte the same size as the old
-        // and the resume check treats it as done) did NOT change the on-disk file, so
-        // the old row must be kept, not dropped.
-        let replaced_in_place = result
+        // Which destinations actually PLACED a new file (vs `AlreadyPresent` — a
+        // resume, or the rare case where the new file is byte-for-byte the same size
+        // as the old and the resume check treats it as done; those did NOT change the
+        // on-disk file, so the old row must be kept).
+        let placed: std::collections::HashMap<String, bool> = result
             .moves
             .iter()
-            .any(|m| !matches!(m.outcome, cellarr_fs::PlacedAs::AlreadyPresent));
+            .map(|m| {
+                (
+                    m.destination_path.to_string_lossy().into_owned(),
+                    !matches!(m.outcome, cellarr_fs::PlacedAs::AlreadyPresent),
+                )
+            })
+            .collect();
         let destinations: Vec<String> = result
             .moves
             .into_iter()
             .map(|m| m.destination_path.to_string_lossy().into_owned())
             .collect();
 
-        // A completed replacement supersedes the old file: cellarr-fs has already
+        // A completed replacement supersedes each old file: cellarr-fs has already
         // swapped it in place (same path) or removed the old path (distinct), so its
         // media_file row is now stale. Drop it — ON DELETE CASCADE clears the
         // content_file link — so the caller's `persist_imported_files` records the
         // NEW quality/size as a fresh row instead of reusing the old one (which would
-        // re-flag the node as still needing the same upgrade). Only when a
-        // replacement move was actually planned AND actually placed a new file.
-        if let Some((old_id, _)) = replaced.filter(|_| sources.len() == 1 && replaced_in_place) {
-            self.db
-                .media_files()
-                .delete(old_id)
-                .await
-                .map_err(|e| format!("remove replaced media_file row: {e}"))?;
+        // re-flag the node as still needing the same upgrade). A same-path row is
+        // dropped only when its move actually placed a new file; a distinct-path row
+        // (not among the move destinations) is always dropped (cleanup_move removed
+        // the old file). Covers single- and multi-file (season-pack) upgrades.
+        for (path, old_id) in replaced_rows {
+            let did_place = placed.get(&path).copied().unwrap_or(true);
+            if did_place {
+                self.db
+                    .media_files()
+                    .delete(old_id)
+                    .await
+                    .map_err(|e| format!("remove replaced media_file row: {e}"))?;
+            }
         }
 
         // Post-commit, best-effort, never library-critical: import sibling extra
