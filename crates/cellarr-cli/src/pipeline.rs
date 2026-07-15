@@ -64,6 +64,16 @@ const NOTIFICATION_INSTANCE_NAME: &str = "cellarr";
 /// single job run unboundedly. The remainder is picked up on the next tick.
 const MAX_NODES_PER_RUN: usize = 50;
 
+/// Hard ceiling on how many untracked files one auto-onboard pass walks and
+/// onboards per library, so a huge pre-existing library (tens of thousands of
+/// files) drains in gentle bounded batches over many passes instead of one pass
+/// hammering the metadata provider and the database. An onboard creates + expands
+/// a series (hundreds of episode-node writes) and adopts each file; an unbounded
+/// burst can saturate a small database and trip its liveness probe. Caps the walk
+/// COST too (`scan_manual_import` bounds the walk when a limit is set), not just
+/// the write volume. The remainder is picked up on the next rescan.
+const ONBOARD_BATCH_CAP: usize = 100;
+
 /// The live seams one pipeline run needs, resolved freshly per run so CRUD writes
 /// (a new indexer, a reconfigured client) take effect with no restart.
 ///
@@ -654,8 +664,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         // Walk WITHOUT skipping remembered-unmatched files (unlike the
                         // adopt pass) so the backlog is reachable; the per-file
                         // `attempted` skip below keeps it from re-hitting the provider.
+                        // Bound the batch (and thus the walk cost + onboard write
+                        // burst) to `ONBOARD_BATCH_CAP` so a huge library drains gently
+                        // over many passes rather than crushing the database in one.
+                        let batch = remaining.map_or(ONBOARD_BATCH_CAP, |r| r.min(ONBOARD_BATCH_CAP));
                         match runner
-                            .scan_manual_import(Some(&config.library_root), None, false, false)
+                            .scan_manual_import(Some(&config.library_root), Some(batch), false, false)
                             .await
                         {
                             Ok(candidates) => {
