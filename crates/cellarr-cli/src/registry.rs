@@ -73,6 +73,19 @@ impl ContentLookup for DbContentLookup {
             if node.media_type != media_type {
                 continue;
             }
+            // A top-level container root (Series/Artist/Author) is never an import
+            // or grab target — it carries only PLACEHOLDER coordinates (a series is
+            // Episode{s1,e1}), which would otherwise collide with the real S01E01 /
+            // disc-1-track-1 leaf and let a file adopt onto the container instead of
+            // its episode/track. Only leaf and season/album nodes are matchable.
+            if matches!(
+                node.kind,
+                cellarr_core::ContentKind::Series
+                    | cellarr_core::ContentKind::Artist
+                    | cellarr_core::ContentKind::Author
+            ) {
+                continue;
+            }
             // The candidate's title is the indexed title the FTS hit matched on,
             // read back so `match_release`'s title-confidence check compares the
             // parsed release title against a real title rather than a node id.
@@ -189,4 +202,82 @@ fn node_title(node: &cellarr_core::ContentNode) -> String {
     node.title_id
         .map(|t| t.to_string())
         .unwrap_or_else(|| node.id.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cellarr_core::repo::ContentRepository;
+    use cellarr_core::{ContentKind, ContentNode, Coordinates, LibraryId, SeriesType};
+    use cellarr_media::ContentLookup;
+
+    // A file's title FTS-hits both the series container (placeholder coords S01E01)
+    // and the real S01E01 episode. The container must NOT be offered as a candidate,
+    // else an S01E01 file adopts onto the series instead of its episode.
+    #[tokio::test]
+    async fn candidates_for_title_excludes_the_series_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        let library_id = LibraryId::new();
+        db.config()
+            .upsert_library(&cellarr_core::Library {
+                id: library_id,
+                media_type: MediaType::Tv,
+                name: "tv".into(),
+                root_folders: vec!["/tv".into()],
+                default_quality_profile: cellarr_core::QualityProfileId::new(),
+            })
+            .await
+            .unwrap();
+        let mk = |kind, parent, coords| ContentNode {
+            id: ContentId::new(),
+            library_id,
+            media_type: MediaType::Tv,
+            parent_id: parent,
+            kind,
+            series_type: SeriesType::Standard,
+            coords,
+            monitored: true,
+            title_id: None,
+            tags: Vec::new(),
+        };
+        let series = mk(
+            ContentKind::Series,
+            None,
+            Coordinates::Episode { season: 1, episode: 1, absolute: None },
+        );
+        let season = mk(
+            ContentKind::Season,
+            Some(series.id),
+            Coordinates::Episode { season: 1, episode: 0, absolute: None },
+        );
+        let episode = mk(
+            ContentKind::Episode,
+            Some(season.id),
+            Coordinates::Episode { season: 1, episode: 1, absolute: None },
+        );
+        for n in [&series, &season, &episode] {
+            db.content().upsert(n).await.unwrap();
+            db.content().index_title(n.id, "Test Show").await.unwrap();
+        }
+
+        let lookup = DbContentLookup::new(db);
+        let ids: Vec<ContentId> = lookup
+            .candidates_for_title(MediaType::Tv, "Test Show")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.content_ref.id)
+            .collect();
+        assert!(
+            ids.contains(&episode.id),
+            "the real S01E01 episode is a candidate"
+        );
+        assert!(
+            !ids.contains(&series.id),
+            "the series container must be excluded (placeholder coords collide with S01E01)"
+        );
+    }
 }
