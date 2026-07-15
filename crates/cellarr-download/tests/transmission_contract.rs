@@ -168,7 +168,10 @@ async fn session_id_rotation_is_recaptured_and_basic_auth_sent() {
 async fn errored_torrent_is_failed_and_foreign_label_is_visible() {
     let (client, transport) = client("transmission/status_errored_and_foreign.json", "cellarr-tv");
 
-    // A non-empty errorString is a hard failure regardless of status.
+    // A LOCAL error (Transmission error code 3 — disk full / permissions / missing
+    // files) is a hard failure. (A bare tracker errorString is benign and left
+    // downloading — Radarr/Sonarr ignore tracker warnings; failing on them removed
+    // live torrents on the first dead-tracker hiccup.)
     let p = client.progress("erroredhash").await.expect("errored");
     assert_eq!(p.state, DownloadState::Failed);
 

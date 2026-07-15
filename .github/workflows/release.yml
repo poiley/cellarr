@@ -117,18 +117,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Stub embedded web assets
         run: mkdir -p web/dist
-      # cellarr-db (repo layer) + cellarr-jobs (the acquisition pipeline: grab /
-      # track / self-heal / import) + cellarr-cli (the live handler that drives
-      # the runner: the scheduler→handler→runner→import chain and the reconcile
-      # sweep). All run on the default SQLite backend with no services, so a
-      # pipeline regression (e.g. blocklisting on a transient client fault, or the
-      # reconcile mishandling a completed/stalled/dead download) surfaces in CI.
-      # cellarr-api is included so the `/api/v3`+`/api/v1` surface (auth gate,
-      # config, shim) is covered — its tests are hermetic (loopback HTTP + SQLite,
-      # no Docker/network). It was previously untested in CI, which let several
-      # tests silently rot against intended behaviour changes.
-      - name: cargo test (db + jobs + cli + api)
-        run: cargo test --locked -p cellarr-db -p cellarr-jobs -p cellarr-cli -p cellarr-api
+      # The WHOLE workspace on the default SQLite backend — hermetic, no services
+      # (this mirrors `just test`). Previously only db+jobs+cli(+api) ran here, so
+      # tests across the other ~10 crates silently rotted against intended
+      # behaviour changes (cellarr-api auth, cellarr-download fixtures, …). The
+      # Docker-gated legs stay separate: Postgres is `test-pg` (--features
+      # postgres), and the differential `oracle` tests are `#[ignore]` (run via
+      # `just oracle`), so `--workspace` here never needs a service. Includes
+      # doctests (nextest skips them; plain `cargo test` runs them).
+      - name: cargo test (whole workspace, SQLite)
+        run: cargo test --locked --workspace
 
   image:
     needs: [changes]
