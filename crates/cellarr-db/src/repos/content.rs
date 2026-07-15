@@ -153,6 +153,35 @@ impl ContentRepo {
     /// # Errors
     /// Returns a [`DbError`] on query failure.
     pub async fn search(&self, query: &str) -> Result<Vec<ContentId>> {
+        // Reduce the query to alphanumeric tokens before it reaches the engine. A
+        // title carrying FTS operators or separators is otherwise unsearchable:
+        // SQLite FTS5 reads `-` as an operator, so a raw `Obi-Wan Kenobi` MATCH
+        // ERRORS ("no such column: Wan"); and both engines' tokenizers split
+        // `Obi-Wan` / `11.22.63` into `obi wan` / `11 22 63`, so the query must
+        // match on those same tokens. Punctuation-only input yields no tokens → no
+        // rows (never a malformed MATCH). The index side matches: SQLite FTS5
+        // already tokenizes on non-alphanumerics; Postgres normalizes the same way
+        // in the `title_tsv` generated column (see the content_fts normalize migration).
+        let tokens: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        // SQLite: each token as a quoted phrase literal so a stray FTS5 keyword or
+        // operator character can never be interpreted (implicit AND across them).
+        // Postgres: a plain space-joined string for `plainto_tsquery`.
+        #[cfg(not(feature = "postgres"))]
+        let bound = tokens
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        #[cfg(feature = "postgres")]
+        let bound = tokens.join(" ");
+
         // FTS is the one query whose shape genuinely differs between engines:
         // SQLite matches the FTS5 virtual table and orders by its `rank`; Postgres
         // matches the generated `tsvector` column and orders by `ts_rank`. Both
@@ -165,7 +194,7 @@ impl ContentRepo {
                    WHERE title_tsv @@ plainto_tsquery('simple', ?1) \
                    ORDER BY ts_rank(title_tsv, plainto_tsquery('simple', ?1)) DESC";
         let rows = sqlx::query(&pq(sql))
-            .bind(query)
+            .bind(&bound)
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter()

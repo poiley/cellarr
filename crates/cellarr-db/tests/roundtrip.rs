@@ -1213,6 +1213,87 @@ async fn fts_search_finds_indexed_titles() {
 }
 
 #[tokio::test]
+async fn fts_search_matches_special_character_titles() {
+    // Hyphenated/dotted titles must be searchable: SQLite FTS5 treats `-` as an
+    // operator (a raw "Obi-Wan Kenobi" MATCH errors), and Postgres indexes "11.22.63"
+    // as a single lexeme the parser's "11 22 63" form can't hit. Both are handled by
+    // normalizing query + index to alphanumeric tokens.
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let mk = |title: &str| {
+        let node = ContentNode {
+            tags: Vec::new(),
+            id: ContentId::new(),
+            library_id: library.id,
+            media_type: MediaType::Tv,
+            parent_id: None,
+            kind: ContentKind::Episode,
+            series_type: cellarr_core::SeriesType::Standard,
+            coords: Coordinates::Episode { season: 1, episode: 1, absolute: None },
+            monitored: true,
+            title_id: None,
+        };
+        (node.id, node, title.to_string())
+    };
+    let (obi_id, obi, obi_t) = mk("Obi-Wan Kenobi");
+    let (six_id, six, six_t) = mk("11.22.63");
+    for (node, title) in [(&obi, &obi_t), (&six, &six_t)] {
+        content.upsert(node).await.unwrap();
+        content.index_title(node.id, title).await.unwrap();
+    }
+
+    // Hyphenated: the raw title (was an FTS5 error) and a normalized form both hit.
+    assert_eq!(content.search("Obi-Wan Kenobi").await.unwrap(), vec![obi_id]);
+    assert_eq!(content.search("obi wan kenobi").await.unwrap(), vec![obi_id]);
+    // Dotted: the exact title AND the parser's dots-as-spaces form both hit.
+    assert_eq!(content.search("11.22.63").await.unwrap(), vec![six_id]);
+    assert_eq!(content.search("11 22 63").await.unwrap(), vec![six_id]);
+    // A query of only punctuation yields nothing (no FTS error).
+    assert!(content.search("---").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unmatched_scan_onboard_attempt_lifecycle() {
+    let (_dir, db) = temp_db().await;
+    let mf = db.media_files();
+    mf.record_unmatched_scan(vec![("/tv/a.mkv".into(), 1), ("/tv/b.mkv".into(), 2)])
+        .await
+        .unwrap();
+
+    // Both start PENDING (never onboard-attempted).
+    assert!(mf.has_pending_onboard().await.unwrap());
+    assert!(mf.onboard_attempted_paths().await.unwrap().is_empty());
+
+    // Stamp `a` attempted: it is skipped, `b` still pending.
+    mf.mark_onboard_attempted(vec!["/tv/a.mkv".into()]).await.unwrap();
+    assert_eq!(
+        mf.onboard_attempted_paths().await.unwrap(),
+        ["/tv/a.mkv".to_string()].into_iter().collect()
+    );
+    assert!(mf.has_pending_onboard().await.unwrap(), "b is still pending");
+
+    // Stamp `b` too → nothing pending; the drain goes idle.
+    mf.mark_onboard_attempted(vec!["/tv/b.mkv".into()]).await.unwrap();
+    assert!(!mf.has_pending_onboard().await.unwrap());
+
+    // Placing `a` forgets it from the backlog entirely.
+    mf.clear_unmatched_scan(vec!["/tv/a.mkv".into()]).await.unwrap();
+    assert_eq!(
+        mf.unmatched_scan_paths().await.unwrap(),
+        ["/tv/b.mkv".to_string()].into_iter().collect()
+    );
+}
+
+#[tokio::test]
 async fn cache_put_get_and_expiry() {
     let (_dir, db) = temp_db().await;
     let cache = db.cache();

@@ -562,6 +562,22 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // its first sighting is not needlessly recorded).
         let mut newly_unmatched: Vec<(String, u64)> = Vec::new();
         let mut pruned_once = false;
+        // Backlog drain state (auto-onboard). `attempted` = remembered-unmatched
+        // files already tried and failed, skipped so they don't re-hit the metadata
+        // provider every pass; `pending` = at least one remembered file has NOT been
+        // tried yet, so the onboard walk is worth doing even when the incremental
+        // adopt pass found nothing NEW this run (the case that otherwise strands a
+        // stable pre-existing library's backlog behind the mtime-incremental gate).
+        let (pending_backlog, attempted): (bool, std::collections::HashSet<String>) =
+            if self.auto_onboard {
+                let mf = self.db.media_files();
+                (
+                    mf.has_pending_onboard().await.unwrap_or(false),
+                    mf.onboard_attempted_paths().await.unwrap_or_default(),
+                )
+            } else {
+                (false, std::collections::HashSet::new())
+            };
         for library in libraries {
             // A synthetic node ref scoped to this library lets the env build the
             // library's config (root + naming); it is used only to resolve config,
@@ -624,17 +640,22 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // movie/series and adopt the file onto it. Off unless configured; a
             // no-confidence / ambiguous file is left for the manual-import screen —
             // content is never created from a guess.
-            if self.auto_onboard && library_unmatched > 0 {
+            // Run the onboard walk when the adopt pass found NEW unplaceable files
+            // OR there is still a remembered backlog no onboard pass has tried — the
+            // latter is what drains a stable pre-existing library whose dirs never
+            // change mtime (so the incremental adopt pass reports 0) without any
+            // manual cache-clearing.
+            if self.auto_onboard && (library_unmatched > 0 || pending_backlog) {
                 if let Some(meta) = self.metadata.clone() {
-                    // A staged first batch caps how many nodes are created; the scan
-                    // is bounded to match so a huge library is not fully walked just
-                    // to onboard a few. The cap is a running total across libraries.
                     let remaining = self.auto_onboard_limit.map(|n| n.saturating_sub(onboarded));
                     if remaining == Some(0) {
                         // Cap already reached in an earlier library this pass.
                     } else {
+                        // Walk WITHOUT skipping remembered-unmatched files (unlike the
+                        // adopt pass) so the backlog is reachable; the per-file
+                        // `attempted` skip below keeps it from re-hitting the provider.
                         match runner
-                            .scan_manual_import(Some(&config.library_root), remaining, true, false)
+                            .scan_manual_import(Some(&config.library_root), None, false, false)
                             .await
                         {
                             Ok(candidates) => {
@@ -646,6 +667,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                 // most once per sweep instead of once per file.
                                 let mut abandoned: std::collections::HashSet<String> =
                                     std::collections::HashSet::new();
+                                // Backlog bookkeeping: forget the rows we place, and
+                                // stamp the ones that DEFINITIVELY can't be placed so a
+                                // later pass skips them (a transient provider outage is
+                                // left pending to retry).
+                                let mut to_clear: Vec<String> = Vec::new();
+                                let mut to_mark: Vec<String> = Vec::new();
                                 for c in candidates {
                                     if self.auto_onboard_limit.is_some_and(|n| onboarded >= n) {
                                         break;
@@ -653,8 +680,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     if c.suggested.is_some() {
                                         continue; // an existing node fits — the adopt pass handled it.
                                     }
+                                    if attempted.contains(&c.path) {
+                                        continue; // already tried and could not place it.
+                                    }
                                     let parsed = cellarr_parse::parse_title(&c.name);
                                     let Some(title) = parsed.clean_title.clone() else {
+                                        to_mark.push(c.path.clone()); // unparseable — never onboardable.
                                         continue;
                                     };
                                     if abandoned.contains(&title) {
@@ -663,13 +694,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     let results =
                                         match meta.search(library.media_type, &title).await {
                                             Ok(cellarr_api::LookupOutcome::Resolved(r)) => r,
-                                            // Unavailable / errored source → skip; try next run.
+                                            // Unavailable / errored source → leave PENDING
+                                            // (do not mark) so a later pass retries.
                                             _ => continue,
                                         };
                                     let Some(chosen) =
                                         pick_confident_candidate(&results, &title, parsed.year)
                                     else {
-                                        continue; // no unambiguous match — leave for manual import.
+                                        to_mark.push(c.path.clone()); // no unambiguous match — leave for manual.
+                                        continue;
                                     };
                                     let (node_id, created) = match self
                                         .create_content_node(&library, chosen)
@@ -677,6 +710,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     {
                                         Ok(v) => v,
                                         Err(detail) => {
+                                            // Transient create failure — leave pending.
                                             tracing::warn!(title = %title, error = %detail, "auto-onboard: create failed");
                                             continue;
                                         }
@@ -705,6 +739,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                             self.rollback_node(&library, node_id).await;
                                             abandoned.insert(title);
                                         }
+                                        to_mark.push(c.path.clone());
                                         continue;
                                     };
                                     let adopt = runner
@@ -722,6 +757,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     let failed = match adopt {
                                         Ok((_imported, errs)) if errs.is_empty() => {
                                             onboarded += 1;
+                                            to_clear.push(c.path.clone());
                                             false
                                         }
                                         Ok((_imported, errs)) => {
@@ -736,11 +772,21 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     // Roll back a series/movie WE just created if its file
                                     // could not be adopted, so a failed onboard leaves no
                                     // empty orphan node (the file falls to manual instead).
-                                    // A reused existing node is never deleted.
+                                    // A reused existing node is never deleted. A post-match
+                                    // adopt failure is left PENDING (likely transient I/O).
                                     if failed && created {
                                         self.rollback_node(&library, node_id).await;
                                         abandoned.insert(title);
                                     }
+                                }
+                                // Forget placed files; stamp the definitively-unplaceable
+                                // so the next drain skips them (best-effort bookkeeping).
+                                let mf = self.db.media_files();
+                                if let Err(e) = mf.clear_unmatched_scan(to_clear).await {
+                                    tracing::warn!(error = %e, "auto-onboard: clearing placed backlog entries failed");
+                                }
+                                if let Err(e) = mf.mark_onboard_attempted(to_mark).await {
+                                    tracing::warn!(error = %e, "auto-onboard: marking attempted backlog entries failed");
                                 }
                             }
                             Err(detail) => {

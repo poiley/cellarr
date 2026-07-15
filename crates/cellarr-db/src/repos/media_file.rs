@@ -67,6 +67,81 @@ impl MediaFileRepo {
             .await
     }
 
+    /// Paths of remembered-unmatched files auto-onboard has ALREADY tried and
+    /// failed (`last_attempt` set). Loaded once per rescan so the onboard drain
+    /// skips them — it never re-runs a metadata lookup for a file it already could
+    /// not place, so a stable library's un-onboardable extras don't hammer the
+    /// provider every pass.
+    pub async fn onboard_attempted_paths(&self) -> Result<std::collections::HashSet<String>> {
+        let rows = sqlx::query(&pq(
+            "SELECT path FROM unmatched_scan WHERE last_attempt IS NOT NULL",
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| row.try_get::<String, _>("path").map_err(DbError::from))
+            .collect()
+    }
+
+    /// Whether any remembered-unmatched file is still PENDING an onboard attempt
+    /// (`last_attempt IS NULL`) — the cheap gate that tells a rescan a backlog
+    /// drain is worth doing. Once every remembered file has been onboarded (row
+    /// deleted) or tried-and-failed (stamped), this is false and the drain is idle.
+    pub async fn has_pending_onboard(&self) -> Result<bool> {
+        let row = sqlx::query(&pq(
+            "SELECT 1 FROM unmatched_scan WHERE last_attempt IS NULL LIMIT 1",
+        ))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// Stamp `last_attempt = now` on each path — auto-onboard tried and could not
+    /// place it, so the next drain skips it. Best-effort ordering bookkeeping.
+    pub async fn mark_onboard_attempted(&self, paths: Vec<String>) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    for path in paths {
+                        sqlx::query(&pq(
+                            "UPDATE unmatched_scan SET last_attempt = ?2 WHERE path = ?1",
+                        ))
+                        .bind(path)
+                        .bind(&now)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// Forget `paths` from `unmatched_scan` — auto-onboard placed the file, so it is
+    /// tracked now and no longer a backlog entry.
+    pub async fn clear_unmatched_scan(&self, paths: Vec<String>) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    for path in paths {
+                        sqlx::query(&pq("DELETE FROM unmatched_scan WHERE path = ?1"))
+                            .bind(path)
+                            .execute(&mut *conn)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Every remembered directory modification time (the `scan_dir` table),
     /// keyed by absolute directory path. Loaded once per rescan so the
     /// mtime-incremental walk can skip directories whose mtime is unchanged.
