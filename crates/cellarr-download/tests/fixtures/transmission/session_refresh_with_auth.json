@@ -5,47 +5,60 @@
       "expect": {
         "method": "POST",
         "url_contains": "/transmission/rpc",
-        "header_equals": { "authorization": "Basic dHJhbnNtaXNzaW9uOnNlY3JldA==" },
+        "header_equals": {
+          "authorization": "Basic dHJhbnNtaXNzaW9uOnNlY3JldA=="
+        },
         "body_contains": "\"method\":\"torrent-get\""
       },
       "response": {
         "status": 409,
-        "headers": { "x-transmission-session-id": "first-id" },
+        "headers": {
+          "x-transmission-session-id": "first-id"
+        },
         "body": "409"
       }
     },
     {
       "expect": {
         "method": "POST",
-        "header_equals": { "x-transmission-session-id": "first-id", "authorization": "Basic dHJhbnNtaXNzaW9uOnNlY3JldA==" }
+        "header_equals": {
+          "x-transmission-session-id": "first-id",
+          "authorization": "Basic dHJhbnNtaXNzaW9uOnNlY3JldA=="
+        }
       },
       "response": {
         "status": 200,
         "headers": {},
-        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"hashString\":\"abc123\",\"name\":\"A\",\"percentDone\":0.5,\"status\":4,\"downloadDir\":\"/d\",\"labels\":[\"cellarr-movies\"],\"uploadRatio\":0.0,\"secondsSeeding\":0,\"errorString\":\"\"}]}}"
+        "body": "{\"result\": \"success\", \"arguments\": {\"torrents\": [{\"hashString\": \"abc123\", \"name\": \"A\", \"percentDone\": 0.5, \"status\": 4, \"downloadDir\": \"/d\", \"labels\": [\"cellarr-movies\"], \"uploadRatio\": 0.0, \"secondsSeeding\": 0, \"errorString\": \"\", \"metadataPercentComplete\": 1.0}]}}"
       }
     },
     {
       "expect": {
         "method": "POST",
-        "header_equals": { "x-transmission-session-id": "first-id" },
+        "header_equals": {
+          "x-transmission-session-id": "first-id"
+        },
         "body_contains": "\"method\":\"torrent-get\""
       },
       "response": {
         "status": 409,
-        "headers": { "x-transmission-session-id": "rotated-id" },
+        "headers": {
+          "x-transmission-session-id": "rotated-id"
+        },
         "body": "409"
       }
     },
     {
       "expect": {
         "method": "POST",
-        "header_equals": { "x-transmission-session-id": "rotated-id" }
+        "header_equals": {
+          "x-transmission-session-id": "rotated-id"
+        }
       },
       "response": {
         "status": 200,
         "headers": {},
-        "body": "{\"result\":\"success\",\"arguments\":{\"torrents\":[{\"hashString\":\"abc123\",\"name\":\"A\",\"percentDone\":1.0,\"status\":6,\"downloadDir\":\"/d\",\"labels\":[\"cellarr-movies\"],\"uploadRatio\":1.0,\"secondsSeeding\":50,\"errorString\":\"\"}]}}"
+        "body": "{\"result\": \"success\", \"arguments\": {\"torrents\": [{\"hashString\": \"abc123\", \"name\": \"A\", \"percentDone\": 1.0, \"status\": 6, \"downloadDir\": \"/d\", \"labels\": [\"cellarr-movies\"], \"uploadRatio\": 1.0, \"secondsSeeding\": 50, \"errorString\": \"\", \"metadataPercentComplete\": 1.0}]}}"
       }
     }
   ]
