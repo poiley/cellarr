@@ -79,16 +79,32 @@ impl HealthCheck {
 /// How recent a backup must be before `no-recent-backup` clears (7 days).
 pub const BACKUP_FRESHNESS_SECS: i64 = 7 * 24 * 60 * 60;
 
+/// A live download-client reachability probe the daemon injects: it names the
+/// configured, enabled clients that cannot currently be reached. `None` (the
+/// offline/test default) skips the `download-client-unreachable` check — a guessed
+/// probe would either false-positive offline or violate the offline non-negotiable.
+#[async_trait::async_trait]
+pub trait DownloadClientProbe: Send + Sync {
+    /// Display names of configured, enabled download clients that fail a
+    /// reachability check right now.
+    async fn unreachable_clients(&self) -> Vec<String>;
+}
+
 /// Run every health check and collect the findings.
 ///
-/// `backup` enables the `no-recent-backup` check when supplied. The
-/// cross-filesystem warning ([`crate::fs_health`]) is folded in by the caller (it
-/// already has its own dedicated reporting), so this focuses on the structural,
-/// writability, freshness, and liveness checks.
+/// `backup` enables the `no-recent-backup` check when supplied; `probe` enables the
+/// `download-client-unreachable` check. The cross-filesystem warning
+/// ([`crate::fs_health`]) is folded in by the caller (it already has its own
+/// dedicated reporting), so this focuses on the structural, writability, freshness,
+/// reachability, and liveness checks.
 ///
 /// # Errors
 /// Propagates a persistence error if the config or a liveness probe fails to run.
-pub async fn run_all(db: &Database, backup: Option<&BackupEngine>) -> ApiResult<Vec<HealthCheck>> {
+pub async fn run_all(
+    db: &Database,
+    backup: Option<&BackupEngine>,
+    probe: Option<&dyn DownloadClientProbe>,
+) -> ApiResult<Vec<HealthCheck>> {
     let mut out = Vec::new();
     let cfg = db.config();
 
@@ -165,10 +181,20 @@ pub async fn run_all(db: &Database, backup: Option<&BackupEngine>) -> ApiResult<
             message: "No download client is configured".into(),
             check_type: "no-download-client",
         });
+    } else if let Some(probe) = probe {
+        // A configured client the daemon cannot currently reach — the silent
+        // failure mode that lets completed downloads pile up unimported (the
+        // reconcile can't poll a client it can't talk to). One warning per
+        // unreachable client. Offline/test builds inject no probe and skip this.
+        for name in probe.unreachable_clients().await {
+            out.push(HealthCheck {
+                source: "DownloadClientCheck",
+                severity: Severity::Warning,
+                message: format!("Download client '{name}' is unreachable"),
+                check_type: "download-client-unreachable",
+            });
+        }
     }
-    // download-client-unreachable: same deferral as indexer-unreachable above.
-    // TODO(reachability-probe): emit a `download-client-unreachable` warning per
-    // client that fails its connectivity test once the live seam is wired.
 
     // --- no-recent-backup -----------------------------------------------------
     if let Some(engine) = backup {
@@ -241,7 +267,7 @@ mod tests {
     async fn db_ok_and_no_root_no_client_on_empty_config() {
         let dir = tempfile::tempdir().unwrap();
         let db = temp_db(dir.path()).await;
-        let checks = run_all(&db, None).await.unwrap();
+        let checks = run_all(&db, None, None).await.unwrap();
         // database-ok: NO DatabaseCheck finding means the probe passed.
         assert!(!checks.iter().any(|c| c.source == "DatabaseCheck"));
         // Missing root folder is an error.
@@ -269,7 +295,7 @@ mod tests {
             enabled: true,
         };
         db.config().upsert_root_folder(&rf).await.unwrap();
-        let checks = run_all(&db, None).await.unwrap();
+        let checks = run_all(&db, None, None).await.unwrap();
         assert!(!checks.iter().any(|c| c.check_type == "no-root-folder"));
         assert!(!checks
             .iter()
@@ -288,12 +314,66 @@ mod tests {
             enabled: true,
         };
         db.config().upsert_root_folder(&rf).await.unwrap();
-        let checks = run_all(&db, None).await.unwrap();
+        let checks = run_all(&db, None, None).await.unwrap();
         let unwritable = checks
             .iter()
             .find(|c| c.check_type == "root-folder-unwritable");
         assert!(unwritable.is_some());
         assert_eq!(unwritable.unwrap().severity, Severity::Error);
+        db.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unreachable_download_client_surfaces_a_warning_only_when_probed() {
+        struct MockProbe(Vec<String>);
+        #[async_trait::async_trait]
+        impl DownloadClientProbe for MockProbe {
+            async fn unreachable_clients(&self) -> Vec<String> {
+                self.0.clone()
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = temp_db(dir.path()).await;
+        // A configured client — the check only runs when one exists.
+        db.config()
+            .upsert_download_client(&cellarr_core::DownloadClientConfig {
+                id: cellarr_core::DownloadClientId::new(),
+                name: "Transmission".into(),
+                kind: "transmission".into(),
+                protocol: cellarr_core::Protocol::Torrent,
+                enabled: true,
+                priority: 0,
+                category: "cellarr".into(),
+                tags: vec![],
+                settings: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+
+        // A probe reporting one unreachable client → exactly one warning naming it.
+        let probe = MockProbe(vec!["Transmission".into()]);
+        let checks = run_all(&db, None, Some(&probe)).await.unwrap();
+        let w = checks
+            .iter()
+            .find(|c| c.check_type == "download-client-unreachable")
+            .expect("an unreachable-client warning");
+        assert_eq!(w.severity, Severity::Warning);
+        assert!(w.message.contains("Transmission"), "{}", w.message);
+
+        // No probe (offline/test) → the check is skipped even with a client present.
+        let checks = run_all(&db, None, None).await.unwrap();
+        assert!(!checks
+            .iter()
+            .any(|c| c.check_type == "download-client-unreachable"));
+
+        // A probe reporting nothing unreachable → no warning.
+        let ok_probe = MockProbe(vec![]);
+        let checks = run_all(&db, None, Some(&ok_probe)).await.unwrap();
+        assert!(!checks
+            .iter()
+            .any(|c| c.check_type == "download-client-unreachable"));
+
         db.shutdown().await;
     }
 

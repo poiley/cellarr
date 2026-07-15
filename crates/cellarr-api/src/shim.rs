@@ -664,7 +664,8 @@ fn unix_to_iso(secs: u64) -> String {
 /// in from [`crate::fs_health`].
 async fn health(State(fs): State<FaceState>) -> ApiResult<Json<Vec<Value>>> {
     let backup = fs.state.backup.as_deref();
-    let checks = crate::health::run_all(&fs.state.db, backup).await?;
+    let probe = fs.state.download_client_probe.as_deref();
+    let checks = crate::health::run_all(&fs.state.db, backup, probe).await?;
     let mut out: Vec<Value> = checks
         .iter()
         .map(crate::health::HealthCheck::to_v3)

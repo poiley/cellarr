@@ -102,6 +102,11 @@ pub struct AppState {
     /// queue row is still removed; the client removal is reported not-performed);
     /// the daemon injects a live implementation that builds the configured client.
     pub queue_client: Option<Arc<dyn QueueDownloadClient>>,
+    /// The live download-client reachability probe backing the
+    /// `download-client-unreachable` health check. `None` (offline/test) skips that
+    /// check; the daemon injects an implementation that builds each configured
+    /// client and pings it.
+    pub download_client_probe: Option<Arc<dyn crate::health::DownloadClientProbe>>,
     /// The on-disk artwork cache directory (`<data_dir>/MediaCover`), where the
     /// identify/refresh path caches poster/fanart bytes keyed by content id. The
     /// `GET /api/v3/mediacover/{id}/{kind}` route serves files from here. `None`
@@ -182,6 +187,7 @@ impl AppState {
             manual_import: None,
             import_list_sync: None,
             queue_client: None,
+            download_client_probe: None,
             artwork_dir: None,
             artwork_cache: Arc::new(RwLock::new(CachedArtwork::default())),
             recycle_bin_path: None,
@@ -249,6 +255,17 @@ impl AppState {
     #[must_use]
     pub fn with_queue_client(mut self, client: Arc<dyn QueueDownloadClient>) -> Self {
         self.queue_client = Some(client);
+        self
+    }
+
+    /// Set the live download-client reachability probe backing the
+    /// `download-client-unreachable` health check.
+    #[must_use]
+    pub fn with_download_client_probe(
+        mut self,
+        probe: Arc<dyn crate::health::DownloadClientProbe>,
+    ) -> Self {
+        self.download_client_probe = Some(probe);
         self
     }
 
