@@ -2913,6 +2913,17 @@ where
         )
     }
 
+    /// Confidently match one parsed file to the content node it belongs on, using
+    /// the same matcher the rescan adopt pass uses ([`suggest_placement`]). Returns
+    /// the node id — for TV the specific **episode** node (the media module resolves
+    /// season/episode and absolute/anime numbering), for a movie the movie node — or
+    /// `None` when nothing matches confidently. Auto-onboard uses this to adopt a
+    /// freshly-expanded series' file onto its episode rather than the series
+    /// container (which would fail the coordinate check).
+    pub async fn match_content(&self, parsed: &ParsedRelease) -> Option<cellarr_core::ContentId> {
+        self.suggest_placement(parsed).await.0.map(|s| s.content_id)
+    }
+
     /// **Manual-import commit**: import the user's chosen loose files onto the
     /// content nodes they picked, each through the **same crash-safe
     /// stage→verify→commit→log import path** an automatic run uses

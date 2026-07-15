@@ -999,3 +999,136 @@ async fn prune_removes_rows_for_vanished_files_but_respects_mount_safety() {
     // Idempotent: a second prune finds nothing to do.
     assert_eq!(runner.prune_missing(&[lib_root]).await.unwrap(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// match_content: the auto-onboard reconciliation seam — a loose episode file
+// must resolve to its specific EPISODE node, not the series container.
+// ---------------------------------------------------------------------------
+
+/// A TV content lookup returning a fixed set of episode candidates for any query
+/// that names the series — the shape `match_release` filters by title + coords.
+struct TvMockLookup {
+    candidates: Vec<ContentCandidate>,
+}
+
+#[async_trait]
+impl ContentLookup for TvMockLookup {
+    type Error = MockLookupError;
+    async fn candidates_for_title(
+        &self,
+        _media_type: MediaType,
+        title_query: &str,
+    ) -> Result<Vec<ContentCandidate>, Self::Error> {
+        if title_query.to_lowercase().contains("x-men") {
+            Ok(self.candidates.clone())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[tokio::test]
+async fn match_content_lands_a_loose_episode_file_on_its_episode_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let lib_root = tmp.path().join("library");
+    std::fs::create_dir_all(&lib_root).unwrap();
+
+    // Seed a series -> season -> episode tree (as expand_series would), with a
+    // placeholder-coords series container and two real episode nodes.
+    let library_id = LibraryId::new();
+    db.config()
+        .upsert_library(&cellarr_core::Library {
+            id: library_id,
+            media_type: MediaType::Tv,
+            name: "tv".into(),
+            root_folders: vec![lib_root.to_str().unwrap().into()],
+            default_quality_profile: QualityProfileId::new(),
+        })
+        .await
+        .unwrap();
+
+    let mk = |kind: cellarr_core::ContentKind, parent: Option<ContentId>, coords: Coordinates| {
+        let id = ContentId::new();
+        (
+            id,
+            cellarr_core::ContentNode {
+                tags: Vec::new(),
+                id,
+                library_id,
+                media_type: MediaType::Tv,
+                parent_id: parent,
+                kind,
+                series_type: cellarr_core::SeriesType::Standard,
+                coords,
+                monitored: true,
+                title_id: None,
+            },
+        )
+    };
+    use cellarr_core::ContentKind;
+    let (series_id, series) = mk(
+        ContentKind::Series,
+        None,
+        Coordinates::Episode { season: 1, episode: 1, absolute: None },
+    );
+    let (season_id, season) = mk(
+        ContentKind::Season,
+        Some(series_id),
+        Coordinates::Episode { season: 2, episode: 0, absolute: None },
+    );
+    let (e5_id, e5) = mk(
+        ContentKind::Episode,
+        Some(season_id),
+        Coordinates::Episode { season: 2, episode: 5, absolute: None },
+    );
+    let (e6_id, e6) = mk(
+        ContentKind::Episode,
+        Some(season_id),
+        Coordinates::Episode { season: 2, episode: 6, absolute: None },
+    );
+    for node in [&series, &season, &e5, &e6] {
+        db.content().upsert(node).await.unwrap();
+        // Episodes carry the SERIES title as their indexed identity (as expand_series does).
+        db.content().index_title(node.id, "X-Men '97").await.unwrap();
+    }
+
+    // Register a TV module whose lookup returns the series + both episode nodes as
+    // candidates for the series title; match_release filters by coords.
+    let candidate = |id: ContentId, coords: Coordinates| ContentCandidate {
+        content_ref: ContentRef::new(id, library_id, MediaType::Tv, coords).unwrap(),
+        title: "X-Men '97".into(),
+        aliases: Vec::new(),
+    };
+    let mut registry = MediaRegistry::new();
+    registry.register(TvModule::new(
+        TvMockLookup {
+            candidates: vec![
+                candidate(series_id, Coordinates::Episode { season: 1, episode: 1, absolute: None }),
+                candidate(e5_id, Coordinates::Episode { season: 2, episode: 5, absolute: None }),
+                candidate(e6_id, Coordinates::Episode { season: 2, episode: 6, absolute: None }),
+            ],
+        },
+        MockMetadata { movie: None },
+    ));
+
+    let indexer = FakeIndexer;
+    let client = NeverDrivenClient;
+    let clock = LogicalClock::new(0);
+    let config = runner_config(lib_root.clone());
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+
+    // A loose S02E05 file must resolve to the S02E05 EPISODE node — never the
+    // series container (whose placeholder coords S01E01 would fail adoption).
+    let parsed = cellarr_parse::parse_title("X-Men '97 (2024) - S02E05 - Weapon X [WEBRip-1080p].mkv");
+    let matched = runner.match_content(&parsed).await;
+    assert_eq!(
+        matched,
+        Some(e5_id),
+        "the S02E05 file must land on the S02E05 episode node, not the series ({series_id}) or S02E06"
+    );
+    assert_ne!(matched, Some(series_id), "must not adopt onto the series container");
+    assert_ne!(matched, Some(e6_id), "must not adopt onto the wrong episode");
+}

@@ -638,6 +638,14 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                             .await
                         {
                             Ok(candidates) => {
+                                // Series whose newly-created node had to be rolled back
+                                // this sweep (no on-disk file could be matched to an
+                                // episode). Skip their remaining files so an unmappable
+                                // series (e.g. absolute-numbered anime the provider's
+                                // episode list can't resolve) is created + expanded at
+                                // most once per sweep instead of once per file.
+                                let mut abandoned: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
                                 for c in candidates {
                                     if self.auto_onboard_limit.is_some_and(|n| onboarded >= n) {
                                         break;
@@ -649,6 +657,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     let Some(title) = parsed.clean_title.clone() else {
                                         continue;
                                     };
+                                    if abandoned.contains(&title) {
+                                        continue; // gave up on this series earlier this sweep.
+                                    }
                                     let results =
                                         match meta.search(library.media_type, &title).await {
                                             Ok(cellarr_api::LookupOutcome::Resolved(r)) => r,
@@ -670,11 +681,37 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                             continue;
                                         }
                                     };
+                                    // Adopt TARGET. For TV, `create_content_node` also
+                                    // EXPANDED the series into season/episode nodes, so
+                                    // re-run the same matcher the adopt pass uses to land
+                                    // on the specific EPISODE node (it resolves
+                                    // season/episode + absolute/anime numbering); adopting
+                                    // an episode file onto the series container fails the
+                                    // coordinate check. For a movie the created node IS
+                                    // the target.
+                                    let target = match library.media_type {
+                                        MediaType::Tv => runner.match_content(&parsed).await,
+                                        _ => Some(node_id),
+                                    };
+                                    let Some(target_id) = target else {
+                                        // Series expanded, but this file matched no episode
+                                        // node. Leave it for manual. If we just minted the
+                                        // series, roll it back and skip its siblings this
+                                        // sweep, so a series whose files can't be matched
+                                        // never lingers MONITORED (which would re-grab
+                                        // episodes whose files are already on disk).
+                                        tracing::debug!(path = %c.path, "auto-onboard: no episode node matched; left for manual");
+                                        if created {
+                                            self.rollback_node(&library, node_id).await;
+                                            abandoned.insert(title);
+                                        }
+                                        continue;
+                                    };
                                     let adopt = runner
                                         .import_manual(&[
                                             cellarr_jobs::runner::ManualImportRequest {
                                                 path: c.path.clone(),
-                                                content_id: node_id,
+                                                content_id: target_id,
                                             },
                                         ])
                                         .await;
@@ -692,12 +729,13 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                             true
                                         }
                                     };
-                                    // Roll back a node WE just created if its file could
-                                    // not be adopted, so a failed onboard leaves no empty
-                                    // orphan node (the file falls to manual instead). A
-                                    // reused existing node is never deleted.
+                                    // Roll back a series/movie WE just created if its file
+                                    // could not be adopted, so a failed onboard leaves no
+                                    // empty orphan node (the file falls to manual instead).
+                                    // A reused existing node is never deleted.
                                     if failed && created {
                                         self.rollback_node(&library, node_id).await;
+                                        abandoned.insert(title);
                                     }
                                 }
                             }
