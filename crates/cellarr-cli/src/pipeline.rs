@@ -486,6 +486,13 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // completions. `None` is unlimited (unchanged behaviour).
         let cap = self.max_active_downloads.map(|c| c as usize);
         let mut active = in_flight.len();
+        // Every node this sweep actually searches gets stamped so it drops to the
+        // back of `monitored_missing`'s least-recently-searched order — that is what
+        // rotates the bounded per-run budget through the whole backlog instead of
+        // re-drawing an unlucky subset. Nodes SKIPPED (in-flight) or DEFERRED (cap
+        // reached) are NOT stamped, so they keep their place at the front for the
+        // next sweep.
+        let mut searched: Vec<cellarr_core::ContentId> = Vec::new();
         for node in &nodes {
             if in_flight.contains(&node.id) {
                 continue; // already grabbed and downloading; reconcile finalizes it
@@ -503,6 +510,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // One node failing (a flaky indexer, a transient write) must not abort
             // the whole sweep; record it and move on. The next tick retries the
             // still-missing nodes.
+            searched.push(node.id);
             match self.run_node(node).await {
                 Ok(true) => active += 1, // a new download was grabbed — count it toward the cap
                 Ok(false) => {}
@@ -510,6 +518,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     tracing::warn!(content = %node.id, error = %detail, "pipeline run failed for node; continuing");
                 }
             }
+        }
+        // Stamp the searched nodes so the next sweep rotates to the next slice
+        // (best-effort: a stamp failure only means the next sweep may re-search them
+        // sooner — it never blocks acquisition).
+        if let Err(e) = self.db.content().mark_missing_searched(searched).await {
+            tracing::warn!(error = %e, "recording last-search timestamps failed");
         }
         JobResult::Success
     }

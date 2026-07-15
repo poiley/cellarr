@@ -91,6 +91,36 @@ impl ContentRepo {
             .await
     }
 
+    /// Record that `ids` were just run through an acquisition search, so the next
+    /// monitored-missing sweep moves on to the next least-recently-searched slice.
+    /// Upserts each node's `searched_at` to now. Best-effort ordering bookkeeping — a
+    /// write failure only costs fairness on the next run, never correctness. The
+    /// acquisition counterpart to [`mark_upgrade_searched`](Self::mark_upgrade_searched).
+    pub async fn mark_missing_searched(&self, ids: Vec<ContentId>) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    for id in ids {
+                        sqlx::query(&pq(
+                            "INSERT INTO missing_search (content_id, searched_at)
+                             VALUES (?1, ?2)
+                             ON CONFLICT(content_id) DO UPDATE SET searched_at = excluded.searched_at",
+                        ))
+                        .bind(id.to_string())
+                        .bind(&now)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Index (or re-index) a node's searchable title in the FTS table.
     ///
     /// # Errors
@@ -993,27 +1023,34 @@ impl ContentRepository for ContentRepo {
         // (series/season/artist/album/author) are excluded: only leaf, grabbable
         // nodes are acquisition targets.
         //
-        // Returned in RANDOM order. The acquisition sweep (RssSync/MissingItemSearch)
-        // takes only the first N per run (bounded to protect the indexers), so a
-        // STABLE order lets a permanently-unsatisfiable head — a handful of
-        // monitored-missing items whose every release is rejected (below-min-seeders,
-        // quality-not-allowed), re-searched fruitlessly every cycle — monopolize the
-        // budget and STARVE everything behind it (e.g. a large TV backlog never
-        // reached because a few stuck movies are always first). Randomizing rotates
-        // coverage across the whole backlog over successive runs so no doomed head can
-        // block the rest. `RANDOM()` is portable across SQLite and Postgres; the query
-        // returns the full set (callers that need membership, not a sample, still get
-        // every row — only order changes).
+        // Ordered LEAST-RECENTLY-SEARCHED first: never-searched nodes (no
+        // `missing_search` row) ahead of all others, then oldest `searched_at` first.
+        // The acquisition sweep (RssSync/MissingItemSearch) takes only the first N per
+        // run (bounded to protect the indexers) and stamps every node it searches via
+        // `mark_missing_searched`, moving it to the BACK. So the budget rotates
+        // deterministically through the whole backlog — every missing node is
+        // guaranteed a search within ceil(backlog / N) runs — and a permanently
+        // unsatisfiable node (every release rejected: below-min-seeders,
+        // quality-not-allowed) can't monopolize the head: once searched it drops to
+        // the back like everything else, costing exactly one slot per full cycle.
+        // This replaces an earlier `ORDER BY RANDOM()` that avoided the same
+        // starvation but gave no coverage guarantee, leaving grabbable-but-unlucky
+        // items un-searched indefinitely. The trailing `RANDOM()` only breaks ties
+        // within a stamp tier (notably the never-searched tier) so no stable sub-order
+        // can form while a large tier drains. Mirrors `upgrade_candidates`. Portable
+        // across SQLite and Postgres (`searched_at IS NULL` yields 1/0 / true-false;
+        // DESC puts the never-searched first).
         let rows = sqlx::query(&pq(
             "SELECT c.id, c.library_id, c.media_type, c.parent_id, c.kind, c.series_type, c.coords,
                     c.monitored, c.title_id
              FROM content c
+             LEFT JOIN missing_search m ON m.content_id = c.id
              WHERE c.monitored = 1
                AND c.kind IN ('movie', 'episode', 'track', 'book')
                AND NOT EXISTS (
                    SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
                )
-             ORDER BY RANDOM()",
+             ORDER BY (m.searched_at IS NULL) DESC, m.searched_at ASC, RANDOM()",
         ))
         .fetch_all(&self.pool)
         .await?;

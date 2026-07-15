@@ -32,7 +32,8 @@ pub trait ContentRepository: Send + Sync {
     /// Fetch a content node as a [`ContentRef`].
     async fn get(&self, id: ContentId) -> Result<Option<ContentRef>, Self::Error>;
 
-    /// All monitored content nodes that currently lack an acceptable file.
+    /// All monitored content nodes that currently lack an acceptable file,
+    /// least-recently-searched first (never-searched nodes ahead of all others).
     async fn monitored_missing(&self) -> Result<Vec<ContentRef>, Self::Error>;
 
     /// The root nodes (those with no parent) of a library, in stable order — the

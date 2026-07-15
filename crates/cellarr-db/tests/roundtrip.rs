@@ -401,10 +401,13 @@ async fn upgrade_candidates_are_monitored_leaves_with_files_least_recently_searc
 }
 
 #[tokio::test]
-async fn monitored_missing_rotates_order_so_no_head_can_starve_the_rest() {
+async fn monitored_missing_rotates_never_searched_nodes_so_no_head_can_starve_the_rest() {
     // A stable order would let a permanently-unsatisfiable head monopolize the
-    // bounded acquisition sweep and starve everything behind it. monitored_missing
-    // returns a RANDOM order so successive runs rotate across the whole backlog.
+    // bounded acquisition sweep and starve everything behind it. Within a single
+    // search tier (here: all nodes never-searched) monitored_missing breaks ties
+    // with RANDOM(), so successive runs rotate across the whole backlog rather than
+    // re-presenting the same head. (Across tiers, ordering is deterministic
+    // least-recently-searched — see the dedicated test below.)
     let (_dir, db) = temp_db().await;
     let config = db.config();
     let content = db.content();
@@ -455,6 +458,79 @@ async fn monitored_missing_rotates_order_so_no_head_can_starve_the_rest() {
     assert_ne!(
         order_a, order_b,
         "the order must rotate between runs so the sweep covers the whole backlog"
+    );
+}
+
+#[tokio::test]
+async fn monitored_missing_orders_least_recently_searched_first() {
+    // The bounded sweep drains the backlog in round-robin: never-searched nodes come
+    // first, and once a node is stamped via `mark_missing_searched` it drops to the
+    // back so the next run reaches the ones it skipped — guaranteeing coverage a
+    // random draw could leave un-searched indefinitely.
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // Three monitored, file-less movies — all never-searched.
+    let a = movie_node(library.id, ContentId::new());
+    let b = movie_node(library.id, ContentId::new());
+    let c = movie_node(library.id, ContentId::new());
+    content.upsert(&a).await.unwrap();
+    content.upsert(&b).await.unwrap();
+    content.upsert(&c).await.unwrap();
+
+    // All three surface as missing.
+    let ids: std::collections::BTreeSet<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(ids, [a.id, b.id, c.id].into_iter().collect());
+
+    // Search `a`, then `b`: the never-searched `c` must sort ahead of both, and the
+    // earlier-searched `a` ahead of the later-searched `b`.
+    content.mark_missing_searched(vec![a.id]).await.unwrap();
+    // A distinct timestamp for `b` (searched_at has second resolution).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    content.mark_missing_searched(vec![b.id]).await.unwrap();
+
+    let order: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    let pos = |id: ContentId| order.iter().position(|x| *x == id).unwrap();
+    assert!(
+        pos(c.id) < pos(a.id) && pos(a.id) < pos(b.id),
+        "least-recently-searched first: never-searched c, then a, then b: {order:?}"
+    );
+
+    // Re-searching `c` moves it to the back (now the most-recently-searched).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    content.mark_missing_searched(vec![c.id]).await.unwrap();
+    let order2: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    let pos2 = |id: ContentId| order2.iter().position(|x| *x == id).unwrap();
+    assert!(
+        pos2(a.id) < pos2(b.id) && pos2(b.id) < pos2(c.id),
+        "after re-searching c it sorts last: a, b, c: {order2:?}"
     );
 }
 
