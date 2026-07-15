@@ -1696,6 +1696,17 @@ async fn delete_series_removes_whole_subtree() {
         title_id: None,
     };
     content.upsert(&series).await.unwrap();
+    // Link an external id so a series_meta identity row exists (keyed by title_id,
+    // not content_id — no cascade reaches it).
+    content
+        .link_external_id(series.id, MediaType::Tv, "tvdb", "81189", "Test Series")
+        .await
+        .unwrap();
+    let series_meta_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM series_meta")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(series_meta_before, 1, "the series identity row exists");
     let season = ContentNode {
         id: ContentId::new(),
         parent_id: Some(series.id),
@@ -1779,6 +1790,12 @@ async fn delete_series_removes_whole_subtree() {
     }
     assert!(media_files.get(file.id).await.unwrap().is_none());
     assert!(db.history().for_content(ep1.id).await.unwrap().is_empty());
+    // The typed identity row is gone too — no orphan series_meta left behind.
+    let series_meta_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM series_meta")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(series_meta_after, 0, "the series identity row was cleaned up");
 }
 
 #[tokio::test]

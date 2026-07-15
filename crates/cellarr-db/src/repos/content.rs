@@ -879,6 +879,26 @@ impl ContentRepo {
                         }
                     }
 
+                    // 1b. The typed identity rows (series_meta / movie_meta, keyed by
+                    //    title_id — NOT content_id, so no cascade reaches them). Collect
+                    //    each subtree node's title_id now, while the rows still exist,
+                    //    and delete the identities below; else a rolled-back onboard (or
+                    //    any series/movie delete) leaves an orphan series_meta row.
+                    let mut title_ids: Vec<String> = Vec::new();
+                    for cid in &ids {
+                        let row = sqlx::query(&pq("SELECT title_id FROM content WHERE id = ?1"))
+                            .bind(cid)
+                            .fetch_optional(&mut *conn)
+                            .await?;
+                        if let Some(tid) =
+                            row.and_then(|r| r.try_get::<Option<String>, _>("title_id").ok().flatten())
+                        {
+                            if !title_ids.contains(&tid) {
+                                title_ids.push(tid);
+                            }
+                        }
+                    }
+
                     // 2. The media files linked anywhere under the subtree, and
                     //    their on-disk paths (the receipt the file step recycles).
                     let mut media_ids: Vec<String> = Vec::new();
@@ -940,6 +960,20 @@ impl ContentRepo {
                     for mid in &media_ids {
                         sqlx::query(&pq("DELETE FROM media_file WHERE id = ?1"))
                             .bind(mid)
+                            .execute(&mut *conn)
+                            .await?;
+                    }
+
+                    // 6. The typed identity rows keyed by title_id. season_meta /
+                    //    episode_meta cascade from series_meta, so deleting the series /
+                    //    movie identity clears the whole typed tree.
+                    for tid in &title_ids {
+                        sqlx::query(&pq("DELETE FROM series_meta WHERE title_id = ?1"))
+                            .bind(tid)
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query(&pq("DELETE FROM movie_meta WHERE title_id = ?1"))
+                            .bind(tid)
                             .execute(&mut *conn)
                             .await?;
                     }
