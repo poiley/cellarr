@@ -44,6 +44,13 @@ pub struct SearchResult {
     /// gives no such signal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prominence: Option<u32>,
+    /// Alternative titles for this candidate — aliases and per-language
+    /// translations (TheTVDB), or the original-language title (TMDb). A file
+    /// often carries a title the source lists only as an alias: anime whose
+    /// canonical name is Japanese (`キルラキル`) but whose English translation is
+    /// `Kill la Kill`. Matching considers these so such a file resolves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alt_titles: Vec<String>,
 }
 
 /// An image reference (poster, banner, fanart, still).

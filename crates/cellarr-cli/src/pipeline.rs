@@ -1422,12 +1422,18 @@ fn pick_confident_candidate<'a>(
             .flat_map(char::to_lowercase)
             .collect()
     }
-    // Break a multi-candidate tie by prominence: return the single candidate that
-    // holds the strictly-highest *positive* prominence. When the top score is tied
-    // (or every candidate is unranked) there is no confident pick. This is what
-    // rescues otherwise-clean titles that collide on title+year (`About Time (2013)`
-    // returns two TMDb entries) or on an ambiguous no-year title (`Lost`): the real,
-    // mainstream entry has orders of magnitude more votes than the stub.
+    // A candidate matches a wanted (normalized) title if its display title OR any
+    // of its alternates (aliases / translations / original-language title) equals
+    // it. Exact — never substring — so `Naruto` still won't match `Naruto
+    // Shippuden`. This is what lets an anime filed under its English title match a
+    // hit whose canonical name is Japanese (`キルラキル` ⇄ `Kill la Kill`).
+    fn matches_title(c: &cellarr_api::LookupCandidate, want: &str) -> bool {
+        normalize(&c.title) == want || c.alt_titles.iter().any(|a| normalize(a) == want)
+    }
+    // Break a multi-candidate tie by prominence: the single candidate holding the
+    // strictly-highest *positive* prominence. Tied top (or all unranked) → None.
+    // Rescues title+year collisions (`About Time (2013)` returns two TMDb entries):
+    // the mainstream entry has orders of magnitude more votes than the stub.
     fn dominant<'a>(
         pool: &[&'a cellarr_api::LookupCandidate],
     ) -> Option<&'a cellarr_api::LookupCandidate> {
@@ -1447,19 +1453,46 @@ fn pick_confident_candidate<'a>(
         }
         unique.then_some(best).flatten()
     }
+    // Break a tie when no prominence signal exists (TheTVDB search carries no vote
+    // count): prefer the single candidate whose display title matches the parsed
+    // title *exactly* (case-insensitive, but punctuation-sensitive). `Lost` beats
+    // `Lost!` for a file named `Lost`. Alternates don't count here — an exact
+    // primary-title hit is the strong signal.
+    fn exact_raw<'a>(
+        pool: &[&'a cellarr_api::LookupCandidate],
+        parsed_title: &str,
+    ) -> Option<&'a cellarr_api::LookupCandidate> {
+        let want = parsed_title.trim();
+        let mut hit = None;
+        for &c in pool {
+            if c.title.trim().eq_ignore_ascii_case(want) {
+                if hit.is_some() {
+                    return None; // more than one exact match — still ambiguous.
+                }
+                hit = Some(c);
+            }
+        }
+        hit
+    }
+    // Prominence first (best when a source provides it), then an exact raw-title
+    // match (the only lever left for vote-less sources like TheTVDB).
+    fn tiebreak<'a>(
+        pool: &[&'a cellarr_api::LookupCandidate],
+        parsed_title: &str,
+    ) -> Option<&'a cellarr_api::LookupCandidate> {
+        dominant(pool).or_else(|| exact_raw(pool, parsed_title))
+    }
 
     let want = normalize(parsed_title);
-    let title_matches: Vec<&cellarr_api::LookupCandidate> = results
-        .iter()
-        .filter(|c| normalize(&c.title) == want)
-        .collect();
+    let title_matches: Vec<&cellarr_api::LookupCandidate> =
+        results.iter().filter(|c| matches_title(c, &want)).collect();
 
-    // No parsed year → confident on a single title match, else fall to prominence.
+    // No parsed year → confident on a single title match, else tie-break.
     let Some(py) = parsed_year else {
         return match title_matches.len() {
             0 => None,
             1 => Some(title_matches[0]),
-            _ => dominant(&title_matches),
+            _ => tiebreak(&title_matches, parsed_title),
         };
     };
 
@@ -1481,7 +1514,7 @@ fn pick_confident_candidate<'a>(
     match pool.len() {
         0 => None,
         1 => Some(pool[0]),
-        _ => dominant(&pool),
+        _ => tiebreak(&pool, parsed_title),
     }
 }
 
@@ -2788,7 +2821,7 @@ mod auto_onboard_tests {
     use cellarr_core::MediaType;
 
     fn cand(title: &str, year: Option<u16>, ids: &[(&str, &str)]) -> LookupCandidate {
-        cand_p(title, year, ids, None)
+        cand_full(title, year, ids, None, &[])
     }
 
     fn cand_p(
@@ -2796,6 +2829,16 @@ mod auto_onboard_tests {
         year: Option<u16>,
         ids: &[(&str, &str)],
         prominence: Option<u32>,
+    ) -> LookupCandidate {
+        cand_full(title, year, ids, prominence, &[])
+    }
+
+    fn cand_full(
+        title: &str,
+        year: Option<u16>,
+        ids: &[(&str, &str)],
+        prominence: Option<u32>,
+        alt_titles: &[&str],
     ) -> LookupCandidate {
         LookupCandidate {
             source_id: "1".to_string(),
@@ -2808,7 +2851,55 @@ mod auto_onboard_tests {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
             prominence,
+            alt_titles: alt_titles.iter().map(|s| (*s).to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn matches_an_alias_or_translation_not_just_the_primary_title() {
+        // The canonical title is Japanese; the English name is a translation. A
+        // file/folder named "Kill la Kill" must resolve to it.
+        let anime = vec![cand_full(
+            "キルラキル",
+            Some(2013),
+            &[("tvdb", "272074")],
+            None,
+            &["Kill la Kill", "Kiru ra kiru"],
+        )];
+        assert_eq!(
+            pick_confident_candidate(&anime, "Kill la Kill", None)
+                .and_then(|c| c.external_id("tvdb")),
+            Some("272074")
+        );
+        // Exactness holds: an alias must match in full, never as a substring.
+        let naruto = vec![
+            cand_full("Naruto", Some(2002), &[("tvdb", "78857")], None, &[]),
+            cand_full(
+                "Naruto Shippuden",
+                Some(2007),
+                &[("tvdb", "79824")],
+                None,
+                &["Naruto: Shippuden"],
+            ),
+        ];
+        assert_eq!(
+            pick_confident_candidate(&naruto, "Naruto", None).and_then(|c| c.external_id("tvdb")),
+            Some("78857")
+        );
+    }
+
+    #[test]
+    fn exact_raw_title_breaks_a_voteless_no_year_tie() {
+        // TheTVDB search carries no vote signal; "Lost" and "Lost!" both normalize
+        // to "lost". The exact raw-title match wins for a file named "Lost".
+        let lost = vec![
+            cand_full("Lost", Some(2004), &[("tvdb", "73739")], None, &[]),
+            cand_full("Lost!", Some(2015), &[("tvdb", "381554")], None, &[]),
+        ];
+        assert_eq!(
+            pick_confident_candidate(&lost, "Lost", None).and_then(|c| c.external_id("tvdb")),
+            Some("73739")
+        );
     }
 
     #[test]

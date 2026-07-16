@@ -48,6 +48,11 @@ pub struct LookupCandidate {
     /// no-year title). Higher = more prominent; `None` when the source gives no
     /// signal. Not surfaced in the v3 wire format — internal disambiguation only.
     pub prominence: Option<u32>,
+    /// Alternative titles (aliases, per-language translations, original-language
+    /// title). Lets a file that carries a title the source lists only as an alias
+    /// — anime named in Japanese but filed under its English title — still match.
+    /// Not surfaced in the v3 wire format — internal disambiguation only.
+    pub alt_titles: Vec<String>,
 }
 
 impl LookupCandidate {

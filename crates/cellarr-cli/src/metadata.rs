@@ -127,6 +127,7 @@ fn to_candidate(r: SearchResult) -> LookupCandidate {
         overview: r.overview,
         external_ids,
         prominence: r.prominence,
+        alt_titles: r.alt_titles,
     }
 }
 

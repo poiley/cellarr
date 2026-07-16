@@ -348,6 +348,27 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
         .map(str::to_string)
         .or_else(|| item.get("id").and_then(json_id))?;
     let title = item.get("name").and_then(|v| v.as_str())?.to_string();
+    // Alternate titles: the `aliases` list plus every per-language translation.
+    // A search hit's canonical `name` may be non-Latin (anime titled in Japanese)
+    // while the title on disk is an English translation — collect both so the
+    // matcher can recognize the file.
+    let mut alt_titles: Vec<String> = Vec::new();
+    if let Some(arr) = item.get("aliases").and_then(|v| v.as_array()) {
+        alt_titles.extend(
+            arr.iter()
+                .filter_map(|a| a.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if let Some(obj) = item.get("translations").and_then(|v| v.as_object()) {
+        alt_titles.extend(
+            obj.values()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        );
+    }
     Some(SearchResult {
         source_id,
         media_type: MediaType::Tv,
@@ -367,6 +388,7 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
             .and_then(serde_json::Value::as_f64)
             .filter(|s| s.is_finite() && *s >= 0.0)
             .map(|s| s.round().min(f64::from(u32::MAX)) as u32),
+        alt_titles,
     })
 }
 

@@ -249,6 +249,14 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
         .or_else(|| item.get("original_title"))
         .and_then(|v| v.as_str())?
         .to_string();
+    // The original-language title, kept as an alternate when it differs from the
+    // display title (foreign films searched by their native name).
+    let alt_titles = item
+        .get("original_title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(&title))
+        .map(|s| vec![s.to_string()])
+        .unwrap_or_default();
     Some(SearchResult {
         source_id,
         media_type: MediaType::Movie,
@@ -264,6 +272,7 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
             .get("vote_count")
             .and_then(serde_json::Value::as_u64)
             .map(|n| n.min(u64::from(u32::MAX)) as u32),
+        alt_titles,
     })
 }
 

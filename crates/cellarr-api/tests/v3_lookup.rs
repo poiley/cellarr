@@ -41,6 +41,7 @@ impl MetadataLookup for MockMetadata {
                             ("imdb".to_string(), "tt0903747".to_string()),
                         ],
                         prominence: None,
+                        alt_titles: Vec::new(),
                     }]))
                 } else {
                     Ok(LookupOutcome::Resolved(vec![]))
