@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 const getContent = vi.fn();
 const listContentFiles = vi.fn();
+const listContentSubtitles = vi.fn();
 const listContent = vi.fn();
 const listMovies = vi.fn();
 const listSeries = vi.fn();
@@ -23,6 +24,7 @@ vi.mock('@lib/api/client', async () => {
     api: {
       getContent: (...a: unknown[]) => getContent(...a),
       listContentFiles: (...a: unknown[]) => listContentFiles(...a),
+      listContentSubtitles: (...a: unknown[]) => listContentSubtitles(...a),
       listContent: (...a: unknown[]) => listContent(...a),
       listMovies: (...a: unknown[]) => listMovies(...a),
       listSeries: (...a: unknown[]) => listSeries(...a),
@@ -105,6 +107,7 @@ describe('Item-detail screen', () => {
     searchParams = new URLSearchParams();
     getContent.mockReset();
     listContentFiles.mockReset();
+    listContentSubtitles.mockReset();
     listContent.mockReset();
     listMovies.mockReset();
     listSeries.mockReset();
@@ -117,6 +120,7 @@ describe('Item-detail screen', () => {
     requestV3.mockReset();
     push.mockReset();
     // Default: empty catalogues unless a test overrides them.
+    listContentSubtitles.mockResolvedValue([]);
     listMovies.mockResolvedValue([]);
     listSeries.mockResolvedValue([]);
     // Default: no episodes (so the Monitoring card is absent unless a test seeds

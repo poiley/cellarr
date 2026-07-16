@@ -81,6 +81,7 @@ import type {
   RemotePathMapping,
   RootFolder,
   Series,
+  Subtitle,
   SystemStatus,
   SystemStatusV3,
   Tag,
@@ -446,6 +447,11 @@ export class CellarrClient {
 
   listContentFiles(id: string, signal?: AbortSignal) {
     return this.request<MediaFile[]>(`/content/${id}/files`, { signal });
+  }
+
+  /** Subtitles fetched for a content node (`/api/v1/content/{id}/subtitles`). */
+  listContentSubtitles(id: string, signal?: AbortSignal) {
+    return this.request<Subtitle[]>(`/content/${id}/subtitles`, { signal });
   }
 
   contentHistory(id: string, signal?: AbortSignal) {

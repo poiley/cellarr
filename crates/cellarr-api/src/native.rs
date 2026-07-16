@@ -36,6 +36,7 @@ pub fn router(state: AppState) -> Router {
         .route("/libraries/{id}/content", get(list_content))
         .route("/content/{id}", get(get_content))
         .route("/content/{id}/files", get(list_content_files))
+        .route("/content/{id}/subtitles", get(list_content_subtitles))
         .route("/content/{id}/history", get(content_history))
         .route("/indexers", get(list_indexers))
         .route("/downloadclients", get(list_download_clients))
@@ -265,6 +266,14 @@ async fn list_content_files(
     Ok(Json(
         state.db.media_files().list_for_content(content_id).await?,
     ))
+}
+
+async fn list_content_subtitles(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<cellarr_core::Subtitle>>> {
+    let content_id = ContentId::from_uuid(parse_uuid(&id, "content")?);
+    Ok(Json(state.db.subtitles().list_for_content(content_id).await?))
 }
 
 async fn content_history(

@@ -61,6 +61,21 @@ export interface MediaFile {
   [key: string]: unknown;
 }
 
+/** A subtitle sidecar fetched for a media file (`/api/v1/content/{id}/subtitles`). */
+export interface Subtitle {
+  id: string;
+  media_file_id: string;
+  language: string;
+  path: string;
+  provider: string;
+  provider_id?: string | null;
+  score?: number | null;
+  forced: boolean;
+  hearing_impaired: boolean;
+  added_at: string;
+  [key: string]: unknown;
+}
+
 export interface HistoryRecord {
   [key: string]: unknown;
 }

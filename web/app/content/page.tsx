@@ -32,7 +32,15 @@ import AppShell from '@app/_components/AppShell';
 import TagInput from '@app/settings/_components/TagInput';
 import { useToast } from '@app/_lib/ToastProvider';
 import { api, ApiError } from '@lib/api/client';
-import type { ContentNode, ContentRef, Episode, MediaFile, QualityProfile, Tag } from '@lib/api/types';
+import type {
+  ContentNode,
+  ContentRef,
+  Episode,
+  MediaFile,
+  QualityProfile,
+  Subtitle,
+  Tag,
+} from '@lib/api/types';
 import {
   basename,
   coordsLabel,
@@ -545,6 +553,7 @@ function ItemDetail() {
 
   const [node, setNode] = React.useState<LoadState<ContentNode>>({ phase: 'loading' });
   const [files, setFiles] = React.useState<LoadState<MediaFile[]>>({ phase: 'loading' });
+  const [subtitles, setSubtitles] = React.useState<LoadState<Subtitle[]>>({ phase: 'loading' });
   const [siblings, setSiblings] = React.useState<ContentRef[]>([]);
   const [catalogueTitle, setCatalogueTitle] = React.useState<string | undefined>(undefined);
   // The rich v3 detail resource (title/year/overview/size/profile/status) that
@@ -673,6 +682,18 @@ function ItemDetail() {
           return;
         }
         setFiles({ phase: 'error', message: errorMessage(err, 'failed to load files') });
+      });
+
+    setSubtitles({ phase: 'loading' });
+    api
+      .listContentSubtitles(id, controller.signal)
+      .then((data) => setSubtitles({ phase: 'ready', data }))
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.code === 'network_error') {
+          setSubtitles({ phase: 'ready', data: [] });
+          return;
+        }
+        setSubtitles({ phase: 'error', message: errorMessage(err, 'failed to load subtitles') });
       });
 
     return () => controller.abort();
@@ -1221,6 +1242,31 @@ function ItemDetail() {
             </Row>
           </>
         ) : null}
+      </Card>
+
+      <Card title="Subtitles" style={{ marginTop: '2ch' }}>
+        {subtitles.phase === 'loading' ? <Text>Loading subtitles…</Text> : null}
+        {subtitles.phase === 'error' ? (
+          <Text>Could not load subtitles: {subtitles.message}</Text>
+        ) : null}
+        {subtitles.phase === 'ready' && subtitles.data.length === 0 ? (
+          <Text>
+            No subtitles yet. Configure a provider (CELLARR_SUBTITLES__*) and search.
+          </Text>
+        ) : null}
+        {subtitles.phase === 'ready' && subtitles.data.length > 0 ? (
+          <Row style={{ gap: '0.5ch', flexWrap: 'wrap' }}>
+            {subtitles.data.map((s) => (
+              <Badge key={s.id}>
+                {s.language.toUpperCase()}
+                {s.forced ? ' · forced' : ''}
+                {s.hearing_impaired ? ' · HI' : ''}
+              </Badge>
+            ))}
+          </Row>
+        ) : null}
+        <Divider type="GRADIENT" />
+        <Button onClick={() => runCommand('SubtitleSearch')}>Fetch subtitles</Button>
       </Card>
     </AppShell>
   );
