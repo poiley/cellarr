@@ -682,6 +682,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cellarr-subtitles"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cellarr-core",
+ "governor",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -8,6 +8,7 @@ members = [
     "crates/cellarr-media",
     "crates/cellarr-indexers",
     "crates/cellarr-download",
+    "crates/cellarr-subtitles",
     "crates/cellarr-fs",
     "crates/cellarr-jobs",
     "crates/cellarr-meta",
@@ -34,6 +35,7 @@ cellarr-decide = { path = "crates/cellarr-decide" }
 cellarr-media = { path = "crates/cellarr-media" }
 cellarr-indexers = { path = "crates/cellarr-indexers" }
 cellarr-download = { path = "crates/cellarr-download" }
+cellarr-subtitles = { path = "crates/cellarr-subtitles" }
 cellarr-fs = { path = "crates/cellarr-fs" }
 cellarr-jobs = { path = "crates/cellarr-jobs" }
 cellarr-meta = { path = "crates/cellarr-meta" }
