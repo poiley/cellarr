@@ -40,7 +40,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use cellarr_api::events::{DomainEvent, EventBus};
-use cellarr_core::repo::{ContentRepository, ProfileRepository};
+use cellarr_core::repo::{ContentRepository, MediaFileRepository, ProfileRepository};
 use cellarr_core::{ContentKind, ContentMetadata, ContentRef, DownloadClient, Indexer, MediaType};
 use cellarr_db::Database;
 use cellarr_decide::ProperRepackPolicy;
@@ -80,6 +80,12 @@ const REFRESH_SERIES_CAP: usize = 25;
 /// COST too (`scan_manual_import` bounds the walk when a limit is set), not just
 /// the write volume. The remainder is picked up on the next rescan.
 const ONBOARD_BATCH_CAP: usize = 100;
+
+/// How many content nodes one `SubtitleScan` processes per run. Each node may fan
+/// out to several provider requests (a search + download per missing language per
+/// file), and OpenSubtitles rate-limits + meters downloads, so a large library
+/// drains over successive @daily passes rather than in one burst.
+const SUBTITLE_SCAN_CAP: usize = 50;
 
 /// The live seams one pipeline run needs, resolved freshly per run so CRUD writes
 /// (a new indexer, a reconfigured client) take effect with no restart.
@@ -145,6 +151,11 @@ pub struct LivePipelineHandler<E: PipelineEnv> {
     /// it — upgrades then happen only via a user's manual search. Bounded + rotated
     /// (least-recently-searched first) so it never re-hammers the same nodes.
     upgrade_search_limit: Option<usize>,
+    /// The subtitle provider (OpenSubtitles), attached for the opt-in subtitle
+    /// jobs. `None` (the default) leaves `SubtitleScan`/`SubtitleSearch` inert.
+    subtitles: Option<Arc<dyn cellarr_subtitles::SubtitleProvider>>,
+    /// Wanted subtitle languages (ISO-639-1). Empty → nothing to fetch.
+    subtitle_languages: Vec<String>,
 }
 
 impl<E: PipelineEnv> LivePipelineHandler<E> {
@@ -164,7 +175,23 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             auto_onboard_limit: None,
             max_active_downloads: None,
             upgrade_search_limit: None,
+            subtitles: None,
+            subtitle_languages: Vec::new(),
         }
+    }
+
+    /// Attach the subtitle provider + wanted languages, enabling the
+    /// `SubtitleScan`/`SubtitleSearch` jobs. With no provider (or no languages)
+    /// those jobs no-op, so the feature stays strictly opt-in.
+    #[must_use]
+    pub fn with_subtitles(
+        mut self,
+        provider: Arc<dyn cellarr_subtitles::SubtitleProvider>,
+        languages: Vec<String>,
+    ) -> Self {
+        self.subtitles = Some(provider);
+        self.subtitle_languages = languages;
+        self
     }
 
     /// Enable the automatic quality-upgrade sweep with a per-`RssSync` bound: after
@@ -359,6 +386,160 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .get(id)
             .await
             .map_err(|e| format!("loading content {content_id} failed: {e}"))
+    }
+
+    /// `SubtitleScan`: sweep every content node that has a file for missing
+    /// wanted-language subtitles, bounded to [`SUBTITLE_SCAN_CAP`] nodes/run.
+    /// Opt-in — a no-op unless a provider AND languages are configured.
+    async fn run_subtitle_scan(&self) -> JobResult {
+        if self.subtitles.is_none() || self.subtitle_languages.is_empty() {
+            return JobResult::Success;
+        }
+        // Only nodes WITH files appear here, so every entry is a movie/episode leaf.
+        let grouped = match self.db.media_files().all_grouped_by_content().await {
+            Ok(g) => g,
+            Err(e) => {
+                return JobResult::Retryable {
+                    detail: format!("subtitle scan: loading files failed: {e}"),
+                }
+            }
+        };
+        let mut fetched = 0usize;
+        let mut nodes = 0usize;
+        for content_id in grouped.into_keys() {
+            if nodes >= SUBTITLE_SCAN_CAP {
+                break;
+            }
+            let Ok(Some(node)) = self.db.content().get(content_id).await else {
+                continue;
+            };
+            fetched += self.fetch_subtitles_for_node(&node).await;
+            nodes += 1;
+        }
+        if fetched > 0 {
+            tracing::info!(fetched, nodes, "subtitle scan complete");
+        }
+        JobResult::Success
+    }
+
+    /// Fetch every missing wanted-language subtitle for one node's files: for each
+    /// file × missing language, search the provider, pick the best match, download
+    /// it, write the sidecar beside the media, and record the `subtitle` row.
+    /// Returns how many sidecars were written. Best-effort: any per-(file,language)
+    /// failure is logged and skipped, never failing the whole node.
+    async fn fetch_subtitles_for_node(&self, node: &ContentRef) -> usize {
+        let Some(provider) = self.subtitles.clone() else {
+            return 0;
+        };
+        if self.subtitle_languages.is_empty()
+            || !matches!(node.media_type, MediaType::Movie | MediaType::Tv)
+        {
+            return 0;
+        }
+        let files = self
+            .db
+            .media_files()
+            .list_for_content(node.id)
+            .await
+            .unwrap_or_default();
+        if files.is_empty() {
+            return 0;
+        }
+        // OpenSubtitles keys off imdb/tmdb (not tvdb); without either we can't query
+        // by id, so skip (a title-only fallback is a later slice).
+        let (imdb, tmdb) = self
+            .db
+            .content()
+            .external_ids_for(node.id, node.media_type)
+            .await
+            .unwrap_or((None, None));
+        if imdb.is_none() && tmdb.is_none() {
+            return 0;
+        }
+        let (season, episode) = match &node.coords {
+            cellarr_core::Coordinates::Episode {
+                season, episode, ..
+            } => (Some(*season), Some(*episode)),
+            _ => (None, None),
+        };
+
+        let mut fetched = 0usize;
+        for file in &files {
+            let existing = self
+                .db
+                .subtitles()
+                .list_for_file(file.id)
+                .await
+                .unwrap_or_default();
+            let have: std::collections::HashSet<&str> =
+                existing.iter().map(|s| s.language.as_str()).collect();
+            let release_name = std::path::Path::new(&file.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string);
+            for lang in &self.subtitle_languages {
+                if have.contains(lang.as_str()) {
+                    continue;
+                }
+                let query = cellarr_subtitles::SubtitleQuery {
+                    media_type: Some(node.media_type),
+                    imdb_id: imdb.clone(),
+                    tmdb_id: tmdb.clone(),
+                    season,
+                    episode,
+                    query: None,
+                    release_name: release_name.clone(),
+                    languages: vec![lang.clone()],
+                };
+                let matches = match provider.search(&query).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(language = %lang, error = %e, "subtitle search failed");
+                        continue;
+                    }
+                };
+                let Some(best) = pick_best_subtitle(&matches, lang) else {
+                    continue;
+                };
+                let bytes = match provider.download(best).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(language = %lang, error = %e, "subtitle download failed");
+                        continue;
+                    }
+                };
+                let path = subtitle_sidecar_path(
+                    &file.path,
+                    lang,
+                    best.forced,
+                    best.hearing_impaired,
+                    &best.format,
+                );
+                if let Err(e) = write_bytes_atomic(&path, &bytes).await {
+                    tracing::warn!(path = %path, error = %e, "subtitle write failed");
+                    continue;
+                }
+                let record = cellarr_core::Subtitle {
+                    id: cellarr_core::SubtitleId::new(),
+                    media_file_id: file.id,
+                    language: lang.clone(),
+                    path: path.clone(),
+                    provider: best.provider.to_string(),
+                    provider_id: Some(best.id.clone()),
+                    score: Some(best.score),
+                    forced: best.forced,
+                    hearing_impaired: best.hearing_impaired,
+                    added_at: String::new(), // stamped by the repo
+                };
+                if let Err(e) = self.db.subtitles().upsert(&record).await {
+                    tracing::warn!(error = %e, "recording subtitle failed");
+                    continue;
+                }
+                tracing::info!(language = %lang, path = %path, "fetched subtitle");
+                fetched += 1;
+            }
+        }
+        fetched
     }
 
     /// Drive one content node through the full runner, publishing the matching
@@ -1623,6 +1804,21 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
             JobKind::RescanLibrary => self.run_rescan().await,
             // Reconcile in-flight grabs against reality: clean redundant/dead ones.
             JobKind::ReconcileDownloads => self.run_reconcile_downloads().await,
+            // Sweep every file for missing wanted-language subtitles, and the
+            // on-demand single-node variant behind the UI "Search subtitles" button.
+            JobKind::SubtitleScan => self.run_subtitle_scan().await,
+            JobKind::SubtitleSearch { content_id } => {
+                match self.one_node(content_id).await {
+                    Ok(Some(node)) => {
+                        self.fetch_subtitles_for_node(&node).await;
+                        JobResult::Success
+                    }
+                    Ok(None) => JobResult::Permanent {
+                        detail: format!("subtitle search: content {content_id} not found"),
+                    },
+                    Err(detail) => JobResult::Permanent { detail },
+                }
+            }
             // Not pipeline work: a benign success so the scheduler keeps its cadence.
             JobKind::DiskSpaceCheck => JobResult::Success,
         }
@@ -1640,7 +1836,58 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::RescanLibrary => "RescanLibrary",
         JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
+        JobKind::SubtitleScan => "SubtitleScan",
+        JobKind::SubtitleSearch { .. } => "SubtitleSearch",
     }
+}
+
+/// Pick the best subtitle among a provider's matches for `lang`: prefer a FULL
+/// subtitle (not forced-narrative-only), then the highest provider score. `None`
+/// when nothing matched the language.
+fn pick_best_subtitle<'a>(
+    matches: &'a [cellarr_subtitles::SubtitleMatch],
+    lang: &str,
+) -> Option<&'a cellarr_subtitles::SubtitleMatch> {
+    matches
+        .iter()
+        .filter(|m| m.language.eq_ignore_ascii_case(lang))
+        // `!forced` (a full subtitle) sorts above a forced-only one; then by score.
+        .max_by_key(|m| (!m.forced, m.score))
+}
+
+/// Derive the sidecar path a subtitle is written to, beside the media file:
+/// `Movie (2019).mkv` → `Movie (2019).en.srt` (with `.forced`/`.hi` modifiers for
+/// the accessibility variants), the convention media players auto-detect.
+fn subtitle_sidecar_path(media_path: &str, lang: &str, forced: bool, hi: bool, format: &str) -> String {
+    let p = std::path::Path::new(media_path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("subtitle");
+    let mut name = format!("{stem}.{lang}");
+    if forced {
+        name.push_str(".forced");
+    }
+    if hi {
+        name.push_str(".hi");
+    }
+    name.push('.');
+    name.push_str(if format.is_empty() { "srt" } else { format });
+    match p.parent() {
+        Some(dir) => dir.join(name).to_string_lossy().into_owned(),
+        None => name,
+    }
+}
+
+/// Write subtitle bytes to `path` atomically: a temp sibling, then a rename (so a
+/// crash never leaves a half-written sidecar the player would choke on). Creates
+/// the parent directory if needed.
+async fn write_bytes_atomic(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let p = std::path::Path::new(path);
+    if let Some(dir) = p.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let tmp = format!("{path}.cellarr.tmp");
+    tokio::fs::write(&tmp, bytes).await?;
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
 }
 
 /// Whether a node's metadata already carries resolver-provided **enrichment** —
@@ -2817,6 +3064,66 @@ mod refresh_tests {
         // A leaf is re-resolved only when not already enriched.
         assert!(refresh_should_resolve(ContentKind::Movie, false));
         assert!(!refresh_should_resolve(ContentKind::Movie, true));
+    }
+}
+
+#[cfg(test)]
+mod subtitle_tests {
+    use super::{pick_best_subtitle, subtitle_sidecar_path};
+    use cellarr_subtitles::SubtitleMatch;
+
+    fn m(lang: &str, forced: bool, hi: bool, score: i32, id: &str) -> SubtitleMatch {
+        SubtitleMatch {
+            provider: "opensubtitles",
+            id: id.to_string(),
+            language: lang.to_string(),
+            release_name: None,
+            forced,
+            hearing_impaired: hi,
+            score,
+            format: "srt".to_string(),
+        }
+    }
+
+    #[test]
+    fn sidecar_path_derives_language_and_variant_suffixes() {
+        let base = "/media/movies/Uncut Gems (2019)/Uncut Gems (2019).mkv";
+        assert_eq!(
+            subtitle_sidecar_path(base, "en", false, false, "srt"),
+            "/media/movies/Uncut Gems (2019)/Uncut Gems (2019).en.srt"
+        );
+        assert_eq!(
+            subtitle_sidecar_path(base, "en", true, false, "srt"),
+            "/media/movies/Uncut Gems (2019)/Uncut Gems (2019).en.forced.srt"
+        );
+        assert_eq!(
+            subtitle_sidecar_path(base, "es", false, true, "ass"),
+            "/media/movies/Uncut Gems (2019)/Uncut Gems (2019).es.hi.ass"
+        );
+        // Empty format defaults to srt.
+        assert_eq!(
+            subtitle_sidecar_path(base, "fr", false, false, ""),
+            "/media/movies/Uncut Gems (2019)/Uncut Gems (2019).fr.srt"
+        );
+    }
+
+    #[test]
+    fn pick_best_prefers_full_subtitle_then_highest_score() {
+        let matches = vec![
+            m("en", true, false, 999, "forced"), // forced-only, huge score
+            m("en", false, false, 50, "full-lo"),
+            m("en", false, false, 80, "full-hi"),
+            m("es", false, false, 500, "wrong-lang"),
+        ];
+        // A full subtitle beats a forced-only one even with a lower score, and
+        // among full ones the highest score wins.
+        let best = pick_best_subtitle(&matches, "en").expect("a match");
+        assert_eq!(best.id, "full-hi");
+        // Only a forced match available → it is still returned (better than nothing).
+        let only_forced = vec![m("en", true, false, 10, "f")];
+        assert_eq!(pick_best_subtitle(&only_forced, "en").unwrap().id, "f");
+        // No language match → None.
+        assert!(pick_best_subtitle(&matches, "de").is_none());
     }
 }
 

@@ -443,6 +443,7 @@ dependencies = [
  "cellarr-migrate",
  "cellarr-parse",
  "cellarr-plugins",
+ "cellarr-subtitles",
  "clap",
  "dotenvy",
  "figment",

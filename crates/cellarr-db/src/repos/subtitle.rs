@@ -30,7 +30,9 @@ impl SubtitleRepo {
     /// Insert a subtitle, or update the existing row for the same
     /// `(media_file, language, forced, hearing_impaired)` variant in place (a
     /// re-fetch that upgrades the file). The passed `id` is kept only when the row
-    /// is newly inserted; on conflict the existing row's id is preserved.
+    /// is newly inserted; on conflict the existing row's id is preserved. The
+    /// `added_at` stamp is set to now by the repo (the passed value is ignored),
+    /// matching how the other repos stamp their timestamps.
     ///
     /// # Errors
     /// Returns a [`DbError`] on write failure.
@@ -44,7 +46,7 @@ impl SubtitleRepo {
         let score = sub.score.map(i64::from);
         let forced = i64::from(sub.forced);
         let hearing_impaired = i64::from(sub.hearing_impaired);
-        let added_at = sub.added_at.clone();
+        let added_at = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {

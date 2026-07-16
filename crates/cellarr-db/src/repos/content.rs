@@ -594,6 +594,66 @@ impl ContentRepo {
             .unwrap_or_default())
     }
 
+    /// The IMDb and TMDb ids for the identity a content node belongs to, as
+    /// `(imdb, tmdb)` — the keys a subtitle provider searches by (OpenSubtitles
+    /// does not accept TheTVDB ids). Walks up to the nearest `title_id`-bearing
+    /// ancestor (the series root for an episode, the movie node itself for a film)
+    /// and reads its `movie_meta`/`series_meta` row. `(None, None)` when the node
+    /// is unidentified or carries neither id.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn external_ids_for(
+        &self,
+        id: ContentId,
+        media_type: MediaType,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let table = match media_type {
+            MediaType::Movie => "movie_meta",
+            MediaType::Tv => "series_meta",
+            MediaType::Music | MediaType::Book => return Ok((None, None)),
+        };
+        // Walk up to the node that carries a `title_id` (see `aliases_for_content`).
+        let mut cur = Some(id.to_string());
+        let mut title_id: Option<String> = None;
+        for _ in 0..8 {
+            let Some(c) = cur.take() else { break };
+            let Some(row) = sqlx::query(&pq("SELECT parent_id, title_id FROM content WHERE id = ?1"))
+                .bind(&c)
+                .fetch_optional(&self.pool)
+                .await?
+            else {
+                break;
+            };
+            if let Some(tid) = row.try_get::<Option<String>, _>("title_id")? {
+                title_id = Some(tid);
+                break;
+            }
+            cur = row.try_get::<Option<String>, _>("parent_id")?;
+        }
+        let Some(tid) = title_id else {
+            return Ok((None, None));
+        };
+        let row = sqlx::query(&pq(&format!(
+            "SELECT imdb_id, tmdb_id FROM {table} WHERE title_id = ?1"
+        )))
+        .bind(&tid)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok((None, None));
+        };
+        let imdb = row
+            .try_get::<Option<String>, _>("imdb_id")
+            .unwrap_or(None)
+            .filter(|s| !s.trim().is_empty());
+        let tmdb = row
+            .try_get::<Option<i64>, _>("tmdb_id")
+            .unwrap_or(None)
+            .map(|v| v.to_string());
+        Ok((imdb, tmdb))
+    }
+
     /// The set of external-id identity keys `(id_type, id_value)` already present
     /// for `media_type`, read back from the typed `*_meta` identity rows linked to
     /// this library's content nodes.

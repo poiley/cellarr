@@ -43,6 +43,15 @@ pub enum JobKind {
         /// The content node (UUID string) to search for.
         content_id: String,
     },
+    /// Periodic sweep for missing subtitles across every content node that has a
+    /// file: for each wanted language a file lacks, search a provider and fetch it.
+    SubtitleScan,
+    /// An on-demand subtitle search for one content node (the UI "Search
+    /// subtitles" button).
+    SubtitleSearch {
+        /// The content node (UUID string) to fetch subtitles for.
+        content_id: String,
+    },
 }
 
 impl JobKind {
@@ -62,6 +71,9 @@ impl JobKind {
             JobKind::RescanLibrary => "filesystem",
             // Reconcile polls the download client, so share its bucket.
             JobKind::ReconcileDownloads => "download",
+            // Subtitle jobs hit the subtitle provider — their own bucket keeps
+            // them off the indexer/metadata budgets.
+            JobKind::SubtitleScan | JobKind::SubtitleSearch { .. } => "subtitle",
         }
     }
 
@@ -77,6 +89,8 @@ impl JobKind {
             JobKind::RescanLibrary => "rescan_library".into(),
             JobKind::ReconcileDownloads => "reconcile_downloads".into(),
             JobKind::ManualSearch { content_id } => format!("manual_search:{content_id}"),
+            JobKind::SubtitleScan => "subtitle_scan".into(),
+            JobKind::SubtitleSearch { content_id } => format!("subtitle_search:{content_id}"),
         }
     }
 }

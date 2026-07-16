@@ -22,6 +22,7 @@ cellarr-decide.workspace = true
 cellarr-media.workspace = true
 cellarr-indexers.workspace = true
 cellarr-download.workspace = true
+cellarr-subtitles.workspace = true
 cellarr-fs.workspace = true
 cellarr-jobs.workspace = true
 cellarr-meta.workspace = true

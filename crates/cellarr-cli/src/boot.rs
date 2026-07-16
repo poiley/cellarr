@@ -194,24 +194,47 @@ impl Daemon {
         // Automatic quality-upgrade sweep bound (None/0 = disabled → upgrades only
         // via manual search).
         let upgrade_search_limit = config.upgrade_search_limit.filter(|&n| n > 0);
+        // Native subtitle provider (OpenSubtitles), opt-in via CELLARR_SUBTITLES__*.
+        // Built only when an api key is present; without it the subtitle jobs stay
+        // inert. Keys are never logged.
+        let subtitle_languages = config.subtitles.languages.clone();
+        let handler_subtitles: Option<std::sync::Arc<dyn cellarr_subtitles::SubtitleProvider>> =
+            config.subtitles.api_key.clone().map(|api_key| {
+                let cfg = cellarr_subtitles::OpenSubtitlesConfig::new(
+                    api_key,
+                    config.subtitles.username.clone(),
+                    config.subtitles.password.clone(),
+                );
+                std::sync::Arc::new(cellarr_subtitles::OpenSubtitles::new(
+                    cellarr_subtitles::ReqwestFetcher::new("opensubtitles"),
+                    cfg,
+                )) as std::sync::Arc<dyn cellarr_subtitles::SubtitleProvider>
+            });
+        info!(
+            subtitles_configured = handler_subtitles.is_some(),
+            subtitle_languages = subtitle_languages.len(),
+            "subtitle provider initialized"
+        );
 
         let state = AppState::new_with_handler(db, auth, move |events| {
             let env = crate::pipeline::LivePipelineEnv::new(handler_db.clone());
             // Attach the scene-mapping provider so a fired job's Identify stage
             // runs the anime absolute→episode remap (the dead-in-prod fix).
-            std::sync::Arc::new(
-                crate::pipeline::LivePipelineHandler::new(
-                    handler_db,
-                    handler_registry,
-                    events,
-                    env,
-                )
-                .with_scene_provider(handler_scene_provider)
-                .with_resolver(handler_resolver)
-                .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit)
-                .with_max_active_downloads(max_active_downloads)
-                .with_upgrade_search(upgrade_search_limit),
+            let mut handler = crate::pipeline::LivePipelineHandler::new(
+                handler_db,
+                handler_registry,
+                events,
+                env,
             )
+            .with_scene_provider(handler_scene_provider)
+            .with_resolver(handler_resolver)
+            .with_auto_onboard(handler_metadata, auto_onboard, auto_onboard_limit)
+            .with_max_active_downloads(max_active_downloads)
+            .with_upgrade_search(upgrade_search_limit);
+            if let Some(provider) = handler_subtitles {
+                handler = handler.with_subtitles(provider, subtitle_languages);
+            }
+            std::sync::Arc::new(handler)
         })
         .with_metadata(metadata)
         .with_release_search(release_search);
@@ -467,6 +490,14 @@ async fn register_recurring(state: &AppState) -> Result<()> {
         )
         .await
         .context("registering ReconcileDownloads")?;
+    // Sweep for missing subtitles daily: for each file lacking a wanted language,
+    // fetch one from the provider. Inert unless subtitles are configured (no
+    // provider / no languages → the job no-ops), and bounded per run, so a daily
+    // cadence is safe.
+    scheduler
+        .add_cron(JobKind::SubtitleScan, "@daily", RetryPolicy::default())
+        .await
+        .context("registering SubtitleScan")?;
     Ok(())
 }
 

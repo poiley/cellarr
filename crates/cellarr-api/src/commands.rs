@@ -91,6 +91,8 @@ pub fn command_name(kind: &JobKind) -> &'static str {
         JobKind::RescanLibrary => "RescanLibrary",
         JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
+        JobKind::SubtitleScan => "SubtitleScan",
+        JobKind::SubtitleSearch { .. } => "SubtitleSearch",
     }
 }
 
@@ -128,6 +130,10 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
         "manualsearch" | "moviesearch" | "episodesearch" | "seriessearch" => {
             content_id.map(|content_id| JobKind::ManualSearch { content_id })
         }
+        // Native subtitle commands: a whole-library sweep, and a per-node search
+        // (the UI "Search subtitles" action) which needs a content id.
+        "subtitlescan" | "subtitlesearchall" => Some(JobKind::SubtitleScan),
+        "subtitlesearch" => content_id.map(|content_id| JobKind::SubtitleSearch { content_id }),
         _ => None,
     }
 }
@@ -149,7 +155,11 @@ pub fn kind_for_command(name: &str, content_id: Option<String>) -> Option<JobKin
 pub async fn submit(scheduler: &ApiScheduler, kind: JobKind) -> Result<String, String> {
     let defer = matches!(
         kind,
-        JobKind::RescanLibrary | JobKind::ReconcileDownloads | JobKind::MetadataRefresh
+        JobKind::RescanLibrary
+            | JobKind::ReconcileDownloads
+            | JobKind::MetadataRefresh
+            // A library-wide subtitle sweep walks every file and hits the network.
+            | JobKind::SubtitleScan
     );
     let id = scheduler
         .submit_now(kind, RetryPolicy::default())

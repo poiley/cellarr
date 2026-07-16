@@ -55,6 +55,10 @@ pub struct Config {
     pub tvdb: TvdbConfig,
     /// TMDb (movie metadata) credentials, from `CELLARR_TMDB__*`.
     pub tmdb: TmdbConfig,
+    /// Native subtitle fetching (OpenSubtitles) — credentials + wanted languages,
+    /// from `CELLARR_SUBTITLES__*`. Off by default (no api key → no subtitle jobs).
+    #[serde(default)]
+    pub subtitles: SubtitlesConfig,
     /// Media-management file-handling settings (the recycle-bin path a delete
     /// moves removed media into instead of unlinking).
     pub media_management: MediaManagementConfig,
@@ -209,6 +213,37 @@ impl std::fmt::Debug for TmdbConfig {
     }
 }
 
+/// Native subtitle configuration (OpenSubtitles.com).
+///
+/// From `CELLARR_SUBTITLES__*`: `API_KEY` (required to search), `USERNAME` +
+/// `PASSWORD` (required to download — the API gates downloads behind a per-user
+/// quota), and `LANGUAGES` (a list of ISO-639-1 codes to fetch). With no
+/// `api_key` the subtitle jobs are inert, so the feature is strictly opt-in.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubtitlesConfig {
+    /// The OpenSubtitles API key. `None` → subtitle fetching disabled.
+    pub api_key: Option<String>,
+    /// Account username, needed only to download.
+    pub username: Option<String>,
+    /// Account password, needed only to download.
+    pub password: Option<String>,
+    /// Wanted languages as ISO-639-1 codes (e.g. `["en", "es"]`). Empty → nothing
+    /// to fetch, so the jobs no-op even with a key configured.
+    pub languages: Vec<String>,
+}
+
+impl std::fmt::Debug for SubtitlesConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubtitlesConfig")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("username", &self.username.as_ref().map(|_| "<redacted>"))
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("languages", &self.languages)
+            .finish()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -220,6 +255,7 @@ impl Default for Config {
             metrics: MetricsConfig::default(),
             tvdb: TvdbConfig::default(),
             tmdb: TmdbConfig::default(),
+            subtitles: SubtitlesConfig::default(),
             media_management: MediaManagementConfig::default(),
             managed_config_path: None,
             max_active_downloads: None,
