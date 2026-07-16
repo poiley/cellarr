@@ -77,7 +77,8 @@ jobs:
   # test suite, so a Postgres-path regression in a query surfaces here. Each test
   # isolates itself in a unique Postgres schema (test-support helper), so the
   # whole suite runs against the one service container without cross-contamination.
-  # Non-blocking: does not gate the image build (mirrors pg-check's role).
+  # GATES the `image-postgres` publish (a real Postgres-path regression blocks the
+  # image rinzler runs); the default SQLite `image` does not depend on it.
   test-pg:
     runs-on: ubuntu-latest
     services:
@@ -105,10 +106,9 @@ jobs:
       - name: cargo test -p cellarr-db --features postgres
         run: cargo test --locked -p cellarr-db --features postgres
 
-  # Run the cellarr-db tests on the DEFAULT (SQLite) backend. `just test` is the
-  # local SQLite gate, but nothing here exercised it — otlp-check/pg-check only
-  # `cargo check` the cli (not the db test target). This validates the SQLite arm
-  # of the shared test harness so a change can't break the default build untested.
+  # The whole-workspace test suite on the DEFAULT (SQLite) backend — the local
+  # `just test` gate, in CI. GATES both image publishes: a test failure in any
+  # crate blocks the build, so a regression can't reach GHCR or the cluster.
   test-sqlite:
     runs-on: ubuntu-latest
     steps:
@@ -129,7 +129,11 @@ jobs:
         run: cargo test --locked --workspace
 
   image:
-    needs: [changes]
+    # Gate the publish on the hermetic whole-workspace SQLite suite: a test
+    # failure in ANY crate now blocks the image (and thus the deploy) instead of
+    # shipping a regression. A failed `test-sqlite` skips this job via `needs`
+    # (the `if` has no `always()`), so nothing broken reaches GHCR.
+    needs: [changes, test-sqlite]
     # Build on any code change, and always on a manual dispatch (a human clicking
     # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
@@ -200,7 +204,10 @@ jobs:
   # deployment whose SQLite file would sit on high-latency network storage runs
   # this image instead, pointed at a Postgres server via CELLARR_DATABASE_URL.
   image-postgres:
-    needs: [changes]
+    # The Postgres image is the one rinzler runs, so gate it on BOTH suites: the
+    # whole-workspace SQLite tests AND the real-Postgres cellarr-db tests. A
+    # regression on either backend blocks this publish.
+    needs: [changes, test-sqlite, test-pg]
     # Build on any code change, and always on a manual dispatch (a human clicking
     # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
