@@ -415,6 +415,18 @@ impl<F: Fetcher> MetadataResolver for LiveMetadataResolver<F> {
                 tracing::warn!(series = %content.id, error = %e, "series expansion failed");
             }
         }
+        // Persist the series' alternate titles so the matcher can adopt a file named
+        // by an alias (e.g. an English "Naruto" file onto "NARUTO－ナルト－").
+        if content.media_type == MediaType::Tv && !meta.aliases.is_empty() {
+            if let Err(e) = self
+                .db
+                .content()
+                .set_series_aliases(content.id, &meta.aliases)
+                .await
+            {
+                tracing::warn!(series = %content.id, error = %e, "persisting series aliases failed");
+            }
+        }
         let resolved_meta = to_content_metadata(meta);
         let artwork = self.cache_artwork(&content.id.to_string(), &images).await;
         Ok(Some(ResolvedMetadata {

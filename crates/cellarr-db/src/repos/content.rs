@@ -424,6 +424,77 @@ impl ContentRepo {
             .await
     }
 
+    /// Persist a series' alternate titles (from the metadata source) onto its
+    /// `series_meta` row, keyed via the series node's `title_id`. Stored as a JSON
+    /// array so the content matcher can accept a file whose parsed title matches an
+    /// alias rather than the canonical (possibly non-English) title.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn set_series_aliases(&self, series: ContentId, aliases: &[String]) -> Result<()> {
+        let json = serde_json::to_string(aliases)?;
+        let id = series.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(
+                        "UPDATE series_meta SET aliases = ?2
+                         WHERE title_id = (SELECT title_id FROM content WHERE id = ?1)",
+                    ))
+                    .bind(&id)
+                    .bind(&json)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    /// The alternate titles of the SERIES a content node belongs to — used by the
+    /// matcher so an episode candidate carries its series' aliases. Walks up the
+    /// adjacency list to the node that carries a `title_id` (the series root;
+    /// seasons/episodes carry none), then reads that series' stored aliases. Empty
+    /// when none are stored (or the node is not under an identified series).
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn aliases_for_content(&self, id: ContentId) -> Result<Vec<String>> {
+        let mut cur = Some(id.to_string());
+        let mut title_id: Option<String> = None;
+        // Bounded walk: series → season → episode is three levels; cap well above.
+        for _ in 0..8 {
+            let Some(c) = cur.take() else { break };
+            let Some(row) = sqlx::query(&pq(
+                "SELECT parent_id, title_id FROM content WHERE id = ?1",
+            ))
+            .bind(&c)
+            .fetch_optional(&self.pool)
+            .await?
+            else {
+                break;
+            };
+            if let Some(tid) = row.try_get::<Option<String>, _>("title_id")? {
+                title_id = Some(tid);
+                break;
+            }
+            cur = row.try_get::<Option<String>, _>("parent_id")?;
+        }
+        let Some(tid) = title_id else {
+            return Ok(Vec::new());
+        };
+        let json: Option<String> = sqlx::query(&pq(
+            "SELECT aliases FROM series_meta WHERE title_id = ?1",
+        ))
+        .bind(&tid)
+        .fetch_optional(&self.pool)
+        .await?
+        .and_then(|r| r.try_get::<Option<String>, _>("aliases").ok().flatten());
+        Ok(json
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default())
+    }
+
     /// The set of external-id identity keys `(id_type, id_value)` already present
     /// for `media_type`, read back from the typed `*_meta` identity rows linked to
     /// this library's content nodes.

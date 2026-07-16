@@ -89,6 +89,13 @@ pub struct Metadata {
     pub media_type: MediaType,
     /// Canonical title.
     pub title: String,
+    /// Alternate titles the work is also known by (TheTVDB `aliases`, romanizations,
+    /// English names for non-English series). Anime in particular is filed under
+    /// several titles, so a library named "Naruto" must still match a series whose
+    /// canonical title is the Japanese "NARUTO－ナルト－". Empty when the source
+    /// provides none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// Release/first-air year, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year: Option<u16>,

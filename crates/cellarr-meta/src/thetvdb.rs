@@ -396,6 +396,22 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
         .map(|eps| eps.iter().filter_map(normalize_episode).collect())
         .unwrap_or_default();
 
+    // TheTVDB `/series/{id}/extended` carries `aliases: [{language, name}]` — the
+    // alternate/romanized/English titles a non-English series is also filed under.
+    // Keep the distinct non-empty names (primary title excluded) so an English-named
+    // library file can still match a Japanese-titled anime.
+    let mut aliases: Vec<String> = Vec::new();
+    if let Some(arr) = data.get("aliases").and_then(serde_json::Value::as_array) {
+        for a in arr {
+            if let Some(name) = a.get("name").and_then(|v| v.as_str()) {
+                let name = name.trim();
+                if !name.is_empty() && name != title && !aliases.iter().any(|x| x == name) {
+                    aliases.push(name.to_string());
+                }
+            }
+        }
+    }
+
     let images = collect_artworks(data.get("artworks"));
 
     // TheTVDB `/series/{id}/extended` carries `genres: [{id, name, slug}]`.
@@ -415,6 +431,7 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
         source_id,
         media_type: MediaType::Tv,
         title,
+        aliases,
         year,
         overview: data
             .get("overview")

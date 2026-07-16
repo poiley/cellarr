@@ -317,6 +317,9 @@ fn normalize_movie(value: &serde_json::Value) -> Option<Metadata> {
         source_id,
         media_type: MediaType::Movie,
         title,
+        // TMDb alternate titles live on a separate endpoint we don't fetch; movies
+        // rarely hit the non-English-title mismatch anime does, so leave empty.
+        aliases: Vec::new(),
         year: year_from_date(value.get("release_date")),
         overview: value
             .get("overview")

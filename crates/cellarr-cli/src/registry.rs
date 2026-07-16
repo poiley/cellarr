@@ -93,10 +93,14 @@ impl ContentLookup for DbContentLookup {
                 .title_for(id)
                 .await?
                 .unwrap_or_else(|| node_title(&node));
+            // The series' alternate titles (romanizations / English names) so an
+            // episode file named by an alias still matches when the canonical title
+            // is non-English (anime). Empty for content with no stored aliases.
+            let aliases = content.aliases_for_content(id).await?;
             out.push(ContentCandidate {
                 content_ref: node.as_ref(),
                 title,
-                aliases: Vec::new(),
+                aliases,
             });
         }
         Ok(out)
@@ -278,6 +282,89 @@ mod tests {
         assert!(
             !ids.contains(&series.id),
             "the series container must be excluded (placeholder coords collide with S01E01)"
+        );
+    }
+
+    // A Japanese-titled anime ("NARUTO－ナルト－") with an English alias ("Naruto"):
+    // its episode candidate must carry the alias so a file named "Naruto" can match
+    // via title_confidence's alias path, not just the (non-English) exact title.
+    #[tokio::test]
+    async fn candidates_carry_series_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(tmp.path().join("c.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        let library_id = LibraryId::new();
+        db.config()
+            .upsert_library(&cellarr_core::Library {
+                id: library_id,
+                media_type: MediaType::Tv,
+                name: "tv".into(),
+                root_folders: vec!["/tv".into()],
+                default_quality_profile: cellarr_core::QualityProfileId::new(),
+            })
+            .await
+            .unwrap();
+        let mk = |kind, parent, coords| ContentNode {
+            id: ContentId::new(),
+            library_id,
+            media_type: MediaType::Tv,
+            parent_id: parent,
+            kind,
+            series_type: SeriesType::Standard,
+            coords,
+            monitored: true,
+            title_id: None,
+            tags: Vec::new(),
+        };
+        let series = mk(
+            ContentKind::Series,
+            None,
+            Coordinates::Episode { season: 1, episode: 1, absolute: None },
+        );
+        let season = mk(
+            ContentKind::Season,
+            Some(series.id),
+            Coordinates::Episode { season: 1, episode: 0, absolute: None },
+        );
+        let episode = mk(
+            ContentKind::Episode,
+            Some(season.id),
+            Coordinates::Episode { season: 1, episode: 1, absolute: Some(1) },
+        );
+        for n in [&series, &season, &episode] {
+            db.content().upsert(n).await.unwrap();
+        }
+        // Episodes are indexed with the (Japanese) series title, as expand_series does.
+        db.content()
+            .index_title(episode.id, "NARUTO－ナルト－")
+            .await
+            .unwrap();
+        // Link an external id → creates the series_meta row, then store the alias.
+        db.content()
+            .link_external_id(series.id, MediaType::Tv, "tvdb", "78857", "NARUTO－ナルト－")
+            .await
+            .unwrap();
+        db.content()
+            .set_series_aliases(series.id, &["Naruto".to_string()])
+            .await
+            .unwrap();
+
+        let lookup = DbContentLookup::new(db);
+        // FTS on the query "naruto" finds the episode (its title tokenizes to include
+        // "naruto"), and the candidate carries the English alias.
+        let cands = lookup
+            .candidates_for_title(MediaType::Tv, "naruto")
+            .await
+            .unwrap();
+        let ep = cands
+            .iter()
+            .find(|c| c.content_ref.id == episode.id)
+            .expect("the episode is found via FTS on the Japanese title");
+        assert!(
+            ep.aliases.iter().any(|a| a == "Naruto"),
+            "the episode candidate carries the series' English alias: {:?}",
+            ep.aliases
         );
     }
 }
