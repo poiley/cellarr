@@ -260,6 +260,10 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         external_ids: Vec::new(),
+        prominence: item
+            .get("vote_count")
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| n.min(u64::from(u32::MAX)) as u32),
     })
 }
 

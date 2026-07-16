@@ -301,6 +301,7 @@ impl cellarr_api::MetadataLookup for MockMetadata {
                 year: Some(2015),
                 overview: None,
                 external_ids: vec![("tvdb".to_string(), "280619".to_string())],
+                prominence: None,
             }],
             MediaType::Movie if t.contains("blade") => vec![LookupCandidate {
                 source_id: "335984".to_string(),
@@ -309,6 +310,7 @@ impl cellarr_api::MetadataLookup for MockMetadata {
                 year: Some(2017),
                 overview: None,
                 external_ids: vec![("tmdb".to_string(), "335984".to_string())],
+                prominence: None,
             }],
             _ => vec![],
         };

@@ -43,6 +43,11 @@ pub struct LookupCandidate {
     /// Cross-referenced external ids as `(scheme, value)` pairs, e.g.
     /// `("tvdb", "81189")`, `("imdb", "tt0903747")`, `("tmdb", "603")`.
     pub external_ids: Vec<(String, String)>,
+    /// A source-agnostic "how mainstream" integer used only to break ties between
+    /// otherwise-indistinguishable candidates (same title + year, or an ambiguous
+    /// no-year title). Higher = more prominent; `None` when the source gives no
+    /// signal. Not surfaced in the v3 wire format — internal disambiguation only.
+    pub prominence: Option<u32>,
 }
 
 impl LookupCandidate {

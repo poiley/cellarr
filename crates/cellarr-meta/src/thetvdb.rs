@@ -362,6 +362,11 @@ fn normalize_search_item(item: &serde_json::Value) -> Option<SearchResult> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         external_ids: Vec::new(),
+        prominence: item
+            .get("score")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|s| s.is_finite() && *s >= 0.0)
+            .map(|s| s.round().min(f64::from(u32::MAX)) as u32),
     })
 }
 

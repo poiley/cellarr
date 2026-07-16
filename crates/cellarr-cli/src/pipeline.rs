@@ -736,8 +736,17 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                         continue; // already tried and could not place it.
                                     }
                                     let parsed = cellarr_parse::parse_title(&c.name);
-                                    let Some(title) = parsed.clean_title.clone() else {
-                                        to_mark.push(c.path.clone()); // unparseable — never onboardable.
+                                    // Search title: the filename's own title, else the
+                                    // folder's (files like `[Prof] S01E07 - …` carry the
+                                    // series name only on their directory). `parsed` still
+                                    // drives episode-coordinate matching below — only the
+                                    // metadata SEARCH uses this fallback.
+                                    let Some(title) = parsed
+                                        .clean_title
+                                        .clone()
+                                        .or_else(|| ancestor_title(&c.path))
+                                    else {
+                                        to_mark.push(c.path.clone()); // no title anywhere — never onboardable.
                                         continue;
                                     };
                                     if abandoned.contains(&title) {
@@ -1381,6 +1390,27 @@ fn native_external_id<'a>(
 /// year (300: 2006 vs 2007), so ±1 recovers the common off-by-one — but doing it
 /// exact-first means a genuine exact-year hit still wins over an adjacent-year one
 /// (so a duplicate a year apart doesn't spuriously make a clean match ambiguous).
+/// The series/movie title carried by a file's *folder* rather than its name.
+///
+/// Some files carry no title in the filename at all — anime fansub episodes like
+/// `[Prof] S01E07 - A Loser I Can't Hate.mkv` rely entirely on their folder for
+/// the series name. The immediate parent is frequently a `Season 01` / `Specials`
+/// directory (which parses to no title and is skipped for free), so walk up a few
+/// ancestors and return the first whose name parses to a real title.
+fn ancestor_title(path: &str) -> Option<String> {
+    let mut dir = std::path::Path::new(path).parent();
+    for _ in 0..3 {
+        let d = dir?;
+        if let Some(name) = d.file_name().and_then(|s| s.to_str()) {
+            if let Some(t) = cellarr_parse::parse_title(name).clean_title {
+                return Some(t);
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 fn pick_confident_candidate<'a>(
     results: &'a [cellarr_api::LookupCandidate],
     parsed_title: &str,
@@ -1392,15 +1422,45 @@ fn pick_confident_candidate<'a>(
             .flat_map(char::to_lowercase)
             .collect()
     }
+    // Break a multi-candidate tie by prominence: return the single candidate that
+    // holds the strictly-highest *positive* prominence. When the top score is tied
+    // (or every candidate is unranked) there is no confident pick. This is what
+    // rescues otherwise-clean titles that collide on title+year (`About Time (2013)`
+    // returns two TMDb entries) or on an ambiguous no-year title (`Lost`): the real,
+    // mainstream entry has orders of magnitude more votes than the stub.
+    fn dominant<'a>(
+        pool: &[&'a cellarr_api::LookupCandidate],
+    ) -> Option<&'a cellarr_api::LookupCandidate> {
+        let mut best: Option<&cellarr_api::LookupCandidate> = None;
+        let mut best_p = 0u32;
+        let mut unique = false;
+        for &c in pool {
+            if let Some(p) = c.prominence.filter(|p| *p > 0) {
+                if p > best_p {
+                    best_p = p;
+                    best = Some(c);
+                    unique = true;
+                } else if p == best_p {
+                    unique = false;
+                }
+            }
+        }
+        unique.then_some(best).flatten()
+    }
+
     let want = normalize(parsed_title);
     let title_matches: Vec<&cellarr_api::LookupCandidate> = results
         .iter()
         .filter(|c| normalize(&c.title) == want)
         .collect();
 
-    // No parsed year → a single title match is confident.
+    // No parsed year → confident on a single title match, else fall to prominence.
     let Some(py) = parsed_year else {
-        return (title_matches.len() == 1).then(|| title_matches[0]);
+        return match title_matches.len() {
+            0 => None,
+            1 => Some(title_matches[0]),
+            _ => dominant(&title_matches),
+        };
     };
 
     // Exact-year candidates; fall back to within-1 only if there is no exact year.
@@ -1418,7 +1478,11 @@ fn pick_confident_candidate<'a>(
     } else {
         exact
     };
-    (pool.len() == 1).then(|| pool[0])
+    match pool.len() {
+        0 => None,
+        1 => Some(pool[0]),
+        _ => dominant(&pool),
+    }
 }
 
 /// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the UI/WS
@@ -2724,6 +2788,15 @@ mod auto_onboard_tests {
     use cellarr_core::MediaType;
 
     fn cand(title: &str, year: Option<u16>, ids: &[(&str, &str)]) -> LookupCandidate {
+        cand_p(title, year, ids, None)
+    }
+
+    fn cand_p(
+        title: &str,
+        year: Option<u16>,
+        ids: &[(&str, &str)],
+        prominence: Option<u32>,
+    ) -> LookupCandidate {
         LookupCandidate {
             source_id: "1".to_string(),
             media_type: MediaType::Movie,
@@ -2734,7 +2807,41 @@ mod auto_onboard_tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            prominence,
         }
+    }
+
+    #[test]
+    fn prominence_breaks_title_year_collisions() {
+        // Two entries share title AND year (real TMDb behavior for `About Time
+        // (2013)`): the mainstream one has far more votes → it wins.
+        let collide = vec![
+            cand_p("About Time", Some(2013), &[("tmdb", "122906")], Some(4200)),
+            cand_p("About Time", Some(2013), &[("tmdb", "999999")], Some(3)),
+        ];
+        assert_eq!(
+            pick_confident_candidate(&collide, "About Time", Some(2013))
+                .and_then(|c| c.external_id("tmdb")),
+            Some("122906")
+        );
+
+        // A genuine tie on prominence stays ambiguous (no false confidence).
+        let tie = vec![
+            cand_p("Twins", Some(1988), &[("tmdb", "1")], Some(500)),
+            cand_p("Twins", Some(1988), &[("tmdb", "2")], Some(500)),
+        ];
+        assert!(pick_confident_candidate(&tie, "Twins", Some(1988)).is_none());
+
+        // No parsed year, many same-title series (`Lost`): the dominant one wins.
+        let lost = vec![
+            cand_p("Lost", None, &[("tvdb", "24313")], Some(900)),
+            cand_p("Lost", None, &[("tvdb", "77")], Some(12)),
+            cand_p("Lost", None, &[("tvdb", "88")], Some(4)),
+        ];
+        assert_eq!(
+            pick_confident_candidate(&lost, "Lost", None).and_then(|c| c.external_id("tvdb")),
+            Some("24313")
+        );
     }
 
     #[test]

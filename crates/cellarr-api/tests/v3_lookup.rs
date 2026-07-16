@@ -40,6 +40,7 @@ impl MetadataLookup for MockMetadata {
                             ("tvdb".to_string(), "81189".to_string()),
                             ("imdb".to_string(), "tt0903747".to_string()),
                         ],
+                        prominence: None,
                     }]))
                 } else {
                     Ok(LookupOutcome::Resolved(vec![]))

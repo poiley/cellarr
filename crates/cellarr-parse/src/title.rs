@@ -68,6 +68,40 @@ static TWO_YEARS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b((?:19|20)\d{2})[\s._\-()\[\]{}]*((?:19|20)\d{2})\b").unwrap()
 });
 
+// Release-modifier keywords (editions, language/dub, audio) can also legitimately
+// BEGIN a real title — `Uncut Gems`, `Extended Family`, `Limited Partners`. A hard
+// structural marker (year, season/episode tag, resolution, source, codec) never
+// does. So when a marker sits at the very start of the remaining title text — which
+// would otherwise strand the movie with an empty title — skip it if it's one of
+// these soft words and cut at the next marker instead.
+static SOFT_LEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)^\s*(
+            extended | unrated | uncut | imax | remaster(?:ed)? | theatrical |
+            director'?s | proper | repack | internal | limited | despecialized |
+            truefrench | vostfr | subfrench | multi(?:sub)? | dubbed | subbed |
+            ac3 | dts | aac | ddp?\d | flac | truehd | atmos
+        )\b",
+    )
+    .unwrap()
+});
+
+// The effective title-cut point: the first structural marker that leaves real
+// title text before it. A soft release-modifier word at the current title start
+// (see `SOFT_LEADING`) is treated as part of the title and skipped.
+fn find_cut(body: &str) -> Option<usize> {
+    let mut from = 0;
+    loop {
+        let m = MARKER.find_at(body, from)?;
+        let preceding = body[from..m.start()].trim();
+        if preceding.is_empty() && SOFT_LEADING.is_match(&body[m.start()..]) {
+            from = m.end();
+            continue;
+        }
+        return Some(m.start());
+    }
+}
+
 /// Extract a cleaned title.
 pub fn extract(input: &str, out: &mut ParsedRelease) {
     let norm = crate::tokens::normalize(input);
@@ -80,7 +114,7 @@ pub fn extract(input: &str, out: &mut ParsedRelease) {
     // When the title ends in a number that itself looks like a year and the real
     // release year follows (`Blade Runner 2049 2017 …`), cut at the *second*
     // year so the embedded number stays in the title.
-    let cut_at = MARKER.find(body).map(|m| m.start());
+    let cut_at = find_cut(body);
     let cut_at = match (cut_at, TWO_YEARS.captures(body)) {
         (Some(marker_start), Some(years)) => {
             let first = years.get(1).unwrap();
@@ -182,6 +216,24 @@ mod tests {
         assert_eq!(
             title("Alien - Covenant (2017).mkv"),
             Some("Alien - Covenant".to_string())
+        );
+    }
+
+    #[test]
+    fn edition_keyword_that_begins_a_real_title_survives() {
+        // `Uncut` is a release-edition keyword, but here it's the actual title —
+        // cutting at it stranded the movie with an empty title.
+        assert_eq!(title("Uncut Gems (2019).mkv"), Some("Uncut Gems".to_string()));
+        // A genuine edition tag AFTER a real title still cuts correctly.
+        assert_eq!(
+            title("Blade Runner 1982 The Final Cut 1080p BluRay"),
+            Some("Blade Runner".to_string())
+        );
+        // The soft-keyword skip only rescues a leading edition word; a real edition
+        // mid-name (`Extended`) after the title is still stripped.
+        assert_eq!(
+            title("Movie Title Extended Edition 1080p"),
+            Some("Movie Title".to_string())
         );
     }
 

@@ -37,6 +37,13 @@ pub struct SearchResult {
     /// `("imdb", "tt0903747")`, `("tvdb", "81189")`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_ids: Vec<(String, String)>,
+    /// A source-agnostic "how mainstream" integer, used only to break ties when
+    /// two candidates are otherwise indistinguishable (same title + year, or an
+    /// ambiguous no-year title). Higher = more prominent. TMDb supplies its
+    /// `vote_count`; TheTVDB its rounded search `score`. Absent when the source
+    /// gives no such signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prominence: Option<u32>,
 }
 
 /// An image reference (poster, banner, fanart, still).
