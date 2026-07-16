@@ -398,8 +398,8 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
 
     // TheTVDB `/series/{id}/extended` carries `aliases: [{language, name}]` — the
     // alternate/romanized/English titles a non-English series is also filed under.
-    // Keep the distinct non-empty names (primary title excluded) so an English-named
-    // library file can still match a Japanese-titled anime.
+    // Keep the distinct non-empty names so an English-named library file can still
+    // match a Japanese-titled anime (the primary is folded back in below).
     let mut aliases: Vec<String> = Vec::new();
     if let Some(arr) = data.get("aliases").and_then(serde_json::Value::as_array) {
         for a in arr {
@@ -411,6 +411,12 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
             }
         }
     }
+    // Prefer a Latin-script title for DISPLAY and naming: a Western library expects
+    // "Naruto" on disk and in the UI, not the Japanese canonical "NARUTO－ナルト－".
+    // Only overrides when the canonical name is substantially non-Latin AND a
+    // more-Latin alias exists; an already-English title is untouched. The original
+    // canonical name is retained as an alias so matching still works either way.
+    let (title, aliases) = prefer_latin_title(title, aliases);
 
     let images = collect_artworks(data.get("artworks"));
 
@@ -462,6 +468,63 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
         rating: None,
         rating_votes: None,
     })
+}
+
+/// Choose a Latin-script DISPLAY title from a canonical name + its aliases. A
+/// Western library expects the romanized/English title on disk and in the UI, not
+/// a non-Latin canonical ("NARUTO－ナルト－"). Returns the chosen title and the
+/// alias list with the ORIGINAL canonical folded in, so matching still works for
+/// every variant. A no-op when the canonical is already substantially Latin, or
+/// when no alias is more Latin than it — so English-titled series are untouched.
+fn prefer_latin_title(name: String, aliases: Vec<String>) -> (String, Vec<String>) {
+    let name_ratio = latin_ratio(&name);
+    // Already fully Latin (e.g. "Breaking Bad", "Pokémon") — nothing to improve, so
+    // English-titled series are never disturbed.
+    if name_ratio >= 1.0 {
+        return (name, aliases);
+    }
+    // The most-Latin alias, but only if it is STRICTLY more Latin than the canonical
+    // (a mixed "NARUTO－ナルト－" at 0.67 is beaten by a pure "Naruto" at 1.0). Ties
+    // keep the canonical.
+    let chosen = aliases
+        .iter()
+        .filter(|a| latin_ratio(a) > name_ratio)
+        .max_by(|a, b| latin_ratio(a).total_cmp(&latin_ratio(b)))
+        .cloned();
+    match chosen {
+        Some(title) => {
+            let mut new_aliases: Vec<String> =
+                aliases.into_iter().filter(|x| *x != title).collect();
+            if !new_aliases.contains(&name) {
+                new_aliases.push(name);
+            }
+            (title, new_aliases)
+        }
+        None => (name, aliases),
+    }
+}
+
+/// Fraction of a string's alphabetic characters written in Latin script — 1.0 for a
+/// pure-Latin string (accents included: "Pokémon" is 1.0), lower as CJK/kana/other
+/// scripts appear ("NARUTO－ナルト－" ≈ 0.67), 0.0 for pure CJK. A char counts as
+/// Latin when its codepoint is below U+0300 (Basic Latin, Latin-1, Latin Extended
+/// A/B, and precomposed accents), so romanizations rank above their native scripts.
+/// A string with no letters is treated as fully Latin (digits/punctuation neutral).
+fn latin_ratio(s: &str) -> f64 {
+    let (mut alpha, mut latin) = (0u32, 0u32);
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            alpha += 1;
+            if (c as u32) < 0x0300 {
+                latin += 1;
+            }
+        }
+    }
+    if alpha == 0 {
+        1.0
+    } else {
+        f64::from(latin) / f64::from(alpha)
+    }
 }
 
 fn normalize_episode(ep: &serde_json::Value) -> Option<ChildNode> {
@@ -524,4 +587,48 @@ fn year_from_date(date: Option<&serde_json::Value>) -> Option<u16> {
         .filter(|s| s.len() >= 4)
         .and_then(|s| s.get(0..4))
         .and_then(|y| y.parse().ok())
+}
+
+#[cfg(test)]
+mod title_pref_tests {
+    use super::{latin_ratio, prefer_latin_title};
+
+    #[test]
+    fn prefers_latin_alias_for_non_latin_canonical() {
+        // A Japanese canonical with an English alias → display the English one, and
+        // fold the canonical back into the aliases so matching still works.
+        let (title, aliases) = prefer_latin_title(
+            "NARUTO－ナルト－".to_string(),
+            vec!["Naruto".to_string(), "ナルト".to_string()],
+        );
+        assert_eq!(title, "Naruto");
+        assert!(aliases.iter().any(|a| a == "NARUTO－ナルト－"), "canonical kept as alias");
+        assert!(!aliases.iter().any(|a| a == "Naruto"), "chosen title removed from aliases");
+    }
+
+    #[test]
+    fn leaves_english_canonical_untouched() {
+        let (title, aliases) = prefer_latin_title(
+            "Breaking Bad".to_string(),
+            vec!["Breaking Bad (US)".to_string()],
+        );
+        assert_eq!(title, "Breaking Bad");
+        assert_eq!(aliases, vec!["Breaking Bad (US)".to_string()]);
+    }
+
+    #[test]
+    fn keeps_non_latin_canonical_when_no_latin_alias() {
+        let (title, aliases) = prefer_latin_title("日本語".to_string(), vec!["にほんご".to_string()]);
+        assert_eq!(title, "日本語", "no more-Latin alternative, so unchanged");
+        assert_eq!(aliases, vec!["にほんご".to_string()]);
+    }
+
+    #[test]
+    fn latin_ratio_basics() {
+        assert!((latin_ratio("Naruto") - 1.0).abs() < f64::EPSILON);
+        assert!((latin_ratio("Pokémon") - 1.0).abs() < f64::EPSILON); // accents are Latin
+        let mixed = latin_ratio("NARUTO－ナルト－");
+        assert!(mixed > 0.0 && mixed < 1.0, "mixed script is partial: {mixed}");
+        assert!((latin_ratio("11.22.63") - 1.0).abs() < f64::EPSILON); // digits are neutral
+    }
 }
