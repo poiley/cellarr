@@ -735,17 +735,18 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     if attempted.contains(&c.path) {
                                         continue; // already tried and could not place it.
                                     }
-                                    let parsed = cellarr_parse::parse_title(&c.name);
-                                    // Search title: the filename's own title, else the
-                                    // folder's (files like `[Prof] S01E07 - …` carry the
-                                    // series name only on their directory). `parsed` still
-                                    // drives episode-coordinate matching below — only the
-                                    // metadata SEARCH uses this fallback.
-                                    let Some(title) = parsed
-                                        .clean_title
-                                        .clone()
-                                        .or_else(|| ancestor_title(&c.path))
-                                    else {
+                                    let mut parsed = cellarr_parse::parse_title(&c.name);
+                                    // When the filename carries no title (anime fansub files
+                                    // like `[Prof] S01E07 - …` name the series only on their
+                                    // directory), fall back to the folder — and inject it into
+                                    // `parsed` so BOTH the metadata search below and the later
+                                    // episode match (which matches the file back onto the
+                                    // freshly-created series by title) can see it. The parsed
+                                    // episode coordinates are untouched.
+                                    if parsed.clean_title.is_none() {
+                                        parsed.clean_title = ancestor_title(&c.path);
+                                    }
+                                    let Some(title) = parsed.clean_title.clone() else {
                                         to_mark.push(c.path.clone()); // no title anywhere — never onboardable.
                                         continue;
                                     };

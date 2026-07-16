@@ -197,7 +197,14 @@ impl<F: Fetcher> TheTvdbSource<F> {
     }
 
     async fn fetch_raw(&self, id: &str) -> Result<serde_json::Value, MetaError> {
-        let url = format!("{}/series/{}/extended", self.config.base_url, id);
+        // `meta=translations` adds `translations.nameTranslations` — the per-language
+        // titles. A non-English series (anime titled in Japanese) often carries its
+        // only clean English name there, not in `aliases`; harvesting it lets the
+        // library match/display the show by its English title.
+        let url = format!(
+            "{}/series/{}/extended?meta=translations",
+            self.config.base_url, id
+        );
         let body = self.cached_get(&format!("tvdb:fetch:{id}"), url).await?;
         serde_json::from_str(&body).map_err(|e| MetaError::Decode {
             src: SOURCE,
@@ -438,6 +445,25 @@ fn normalize_series(value: &serde_json::Value) -> Option<Metadata> {
             }
         }
     }
+    // Per-language title translations (`?meta=translations`). The clean English
+    // name of a Japanese-titled anime lives here — `Kill la Kill` for `キルラキル` —
+    // and nowhere in `aliases`. Fold every distinct translation in so the series is
+    // matchable and namable by any of them; `prefer_latin_title` then promotes the
+    // most-Latin one to the display title.
+    if let Some(arr) = data
+        .get("translations")
+        .and_then(|t| t.get("nameTranslations"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for t in arr {
+            if let Some(name) = t.get("name").and_then(|v| v.as_str()) {
+                let name = name.trim();
+                if !name.is_empty() && name != title && !aliases.iter().any(|x| x == name) {
+                    aliases.push(name.to_string());
+                }
+            }
+        }
+    }
     // Prefer a Latin-script title for DISPLAY and naming: a Western library expects
     // "Naruto" on disk and in the UI, not the Japanese canonical "NARUTO－ナルト－".
     // Only overrides when the canonical name is substantially non-Latin AND a
@@ -631,6 +657,41 @@ mod title_pref_tests {
         assert_eq!(title, "Naruto");
         assert!(aliases.iter().any(|a| a == "NARUTO－ナルト－"), "canonical kept as alias");
         assert!(!aliases.iter().any(|a| a == "Naruto"), "chosen title removed from aliases");
+    }
+
+    #[test]
+    fn harvests_name_translations_into_aliases_and_promotes_english() {
+        // A Japanese-titled anime whose only clean English name is a translation
+        // (`Kill la Kill`), never a bare alias. The harvest must surface it so the
+        // series is matchable AND the display title becomes the English one.
+        let value = serde_json::json!({
+            "data": {
+                "id": 272074,
+                "name": "キルラキル",
+                "year": "2013",
+                "aliases": [
+                    { "language": "jpn", "name": "Kiru ra kiru: KILL la KILL" },
+                    { "language": "rus", "name": "Убей или умри" }
+                ],
+                "translations": {
+                    "nameTranslations": [
+                        { "language": "eng", "name": "Kill la Kill" },
+                        { "language": "jpn", "name": "キルラキル", "isPrimary": true },
+                        { "language": "kor", "name": "킬라킬" }
+                    ]
+                }
+            }
+        });
+        let meta = super::normalize_series(&value).expect("normalizes");
+        assert_eq!(meta.title, "Kill la Kill", "English translation promoted to title");
+        assert!(
+            meta.aliases.iter().any(|a| a == "キルラキル"),
+            "canonical kept as alias for matching"
+        );
+        assert!(
+            meta.aliases.iter().any(|a| a == "Kiru ra kiru: KILL la KILL"),
+            "bare alias retained"
+        );
     }
 
     #[test]
