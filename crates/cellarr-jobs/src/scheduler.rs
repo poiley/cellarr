@@ -265,7 +265,19 @@ where
     /// Propagates store errors.
     pub async fn submit_now(&self, kind: JobKind, retry: RetryPolicy) -> Result<String, S::Error> {
         let now = self.clock.now_secs();
-        if let Some(existing) = self.find_active_by_dedup(&kind.dedup_key()).await? {
+        if let Some(mut existing) = self.find_active_by_dedup(&kind.dedup_key()).await? {
+            // A recurring job of this kind is normally parked `Scheduled` with a
+            // FUTURE due time (e.g. `RescanLibrary`/`MetadataRefresh` @daily). A
+            // manual trigger must run it NOW, so pull its due time forward — the next
+            // tick dispatches it, and `apply_result` reschedules it to its next
+            // interval afterward. Without this a manual command silently returns the
+            // future job and never runs until the cron fires. A job already `Running`
+            // (or backing off in `Retrying`) is a genuine in-flight dedup: return it
+            // untouched rather than double-run or disturb its backoff.
+            if matches!(existing.state, JobState::Scheduled) && existing.due_at > now {
+                existing.due_at = now;
+                self.store.upsert(&existing).await?;
+            }
             return Ok(existing.id);
         }
         let job = Job {

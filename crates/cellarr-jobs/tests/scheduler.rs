@@ -143,6 +143,49 @@ async fn identical_in_flight_jobs_are_deduplicated() {
 }
 
 #[tokio::test]
+async fn manual_submit_pulls_a_future_scheduled_recurring_job_forward() {
+    let clock = Arc::new(LogicalClock::new(0));
+    let store = Arc::new(MemoryJobStore::new());
+    let handler = RecordingHandler::new(JobResult::Success);
+    let sched = Scheduler::new(clock.clone(), store.clone(), handler.clone(), caps(4));
+
+    // A daily recurring job: fires at t=0, then parks Scheduled for t=3600 — the
+    // shape of RescanLibrary/MetadataRefresh between cron fires.
+    sched
+        .add_recurring(JobKind::RssSync, 3600, RetryPolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(sched.tick().await.unwrap(), 1);
+    sched.join_in_flight().await;
+    assert_eq!(handler.call_count(), 1);
+
+    // Long before the next interval, a manual trigger of the same kind must run it
+    // NOW — pull the parked recurring job forward — rather than silently return the
+    // future-scheduled job and wait a full day (the bug: a UI "Rescan"/"Refresh"
+    // never executed).
+    clock.set(100);
+    sched
+        .submit_now(JobKind::RssSync, RetryPolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(store.load_all().await.unwrap().len(), 1, "no duplicate job created");
+    assert_eq!(
+        sched.tick().await.unwrap(),
+        1,
+        "the manual trigger made the recurring job due now"
+    );
+    sched.join_in_flight().await;
+    assert_eq!(handler.call_count(), 2, "the job actually ran on the manual trigger");
+
+    // It rescheduled to the next interval from the manual run (t=100+3600=3700), so
+    // it does not auto-fire again before then.
+    clock.set(200);
+    assert_eq!(sched.tick().await.unwrap(), 0);
+    sched.join_in_flight().await;
+    assert_eq!(handler.call_count(), 2);
+}
+
+#[tokio::test]
 async fn failing_job_retries_with_bounded_exponential_backoff_then_fails() {
     let clock = Arc::new(LogicalClock::new(0));
     let store = Arc::new(MemoryJobStore::new());
