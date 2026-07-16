@@ -23,7 +23,7 @@ use crate::error::Result;
 use crate::repos::{
     AuthRepo, BlocklistRepo, CacheRepo, ConfigRepo, ContentRepo, DecisionLogRepo, GrabRepo,
     HistoryRepo, ImportListRepo, ManagedConfigRepo, MediaFileRepo, PendingReleaseRepo, ProfileRepo,
-    TagRepo,
+    SubtitleRepo, TagRepo,
 };
 use crate::writer::{WriterHandle, WriterShutdown};
 
@@ -385,6 +385,12 @@ impl Database {
     #[must_use]
     pub fn media_files(&self) -> MediaFileRepo {
         MediaFileRepo::new(self.pool.clone(), self.writer.clone())
+    }
+
+    /// The subtitle repository.
+    #[must_use]
+    pub fn subtitles(&self) -> SubtitleRepo {
+        SubtitleRepo::new(self.pool.clone(), self.writer.clone())
     }
 
     /// The grab repository.

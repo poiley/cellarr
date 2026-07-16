@@ -61,7 +61,7 @@ pub use error::{CoreError, Result};
 pub use history::{DecisionLogRecord, HistoryEvent, HistoryRecord};
 pub use ids::{
     ContentId, CustomFormatId, DelayProfileId, DownloadClientId, GrabId, IndexerId, LibraryId,
-    MediaFileId, PipelineRunId, QualityProfileId, ReleaseProfileId, TitleId,
+    MediaFileId, PipelineRunId, QualityProfileId, ReleaseProfileId, SubtitleId, TitleId,
 };
 pub use importlist::{
     sync_import_list, CleanAction, FetchResult, ImportListConfig, ImportListExclusion,
@@ -69,7 +69,7 @@ pub use importlist::{
 };
 pub use media::{
     ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, Library, MediaFile,
-    MediaType, SeriesType,
+    MediaType, SeriesType, Subtitle,
 };
 pub use monitor::{EpisodeFacts, MonitorOption};
 pub use notification::{

@@ -63,6 +63,10 @@ id_newtype!(
     MediaFileId
 );
 id_newtype!(
+    /// Identifies a subtitle sidecar fetched for a media file.
+    SubtitleId
+);
+id_newtype!(
     /// Identifies a typed identity/metadata row (the `title_id`).
     TitleId
 );

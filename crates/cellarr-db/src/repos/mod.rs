@@ -22,6 +22,7 @@ mod managed_config;
 mod media_file;
 mod pending_release;
 mod profile;
+mod subtitle;
 mod tag;
 
 pub use auth::{AuthRepo, AuthSession};
@@ -37,4 +38,5 @@ pub use managed_config::{ManagedConfigRepo, ManagedEntity};
 pub use media_file::MediaFileRepo;
 pub use pending_release::{PendingRelease, PendingReleaseRepo};
 pub use profile::ProfileRepo;
+pub use subtitle::SubtitleRepo;
 pub use tag::TagRepo;

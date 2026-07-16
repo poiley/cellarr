@@ -796,6 +796,108 @@ async fn media_file_create_get_and_list_for_content() {
 }
 
 #[tokio::test]
+async fn subtitle_upsert_list_and_cascade() {
+    use cellarr_core::{Subtitle, SubtitleId};
+
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let media_files = db.media_files();
+    let subtitles = db.subtitles();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Movie,
+        name: "Movies".to_string(),
+        root_folders: vec!["/movies".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let node = movie_node(library.id, ContentId::new());
+    content.upsert(&node).await.unwrap();
+
+    let file = MediaFile {
+        id: MediaFileId::new(),
+        path: "/movies/Uncut Gems (2019)/Uncut Gems (2019).mkv".to_string(),
+        size: 8_000_000_000,
+        quality: Quality::new("BluRay-1080p", 15),
+        languages: vec!["en".to_string()],
+        media_info: None,
+        custom_format_score: None,
+        release_type: None,
+    };
+    media_files.create(&file).await.expect("create file");
+    media_files.link(node.id, file.id).await.expect("link");
+
+    // Two languages for the same file.
+    let en = Subtitle {
+        id: SubtitleId::new(),
+        media_file_id: file.id,
+        language: "en".to_string(),
+        path: "/movies/Uncut Gems (2019)/Uncut Gems (2019).en.srt".to_string(),
+        provider: "opensubtitles".to_string(),
+        provider_id: Some("os-111".to_string()),
+        score: Some(90),
+        forced: false,
+        hearing_impaired: false,
+        added_at: "2026-07-16T00:00:00Z".to_string(),
+    };
+    let fr = Subtitle {
+        id: SubtitleId::new(),
+        language: "fr".to_string(),
+        path: "/movies/Uncut Gems (2019)/Uncut Gems (2019).fr.srt".to_string(),
+        provider_id: Some("os-222".to_string()),
+        score: Some(70),
+        ..en.clone()
+    };
+    subtitles.upsert(&en).await.expect("upsert en");
+    subtitles.upsert(&fr).await.expect("upsert fr");
+
+    let mut listed = subtitles.list_for_file(file.id).await.expect("list");
+    assert_eq!(listed.len(), 2, "both languages recorded");
+    // Reachable through the content node too (join via content_file).
+    let via_content = subtitles.list_for_content(node.id).await.expect("by content");
+    assert_eq!(via_content.len(), 2);
+
+    // Re-fetching the SAME (file, language, variant) upgrades in place — no dup.
+    let en_upgraded = Subtitle {
+        id: SubtitleId::new(), // a fresh id; the existing row is kept on conflict
+        path: "/movies/Uncut Gems (2019)/Uncut Gems (2019).en.srt".to_string(),
+        provider_id: Some("os-999".to_string()),
+        score: Some(99),
+        ..en.clone()
+    };
+    subtitles.upsert(&en_upgraded).await.expect("upsert-in-place");
+    listed = subtitles.list_for_file(file.id).await.expect("list again");
+    assert_eq!(listed.len(), 2, "upsert replaced, did not duplicate");
+    let en_row = listed.iter().find(|s| s.language == "en").expect("en present");
+    assert_eq!(en_row.score, Some(99), "upgraded score persisted");
+    assert_eq!(en_row.provider_id.as_deref(), Some("os-999"));
+
+    // A hearing-impaired EN is a DISTINCT variant, not a conflict.
+    let en_hi = Subtitle {
+        id: SubtitleId::new(),
+        hearing_impaired: true,
+        path: "/movies/Uncut Gems (2019)/Uncut Gems (2019).en.hi.srt".to_string(),
+        ..en.clone()
+    };
+    subtitles.upsert(&en_hi).await.expect("upsert en-hi");
+    assert_eq!(
+        subtitles.list_for_file(file.id).await.expect("list hi").len(),
+        3,
+        "the HI variant is a separate row"
+    );
+
+    // Deleting the media file cascades its subtitle rows.
+    media_files.delete(file.id).await.expect("delete file");
+    assert!(subtitles
+        .list_for_file(file.id)
+        .await
+        .expect("list after cascade")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn content_upsert_and_children_walk_the_tree() {
     let (_dir, db) = temp_db().await;
     let config = db.config();

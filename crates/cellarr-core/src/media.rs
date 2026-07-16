@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use crate::ids::{ContentId, LibraryId, MediaFileId, TitleId};
+use crate::ids::{ContentId, LibraryId, MediaFileId, SubtitleId, TitleId};
 use crate::profile::Quality;
 
 /// The four supported media types.
@@ -426,6 +426,40 @@ pub struct MediaFile {
     /// files written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_type: Option<crate::ReleaseType>,
+}
+
+/// A persisted `subtitle` row: a subtitle sidecar fetched for a media file.
+///
+/// One row per (media file, language, forced/hearing-impaired variant). The
+/// sidecar file lives beside the media file on disk (`Movie.en.srt`); this row
+/// records where it came from and its match quality, so the UI can show coverage
+/// ("has EN, missing FR") and a re-fetch can upgrade it in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subtitle {
+    /// Subtitle identifier.
+    pub id: SubtitleId,
+    /// The media file this subtitle accompanies.
+    pub media_file_id: MediaFileId,
+    /// ISO-639-1 language code (`en`, `es`, …).
+    pub language: String,
+    /// Absolute path to the sidecar file on disk.
+    pub path: String,
+    /// The provider that supplied it (`opensubtitles`, …).
+    pub provider: String,
+    /// The provider's own id for the chosen file, kept for re-download/upgrade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// The provider's match score, when it supplies one (higher = better).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<i32>,
+    /// A forced-narrative-only subtitle (foreign-dialogue lines).
+    #[serde(default)]
+    pub forced: bool,
+    /// A hearing-impaired (SDH) subtitle.
+    #[serde(default)]
+    pub hearing_impaired: bool,
+    /// When the sidecar was written (RFC3339 UTC).
+    pub added_at: String,
 }
 
 /// A typed collection of content of a single media type.
