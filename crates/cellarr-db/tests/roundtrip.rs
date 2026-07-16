@@ -276,6 +276,74 @@ async fn external_id_reverse_lookup_finds_the_node() {
 }
 
 #[tokio::test]
+async fn set_identity_title_reconciles_search_seed_with_resolved_title() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+
+    // A series node whose identity is seeded from the SEARCH title (a provider's
+    // native primary), the way auto-onboard first links it.
+    let series = ContentNode {
+        tags: Vec::new(),
+        id: ContentId::new(),
+        library_id: library.id,
+        media_type: MediaType::Tv,
+        parent_id: None,
+        kind: ContentKind::Series,
+        series_type: cellarr_core::SeriesType::Standard,
+        coords: Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+        monitored: true,
+        title_id: None,
+    };
+    content.upsert(&series).await.unwrap();
+    content
+        .link_external_id(series.id, MediaType::Tv, "tvdb", "272074", "キルラキル")
+        .await
+        .unwrap();
+    let seeded: String = sqlx::query_scalar("SELECT title FROM series_meta WHERE tvdb_id = 272074")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(seeded, "キルラキル", "identity seeded from the search title");
+
+    // The details resolve reconciles it to the display title.
+    content
+        .set_identity_title(series.id, MediaType::Tv, "Kill la Kill")
+        .await
+        .unwrap();
+    let reconciled: String =
+        sqlx::query_scalar("SELECT title FROM series_meta WHERE tvdb_id = 272074")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(reconciled, "Kill la Kill", "resolved title replaces the seed");
+
+    // A node with no identity row is a harmless no-op (never errors).
+    let orphan = ContentNode {
+        id: ContentId::new(),
+        ..series.clone()
+    };
+    content.upsert(&orphan).await.unwrap();
+    content
+        .set_identity_title(orphan.id, MediaType::Tv, "whatever")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn monitored_missing_excludes_nodes_with_files_and_containers() {
     let (_dir, db) = temp_db().await;
     let config = db.config();

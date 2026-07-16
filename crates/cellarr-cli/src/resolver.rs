@@ -415,6 +415,25 @@ impl<F: Fetcher> MetadataResolver for LiveMetadataResolver<F> {
                 tracing::warn!(series = %content.id, error = %e, "series expansion failed");
             }
         }
+        // Reconcile the node's title with the resolved display title. Both the
+        // node's FTS/display title (`content_fts`, what `title_for` and the v3
+        // projection read) and its identity row (`movie_meta`/`series_meta`) were
+        // seeded at create time from the SEARCH title — for a non-English work the
+        // provider's native primary (`キルラキル`). The details fetch yields the title
+        // cellarr should show (`normalize_series` prefers a Latin one, `Kill la
+        // Kill`). Without re-indexing both, the native name is frozen in the UI
+        // forever, even though episodes already carry the resolved title.
+        if let Err(e) = self.db.content().index_title(content.id, &meta.title).await {
+            tracing::warn!(content = %content.id, error = %e, "re-indexing resolved title failed");
+        }
+        if let Err(e) = self
+            .db
+            .content()
+            .set_identity_title(content.id, content.media_type, &meta.title)
+            .await
+        {
+            tracing::warn!(content = %content.id, error = %e, "persisting identity title failed");
+        }
         // Persist the series' alternate titles so the matcher can adopt a file named
         // by an alias (e.g. an English "Naruto" file onto "NARUTO－ナルト－").
         if content.media_type == MediaType::Tv && !meta.aliases.is_empty() {

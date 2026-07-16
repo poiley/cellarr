@@ -484,6 +484,52 @@ impl ContentRepo {
     ///
     /// # Errors
     /// Returns a [`DbError`] on write failure.
+    /// Reconcile a movie/series node's **identity title** with the authoritative
+    /// title from a metadata resolve.
+    ///
+    /// The identity row (`movie_meta`/`series_meta`) is first seeded at create time
+    /// from the *search-result* title, which for a non-English work is often the
+    /// provider's native primary (anime titled `キルラキル`). The details fetch then
+    /// yields the display title cellarr should use (`normalize_series` prefers a
+    /// Latin one). Without this, the search title is frozen in place and the v3
+    /// projection shows the native name forever. Called on every resolve (create +
+    /// refresh) so the title tracks the provider, exactly as Sonarr/Radarr refresh.
+    ///
+    /// A no-op for kinds without an identity table (music/book) and when the node
+    /// carries no `title_id` yet.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn set_identity_title(
+        &self,
+        content: ContentId,
+        media_type: MediaType,
+        title: &str,
+    ) -> Result<()> {
+        let table = match media_type {
+            MediaType::Movie => "movie_meta",
+            MediaType::Tv => "series_meta",
+            MediaType::Music | MediaType::Book => return Ok(()),
+        };
+        let id = content.to_string();
+        let title = title.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(&format!(
+                        "UPDATE {table} SET title = ?2
+                         WHERE title_id = (SELECT title_id FROM content WHERE id = ?1)"
+                    )))
+                    .bind(&id)
+                    .bind(&title)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     pub async fn set_series_aliases(&self, series: ContentId, aliases: &[String]) -> Result<()> {
         let json = serde_json::to_string(aliases)?;
         let id = series.to_string();

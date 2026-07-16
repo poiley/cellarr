@@ -969,8 +969,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .set_metadata(node.id, &meta)
             .await
             .map_err(|e| e.to_string())?;
-        // Best-effort rich enrichment now (poster/overview/runtime); a failure is
-        // fine — the daily metadata refresh retries.
+        // Best-effort rich enrichment now (poster/overview/runtime + the resolved
+        // display title); a failure is fine — the daily metadata refresh retries.
+        // resolve() re-indexes the node's FTS/identity title from the details fetch;
+        // persist its returned content-metadata too so the node carries the resolved
+        // title + facts immediately instead of the bare search seed until refresh.
         if let Some(resolver) = &self.resolver {
             if let Ok(node_ref) = ContentRef::new(
                 node.id,
@@ -978,7 +981,9 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 library.media_type,
                 default_coords(library.media_type),
             ) {
-                let _ = resolver.resolve(&node_ref).await;
+                if let Ok(Some(resolved)) = resolver.resolve(&node_ref).await {
+                    let _ = content.set_metadata(node.id, &resolved.meta).await;
+                }
             }
         }
         Ok((node.id, true))
