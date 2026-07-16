@@ -64,6 +64,13 @@ const NOTIFICATION_INSTANCE_NAME: &str = "cellarr";
 /// single job run unboundedly. The remainder is picked up on the next tick.
 const MAX_NODES_PER_RUN: usize = 50;
 
+/// How many series one `MetadataRefresh` run re-resolves (fetch + expand). Every
+/// series is re-resolved to pick up newly-aired episodes, but doing them ALL each
+/// run is a read/write burst that can saturate a small database; a bounded
+/// least-recently-refreshed batch spreads it over runs, covering every series
+/// within a bounded window. The rest wait for the next run.
+const REFRESH_SERIES_CAP: usize = 25;
+
 /// Hard ceiling on how many untracked files one auto-onboard pass walks and
 /// onboards per library, so a huge pre-existing library (tens of thousands of
 /// files) drains in gentle bounded batches over many passes instead of one pass
@@ -243,6 +250,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // re-resolve. `false` (is TV) sorts ahead of `true`.
         libraries.sort_by_key(|l| l.media_type != MediaType::Tv);
         let content = self.db.content();
+        // Throttle: only the least-recently-refreshed batch of series is re-resolved
+        // this run (each fetch + expand is heavy). Other series are skipped and
+        // picked up on a later run — covering all of them within a bounded window.
+        let due_series: std::collections::HashSet<cellarr_core::ContentId> = content
+            .series_due_for_refresh(REFRESH_SERIES_CAP)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         for lib in libraries {
             let mut stack = match content.roots(lib.id).await {
                 Ok(r) => r,
@@ -274,7 +290,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                         .flatten()
                         .is_some_and(|m| metadata_is_enriched(&m))
                 };
-                if refresh_should_resolve(node.kind, enriched) {
+                // A series not in this run's due batch is skipped (throttle) — but
+                // still stamped-through below only when actually resolved.
+                let series_throttled =
+                    node.kind == ContentKind::Series && !due_series.contains(&node.id);
+                if refresh_should_resolve(node.kind, enriched) && !series_throttled {
                     match resolver.resolve(&node_ref).await {
                         Ok(Some(resolved)) if !resolved.meta.is_empty() => {
                             if let Err(e) = content.set_metadata(node.id, &resolved.meta).await {
@@ -286,11 +306,29 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                             tracing::warn!(content = %node.id, error = %e, "refresh: resolve failed");
                         }
                     }
+                    // Record the refresh so the next run rotates to the next batch —
+                    // only for a series we actually resolved (a throttled one keeps
+                    // its place at the front of the queue).
+                    if node.kind == ContentKind::Series {
+                        if let Err(e) = content.mark_series_refreshed(node.id).await {
+                            tracing::warn!(series = %node.id, error = %e, "refresh: recording series refresh failed");
+                        }
+                    }
                 }
-                match content.children(node.id).await {
-                    Ok(children) => stack.extend(children),
-                    Err(e) => {
-                        tracing::warn!(content = %node.id, error = %e, "refresh: loading children failed");
+                // Descend only where a descendant can itself resolve. A TV series'
+                // subtree (Season/Episode) never resolves — its episodes are
+                // populated by the series' own `expand_series` — so walking it is
+                // pure read overhead; music/book roots (Artist→Album→Track,
+                // Author→Book) DO resolve their children, so those are still walked.
+                if !matches!(
+                    node.kind,
+                    ContentKind::Series | ContentKind::Season | ContentKind::Episode
+                ) {
+                    match content.children(node.id).await {
+                        Ok(children) => stack.extend(children),
+                        Err(e) => {
+                            tracing::warn!(content = %node.id, error = %e, "refresh: loading children failed");
+                        }
                     }
                 }
             }

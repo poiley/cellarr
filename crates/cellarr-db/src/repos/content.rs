@@ -121,6 +121,59 @@ impl ContentRepo {
             .await
     }
 
+    /// The series content-node ids most in need of a metadata refresh — never-refreshed
+    /// first (no `series_refresh` row), then least-recently-refreshed. Bounded to
+    /// `limit` so a whole-library MetadataRefresh re-resolves a gentle batch per run
+    /// instead of every series at once (which can saturate a small database). Over
+    /// successive runs every series is covered.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn series_due_for_refresh(&self, limit: usize) -> Result<Vec<ContentId>> {
+        let rows = sqlx::query(&pq(
+            "SELECT c.id FROM content c
+             LEFT JOIN series_refresh sr ON sr.content_id = c.id
+             WHERE c.kind = 'series'
+             ORDER BY (sr.resolved_at IS NULL) DESC, sr.resolved_at ASC
+             LIMIT ?1",
+        ))
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let s: String = r.try_get("id")?;
+                Ok(ContentId::from_uuid(parse_uuid("content_id", &s)?))
+            })
+            .collect()
+    }
+
+    /// Record that a series was just re-resolved, so the next refresh moves on to the
+    /// next least-recently-refreshed batch. Upserts its `resolved_at` to now.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on write failure.
+    pub async fn mark_series_refreshed(&self, series: ContentId) -> Result<()> {
+        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        let id = series.to_string();
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(
+                        "INSERT INTO series_refresh (content_id, resolved_at)
+                         VALUES (?1, ?2)
+                         ON CONFLICT(content_id) DO UPDATE SET resolved_at = excluded.resolved_at",
+                    ))
+                    .bind(&id)
+                    .bind(&now)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Index (or re-index) a node's searchable title in the FTS table.
     ///
     /// # Errors

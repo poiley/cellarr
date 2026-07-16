@@ -1294,6 +1294,52 @@ async fn unmatched_scan_onboard_attempt_lifecycle() {
 }
 
 #[tokio::test]
+async fn series_refresh_rotates_least_recently_refreshed_first() {
+    let (_dir, db) = temp_db().await;
+    let config = db.config();
+    let content = db.content();
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/tv".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    config.upsert_library(&library).await.unwrap();
+    let mk = || ContentNode {
+        tags: Vec::new(),
+        id: ContentId::new(),
+        library_id: library.id,
+        media_type: MediaType::Tv,
+        parent_id: None,
+        kind: ContentKind::Series,
+        series_type: cellarr_core::SeriesType::Standard,
+        coords: Coordinates::Episode { season: 1, episode: 1, absolute: None },
+        monitored: true,
+        title_id: None,
+    };
+    let (a, b, c) = (mk(), mk(), mk());
+    for s in [&a, &b, &c] {
+        content.upsert(s).await.unwrap();
+    }
+
+    // All three are never-refreshed → all due (bounded by limit).
+    let due: std::collections::HashSet<ContentId> = content
+        .series_due_for_refresh(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(due, [a.id, b.id, c.id].into_iter().collect());
+    assert_eq!(content.series_due_for_refresh(2).await.unwrap().len(), 2, "bound honored");
+
+    // Refresh `a`: it drops to the back, `b` and `c` (never-refreshed) come first.
+    content.mark_series_refreshed(a.id).await.unwrap();
+    let order = content.series_due_for_refresh(10).await.unwrap();
+    assert_eq!(order.iter().position(|x| *x == a.id).unwrap(), 2, "refreshed sorts last: {order:?}");
+}
+
+#[tokio::test]
 async fn cache_put_get_and_expiry() {
     let (_dir, db) = temp_db().await;
     let cache = db.cache();
