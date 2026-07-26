@@ -6,6 +6,7 @@
 //! are never a test dependency (`docs/06-integrations.md`).
 
 use async_trait::async_trait;
+use tokio::sync::OnceCell;
 
 use crate::error::{IndexerError, Result};
 
@@ -95,6 +96,181 @@ impl ReqwestFetcher {
             });
         }
         Ok(resp.bytes().await?.to_vec())
+    }
+}
+
+/// A [`Fetcher`] that proxies through a **FlareSolverr** instance.
+///
+/// Some trackers sit behind an interstitial bot check that a plain HTTP client
+/// cannot clear — the request never reaches the site, so no amount of definition
+/// tuning helps. FlareSolverr drives a real browser, solves the challenge, and
+/// returns the resulting document; keeping a named session across calls preserves
+/// the clearance cookies so only the first request pays the solve cost.
+///
+/// This is **opt-in per indexer**. It introduces an external service, which the
+/// single-binary/zero-required-services default must not depend on, so it is only
+/// constructed when an operator configures an endpoint for a specific indexer.
+pub struct FlareSolverrFetcher {
+    client: reqwest::Client,
+    /// Base URL of the FlareSolverr instance (its `/v1` endpoint is appended).
+    endpoint: String,
+    /// Session name, so clearance cookies persist across requests.
+    session: String,
+    /// How long FlareSolverr may spend solving, in milliseconds.
+    max_timeout_ms: u64,
+    /// Ensures the session is created once, on first use.
+    session_ready: OnceCell<()>,
+}
+
+impl FlareSolverrFetcher {
+    /// Default solve budget. A challenge typically clears in 15-20s; below that a
+    /// first request against a protected host fails spuriously.
+    const DEFAULT_MAX_TIMEOUT_MS: u64 = 90_000;
+
+    /// Build a fetcher pointed at a FlareSolverr instance (e.g.
+    /// `http://flaresolverr:8191/`), tagging its session with `session`.
+    #[must_use]
+    pub fn new(
+        client: reqwest::Client,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            endpoint: endpoint.into().trim_end_matches('/').to_string(),
+            session: session.into(),
+            max_timeout_ms: Self::DEFAULT_MAX_TIMEOUT_MS,
+            session_ready: OnceCell::new(),
+        }
+    }
+
+    /// Override the solve budget in milliseconds.
+    #[must_use]
+    pub fn with_max_timeout_ms(mut self, max_timeout_ms: u64) -> Self {
+        self.max_timeout_ms = max_timeout_ms;
+        self
+    }
+
+    /// POST one command to FlareSolverr and return the decoded envelope.
+    async fn command(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        let resp = self
+            .client
+            .post(format!("{}/v1", self.endpoint))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            let snippet: String = body.chars().take(200).collect();
+            return Err(IndexerError::Status {
+                status: status.as_u16(),
+                body_snippet: (!snippet.is_empty()).then_some(snippet),
+            });
+        }
+        serde_json::from_str(&body)
+            .map_err(|e| IndexerError::Parse(format!("flaresolverr envelope: {e}")))
+    }
+
+    /// Create the named session once; a session that already exists is not an error.
+    async fn ensure_session(&self) {
+        self.session_ready
+            .get_or_init(|| async {
+                let _ = self
+                    .command(serde_json::json!({
+                        "cmd": "sessions.create",
+                        "session": self.session,
+                    }))
+                    .await;
+            })
+            .await;
+    }
+
+    /// Run a `request.get`/`request.post` and return the page body.
+    async fn request(&self, payload: serde_json::Value) -> Result<String> {
+        self.ensure_session().await;
+        let envelope = self.command(payload).await?;
+
+        if envelope.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+            let message = envelope
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no message");
+            return Err(IndexerError::Parse(format!("flaresolverr: {message}")));
+        }
+        // The upstream status lives on the solution; FlareSolverr itself answers 200
+        // even when the site returned an error page, so a non-success here must be
+        // surfaced as the tracker being unavailable rather than as empty results.
+        let solution = envelope
+            .get("solution")
+            .ok_or_else(|| IndexerError::Parse("flaresolverr reply had no solution".to_string()))?;
+        let upstream = solution
+            .get("status")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let body = solution
+            .get("response")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !(200..300).contains(&upstream) {
+            let snippet: String = body.chars().take(200).collect();
+            return Err(IndexerError::Status {
+                status: u16::try_from(upstream).unwrap_or(0),
+                body_snippet: (!snippet.is_empty()).then_some(snippet),
+            });
+        }
+        Ok(unwrap_pre(&body))
+    }
+}
+
+/// Unwrap a non-HTML body from the `<pre>` block the headless browser renders it in.
+///
+/// A JSON endpoint fetched through FlareSolverr comes back as a rendered document,
+/// not raw bytes, so callers expecting JSON would otherwise get markup. A body with
+/// no single `<pre>` is returned unchanged.
+fn unwrap_pre(body: &str) -> String {
+    let Some(start) = body.find("<pre") else {
+        return body.to_string();
+    };
+    let Some(open_end) = body[start..].find('>').map(|i| start + i + 1) else {
+        return body.to_string();
+    };
+    let Some(close) = body[open_end..].find("</pre>").map(|i| open_end + i) else {
+        return body.to_string();
+    };
+    let inner = &body[open_end..close];
+    inner
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+#[async_trait]
+impl Fetcher for FlareSolverrFetcher {
+    async fn get(&self, url: &str) -> Result<String> {
+        self.request(serde_json::json!({
+            "cmd": "request.get",
+            "url": url,
+            "session": self.session,
+            "maxTimeout": self.max_timeout_ms,
+        }))
+        .await
+    }
+
+    async fn post(&self, url: &str, body: &str, _content_type: &str) -> Result<String> {
+        // FlareSolverr only submits form-encoded bodies; it derives the content type
+        // itself, so the caller's is not forwarded.
+        self.request(serde_json::json!({
+            "cmd": "request.post",
+            "url": url,
+            "postData": body,
+            "session": self.session,
+            "maxTimeout": self.max_timeout_ms,
+        }))
+        .await
     }
 }
 
