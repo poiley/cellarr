@@ -108,6 +108,16 @@ pub fn episode_ref(library: LibraryId, season: u32, episode: u32) -> ContentRef 
     }
 }
 
+/// Build a season-unit `ContentRef` — the container a season pack fills.
+pub fn season_ref(library: LibraryId, season: u16) -> ContentRef {
+    ContentRef {
+        id: ContentId::new(),
+        library_id: library,
+        media_type: MediaType::Tv,
+        coords: Coordinates::SeasonPack { season },
+    }
+}
+
 /// Build a movie `ContentRef` for a fresh node.
 pub fn movie_ref(library: LibraryId) -> ContentRef {
     ContentRef {

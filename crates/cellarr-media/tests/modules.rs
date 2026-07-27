@@ -416,3 +416,152 @@ async fn tv_module_reports_its_media_type() {
     assert_eq!(MediaModule::media_type(&module), MediaType::Tv);
     let _ = ContentId::new(); // keep import used across cfgs
 }
+
+// --- season units ----------------------------------------------------------
+
+/// A season pack addresses the season unit it fills. Before seasons carried a
+/// season coordinate this could not match anything, so a pack found by any search
+/// was silently discarded.
+#[tokio::test]
+async fn tv_match_season_pack_lands_on_the_season_unit() {
+    let lib = LibraryId::new();
+    let season6 = common::season_ref(lib, 6);
+    let candidates = vec![ContentCandidate {
+        content_ref: season6.clone(),
+        title: "Love Island".to_string(),
+        aliases: vec![],
+    }];
+    let module = TvModule::new(MockContentLookup { candidates }, MockMetadata::default());
+
+    let mut parsed = ParsedRelease::new("Love.Island.S06.1080p.WEB-DL.x264-GROUP");
+    parsed.clean_title = Some("Love Island".to_string());
+    parsed.coordinates = vec![Coordinates::SeasonPack { season: 6 }];
+
+    let matches = module.match_release(&parsed).await.expect("match");
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].content_ref.id, season6.id);
+}
+
+/// A pack for a different season must not land on this one.
+#[tokio::test]
+async fn tv_match_season_pack_ignores_a_different_season() {
+    let lib = LibraryId::new();
+    let candidates = vec![ContentCandidate {
+        content_ref: common::season_ref(lib, 6),
+        title: "Love Island".to_string(),
+        aliases: vec![],
+    }];
+    let module = TvModule::new(MockContentLookup { candidates }, MockMetadata::default());
+
+    let mut parsed = ParsedRelease::new("Love.Island.S02.1080p.WEB-DL.x264-GROUP");
+    parsed.clean_title = Some("Love Island".to_string());
+    parsed.coordinates = vec![Coordinates::SeasonPack { season: 2 }];
+
+    assert!(module
+        .match_release(&parsed)
+        .await
+        .expect("match")
+        .is_empty());
+}
+
+/// A multi-season pack carries one coordinate per covered season, so it satisfies
+/// every season unit it spans — and none it doesn't.
+#[tokio::test]
+async fn tv_match_multi_season_pack_lands_on_every_season_it_covers() {
+    let lib = LibraryId::new();
+    let s1 = common::season_ref(lib, 1);
+    let s2 = common::season_ref(lib, 2);
+    let s3 = common::season_ref(lib, 3);
+    let s9 = common::season_ref(lib, 9);
+    let candidates = [&s1, &s2, &s3, &s9]
+        .into_iter()
+        .map(|r| ContentCandidate {
+            content_ref: r.clone(),
+            title: "Love Island".to_string(),
+            aliases: vec![],
+        })
+        .collect();
+    let module = TvModule::new(MockContentLookup { candidates }, MockMetadata::default());
+
+    let mut parsed = ParsedRelease::new("Love.Island.S01-S03.COMPLETE.1080p.WEB-DL.x264-GROUP");
+    parsed.clean_title = Some("Love Island".to_string());
+    parsed.coordinates = vec![
+        Coordinates::SeasonPack { season: 1 },
+        Coordinates::SeasonPack { season: 2 },
+        Coordinates::SeasonPack { season: 3 },
+    ];
+
+    let matches = module.match_release(&parsed).await.expect("match");
+    let ids: Vec<_> = matches.iter().map(|m| m.content_ref.id).collect();
+    assert_eq!(ids.len(), 3, "{matches:?}");
+    for wanted in [s1.id, s2.id, s3.id] {
+        assert!(ids.contains(&wanted), "missing a covered season: {ids:?}");
+    }
+    assert!(!ids.contains(&s9.id), "season 9 is not covered: {ids:?}");
+}
+
+/// A season unit searches by season alone — never with an episode number, which
+/// is what the old episode-zero sentinel produced.
+#[tokio::test]
+async fn tv_season_unit_search_terms_carry_season_without_an_episode() {
+    let lib = LibraryId::new();
+    let node = common::season_ref(lib, 6);
+    let mut meta = MockMetadata::default();
+    meta.series.insert(
+        node.id,
+        SeriesMeta {
+            title: "Love Island".to_string(),
+            aliases: vec![],
+            year: None,
+            external_ids: vec![],
+        },
+    );
+    let module = TvModule::new(MockContentLookup { candidates: vec![] }, meta);
+
+    let terms = module.search_terms(&node).await.expect("search terms");
+    assert!(terms
+        .numbering
+        .contains(&("season".to_string(), "6".to_string())));
+    assert!(
+        !terms.numbering.iter().any(|(k, _)| k == "ep"),
+        "a season unit must not ask for an episode: {:?}",
+        terms.numbering
+    );
+}
+
+/// A pack fills the season unit *and* covers that season's episodes — the grab
+/// path fans it out to them, the adopt path sees its files land on them — while
+/// staying off episodes of seasons it does not cover.
+#[tokio::test]
+async fn tv_match_season_pack_covers_its_episodes_but_not_another_seasons() {
+    let lib = LibraryId::new();
+    let unit = common::season_ref(lib, 6);
+    let s6e1 = common::episode_ref(lib, 6, 1);
+    let s6e2 = common::episode_ref(lib, 6, 2);
+    let s2e1 = common::episode_ref(lib, 2, 1);
+    let candidates = [&unit, &s6e1, &s6e2, &s2e1]
+        .into_iter()
+        .map(|r| ContentCandidate {
+            content_ref: r.clone(),
+            title: "Love Island".to_string(),
+            aliases: vec![],
+        })
+        .collect();
+    let module = TvModule::new(MockContentLookup { candidates }, MockMetadata::default());
+
+    let mut parsed = ParsedRelease::new("Love.Island.S06.1080p.WEB-DL.x264-GROUP");
+    parsed.clean_title = Some("Love Island".to_string());
+    parsed.coordinates = vec![Coordinates::SeasonPack { season: 6 }];
+
+    let ids: Vec<_> = module
+        .match_release(&parsed)
+        .await
+        .expect("match")
+        .into_iter()
+        .map(|m| m.content_ref.id)
+        .collect();
+    assert!(ids.contains(&unit.id), "the season unit: {ids:?}");
+    assert!(ids.contains(&s6e1.id), "S06E01 is covered: {ids:?}");
+    assert!(ids.contains(&s6e2.id), "S06E02 is covered: {ids:?}");
+    assert!(!ids.contains(&s2e1.id), "S02E01 is not covered: {ids:?}");
+}

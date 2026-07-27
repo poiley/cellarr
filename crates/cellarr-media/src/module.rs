@@ -268,15 +268,19 @@ where
         // absolute numbering to Episode first, so an "[Group] Naruto - 001" file
         // arrives here still absolute-addressed — it must land on the node
         // `expand_series` stamped with that absolute number, not go unmatched).
-        // Daily/SeasonPack still address no canonical single node here and are
-        // dropped (surfaced upstream / handled by Identify on the grab path).
+        // A season pack addresses the season unit it fills, and a multi-season pack
+        // carries one coordinate per covered season so it can match several at once.
+        // Daily still addresses no canonical node here and is dropped (surfaced
+        // upstream / handled by Identify on the grab path).
         let wanted: Vec<&Coordinates> = parsed
             .coordinates
             .iter()
             .filter(|c| {
                 matches!(
                     c,
-                    Coordinates::Episode { .. } | Coordinates::Absolute { .. }
+                    Coordinates::Episode { .. }
+                        | Coordinates::Absolute { .. }
+                        | Coordinates::SeasonPack { .. }
                 )
             })
             .collect();
@@ -407,6 +411,19 @@ fn episode_coords_match(a: &Coordinates, b: &Coordinates) -> bool {
                 ..
             },
         ) => number == abs,
+        // A season pack fills the season unit it covers. A release spanning several
+        // seasons carries one of these per season, so it matches each of their units
+        // and can satisfy them together.
+        (Coordinates::SeasonPack { season: sa }, Coordinates::SeasonPack { season: sb }) => {
+            sa == sb
+        }
+        // A pack also covers every episode of that season, so it matches those
+        // episode units too — the grab path fans a pack out to them, and the adopt
+        // path sees the pack's files land on them. Matching on the season keeps a
+        // pack off episodes of the seasons it does not cover.
+        (Coordinates::SeasonPack { season: sa }, Coordinates::Episode { season: sb, .. }) => {
+            u32::from(*sa) == *sb
+        }
         _ => false,
     }
 }
