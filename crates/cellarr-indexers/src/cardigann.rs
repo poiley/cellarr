@@ -1088,7 +1088,7 @@ impl CardigannIndexer {
                 "infohash" => infohash = Some(value.clone()),
                 "details" | "guid" => guid = Some(self.resolve_url(value)),
                 "size" => size = parse_size(value),
-                "seeders" => seeders = value.replace(',', "").trim().parse().ok(),
+                "seeders" => seeders = parse_count(value),
                 "downloadvolumefactor" if value.trim().parse::<f64>().is_ok_and(|f| f == 0.0) => {
                     flags.push("freeleech".to_string());
                 }
@@ -1351,21 +1351,18 @@ fn finalize_magnet(link: String, title: &str) -> String {
 
 /// Parse a human size string (`"1.5 GB"`, `"700 MB"`, `"1234567"`) into bytes.
 fn parse_size(raw: &str) -> Option<u64> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
+    let (value, rest) = split_leading_number(raw)?;
+    let unit: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    // A bare count with no unit is a byte count, as JSON-ish feeds report it.
+    if unit.is_empty() {
+        return (value >= 0.0).then_some(value as u64);
     }
-    // Plain integer byte counts are common in JSON-ish feeds.
-    if let Ok(bytes) = raw.replace(',', "").parse::<u64>() {
-        return Some(bytes);
-    }
-
-    let lower = raw.to_ascii_lowercase();
-    let (num_part, unit) = lower
-        .find(|c: char| c.is_ascii_alphabetic())
-        .map(|idx| (lower[..idx].trim(), lower[idx..].trim()))?;
-    let value: f64 = num_part.replace(',', "").parse().ok()?;
-    let multiplier: f64 = match unit {
+    let multiplier: f64 = match unit.as_str() {
         "b" => 1.0,
         "kb" | "kib" => 1024.0,
         "mb" | "mib" => 1024.0 * 1024.0,
@@ -1374,6 +1371,33 @@ fn parse_size(raw: &str) -> Option<u64> {
         _ => return None,
     };
     Some((value * multiplier) as u64)
+}
+
+/// Parse a count that may be rendered with a label (`Seeds 137`).
+fn parse_count(raw: &str) -> Option<u32> {
+    let (value, _) = split_leading_number(raw)?;
+    (value >= 0.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
+}
+
+/// Split the first numeric token out of `raw`, returning its value and the text
+/// that follows it.
+///
+/// Cells commonly carry a label alongside the value (`Size 4.2 GB`, `Seeds 137`) —
+/// trackers render one for narrow viewports and hide it with CSS, so the label is
+/// part of the element's text even though a reader never sees it. Anchoring on the
+/// first digit rather than on the start of the string reads those cells the way the
+/// definition's author intended, without every definition needing a strip filter.
+fn split_leading_number(raw: &str) -> Option<(f64, &str)> {
+    let start = raw.find(|c: char| c.is_ascii_digit())?;
+    let rest = &raw[start..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == ',' || c == '.'))
+        .unwrap_or(rest.len());
+    // A trailing separator belongs to the prose after the number ("4 GB, seeded"),
+    // not to the number itself.
+    let digits = rest[..end].trim_end_matches([',', '.']);
+    let value: f64 = digits.replace(',', "").parse().ok()?;
+    Some((value, &rest[digits.len()..]))
 }
 
 #[cfg(test)]
@@ -1814,6 +1838,40 @@ search:
         assert_eq!(parse_size("1,234"), Some(1234));
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("garbage"), None);
+    }
+
+    /// Cells often carry a CSS-hidden label next to the value; the label is part of
+    /// the element's text, so anchoring on the start of the string loses the number.
+    #[test]
+    fn parse_size_reads_a_labelled_cell() {
+        assert_eq!(
+            parse_size("Size 4.2 GB"),
+            Some((4.2 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(parse_size("  Size\n 700 MB "), Some(700 * 1024 * 1024));
+        assert_eq!(parse_size("1.5GiB"), Some((1.5 * 1024.0f64.powi(3)) as u64));
+        // A number in a unitless label is still a byte count.
+        assert_eq!(parse_size("Size 1234"), Some(1234));
+        // A unit that isn't a size unit is not a size.
+        assert_eq!(parse_size("Age 4 years ago"), None);
+    }
+
+    #[test]
+    fn parse_count_reads_a_labelled_cell() {
+        assert_eq!(parse_count("Seeds 137"), Some(137));
+        assert_eq!(parse_count("88"), Some(88));
+        assert_eq!(parse_count("1,204"), Some(1204));
+        assert_eq!(parse_count("Seeds"), None);
+        assert_eq!(parse_count(""), None);
+    }
+
+    #[test]
+    fn split_leading_number_stops_at_trailing_separators() {
+        assert_eq!(
+            split_leading_number("4 GB, seeded"),
+            Some((4.0, " GB, seeded"))
+        );
+        assert_eq!(split_leading_number("no digits here"), None);
     }
 
     #[test]

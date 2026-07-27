@@ -136,6 +136,12 @@ async fn rows_without_a_link_are_resolved_into_magnets() {
     // The display name is still appended, as it is for definition-supplied magnets.
     assert!(releases[0].download_url.contains("dn="));
     assert_eq!(releases[0].seeders, Some(42));
+    // The cells carry a CSS-hidden label next to the value, as trackers render them.
+    assert_eq!(
+        releases[0].size,
+        Some((2.1 * 1024.0 * 1024.0 * 1024.0) as u64),
+        "labelled size cell should still parse"
+    );
 }
 
 #[tokio::test]
