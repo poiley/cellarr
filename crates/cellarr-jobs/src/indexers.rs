@@ -22,7 +22,8 @@ use async_trait::async_trait;
 use cellarr_core::{Indexer, IndexerConfig, Protocol, Release, SearchTerms};
 use cellarr_db::Database;
 use cellarr_indexers::{
-    CardigannIndexer, Definition, HostRateLimiter, IndexerError, NewznabIndexer, TorznabIndexer,
+    CardigannIndexer, Definition, FetcherPool, HostRateLimiter, IndexerError, NewznabIndexer,
+    TorznabIndexer,
 };
 
 /// A failure building or fanning out the configured indexer set.
@@ -72,6 +73,11 @@ pub struct DbIndexerSet {
     /// default) is the "no content tags" case — only global indexers apply, which
     /// matches today's behavior since indexers are untagged by default.
     content_tags: Vec<u32>,
+    /// Long-lived fetchers shared across searches. Adapters are rebuilt per search,
+    /// but a FlareSolverr session must outlive them (see [`FetcherPool`]); sharing
+    /// one pool the way the rate limiter is shared keeps a single session per
+    /// indexer instead of standing up a rival browser for every search.
+    fetchers: Arc<FetcherPool>,
 }
 
 impl DbIndexerSet {
@@ -84,6 +90,7 @@ impl DbIndexerSet {
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
             fail_fast: false,
             content_tags: Vec::new(),
+            fetchers: Arc::new(FetcherPool::new()),
         }
     }
 
@@ -100,7 +107,17 @@ impl DbIndexerSet {
             rate_limiter,
             fail_fast,
             content_tags: Vec::new(),
+            fetchers: Arc::new(FetcherPool::new()),
         }
+    }
+
+    /// Use a caller-owned fetcher pool, so several per-run sets share one session
+    /// per indexer. Without this each set builds its own pool, which is correct but
+    /// gives up session reuse across runs.
+    #[must_use]
+    pub fn with_fetcher_pool(mut self, fetchers: Arc<FetcherPool>) -> Self {
+        self.fetchers = fetchers;
+        self
     }
 
     /// Scope this set to the tag ids of the content being searched, so a
@@ -271,10 +288,9 @@ impl DbIndexerSet {
     /// per indexer so two trackers never share clearance cookies.
     fn cardigann_fetcher(&self, config: &IndexerConfig) -> Arc<dyn cellarr_indexers::Fetcher> {
         match setting_str(config, "flaresolverrUrl").filter(|url| !url.trim().is_empty()) {
-            Some(endpoint) => Arc::new(cellarr_indexers::FlareSolverrFetcher::with_endpoint(
-                endpoint.trim(),
-                format!("cellarr-{}", config.id),
-            )),
+            Some(endpoint) => self
+                .fetchers
+                .flaresolverr(endpoint.trim(), &format!("cellarr-{}", config.id)),
             None => self.db_fetcher(),
         }
     }
@@ -612,6 +628,48 @@ search:
                 || first.contains("sessions.create")
                 || first.contains("request.get"),
             "expected a flaresolverr envelope, got: {first}"
+        );
+    }
+
+    /// A FlareSolverr session is one browser and must outlive the per-search
+    /// adapters. Two adapters built for the same indexer have to land on the same
+    /// pooled fetcher, or each search stands up a rival session and they crash each
+    /// other's tabs under load.
+    #[tokio::test]
+    async fn adapters_for_one_indexer_share_a_pooled_fetcher() {
+        let (_dir, db) = temp_db().await;
+        let pool = Arc::new(FetcherPool::new());
+        let set = DbIndexerSet::new(db).with_fetcher_pool(Arc::clone(&pool));
+        let config = IndexerConfig {
+            id: IndexerId::new(),
+            name: "protected".into(),
+            kind: "cardigann".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags: vec![],
+            settings: json!({
+                "definition": CARDIGANN_DEF,
+                "flaresolverrUrl": "http://flaresolverr.invalid:8191",
+            }),
+        };
+
+        let first = set.cardigann_fetcher(&config);
+        let second = set.cardigann_fetcher(&config);
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "the same indexer must reuse one pooled fetcher"
+        );
+
+        // A different indexer id is a different session, so a different fetcher.
+        let other = IndexerConfig {
+            id: IndexerId::new(),
+            ..config
+        };
+        assert!(
+            !Arc::ptr_eq(&first, &set.cardigann_fetcher(&other)),
+            "distinct indexers must not share a session"
         );
     }
 

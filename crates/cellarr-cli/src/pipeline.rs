@@ -1973,6 +1973,10 @@ where
 pub struct LivePipelineEnv {
     db: Database,
     rate_limiter: Arc<HostRateLimiter>,
+    /// Shared across every run for the same reason the rate limiter is: a
+    /// challenge-solving fetcher's session is expensive to establish and must not
+    /// be driven by two runs at once.
+    fetchers: Arc<cellarr_indexers::FetcherPool>,
     /// How many times Track polls the download client before giving up.
     max_track_polls: u32,
     /// Startup grace polls before stall detection (magnet metadata/DHT bootstrap).
@@ -1989,6 +1993,7 @@ impl LivePipelineEnv {
         Self {
             db,
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
+            fetchers: Arc::new(cellarr_indexers::FetcherPool::new()),
             // A real multi-GB download takes far longer than a few minutes —
             // especially through a VPN. 240 polls (20 min) was "tracking timed out"
             // and blocklisting live downloads mid-flight; this is a backstop that
@@ -2104,6 +2109,7 @@ impl LivePipelineEnv {
             Arc::clone(&self.rate_limiter),
             /* fail_fast = */ false,
         )
+        .with_fetcher_pool(Arc::clone(&self.fetchers))
         .with_content_tags(content_tag_ids);
         Ok(Some((indexer, config)))
     }
@@ -2299,6 +2305,7 @@ impl PipelineEnv for LivePipelineEnv {
             Arc::clone(&self.rate_limiter),
             /* fail_fast = */ false,
         )
+        .with_fetcher_pool(Arc::clone(&self.fetchers))
         .with_content_tags(content_tag_ids);
         Ok(Some((indexer, client, config)))
     }
