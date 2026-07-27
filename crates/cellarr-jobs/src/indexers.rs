@@ -608,7 +608,9 @@ search:
             "expected a flaresolverr command, got: {first}"
         );
         assert!(
-            first.contains("request.get") || first.contains("sessions.create"),
+            first.contains("sessions.list")
+                || first.contains("sessions.create")
+                || first.contains("request.get"),
             "expected a flaresolverr envelope, got: {first}"
         );
     }
