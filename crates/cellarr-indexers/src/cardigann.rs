@@ -918,7 +918,9 @@ impl CardigannIndexer {
         if self.definition.search.paths.is_empty() {
             return Err(IndexerError::Definition("search has no paths".into()));
         }
-        let keywords = terms.queries.first().map(String::as_str).unwrap_or("");
+        let base_keywords = terms.queries.first().map(String::as_str).unwrap_or("");
+        let folded = self.keywords_with_numbering(terms, base_keywords);
+        let keywords = folded.as_str();
         let query = query_fields(terms);
         let categories = self.tracker_categories(&terms.categories);
         let ctx = TemplateContext {
@@ -1167,6 +1169,57 @@ impl CardigannIndexer {
         let mut releases = self.extract(&body)?;
         self.resolve_pending_links(&mut releases).await;
         Ok(releases)
+    }
+
+    /// The keyword string a search sends, with season/episode folded in when the
+    /// definition has no input that could otherwise carry them.
+    ///
+    /// A scrape-style tracker often has no season/episode URL parameter at all —
+    /// its definition declares `tv-search` in `caps` but templates only `q`. The
+    /// numbering is computed either way, so without this it is silently dropped and
+    /// every episode search degrades to a bare series-title search: thousands of
+    /// rows spanning every season, with the wanted episode nowhere near the top.
+    /// Folding it into the keyword the way the site's own users would type it
+    /// (`Series S06E03`, or `Series S06` for a whole season) is what makes such a
+    /// tracker usable for TV at all.
+    ///
+    /// A definition that *does* template the numbering keeps the keyword untouched,
+    /// so nothing is sent twice.
+    fn keywords_with_numbering(&self, terms: &SearchTerms, base: &str) -> String {
+        if base.is_empty() || self.definition_templates_numbering() {
+            return base.to_string();
+        }
+        let value = |key: &str| {
+            terms
+                .numbering
+                .iter()
+                .find(|(k, _)| k == key)
+                .and_then(|(_, v)| v.parse::<u32>().ok())
+        };
+        let Some(season) = value("season") else {
+            return base.to_string();
+        };
+        match value("ep").or_else(|| value("episode")) {
+            Some(episode) => format!("{base} S{season:02}E{episode:02}"),
+            None => format!("{base} S{season:02}"),
+        }
+    }
+
+    /// Whether any configured input renders the season/episode query fields, in
+    /// which case the definition carries the numbering itself.
+    fn definition_templates_numbering(&self) -> bool {
+        let mentions = |template: &String| {
+            [".Query.Season", ".Query.Episode", ".Query.Ep"]
+                .iter()
+                .any(|field| template.contains(field))
+        };
+        self.definition.search.inputs.values().any(mentions)
+            || self
+                .definition
+                .search
+                .paths
+                .iter()
+                .any(|path| path.inputs.values().any(mentions) || mentions(&path.path))
     }
 
     /// Wait out the definition's `requestDelay` since this engine's last request.
