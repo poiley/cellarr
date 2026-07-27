@@ -247,13 +247,36 @@ impl DbIndexerSet {
                 name: config.name.clone(),
                 reason: format!("invalid cardigann definition: {e}"),
             })?;
-        Ok(NabAdapter::Cardigann(CardigannIndexer::with_deps(
+        let resolver = cellarr_indexers::resolver_for(&definition);
+        let mut engine = CardigannIndexer::with_deps(
             config.id,
             definition,
             settings_string_map(config),
-            self.db_fetcher(),
+            self.cardigann_fetcher(config),
             Arc::clone(&self.rate_limiter),
-        )))
+        );
+        if let Some(resolver) = resolver {
+            engine = engine.with_resolver(resolver);
+        }
+        Ok(NabAdapter::Cardigann(engine))
+    }
+
+    /// The fetcher a Cardigann adapter uses.
+    ///
+    /// A tracker behind an interstitial bot check can't be reached by a plain HTTP
+    /// client at all, so an operator points that indexer at a FlareSolverr instance
+    /// with a `flaresolverrUrl` setting. It is per-indexer and absent by default:
+    /// the single-binary/zero-required-services promise means no indexer may need
+    /// an external process unless its operator opts in. The session is namespaced
+    /// per indexer so two trackers never share clearance cookies.
+    fn cardigann_fetcher(&self, config: &IndexerConfig) -> Arc<dyn cellarr_indexers::Fetcher> {
+        match setting_str(config, "flaresolverrUrl").filter(|url| !url.trim().is_empty()) {
+            Some(endpoint) => Arc::new(cellarr_indexers::FlareSolverrFetcher::with_endpoint(
+                endpoint.trim(),
+                format!("cellarr-{}", config.id),
+            )),
+            None => self.db_fetcher(),
+        }
     }
 
     /// The HTTP fetcher used by built adapters: a real `reqwest` fetcher, so the
@@ -512,6 +535,107 @@ search:
         assert!(matches!(
             set.build_adapter(&missing),
             Err(IndexerSetError::Misconfigured { .. })
+        ));
+    }
+
+    /// A tracker behind a bot check is unreachable by a plain client, so the
+    /// `flaresolverrUrl` setting has to actually change which fetcher the adapter
+    /// gets. Asserted by watching what arrives on the wire: a FlareSolverr envelope
+    /// rather than a direct GET of the tracker.
+    #[tokio::test]
+    async fn a_flaresolverr_url_setting_routes_the_adapter_through_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorder = Arc::clone(&seen);
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let recorder = Arc::clone(&recorder);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    recorder
+                        .lock()
+                        .expect("lock")
+                        .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                    // A FlareSolverr envelope wrapping an empty listing.
+                    let body = r#"{"status":"ok","solution":{"status":200,"response":"<html><body><table></table></body></html>"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+
+        let (_dir, db) = temp_db().await;
+        let set = DbIndexerSet::new(db);
+        let config = IndexerConfig {
+            id: IndexerId::new(),
+            name: "protected".into(),
+            kind: "cardigann".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags: vec![],
+            settings: json!({
+                "definition": CARDIGANN_DEF,
+                "flaresolverrUrl": format!("http://{addr}"),
+            }),
+        };
+
+        let adapter = set.build_adapter(&config).expect("build cardigann adapter");
+        let NabAdapter::Cardigann(engine) = adapter else {
+            panic!("expected a Cardigann adapter");
+        };
+        let _ = engine.latest().await;
+        server.abort();
+
+        let requests = seen.lock().expect("lock").clone();
+        assert!(
+            !requests.is_empty(),
+            "nothing reached the flaresolverr stub"
+        );
+        let first = &requests[0];
+        assert!(
+            first.contains("POST /v1"),
+            "expected a flaresolverr command, got: {first}"
+        );
+        assert!(
+            first.contains("request.get") || first.contains("sessions.create"),
+            "expected a flaresolverr envelope, got: {first}"
+        );
+    }
+
+    /// Without the setting the adapter keeps the plain fetcher, so an ordinary
+    /// tracker never depends on an external process.
+    #[tokio::test]
+    async fn without_the_setting_no_flaresolverr_is_used() {
+        let (_dir, db) = temp_db().await;
+        let set = DbIndexerSet::new(db);
+        let config = IndexerConfig {
+            id: IndexerId::new(),
+            name: "plain".into(),
+            kind: "cardigann".into(),
+            protocol: Protocol::Torrent,
+            enabled: true,
+            priority: 25,
+            criteria: Default::default(),
+            tags: vec![],
+            // An empty value is treated as absent rather than as an endpoint.
+            settings: json!({ "definition": CARDIGANN_DEF, "flaresolverrUrl": "  " }),
+        };
+        // Building succeeds and yields a Cardigann adapter; the fetcher choice is
+        // observable in the sibling test, and here only that it did not error.
+        assert!(matches!(
+            set.build_adapter(&config).expect("build"),
+            NabAdapter::Cardigann(_)
         ));
     }
 

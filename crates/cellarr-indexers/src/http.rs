@@ -144,6 +144,23 @@ impl FlareSolverrFetcher {
         }
     }
 
+    /// Build against `endpoint` with a client of this crate's choosing, so a caller
+    /// that only has configuration (an endpoint string) needs no `reqwest` of its own.
+    ///
+    /// The client's timeout must exceed the solve budget — a challenge routinely
+    /// takes 15-20s and the browser holds the request open for the whole of it, so a
+    /// default-timeout client would abort every protected fetch.
+    #[must_use]
+    pub fn with_endpoint(endpoint: impl Into<String>, session: impl Into<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(
+                Self::DEFAULT_MAX_TIMEOUT_MS + 30_000,
+            ))
+            .build()
+            .unwrap_or_default();
+        Self::new(client, endpoint, session)
+    }
+
     /// Override the solve budget in milliseconds.
     #[must_use]
     pub fn with_max_timeout_ms(mut self, max_timeout_ms: u64) -> Self {
