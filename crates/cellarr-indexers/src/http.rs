@@ -6,6 +6,8 @@
 //! are never a test dependency (`docs/06-integrations.md`).
 
 use async_trait::async_trait;
+use std::sync::Arc;
+
 use tokio::sync::OnceCell;
 
 use crate::error::{IndexerError, Result};
@@ -120,6 +122,14 @@ pub struct FlareSolverrFetcher {
     max_timeout_ms: u64,
     /// Ensures the session is created once, on first use.
     session_ready: OnceCell<()>,
+    /// One in-flight request at a time.
+    ///
+    /// A session is one browser. Driving several requests into it concurrently
+    /// makes its tabs fight over the session and, under load, crash it outright —
+    /// after which every later request on that session fails instantly. Serializing
+    /// here is not a throughput loss: FlareSolverr processes a session's requests
+    /// one at a time regardless.
+    gate: tokio::sync::Semaphore,
 }
 
 impl FlareSolverrFetcher {
@@ -141,6 +151,7 @@ impl FlareSolverrFetcher {
             session: session.into(),
             max_timeout_ms: Self::DEFAULT_MAX_TIMEOUT_MS,
             session_ready: OnceCell::new(),
+            gate: tokio::sync::Semaphore::new(1),
         }
     }
 
@@ -227,9 +238,67 @@ impl FlareSolverrFetcher {
             .await;
     }
 
-    /// Run a `request.get`/`request.post` and return the page body.
+    /// Tear the session down and build a fresh one.
+    ///
+    /// The browser behind a session can die (`tab crashed`), and every later
+    /// request on it then fails instantly — adopting a session forever would pin
+    /// the indexer to a corpse. Destroying first is what makes the create
+    /// meaningful, since creating over a live session is what we avoid elsewhere.
+    async fn reset_session(&self) {
+        let _ = self
+            .command(serde_json::json!({
+                "cmd": "sessions.destroy",
+                "session": self.session,
+            }))
+            .await;
+        let _ = self
+            .command(serde_json::json!({
+                "cmd": "sessions.create",
+                "session": self.session,
+            }))
+            .await;
+    }
+
+    /// Whether a failure means the session's browser is unusable rather than the
+    /// site being slow, so it is worth rebuilding the session and trying once more.
+    fn is_session_fault(error: &IndexerError) -> bool {
+        let text = error.to_string();
+        [
+            "tab crashed",
+            "invalid session",
+            "session deleted",
+            "no such session",
+            "chrome not reachable",
+        ]
+        .iter()
+        .any(|marker| text.to_ascii_lowercase().contains(marker))
+    }
+
+    /// Run a `request.get`/`request.post` and return the page body, serialized
+    /// against this session and retried once if the session itself has died.
     async fn request(&self, payload: serde_json::Value) -> Result<String> {
+        let _permit = self
+            .gate
+            .acquire()
+            .await
+            .map_err(|_| IndexerError::Parse("flaresolverr gate closed".to_string()))?;
         self.ensure_session().await;
+        match self.request_once(payload.clone()).await {
+            Err(err) if Self::is_session_fault(&err) => {
+                tracing::warn!(
+                    session = %self.session,
+                    error = %err,
+                    "flaresolverr session died; rebuilding it and retrying once"
+                );
+                self.reset_session().await;
+                self.request_once(payload).await
+            }
+            other => other,
+        }
+    }
+
+    /// One attempt, with no session handling.
+    async fn request_once(&self, payload: serde_json::Value) -> Result<String> {
         let envelope = self.command(payload).await?;
 
         if envelope.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
@@ -262,6 +331,40 @@ impl FlareSolverrFetcher {
             });
         }
         Ok(unwrap_pre(&body))
+    }
+}
+
+/// Long-lived [`FlareSolverrFetcher`] instances, keyed by endpoint and session.
+///
+/// Indexer adapters are rebuilt for every search, but a FlareSolverr session is
+/// expensive to establish and must not be driven concurrently. Holding the
+/// fetchers here — one shared pool passed in alongside the rate limiter — means
+/// every search for an indexer reuses that indexer's session and its
+/// one-at-a-time gate, instead of standing up a rival browser each time.
+#[derive(Default)]
+pub struct FetcherPool {
+    flaresolverr: std::sync::Mutex<std::collections::HashMap<String, Arc<FlareSolverrFetcher>>>,
+}
+
+impl FetcherPool {
+    /// An empty pool.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The shared fetcher for `endpoint`/`session`, creating it on first use.
+    #[must_use]
+    pub fn flaresolverr(&self, endpoint: &str, session: &str) -> Arc<dyn Fetcher> {
+        let key = format!("{endpoint}\u{0}{session}");
+        let mut map = self
+            .flaresolverr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            map.entry(key)
+                .or_insert_with(|| Arc::new(FlareSolverrFetcher::with_endpoint(endpoint, session))),
+        ) as Arc<dyn Fetcher>
     }
 }
 
