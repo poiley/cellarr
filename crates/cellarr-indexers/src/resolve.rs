@@ -11,11 +11,44 @@
 //! Resolution is per-release and only runs for rows that arrived without one, so a
 //! definition that already supplies links never pays for it.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
+use crate::cardigann::Definition;
 use crate::error::{IndexerError, Result};
 use crate::http::Fetcher;
+
+/// The resolver a definition needs, if any.
+///
+/// Keeps per-tracker knowledge in this crate: the integration layer asks for a
+/// definition's resolver rather than knowing which trackers are special. A
+/// definition with no entry here resolves nothing, which is the ordinary case —
+/// most trackers publish the link in the row.
+///
+/// The resolver is scoped to the hosts the *definition* declares, so an operator
+/// who adds a mirror to their copy gets it covered without a code change.
+#[must_use]
+pub fn resolver_for(definition: &Definition) -> Option<Arc<dyn DownloadResolver>> {
+    match definition.id.as_str() {
+        "exttorrents" => {
+            let hosts = definition
+                .links
+                .iter()
+                .filter_map(|link| Some(link.split("://").nth(1)?.split('/').next()?.to_string()))
+                .filter(|host| !host.is_empty())
+                .collect::<Vec<_>>();
+            let resolver = if hosts.is_empty() {
+                ExtTorrentsResolver::new()
+            } else {
+                ExtTorrentsResolver::with_hosts(hosts)
+            };
+            Some(Arc::new(resolver))
+        }
+        _ => None,
+    }
+}
 
 /// Resolves a release's download link when the search row didn't carry one.
 #[async_trait]
@@ -271,6 +304,57 @@ mod tests {
         let body = r#"{"success":false,"error":"Invalid session"}"#;
         let err = ExtTorrentsResolver::magnet_from_reply(body).unwrap_err();
         assert!(err.to_string().contains("Invalid session"), "{err}");
+    }
+
+    /// The registry scopes the resolver to the hosts the operator's own copy of
+    /// the definition declares, so a mirror they add is covered without a release.
+    #[test]
+    fn resolver_for_scopes_to_the_definitions_own_links() {
+        let def = Definition::from_yaml(
+            r#"
+id: exttorrents
+name: EXT Torrents
+links:
+  - https://ext.to/
+  - https://my-private-mirror.example/
+search:
+  paths:
+    - path: /browse/
+  rows:
+    selector: tr
+  fields:
+    title:
+      selector: a
+"#,
+        )
+        .expect("parse definition");
+        let resolver = resolver_for(&def).expect("exttorrents should have a resolver");
+        assert!(resolver.handles("https://ext.to/a-1/"));
+        assert!(resolver.handles("https://my-private-mirror.example/a-1/"));
+        // A mirror this copy does not declare is not claimed.
+        assert!(!resolver.handles("https://extranet.torrentbay.st/a-1/"));
+    }
+
+    #[test]
+    fn resolver_for_is_none_for_an_ordinary_definition() {
+        let def = Definition::from_yaml(
+            r#"
+id: ordinarytracker
+name: Ordinary Tracker
+links:
+  - https://ordinary.example/
+search:
+  paths:
+    - path: /browse/
+  rows:
+    selector: tr
+  fields:
+    title:
+      selector: a
+"#,
+        )
+        .expect("parse definition");
+        assert!(resolver_for(&def).is_none());
     }
 
     #[test]

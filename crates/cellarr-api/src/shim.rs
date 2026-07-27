@@ -2949,13 +2949,31 @@ async fn test_indexer(Json(body): Json<IndexerBody>) -> ApiResult<Json<Value>> {
             Ok(c) => c,
             Err(e) => return Ok(Json(test_failure(format!("http client: {e}")))),
         };
-        let engine = cellarr_indexers::CardigannIndexer::with_deps(
+        // Test through the same fetcher and resolver a search would use, or a
+        // tracker that needs either would fail its test while working in practice.
+        let fetcher: std::sync::Arc<dyn cellarr_indexers::Fetcher> = match config
+            .get("flaresolverrUrl")
+            .map(|url| url.trim())
+            .filter(|url| !url.is_empty())
+        {
+            Some(endpoint) => std::sync::Arc::new(cellarr_indexers::FlareSolverrFetcher::new(
+                client,
+                endpoint,
+                "cellarr-indexer-test",
+            )),
+            None => std::sync::Arc::new(cellarr_indexers::ReqwestFetcher::new(client)),
+        };
+        let resolver = cellarr_indexers::resolver_for(&def);
+        let mut engine = cellarr_indexers::CardigannIndexer::with_deps(
             cellarr_core::IndexerId::new(),
             def,
             config,
-            std::sync::Arc::new(cellarr_indexers::ReqwestFetcher::new(client)),
+            fetcher,
             std::sync::Arc::new(cellarr_indexers::HostRateLimiter::conservative_default()),
         );
+        if let Some(resolver) = resolver {
+            engine = engine.with_resolver(resolver);
+        }
         return match engine.latest().await {
             Ok(_) => Ok(Json(json!({ "isValid": true, "validationFailures": [] }))),
             Err(e) => Ok(Json(test_failure(format!("test search failed: {e}")))),

@@ -36,5 +36,5 @@ pub use error::{IndexerError, Result};
 pub use feed::parse_feed;
 pub use http::{Fetcher, FlareSolverrFetcher, ReqwestFetcher};
 pub use ratelimit::HostRateLimiter;
-pub use resolve::{DownloadResolver, ExtTorrentsResolver};
+pub use resolve::{resolver_for, DownloadResolver, ExtTorrentsResolver};
 pub use torznab::{NabIndexer, NewznabIndexer, TorznabIndexer};
