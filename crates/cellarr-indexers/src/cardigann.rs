@@ -58,6 +58,7 @@ use url::Url;
 use crate::error::{IndexerError, Result};
 use crate::http::{Fetcher, ReqwestFetcher};
 use crate::ratelimit::HostRateLimiter;
+use crate::resolve::DownloadResolver;
 
 /// A parsed Cardigann definition (the subset this engine interprets).
 #[derive(Debug, Clone, Deserialize)]
@@ -136,6 +137,12 @@ pub struct SearchBlock {
     /// Request paths the search hits.
     #[serde(default)]
     pub paths: Vec<SearchPath>,
+    /// Query inputs shared by every path (`name → template`). Definitions commonly
+    /// declare the whole query here and use `paths` only to vary the page, so these
+    /// must be merged into each path's own inputs — a path-level entry of the same
+    /// name wins.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
     /// How to parse the response body (`html`, the default, or `json`).
     #[serde(default)]
     pub response: ResponseBlock,
@@ -432,6 +439,29 @@ fn eval_expr(expr: &str, ctx: &TemplateContext) -> Result<String> {
         })?;
         return Ok(eval_list(list_expr, ctx)?.join(sep));
     }
+    // `or`/`and` over value expressions, with Go's template semantics: `or` yields
+    // the first non-empty argument, `and` the last (or empty if any is empty). Both
+    // are common in definitions that vary a query field on whether a keyword or an
+    // id was supplied, and both read as booleans in an `if`.
+    if let Some(rest) = expr.strip_prefix("or ") {
+        for arg in split_args(rest) {
+            let value = eval_expr(&arg, ctx)?;
+            if !value.is_empty() {
+                return Ok(value);
+            }
+        }
+        return Ok(String::new());
+    }
+    if let Some(rest) = expr.strip_prefix("and ") {
+        let mut last = String::new();
+        for arg in split_args(rest) {
+            last = eval_expr(&arg, ctx)?;
+            if last.is_empty() {
+                return Ok(String::new());
+            }
+        }
+        return Ok(last);
+    }
     match expr {
         "." => Ok(ctx.dot.unwrap_or_default().to_string()),
         ".Keywords" | ".Query.Keywords" | ".Query.q" => Ok(ctx.keywords.to_string()),
@@ -451,6 +481,38 @@ fn eval_expr(expr: &str, ctx: &TemplateContext) -> Result<String> {
             "unsupported template expression: {{{{ {other} }}}}"
         ))),
     }
+}
+
+/// Split an argument list on whitespace, keeping a quoted literal (which may itself
+/// contain spaces) as one argument.
+fn split_args(rest: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in rest.chars() {
+        match quote {
+            Some(q) => {
+                current.push(ch);
+                if ch == q {
+                    quote = None;
+                }
+            }
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 /// Evaluate a truthiness condition (non-empty value / non-empty list = true).
@@ -749,6 +811,9 @@ pub struct CardigannIndexer {
     config: BTreeMap<String, String>,
     fetcher: Arc<dyn Fetcher>,
     rate_limiter: Arc<HostRateLimiter>,
+    /// Fills in links for rows that arrive without one (see [`crate::resolve`]).
+    /// `None` drops such rows, which is the behavior of a definition-only engine.
+    resolver: Option<Arc<dyn DownloadResolver>>,
 }
 
 impl CardigannIndexer {
@@ -783,7 +848,16 @@ impl CardigannIndexer {
             config,
             fetcher,
             rate_limiter,
+            resolver: None,
         }
+    }
+
+    /// Attach a [`DownloadResolver`] for rows whose link the definition can't
+    /// express (a tracker that serves magnets from a signed endpoint).
+    #[must_use]
+    pub fn with_resolver(mut self, resolver: Arc<dyn DownloadResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// The tracker's human-facing name.
@@ -848,9 +922,12 @@ impl CardigannIndexer {
             let mut url = base.join(&rendered).map_err(|e| {
                 IndexerError::Definition(format!("bad search path '{rendered}': {e}"))
             })?;
-            // Render the non-empty inputs once.
+            // Render the non-empty inputs once, taking the search-level block first
+            // so a path that repeats a name overrides it.
+            let mut merged = self.definition.search.inputs.clone();
+            merged.extend(path.inputs.clone());
             let mut inputs = Vec::new();
-            for (name, template) in &path.inputs {
+            for (name, template) in &merged {
                 let value = render_template(template, &ctx)?;
                 if !value.is_empty() {
                     inputs.push((name.clone(), value));
@@ -1011,7 +1088,7 @@ impl CardigannIndexer {
                 "infohash" => infohash = Some(value.clone()),
                 "details" | "guid" => guid = Some(self.resolve_url(value)),
                 "size" => size = parse_size(value),
-                "seeders" => seeders = value.replace(',', "").trim().parse().ok(),
+                "seeders" => seeders = parse_count(value),
                 "downloadvolumefactor" if value.trim().parse::<f64>().is_ok_and(|f| f == 0.0) => {
                     flags.push("freeleech".to_string());
                 }
@@ -1030,7 +1107,20 @@ impl CardigannIndexer {
         };
 
         let title = title?;
-        let link = finalize_magnet(link?, &title);
+        let link = match link {
+            Some(link) => finalize_magnet(link, &title),
+            // No link in the row. If a resolver claims the details URL it can fetch
+            // one; leave the field empty as the marker for that deferred pass and
+            // let `resolve_pending_links` fill it or drop the release. Without a
+            // resolver the row is unusable and drops here, as it always has.
+            None => {
+                let details = guid.as_deref()?;
+                if !self.resolver.as_ref().is_some_and(|r| r.handles(details)) {
+                    return None;
+                }
+                PENDING_LINK.to_string()
+            }
+        };
         Some(Release {
             indexer_id: self.indexer_id,
             title,
@@ -1061,9 +1151,66 @@ impl CardigannIndexer {
             None => self.fetcher.get_bytes(req.url.as_str()).await?,
         };
         let body = decode_body(&bytes, self.definition.encoding.as_deref());
-        self.extract(&body)
+        let mut releases = self.extract(&body)?;
+        self.resolve_pending_links(&mut releases).await;
+        Ok(releases)
+    }
+
+    /// Fill in links for releases the extractor left [`PENDING_LINK`], dropping any
+    /// the resolver can't satisfy.
+    ///
+    /// A resolve costs at least one extra request per release, so it runs only for
+    /// rows that arrived without a link, and shares the per-host budget with the
+    /// search itself. One release failing to resolve must not fail the search —
+    /// the tracker may simply have pulled that torrent — so failures drop the
+    /// release and are traced rather than propagated.
+    async fn resolve_pending_links(&self, releases: &mut Vec<Release>) {
+        let Some(resolver) = self.resolver.clone() else {
+            return;
+        };
+        if !releases.iter().any(|r| r.download_url == PENDING_LINK) {
+            return;
+        }
+
+        let mut resolved = Vec::with_capacity(releases.len());
+        for mut release in std::mem::take(releases) {
+            if release.download_url != PENDING_LINK {
+                resolved.push(release);
+                continue;
+            }
+            let Some(details) = release.guid.clone() else {
+                continue;
+            };
+            if let Some(host) = Url::parse(&details).ok().and_then(|u| {
+                let h = u.host_str()?;
+                Some(h.to_string())
+            }) {
+                self.rate_limiter.until_ready(&host).await;
+            }
+            match resolver.resolve(&details, self.fetcher.as_ref()).await {
+                Ok(link) => {
+                    release.download_url = finalize_magnet(link, &release.title);
+                    resolved.push(release);
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        indexer = %self.definition.name,
+                        details = %details,
+                        error = %err,
+                        "dropping release whose download link could not be resolved"
+                    );
+                }
+            }
+        }
+        *releases = resolved;
     }
 }
+
+/// Placeholder written into `download_url` by the extractor when a row has no link
+/// but a [`DownloadResolver`] may be able to fetch one. Never escapes the engine:
+/// [`CardigannIndexer::resolve_pending_links`] either replaces it or drops the
+/// release. Empty rather than a sentinel string so a leak is inert downstream.
+const PENDING_LINK: &str = "";
 
 /// Decode response bytes using the named encoding (Cardigann's `encoding` field),
 /// defaulting to UTF-8. An unknown label falls back to UTF-8; decoding is lossy
@@ -1204,21 +1351,18 @@ fn finalize_magnet(link: String, title: &str) -> String {
 
 /// Parse a human size string (`"1.5 GB"`, `"700 MB"`, `"1234567"`) into bytes.
 fn parse_size(raw: &str) -> Option<u64> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
+    let (value, rest) = split_leading_number(raw)?;
+    let unit: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    // A bare count with no unit is a byte count, as JSON-ish feeds report it.
+    if unit.is_empty() {
+        return (value >= 0.0).then_some(value as u64);
     }
-    // Plain integer byte counts are common in JSON-ish feeds.
-    if let Ok(bytes) = raw.replace(',', "").parse::<u64>() {
-        return Some(bytes);
-    }
-
-    let lower = raw.to_ascii_lowercase();
-    let (num_part, unit) = lower
-        .find(|c: char| c.is_ascii_alphabetic())
-        .map(|idx| (lower[..idx].trim(), lower[idx..].trim()))?;
-    let value: f64 = num_part.replace(',', "").parse().ok()?;
-    let multiplier: f64 = match unit {
+    let multiplier: f64 = match unit.as_str() {
         "b" => 1.0,
         "kb" | "kib" => 1024.0,
         "mb" | "mib" => 1024.0 * 1024.0,
@@ -1227,6 +1371,33 @@ fn parse_size(raw: &str) -> Option<u64> {
         _ => return None,
     };
     Some((value * multiplier) as u64)
+}
+
+/// Parse a count that may be rendered with a label (`Seeds 137`).
+fn parse_count(raw: &str) -> Option<u32> {
+    let (value, _) = split_leading_number(raw)?;
+    (value >= 0.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
+}
+
+/// Split the first numeric token out of `raw`, returning its value and the text
+/// that follows it.
+///
+/// Cells commonly carry a label alongside the value (`Size 4.2 GB`, `Seeds 137`) —
+/// trackers render one for narrow viewports and hide it with CSS, so the label is
+/// part of the element's text even though a reader never sees it. Anchoring on the
+/// first digit rather than on the start of the string reads those cells the way the
+/// definition's author intended, without every definition needing a strip filter.
+fn split_leading_number(raw: &str) -> Option<(f64, &str)> {
+    let start = raw.find(|c: char| c.is_ascii_digit())?;
+    let rest = &raw[start..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == ',' || c == '.'))
+        .unwrap_or(rest.len());
+    // A trailing separator belongs to the prose after the number ("4 GB, seeded"),
+    // not to the number itself.
+    let digits = rest[..end].trim_end_matches([',', '.']);
+    let value: f64 = digits.replace(',', "").parse().ok()?;
+    Some((value, &rest[digits.len()..]))
 }
 
 #[cfg(test)]
@@ -1317,6 +1488,72 @@ mod tests {
             )
             .unwrap(),
             "100;101;"
+        );
+    }
+
+    /// `or`/`and` follow Go's template semantics — they yield a *value*, not a
+    /// boolean — which is what lets a definition write
+    /// `{{ if or .Keywords .Query.IMDBID }}` and also `{{ or .A .B }}` inline.
+    #[test]
+    fn template_or_and_yield_go_values_and_read_as_conditions() {
+        let mut query = BTreeMap::new();
+        query.insert("IMDBID".to_string(), "tt13991232".to_string());
+        let c = TemplateContext {
+            keywords: "",
+            query: &query,
+            config: &BTreeMap::new(),
+            categories: &[],
+            dot: None,
+        };
+
+        // `or` returns the first non-empty argument, skipping the empty keywords.
+        assert_eq!(
+            render_template("{{ or .Keywords .Query.IMDBID }}", &c).unwrap(),
+            "tt13991232"
+        );
+        // As a condition, a non-empty result takes the `if` branch.
+        assert_eq!(
+            render_template(
+                "{{ if or .Keywords .Query.IMDBID }}have{{ else }}none{{ end }}",
+                &c
+            )
+            .unwrap(),
+            "have"
+        );
+        // `and` is empty when any argument is empty, so it takes the `else` branch.
+        assert_eq!(
+            render_template(
+                "{{ if and .Keywords .Query.IMDBID }}both{{ else }}not-both{{ end }}",
+                &c
+            )
+            .unwrap(),
+            "not-both"
+        );
+        // With neither present the `or` is empty and the `else` branch wins — the
+        // keyword-less sweep a listing definition relies on.
+        let empty = TemplateContext {
+            keywords: "",
+            query: &BTreeMap::new(),
+            config: &BTreeMap::new(),
+            categories: &[],
+            dot: None,
+        };
+        assert_eq!(
+            render_template(
+                "{{ if or .Keywords .Query.IMDBID }}{{ else }}4{{ end }}",
+                &empty
+            )
+            .unwrap(),
+            "4"
+        );
+    }
+
+    /// A quoted literal containing spaces stays one argument.
+    #[test]
+    fn split_args_keeps_quoted_literals_whole() {
+        assert_eq!(
+            split_args(r#".Keywords "a b" .Query.X"#),
+            vec![".Keywords", "\"a b\"", ".Query.X"]
         );
     }
 
@@ -1572,6 +1809,7 @@ search:
             caps: DefinitionCaps::default(),
             search: SearchBlock {
                 paths: vec![],
+                inputs: BTreeMap::new(),
                 response: ResponseBlock::default(),
                 rows: RowsBlock {
                     selector: "tr".into(),
@@ -1600,6 +1838,40 @@ search:
         assert_eq!(parse_size("1,234"), Some(1234));
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("garbage"), None);
+    }
+
+    /// Cells often carry a CSS-hidden label next to the value; the label is part of
+    /// the element's text, so anchoring on the start of the string loses the number.
+    #[test]
+    fn parse_size_reads_a_labelled_cell() {
+        assert_eq!(
+            parse_size("Size 4.2 GB"),
+            Some((4.2 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(parse_size("  Size\n 700 MB "), Some(700 * 1024 * 1024));
+        assert_eq!(parse_size("1.5GiB"), Some((1.5 * 1024.0f64.powi(3)) as u64));
+        // A number in a unitless label is still a byte count.
+        assert_eq!(parse_size("Size 1234"), Some(1234));
+        // A unit that isn't a size unit is not a size.
+        assert_eq!(parse_size("Age 4 years ago"), None);
+    }
+
+    #[test]
+    fn parse_count_reads_a_labelled_cell() {
+        assert_eq!(parse_count("Seeds 137"), Some(137));
+        assert_eq!(parse_count("88"), Some(88));
+        assert_eq!(parse_count("1,204"), Some(1204));
+        assert_eq!(parse_count("Seeds"), None);
+        assert_eq!(parse_count(""), None);
+    }
+
+    #[test]
+    fn split_leading_number_stops_at_trailing_separators() {
+        assert_eq!(
+            split_leading_number("4 GB, seeded"),
+            Some((4.0, " GB, seeded"))
+        );
+        assert_eq!(split_leading_number("no digits here"), None);
     }
 
     #[test]
