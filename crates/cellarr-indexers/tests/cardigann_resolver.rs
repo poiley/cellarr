@@ -360,3 +360,81 @@ async fn a_keywordless_search_takes_the_else_branch_of_an_or_condition() {
         assert!(!url.contains("q="), "no keyword to send: {url}");
     }
 }
+
+/// Resolution costs two requests per release against the slowest indexer in the
+/// set, so an unbounded sweep is not acceptable. The cap keeps the best-seeded
+/// rows and drops the rest rather than resolving everything.
+#[tokio::test]
+async fn resolution_is_capped_at_the_best_seeded_rows() {
+    let fetcher = Arc::new(SignedTrackerFetcher::new());
+    let def = Definition::from_yaml(DEFINITION).expect("parse definition");
+    let releases = CardigannIndexer::with_deps(
+        IndexerId::new(),
+        def,
+        std::collections::BTreeMap::from([("resolveLimit".to_string(), "1".to_string())]),
+        Arc::clone(&fetcher) as Arc<dyn Fetcher>,
+        Arc::new(HostRateLimiter::conservative_default()),
+    )
+    .with_resolver(Arc::new(ExtTorrentsResolver::with_hosts(vec![
+        "signedtracker.example".to_string(),
+    ])))
+    .search(&SearchTerms {
+        queries: vec!["example show".to_string()],
+        ..SearchTerms::default()
+    })
+    .await
+    .expect("search");
+
+    assert_eq!(
+        releases.len(),
+        1,
+        "cap should keep exactly one: {releases:?}"
+    );
+    // The 42-seeder row wins over the 7-seeder one.
+    assert!(
+        releases[0].download_url.contains("11223344"),
+        "cap should keep the best-seeded row, got {:?}",
+        releases[0].download_url
+    );
+    assert_eq!(
+        fetcher.posts().len(),
+        1,
+        "only the kept row should cost requests"
+    );
+}
+
+/// A tracker that publishes a courtesy interval is telling you the rate at which
+/// it stops answering; the engine must not out-run it.
+#[tokio::test]
+async fn a_definitions_request_delay_paces_the_engine() {
+    let yaml = DEFINITION.replace("type: public", "type: public\nrequestDelay: 1");
+    let def = Definition::from_yaml(&yaml).expect("parse definition");
+    assert_eq!(def.request_delay, Some(1.0), "requestDelay should parse");
+
+    let started = std::time::Instant::now();
+    let releases = CardigannIndexer::with_deps(
+        IndexerId::new(),
+        def,
+        std::collections::BTreeMap::from([("resolveLimit".to_string(), "1".to_string())]),
+        Arc::new(SignedTrackerFetcher::new()) as Arc<dyn Fetcher>,
+        Arc::new(HostRateLimiter::conservative_default()),
+    )
+    .with_resolver(Arc::new(ExtTorrentsResolver::with_hosts(vec![
+        "signedtracker.example".to_string(),
+    ])))
+    .search(&SearchTerms {
+        queries: vec!["example show".to_string()],
+        ..SearchTerms::default()
+    })
+    .await
+    .expect("search");
+
+    assert_eq!(releases.len(), 1);
+    // Two search paths plus one resolve = at least three paced requests, so at
+    // least two full delays must have elapsed.
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "expected the engine to pace itself, took only {:?}",
+        started.elapsed()
+    );
+}

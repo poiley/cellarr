@@ -189,16 +189,40 @@ impl FlareSolverrFetcher {
             .map_err(|e| IndexerError::Parse(format!("flaresolverr envelope: {e}")))
     }
 
-    /// Create the named session once; a session that already exists is not an error.
+    /// Adopt the named session, creating it only if it isn't already there.
+    ///
+    /// Creating a session that exists resets its browser, throwing away the
+    /// clearance cookies that make the *second* request cheap — and callers rebuild
+    /// this fetcher often (indexer adapters are constructed per search), so a
+    /// create-every-time would re-solve a challenge on every request and the solves
+    /// would pile up until they time out. Listing first makes adoption idempotent
+    /// across instances and across process restarts.
     async fn ensure_session(&self) {
         self.session_ready
             .get_or_init(|| async {
-                let _ = self
-                    .command(serde_json::json!({
-                        "cmd": "sessions.create",
-                        "session": self.session,
-                    }))
-                    .await;
+                let existing = self
+                    .command(serde_json::json!({ "cmd": "sessions.list" }))
+                    .await
+                    .ok()
+                    .and_then(|envelope| {
+                        Some(
+                            envelope
+                                .get("sessions")?
+                                .as_array()?
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .any(|s| s == self.session),
+                        )
+                    })
+                    .unwrap_or(false);
+                if !existing {
+                    let _ = self
+                        .command(serde_json::json!({
+                            "cmd": "sessions.create",
+                            "session": self.session,
+                        }))
+                        .await;
+                }
             })
             .await;
     }

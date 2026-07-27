@@ -76,6 +76,13 @@ pub struct Definition {
     /// defaults to UTF-8.
     #[serde(default)]
     pub encoding: Option<String>,
+    /// Minimum seconds the tracker asks callers to leave between requests.
+    ///
+    /// Honored as a floor on this indexer's own request spacing, on top of the
+    /// shared per-host limiter. A tracker that publishes one is telling you the
+    /// rate at which it stops answering; ignoring it is how an indexer gets banned.
+    #[serde(default, rename = "requestDelay")]
+    pub request_delay: Option<f64>,
     /// Declared capabilities (category mappings + modes).
     #[serde(default)]
     pub caps: DefinitionCaps,
@@ -814,6 +821,10 @@ pub struct CardigannIndexer {
     /// Fills in links for rows that arrive without one (see [`crate::resolve`]).
     /// `None` drops such rows, which is the behavior of a definition-only engine.
     resolver: Option<Arc<dyn DownloadResolver>>,
+    /// When this engine last issued a request, for honoring the definition's
+    /// `requestDelay`. Per-engine rather than per-host: the delay is this
+    /// tracker's own published courtesy interval.
+    last_request: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl CardigannIndexer {
@@ -849,6 +860,7 @@ impl CardigannIndexer {
             fetcher,
             rate_limiter,
             resolver: None,
+            last_request: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -1139,6 +1151,7 @@ impl CardigannIndexer {
         if let Some(host) = req.url.host_str() {
             self.rate_limiter.until_ready(host).await;
         }
+        self.pace().await;
         // Fetch raw bytes and decode with the definition's declared encoding, so a
         // non-UTF-8 tracker (e.g. windows-1251) that sends no/incorrect charset
         // header is read correctly rather than mojibake.
@@ -1156,37 +1169,101 @@ impl CardigannIndexer {
         Ok(releases)
     }
 
+    /// Wait out the definition's `requestDelay` since this engine's last request.
+    ///
+    /// The shared limiter is keyed on host and tuned for ordinary trackers; a
+    /// tracker that publishes a courtesy interval usually wants something much
+    /// slower, and one that answers through a headless browser cannot be driven
+    /// at the shared rate at all.
+    async fn pace(&self) {
+        let Some(delay) = self
+            .definition
+            .request_delay
+            .filter(|d| *d > 0.0)
+            .map(std::time::Duration::from_secs_f64)
+        else {
+            return;
+        };
+        let mut last = self.last_request.lock().await;
+        if let Some(previous) = *last {
+            let elapsed = previous.elapsed();
+            if elapsed < delay {
+                tokio::time::sleep(delay - elapsed).await;
+            }
+        }
+        *last = Some(std::time::Instant::now());
+    }
+
+    /// How many link-less rows one search may resolve.
+    ///
+    /// Resolution costs two extra requests per release against a tracker that is
+    /// already the slow one, so an unbounded sweep of a hundred-row page would
+    /// spend minutes and starve every other indexer. The cap keeps the best
+    /// candidates — which is what a decision engine picks from anyway — and the
+    /// number of rows it dropped is logged rather than swallowed.
+    fn resolve_limit(&self) -> usize {
+        self.config
+            .get("resolveLimit")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RESOLVE_LIMIT)
+    }
+
     /// Fill in links for releases the extractor left [`PENDING_LINK`], dropping any
     /// the resolver can't satisfy.
     ///
-    /// A resolve costs at least one extra request per release, so it runs only for
-    /// rows that arrived without a link, and shares the per-host budget with the
-    /// search itself. One release failing to resolve must not fail the search —
-    /// the tracker may simply have pulled that torrent — so failures drop the
-    /// release and are traced rather than propagated.
+    /// Runs only for rows that arrived without a link, best-seeded first and capped
+    /// by [`resolve_limit`](Self::resolve_limit). One release failing to resolve
+    /// must not fail the search — the tracker may simply have pulled that torrent —
+    /// so failures drop the release and are traced rather than propagated.
     async fn resolve_pending_links(&self, releases: &mut Vec<Release>) {
         let Some(resolver) = self.resolver.clone() else {
             return;
         };
-        if !releases.iter().any(|r| r.download_url == PENDING_LINK) {
+        let pending = releases
+            .iter()
+            .filter(|r| r.download_url == PENDING_LINK)
+            .count();
+        if pending == 0 {
             return;
         }
 
+        // Resolve the most-seeded rows first so the cap keeps the candidates worth
+        // having. Rows that already carry a link keep their original order.
+        let limit = self.resolve_limit();
+        let mut order: Vec<usize> = (0..releases.len())
+            .filter(|i| releases[*i].download_url == PENDING_LINK)
+            .collect();
+        order.sort_by_key(|i| std::cmp::Reverse(releases[*i].seeders.unwrap_or(0)));
+        let attempt: std::collections::HashSet<usize> = order.iter().copied().take(limit).collect();
+        if pending > limit {
+            tracing::info!(
+                indexer = %self.definition.name,
+                pending,
+                limit,
+                dropped = pending - limit,
+                "capping download-link resolution to the best-seeded rows"
+            );
+        }
+
         let mut resolved = Vec::with_capacity(releases.len());
-        for mut release in std::mem::take(releases) {
+        for (index, mut release) in std::mem::take(releases).into_iter().enumerate() {
             if release.download_url != PENDING_LINK {
                 resolved.push(release);
+                continue;
+            }
+            if !attempt.contains(&index) {
                 continue;
             }
             let Some(details) = release.guid.clone() else {
                 continue;
             };
-            if let Some(host) = Url::parse(&details).ok().and_then(|u| {
-                let h = u.host_str()?;
-                Some(h.to_string())
-            }) {
+            if let Some(host) = Url::parse(&details)
+                .ok()
+                .and_then(|u| u.host_str().map(ToString::to_string))
+            {
                 self.rate_limiter.until_ready(&host).await;
             }
+            self.pace().await;
             match resolver.resolve(&details, self.fetcher.as_ref()).await {
                 Ok(link) => {
                     release.download_url = finalize_magnet(link, &release.title);
@@ -1205,6 +1282,9 @@ impl CardigannIndexer {
         *releases = resolved;
     }
 }
+
+/// Rows one search resolves when the indexer sets no `resolveLimit`.
+const DEFAULT_RESOLVE_LIMIT: usize = 15;
 
 /// Placeholder written into `download_url` by the extractor when a row has no link
 /// but a [`DownloadResolver`] may be able to fetch one. Never escapes the engine:
@@ -1806,6 +1886,7 @@ search:
             name: "T".into(),
             links: vec!["https://tracker.example/".into()],
             encoding: None,
+            request_delay: None,
             caps: DefinitionCaps::default(),
             search: SearchBlock {
                 paths: vec![],
