@@ -134,10 +134,18 @@ pub enum Coordinates {
         /// takes no calendar/`chrono` dependency; validated by `cellarr-parse`.
         date: String,
     },
-    /// A whole-season release, before Identify fans it out to per-episode nodes.
-    /// **Parser-stage / transient.**
+    /// A whole season.
+    ///
+    /// This addresses a season two ways at once, deliberately: it is the
+    /// coordinate a **season unit** carries (the container under a series, which
+    /// can be monitored and searched on its own), and it is what the parser
+    /// produces for a **season-pack release**. Because both sides speak it, a pack
+    /// matches the season it fills without either having to be translated.
+    ///
+    /// A release spanning several seasons carries one of these per covered season,
+    /// so it can satisfy several season units at once.
     SeasonPack {
-        /// The season the pack covers.
+        /// The season covered.
         season: u16,
     },
     /// An anime absolute episode number, before Identify remaps it (via the scene

@@ -6040,6 +6040,10 @@ struct ReleaseQuery {
     movie_id: Option<String>,
     #[serde(rename = "seriesId")]
     series_id: Option<String>,
+    /// Search a whole season rather than one episode — the originals' season
+    /// search. Combined with `seriesId`, it addresses that series' season unit.
+    #[serde(rename = "seasonNumber")]
+    season_number: Option<i64>,
 }
 
 /// v3 `GET /api/v3/release` — the **interactive (manual) release search**.
@@ -6074,10 +6078,21 @@ async fn release_search(
                 "a contentId (or movieId/seriesId) query parameter is required".into(),
             )
         })?;
-    let content_id = cellarr_core::ContentId::from_uuid(
+    let addressed = cellarr_core::ContentId::from_uuid(
         raw.parse::<uuid::Uuid>()
             .map_err(|_| ApiError::BadRequest(format!("invalid contentId: {raw}")))?,
     );
+
+    // `seasonNumber` redirects the search from the addressed series to that
+    // series' season unit, so the query goes out as a season rather than as one
+    // episode. A season the series does not have is a client error, not an empty
+    // list, so a typo is not mistaken for "nothing available".
+    let content_id = match q.season_number {
+        Some(season) => season_unit_of(&fs.state, addressed, season)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest(format!("season {season} not found")))?,
+        None => addressed,
+    };
 
     // No pipeline wiring (offline/test): degrade to an empty list, never 500.
     let Some(search) = fs.state.release_search.as_ref() else {
@@ -6602,6 +6617,32 @@ async fn season_monitor(
 }
 
 /// Resolve a season id (full uuid or numeric projection) to its Season-kind
+/// The season unit under `series` numbered `season`, if the series has one.
+///
+/// A season is a real content node, so searching one is just searching its id —
+/// this only turns the originals' `(seriesId, seasonNumber)` addressing into that
+/// id.
+async fn season_unit_of(
+    state: &AppState,
+    series: cellarr_core::ContentId,
+    season: i64,
+) -> ApiResult<Option<cellarr_core::ContentId>> {
+    let wanted = u16::try_from(season)
+        .map_err(|_| ApiError::BadRequest(format!("season {season} is out of range")))?;
+    for child in state.db.content().children(series).await? {
+        if child.kind != cellarr_core::ContentKind::Season {
+            continue;
+        }
+        if matches!(
+            child.coords,
+            cellarr_core::Coordinates::SeasonPack { season } if season == wanted
+        ) {
+            return Ok(Some(child.id));
+        }
+    }
+    Ok(None)
+}
+
 /// [`ContentNode`], or `None` when nothing matches.
 async fn resolve_season_node(
     state: &AppState,

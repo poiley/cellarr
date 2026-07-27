@@ -182,12 +182,16 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
             .await
             .map_err(|e| ResolverError::Repo(e.to_string()))?;
         for s in seasons {
-            let Coordinates::Episode { season, .. } = s.coords else {
-                continue;
-            };
             if s.kind != ContentKind::Season {
                 continue;
             }
+            // A season node carries a season coordinate; tolerate the pre-migration
+            // episode-sentinel shape so a tree written by an older build still reads.
+            let season = match s.coords {
+                Coordinates::SeasonPack { season } => u32::from(season),
+                Coordinates::Episode { season, .. } => season,
+                _ => continue,
+            };
             season_id.insert(season, s.id);
             for ep in repo
                 .children(s.id)
@@ -224,10 +228,8 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
                         parent_id: Some(series.id),
                         kind: ContentKind::Season,
                         series_type: series_node.series_type,
-                        coords: Coordinates::Episode {
-                            season,
-                            episode: 0,
-                            absolute: None,
+                        coords: Coordinates::SeasonPack {
+                            season: u16::try_from(season).unwrap_or(u16::MAX),
                         },
                         monitored,
                         title_id: None,
