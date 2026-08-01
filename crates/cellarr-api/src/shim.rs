@@ -7288,17 +7288,28 @@ fn dc_numeric_id(id: cellarr_core::DownloadClientId) -> i64 {
     uuid_to_i64(id.as_uuid())
 }
 
-/// Project a remote-path-mapping id (a uuid string) onto a stable positive
-/// integer the v3 `id` field requires. A non-uuid id (should not occur for
-/// cellarr-created rows) hashes its bytes so the projection stays stable.
-/// The largest integer a JS `Number` represents exactly (`2^53 - 1`,
-/// `Number.MAX_SAFE_INTEGER`). v3 numeric ids are projected from uuids and read by
-/// the web client via `JSON.parse` into a JS `number`; masking to this width keeps
-/// every projected id exact in the browser (a wider `i64::MAX` mask silently
-/// truncated large ids, so UI delete/update against the mangled id no-op'd). The
-/// id is a stateless projection re-derived on every request (lookups re-project and
-/// match), so narrowing the mask is consistent and stores nothing.
-const JS_SAFE_INT_MAX: i64 = (1 << 53) - 1;
+/// The widest value a v3 numeric id may take: `i32::MAX`.
+///
+/// v3 ids are projected from uuids and read by two very different consumers. The
+/// web client parses them as JS numbers, which is why this was once masked to
+/// `Number.MAX_SAFE_INTEGER` — but the *arr `/api/v3` contract types an id as a
+/// 32-bit `int`, and Prowlarr deserializes our indexer list into one. A 53-bit id
+/// overflows that `int`, the deserialization throws part-way through the list, and
+/// the whole application sync fails — Prowlarr reported this app as unavailable
+/// continuously for over a month while its connection test kept passing.
+///
+/// `i32::MAX` satisfies both: it is well inside the JS safe range too. The id is a
+/// stateless projection re-derived on every request (lookups re-project and match),
+/// so narrowing the mask is consistent and stores nothing.
+///
+/// Narrowing is not free, and the cost is worth stating: 128 bits of uuid cannot
+/// map onto 31 bits without collisions. By the birthday bound the probability is
+/// ~2e-6 across 100 projected resources and ~2e-4 across 1000 — an *arr install
+/// has tens of indexers and profiles, not thousands — against a sync that was
+/// failing 100% of the time before. The real apps sidestep this by handing out
+/// sequential database ints; a stateless projection cannot, short of persisting a
+/// mapping table, which is the change to make if collisions ever show up.
+const V3_ID_MAX: i64 = i32::MAX as i64;
 
 fn rpm_numeric_id(id: &str) -> i64 {
     match uuid::Uuid::parse_str(id) {
@@ -7308,7 +7319,7 @@ fn rpm_numeric_id(id: &str) -> i64 {
             for b in id.as_bytes().iter().take(8) {
                 n = (n << 8) | i64::from(*b);
             }
-            n & JS_SAFE_INT_MAX
+            n & V3_ID_MAX
         }
     }
 }
@@ -7337,7 +7348,7 @@ fn uuid_to_i64(id: uuid::Uuid) -> i64 {
     for b in &bytes[..8] {
         n = (n << 8) | i64::from(*b);
     }
-    n & JS_SAFE_INT_MAX
+    n & V3_ID_MAX
 }
 
 fn protocol_str(p: cellarr_core::Protocol) -> &'static str {
@@ -8194,28 +8205,61 @@ async fn list_updates() -> Json<Vec<Value>> {
 }
 
 #[cfg(test)]
-mod numeric_id_js_safety {
-    use super::{rpm_numeric_id, uuid_to_i64, JS_SAFE_INT_MAX};
+mod numeric_id_bounds {
+    use super::{rpm_numeric_id, uuid_to_i64, V3_ID_MAX};
 
-    // Regression: v3 numeric ids are read by the web client as a JS `number`, which
-    // only represents integers exactly up to 2^53-1. A uuid whose first 8 bytes have
-    // the high bits set used to project (mask i64::MAX) to a value > 2^53, which the
-    // browser truncated -> UI delete/update hit a mangled id and silently no-op'd.
+    // Regression, and a lesson in asserting the wrong contract: this test used to
+    // check that projected ids fit a JS `number` (2^53-1). They did — and the bug
+    // shipped anyway, because the *arr `/api/v3` contract types an id as a 32-bit
+    // `int`. Prowlarr deserializes our indexer list into one, so a 53-bit id threw
+    // part-way through the list and failed the whole application sync, which was
+    // reported as an unavailable application for over a month while the
+    // connection test passed.
+    //
+    // The bound that matters is therefore i32, not the JS safe integer.
     #[test]
-    fn projected_ids_fit_in_a_js_number() {
-        // A uuid with all-high first bytes would exceed 2^53 under the old i64::MAX mask.
+    fn projected_ids_fit_the_v3_int_contract() {
+        // The worst case: a uuid whose leading bytes are all set.
         let worst = uuid::Uuid::from_bytes([0xFF; 16]);
         let n = uuid_to_i64(worst);
         assert!(n >= 0, "id must be non-negative");
         assert!(
-            n <= JS_SAFE_INT_MAX,
-            "projected id {n} exceeds Number.MAX_SAFE_INTEGER ({JS_SAFE_INT_MAX})"
+            i32::try_from(n).is_ok(),
+            "projected id {n} does not fit the v3 int contract"
         );
-        // The shared projection (notifications/import-lists/blocklist/rootfolders) too.
-        assert!(rpm_numeric_id(&worst.to_string()) <= JS_SAFE_INT_MAX);
-        // Stable + deterministic (lookups re-project and match).
+        // The shared projection (notifications/import-lists/blocklist/seasons) too.
+        let shared = rpm_numeric_id(&worst.to_string());
+        assert!(i32::try_from(shared).is_ok(), "{shared} exceeds i32");
+        // A non-uuid key takes the fallback branch; it must be bounded as well.
+        let fallback = rpm_numeric_id("a-plain-string-key");
+        assert!(i32::try_from(fallback).is_ok(), "{fallback} exceeds i32");
+
+        // Stable and deterministic — lookups re-project and match on the value.
         assert_eq!(uuid_to_i64(worst), uuid_to_i64(worst));
-        assert_eq!(JS_SAFE_INT_MAX, 9_007_199_254_740_991);
+        assert_eq!(V3_ID_MAX, i64::from(i32::MAX));
+    }
+
+    // The projection must actually use the entropy it has: a mask that collapsed
+    // ids (to zero, or to the same value for near-identical uuids) would be
+    // catastrophic rather than merely lossy, and would still satisfy the bounds
+    // check above. Deterministic on purpose — the birthday-bound collision rate is
+    // documented on `V3_ID_MAX` and is not something a random draw should assert.
+    #[test]
+    fn distinct_uuids_project_to_distinct_ids() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..512u128 {
+            // Vary the FIRST 8 bytes: those are the only ones the projection reads,
+            // so two uuids differing solely in their low half collapse onto one id
+            // by construction. Harmless for v4 uuids, whose high half is random,
+            // but it is the reason this varies the high half and not the low.
+            let u = uuid::Uuid::from_u128((i << 64) | 0x0123_4567_89ab_cdef_u128);
+            assert!(
+                seen.insert(uuid_to_i64(u)),
+                "uuid {u} collided with an earlier projection"
+            );
+        }
+        // And a value that is not simply truncated to nothing.
+        assert!(uuid_to_i64(uuid::Uuid::from_bytes([0xFF; 16])) > 0);
     }
 }
 
