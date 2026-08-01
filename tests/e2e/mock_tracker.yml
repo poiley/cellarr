@@ -1,0 +1,70 @@
+# SYNTHETIC Cardigann definition for tests/e2e/mock_tracker.py.
+#
+# Hand-authored against the mock's own markup, not copied from any tracker
+# (see crates/cellarr-indexers/tests/fixtures/NOTES.md and
+# docs/agents/legal-and-licensing.md).
+#
+# Point `links` at the port the mock printed, then add it to cellarr as a
+# cardigann indexer with `definitionFile` set to this path. The mock's fault
+# flags then exercise the engine end to end: --rate-limit for the limiter,
+# --challenge for session reuse, --sign-downloads for deferred link resolution,
+# --categories named for the mapping that silently resolves to nothing.
+---
+id: mocktracker
+name: Mock Tracker
+description: "A local tracker that misbehaves on demand, for testing the indexer engine"
+language: en-US
+type: public
+encoding: UTF-8
+# The mock honours --latency; this is what the engine should pace itself by.
+requestDelay: 0
+links:
+  - http://127.0.0.1:8080/
+
+caps:
+  categorymappings:
+    # Numeric ids, as the canonical sites use.
+    - { id: "5", cat: TV, desc: "TV" }
+    - { id: "54", cat: Movies, desc: "Movies" }
+    # The mirror shape --categories=named produces. Without these every row is
+    # uncategorised and category-filtered searches come back empty.
+    - { id: tv, cat: TV, desc: "TV (named)" }
+    - { id: movies, cat: Movies, desc: "Movies (named)" }
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+    movie-search: [q]
+
+search:
+  paths:
+    - path: browse/
+  inputs:
+    q: "{{ .Keywords }}"
+  rows:
+    selector: "table.torrents > tbody > tr"
+  fields:
+    title:
+      selector: a.title
+    details:
+      selector: a.title
+      attribute: href
+    # Present only when the mock runs WITHOUT --sign-downloads. With that flag
+    # the row carries no magnet at all and a resolver has to fetch it.
+    download:
+      optional: true
+      selector: a.dl[href^="magnet:"]
+      attribute: href
+    category_optional:
+      optional: true
+      selector: a.cat
+      attribute: href
+      filters:
+        - name: split
+          args: ["/", 2]
+    category:
+      text: "{{ if .Result.category_optional }}{{ .Result.category_optional }}{{ else }}5{{ end }}"
+    # Both cells carry a CSS-hidden label, as real trackers render them.
+    size:
+      selector: td.size
+    seeders:
+      selector: td.seeders
