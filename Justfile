@@ -220,6 +220,14 @@ oracle-trash-cf *ARGS:
 
 # Full live e2e: a real Torznab mock + a real qBittorrent (Docker) + the real
 # `cellarr run` daemon, proving the whole chain search->grab->track->import.
+# Prove the hostile-tracker mock actually misbehaves the way it advertises. A
+# harness that lies is worse than no harness, so this drives every fault mode
+# (rate limit, challenge, signed downloads, named categories, permanent failure)
+# against the server itself. Pure stdlib, no Docker, runs in about a second.
+mock-tracker-selftest:
+    #!/usr/bin/env bash
+    "${PYTHON:-python3}" tests/e2e/mock_tracker.py --selftest
+
 # DETERMINISTIC (the payload is pre-staged so the torrent rechecks to Completed
 # in seconds) and HARD-BOUNDED (every wait is capped; an 8-min watchdog kills it).
 # Tears down all qbittorrent-cellarr-* containers + the daemon on any exit.
