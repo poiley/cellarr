@@ -2,8 +2,16 @@ name: release
 
 # Build the web UI (embedded into the binary), cross-compile a static arm64
 # binary, and publish a container image to GHCR on every push to main.
+#
+# Pull requests run the CHECKS ONLY. Until they did, the first gate a change met
+# was the post-merge build on main — so a PR could look fine, merge, and only
+# then fail. The publish legs stay off PRs: they push to GHCR (which a PR has no
+# business doing) and the arm64 cross-compile costs ~10 minutes, which is not
+# worth paying on every push to a branch.
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -136,7 +144,10 @@ jobs:
     needs: [changes, test-sqlite]
     # Build on any code change, and always on a manual dispatch (a human clicking
     # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    # Never on a pull request: publishing is a main-branch action.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -210,7 +221,10 @@ jobs:
     needs: [changes, test-sqlite, test-pg]
     # Build on any code change, and always on a manual dispatch (a human clicking
     # "Run workflow" wants a rebuild even though paths-filter sees no diff vs itself).
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    # Never on a pull request: publishing is a main-branch action.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
