@@ -1312,9 +1312,28 @@ impl ContentRepository for ContentRepo {
     }
 
     async fn monitored_missing(&self) -> Result<Vec<ContentRef>> {
-        // Monitored nodes with no linked media_file are "missing". Containers
-        // (series/season/artist/album/author) are excluded: only leaf, grabbable
-        // nodes are acquisition targets.
+        // Monitored nodes with no linked media_file are "missing". Most containers
+        // (series/artist/album/author) are excluded: they are not grabbable as a
+        // unit, so only their leaves are acquisition targets.
+        //
+        // A SEASON is the exception, because trackers publish whole-season packs and
+        // a season node carries `Coordinates::SeasonPack` — a real, searchable unit
+        // (`&season=N`, no `ep`). Without it, a series whose season is entirely
+        // absent could only ever be chased one episode at a time: N searches and N
+        // grabs for something published as a single release, and nothing at all for
+        // a season whose episode rows aren't known yet.
+        //
+        // A season and its own episodes must never both be swept — that would search
+        // twice and could grab a pack *and* the singles it contains. The rule that
+        // keeps them disjoint: a season is the unit only when EVERY monitored episode
+        // under it is missing; otherwise the season is partially present and its
+        // individual missing episodes are the units. So exactly one level of each
+        // season is ever in this result, and a season with no monitored episodes at
+        // all is not a target (nothing is known to be wanted under it).
+        //
+        // "Missing" is deliberately evaluated over the season's EPISODES rather than
+        // the season row, which never has a linked file of its own — testing the row
+        // would make every season permanently missing and re-searched forever.
         //
         // Ordered LEAST-RECENTLY-SEARCHED first: never-searched nodes (no
         // `missing_search` row) ahead of all others, then oldest `searched_at` first.
@@ -1339,10 +1358,47 @@ impl ContentRepository for ContentRepo {
              FROM content c
              LEFT JOIN missing_search m ON m.content_id = c.id
              WHERE c.monitored = 1
-               AND c.kind IN ('movie', 'episode', 'track', 'book')
-               AND NOT EXISTS (
-                   SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
-               )
+               AND (
+                     (
+                       c.kind IN ('movie', 'episode', 'track', 'book')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
+                       )
+                       AND NOT (
+                           c.kind = 'episode'
+                           AND EXISTS (
+                               SELECT 1 FROM content s
+                               WHERE s.id = c.parent_id
+                                 AND s.kind = 'season'
+                                 AND s.monitored = 1
+                                 AND NOT EXISTS (
+                                     SELECT 1 FROM content e
+                                     JOIN content_file cf2 ON cf2.content_id = e.id
+                                     WHERE e.parent_id = s.id
+                                       AND e.kind = 'episode'
+                                       AND e.monitored = 1
+                                 )
+                           )
+                       )
+                     )
+                     OR
+                     (
+                       c.kind = 'season'
+                       AND EXISTS (
+                           SELECT 1 FROM content e
+                           WHERE e.parent_id = c.id
+                             AND e.kind = 'episode'
+                             AND e.monitored = 1
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1 FROM content e
+                           JOIN content_file cf3 ON cf3.content_id = e.id
+                           WHERE e.parent_id = c.id
+                             AND e.kind = 'episode'
+                             AND e.monitored = 1
+                       )
+                     )
+                   )
              ORDER BY (m.searched_at IS NULL) DESC, m.searched_at ASC, RANDOM()",
         ))
         .fetch_all(&self.pool)

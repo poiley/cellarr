@@ -241,6 +241,18 @@ impl<F: Fetcher> LiveMetadataResolver<F> {
                     repo.index_title(id, series_title)
                         .await
                         .map_err(|e| ResolverError::Repo(e.to_string()))?;
+                    // A season is an acquisition unit in its own right (a wholly
+                    // missing season is swept as one season-pack search), and search
+                    // reads the node's OWN title rather than walking up to the series
+                    // — so without this a season unit would search for nothing. No
+                    // air date: a season doesn't have one, only its episodes do.
+                    let meta = ContentMetadata {
+                        title: Some(series_title.to_string()),
+                        ..Default::default()
+                    };
+                    repo.set_metadata(id, &meta)
+                        .await
+                        .map_err(|e| ResolverError::Repo(e.to_string()))?;
                     season_id.insert(season, id);
                     id
                 }
@@ -569,30 +581,37 @@ mod tests {
         let eps = vec![child(1, 1), child(1, 2), child(2, 1), child(0, 1)];
         r.expand_series(&series, "Breaking Bad", &eps).await.unwrap();
 
-        // monitored_missing (what the pipeline grabs) now returns exactly the 3
-        // real episodes — the series/season containers and the special are excluded.
+        // monitored_missing (what the pipeline grabs) returns the two real seasons
+        // as SEASON PACKS, not their episodes: a freshly expanded series has nothing
+        // on disk, so each season is wholly missing and is published as one release.
+        // The series root is excluded (not grabbable), and so is the specials season
+        // — expand_series leaves season-0 episodes unmonitored, so season 0 states no
+        // want and is not a target.
         let missing = db.content().monitored_missing().await.unwrap();
         assert_eq!(
             missing.len(),
-            3,
-            "3 monitored episodes are grabbable; series/season/special excluded"
+            2,
+            "seasons 1 and 2 are each one grabbable unit; series/special excluded"
         );
         assert!(
             missing
                 .iter()
                 .all(|c| c.media_type == MediaType::Tv
-                    && matches!(c.coords, Coordinates::Episode { episode, .. } if episode > 0)),
-            "every grabbable node is a real TV episode"
+                    && matches!(c.coords, Coordinates::SeasonPack { season } if season > 0)),
+            "every grabbable node is a real TV season"
         );
 
-        // Each episode carries the SERIES title as its identity, so the TvModule's
-        // search resolves "Breaking Bad" + the season/episode numbering.
-        let ep = &missing[0];
-        let meta = ContentRepository::metadata(&db.content(), ep.id)
-            .await
-            .unwrap()
-            .expect("episode has metadata");
-        assert_eq!(meta.title.as_deref(), Some("Breaking Bad"));
+        // Every grabbable unit carries the SERIES title as its identity, so the
+        // TvModule's search resolves "Breaking Bad" + the numbering. Search reads the
+        // node's own title and never walks up to the series, so this has to hold for
+        // the season units too, not just for episodes.
+        for unit in &missing {
+            let meta = ContentRepository::metadata(&db.content(), unit.id)
+                .await
+                .unwrap()
+                .expect("every grabbable unit has metadata to search with");
+            assert_eq!(meta.title.as_deref(), Some("Breaking Bad"));
+        }
     }
 
     #[tokio::test]
@@ -604,17 +623,29 @@ mod tests {
         r.expand_series(&series, "Show", &[child(1, 1), child(1, 2)])
             .await
             .unwrap();
-        assert_eq!(db.content().monitored_missing().await.unwrap().len(), 2);
+        // Nothing is on disk, so season 1 is wholly missing and is the single unit
+        // that covers both episodes.
+        assert_eq!(db.content().monitored_missing().await.unwrap().len(), 1);
 
         // Re-refresh with the same episodes plus a newly-aired one: no duplicates,
-        // just the new episode appears.
+        // just the new episode appears. Counted over the TREE rather than over
+        // monitored_missing, which reports the wholly-missing season as one unit
+        // however many episodes sit under it and so cannot see a duplicate.
         r.expand_series(&series, "Show", &[child(1, 1), child(1, 2), child(1, 3)])
             .await
             .unwrap();
+        let seasons = db.content().children(series.id).await.unwrap();
+        assert_eq!(seasons.len(), 1, "the season is reused, not recreated");
+        let episodes = db.content().children(seasons[0].id).await.unwrap();
         assert_eq!(
-            db.content().monitored_missing().await.unwrap().len(),
+            episodes.len(),
             3,
             "a re-refresh adds only the new episode, never duplicates"
+        );
+        assert_eq!(
+            db.content().monitored_missing().await.unwrap().len(),
+            1,
+            "the season is still wholly missing, so it stays a single grabbable unit"
         );
     }
 

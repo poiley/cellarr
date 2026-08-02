@@ -2682,3 +2682,211 @@ async fn download_progress_round_trips_and_clears() {
     assert!(grabs.download_progress(grab).await.unwrap().is_none());
     grabs.clear_download_progress(grab).await.unwrap(); // no-op on missing
 }
+
+/// Build a `series -> season -> episodes` tree. `have_files` marks which of the
+/// episodes (by episode number) already have a linked media file.
+async fn tv_tree(
+    db: &Database,
+    library_id: LibraryId,
+    season_number: u16,
+    episodes: &[u32],
+    have_files: &[u32],
+) -> (ContentId, ContentId, Vec<(u32, ContentId)>) {
+    let content = db.content();
+    let media_files = db.media_files();
+
+    let series_id = ContentId::new();
+    content
+        .upsert(&ContentNode {
+            tags: Vec::new(),
+            id: series_id,
+            library_id,
+            media_type: MediaType::Tv,
+            parent_id: None,
+            kind: ContentKind::Series,
+            series_type: cellarr_core::SeriesType::Standard,
+            coords: Coordinates::Episode {
+                season: 0,
+                episode: 0,
+                absolute: None,
+            },
+            monitored: true,
+            title_id: None,
+        })
+        .await
+        .unwrap();
+
+    let season_id = ContentId::new();
+    content
+        .upsert(&ContentNode {
+            tags: Vec::new(),
+            id: season_id,
+            library_id,
+            media_type: MediaType::Tv,
+            parent_id: Some(series_id),
+            kind: ContentKind::Season,
+            series_type: cellarr_core::SeriesType::Standard,
+            coords: Coordinates::SeasonPack {
+                season: season_number,
+            },
+            monitored: true,
+            title_id: None,
+        })
+        .await
+        .unwrap();
+
+    let mut made = Vec::new();
+    for &ep in episodes {
+        let id = ContentId::new();
+        content
+            .upsert(&ContentNode {
+                tags: Vec::new(),
+                id,
+                library_id,
+                media_type: MediaType::Tv,
+                parent_id: Some(season_id),
+                kind: ContentKind::Episode,
+                series_type: cellarr_core::SeriesType::Standard,
+                coords: Coordinates::Episode {
+                    season: u32::from(season_number),
+                    episode: ep,
+                    absolute: None,
+                },
+                monitored: true,
+                title_id: None,
+            })
+            .await
+            .unwrap();
+        if have_files.contains(&ep) {
+            let file = MediaFile {
+                id: MediaFileId::new(),
+                path: format!("/data/s{season_number}e{ep}.mkv"),
+                size: 100,
+                quality: Quality::new("Bluray-1080p", 14),
+                languages: vec![],
+                media_info: None,
+                custom_format_score: None,
+                release_type: None,
+            };
+            media_files.create(&file).await.expect("create file");
+            media_files.link(id, file.id).await.expect("link file");
+        }
+        made.push((ep, id));
+    }
+    (series_id, season_id, made)
+}
+
+async fn tv_library(db: &Database) -> LibraryId {
+    let library = Library {
+        id: LibraryId::new(),
+        media_type: MediaType::Tv,
+        name: "TV".to_string(),
+        root_folders: vec!["/data".to_string()],
+        default_quality_profile: QualityProfileId::new(),
+    };
+    db.config().upsert_library(&library).await.unwrap();
+    library.id
+}
+
+/// A season with nothing at all is published as one pack, so it is swept as ONE
+/// unit — and its episodes must not also appear, or a run would search the same
+/// content twice and could grab both the pack and the singles inside it.
+#[tokio::test]
+async fn a_wholly_missing_season_is_swept_as_one_unit_and_its_episodes_are_not() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let (_series, season, eps) = tv_tree(&db, library_id, 6, &[1, 2, 3], &[]).await;
+
+    let ids: Vec<ContentId> = db
+        .content()
+        .monitored_missing()
+        .await
+        .expect("query")
+        .iter()
+        .map(|r| r.id)
+        .collect();
+
+    assert!(
+        ids.contains(&season),
+        "a season with no episodes present is itself the acquisition unit"
+    );
+    for (ep, id) in &eps {
+        assert!(
+            !ids.contains(id),
+            "episode {ep} must not be swept alongside the season pack that covers it"
+        );
+    }
+}
+
+/// Once part of a season is on disk a pack is the wrong unit — it would re-fetch
+/// what is already there — so the sweep falls back to the individual gaps.
+#[tokio::test]
+async fn a_partly_present_season_is_swept_as_its_missing_episodes_not_as_a_pack() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let (_series, season, eps) = tv_tree(&db, library_id, 6, &[1, 2, 3], &[1]).await;
+
+    let ids: Vec<ContentId> = db
+        .content()
+        .monitored_missing()
+        .await
+        .expect("query")
+        .iter()
+        .map(|r| r.id)
+        .collect();
+
+    assert!(
+        !ids.contains(&season),
+        "a season that is partly present must not be grabbed as a whole pack"
+    );
+    let id_of = |want: u32| eps.iter().find(|(e, _)| *e == want).unwrap().1;
+    assert!(!ids.contains(&id_of(1)), "the episode on disk is not missing");
+    assert!(ids.contains(&id_of(2)), "the gaps are the units");
+    assert!(ids.contains(&id_of(3)), "the gaps are the units");
+}
+
+/// A season whose episodes aren't known yet states no want, so it is not a target.
+/// Without this the season row — which never has a file of its own — would look
+/// missing forever and be re-searched on every single sweep.
+#[tokio::test]
+async fn a_season_with_no_monitored_episodes_is_not_a_target() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let (_series, season, _eps) = tv_tree(&db, library_id, 6, &[], &[]).await;
+
+    let ids: Vec<ContentId> = db
+        .content()
+        .monitored_missing()
+        .await
+        .expect("query")
+        .iter()
+        .map(|r| r.id)
+        .collect();
+
+    assert!(
+        !ids.contains(&season),
+        "an empty season wants nothing and must not be swept"
+    );
+}
+
+/// A fully-present season is not missing at either level.
+#[tokio::test]
+async fn a_complete_season_is_missing_at_neither_level() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let (_series, season, eps) = tv_tree(&db, library_id, 6, &[1, 2], &[1, 2]).await;
+
+    let ids: Vec<ContentId> = db
+        .content()
+        .monitored_missing()
+        .await
+        .expect("query")
+        .iter()
+        .map(|r| r.id)
+        .collect();
+
+    assert!(!ids.contains(&season));
+    for (_, id) in &eps {
+        assert!(!ids.contains(id));
+    }
+}
