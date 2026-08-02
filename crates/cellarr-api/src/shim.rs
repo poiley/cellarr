@@ -275,6 +275,7 @@ pub fn router(state: AppState, face: Face) -> Router {
         .route("/releaseprofile/{id}", delete(delete_release_profile))
         .route("/releaseProfile/{id}", delete(delete_release_profile))
         .route("/indexer", post(create_indexer))
+        .route("/indexer/{id}", get(get_indexer))
         .route("/indexer/{id}", put(update_indexer))
         .route("/indexer/{id}", delete(delete_indexer))
         .route("/indexer/test", post(test_indexer))
@@ -2831,6 +2832,35 @@ async fn create_indexer(
     }
     let ix = indexer_from_body(&body, cellarr_core::IndexerId::new());
     fs.state.db.config().upsert_indexer(&ix).await?;
+    let managed = managed_ids(&fs.state.db, managed_kind::INDEXER).await;
+    Ok(Json(with_managed(
+        v3_indexer(&ix),
+        managed.contains(&ix.id.to_string()),
+    )))
+}
+
+/// v3 `GET indexer/{id}` — one indexer by its projected numeric id.
+///
+/// Prowlarr's application sync does not stop at the list: having read
+/// `GET /indexer`, it re-reads each indexer it believes it manages individually
+/// to confirm the remote copy still matches what it pushed. Without this route
+/// the path existed for PUT and DELETE only, so the GET fell through to a bare
+/// `405 Method Not Allowed` — which the sync reports as the whole application
+/// being unreachable, not as one missing verb.
+async fn get_indexer(
+    State(fs): State<FaceState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let numeric = parse_i64(&id, "indexer")?;
+    let ix = fs
+        .state
+        .db
+        .config()
+        .list_indexers()
+        .await?
+        .into_iter()
+        .find(|ix| ix_numeric_id(ix.id) == numeric)
+        .ok_or_else(|| ApiError::NotFound(format!("indexer {id} not found")))?;
     let managed = managed_ids(&fs.state.db, managed_kind::INDEXER).await;
     Ok(Json(with_managed(
         v3_indexer(&ix),
