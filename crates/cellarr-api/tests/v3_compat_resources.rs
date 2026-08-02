@@ -616,3 +616,57 @@ fn urlencoding(s: &str) -> String {
     }
     out
 }
+
+/// Prowlarr's application sync does not stop at `GET /indexer`: for each indexer
+/// it believes it manages it re-reads that indexer **by id** to confirm the remote
+/// copy still matches what it pushed. The path used to be registered for PUT and
+/// DELETE only, so this GET fell through to a bare `405 Method Not Allowed`, and
+/// the sync reported the whole application as unreachable rather than one missing
+/// verb — an application stuck "unavailable" while every other signal said healthy.
+#[tokio::test]
+async fn an_indexer_can_be_re_read_by_the_id_the_list_advertised() {
+    let srv = common::start_open().await;
+    common::seed_indexer(&srv.state, "prowlarr-pushed").await;
+
+    let listed: Vec<serde_json::Value> = reqwest::Client::new()
+        .get(srv.url("/api/v3/indexer"))
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("list json");
+    let id = listed
+        .iter()
+        .find(|ix| ix["name"] == "prowlarr-pushed")
+        .expect("seeded indexer is listed")["id"]
+        .as_i64()
+        .expect("id is a number");
+
+    let response = reqwest::Client::new()
+        .get(srv.url(&format!("/api/v3/indexer/{id}")))
+        .send()
+        .await
+        .expect("get by id");
+    assert_eq!(
+        response.status(),
+        200,
+        "the id the list just advertised must be re-readable, not a 405"
+    );
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(body["id"], id, "the same id comes back");
+    assert_eq!(body["name"], "prowlarr-pushed");
+}
+
+/// An id that maps to nothing is a 404 — a definite "gone", which the sync acts on
+/// by removing its copy. A 405 or a 500 would instead look like a broken app.
+#[tokio::test]
+async fn re_reading_an_unknown_indexer_id_is_a_not_found() {
+    let srv = common::start_open().await;
+    let response = reqwest::Client::new()
+        .get(srv.url("/api/v3/indexer/2147483646"))
+        .send()
+        .await
+        .expect("get by id");
+    assert_eq!(response.status(), 404);
+}
