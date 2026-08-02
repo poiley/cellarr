@@ -148,7 +148,18 @@ impl ExtTorrentsResolver {
             })
     }
 
-    /// Pull the magnet out of the endpoint's `{"success":true,"magnet":"…"}` reply.
+    /// Pull the magnet out of a successful reply.
+    ///
+    /// The endpoint carries the link in `url`, and separately may carry the raw
+    /// infohash in `hash`. Its own client prefers `url` and falls back to building
+    /// `magnet:?xt=urn:btih:<hash>` when `url` is absent — a partial reply that
+    /// still identifies the torrent, and which it takes even when an `error` string
+    /// rides along beside it. Both shapes are accepted here for the same reason: a
+    /// resolvable infohash is a working magnet, and refusing it would drop releases
+    /// the tracker was willing to serve.
+    ///
+    /// `magnet` is accepted too, ahead of both, so a mirror still answering with the
+    /// older key keeps working.
     fn magnet_from_reply(body: &str) -> Result<String> {
         let reply: serde_json::Value = serde_json::from_str(body)
             .map_err(|e| IndexerError::Parse(format!("magnet endpoint reply: {e}")))?;
@@ -161,12 +172,24 @@ impl ExtTorrentsResolver {
                 "magnet endpoint refused: {reason}"
             )));
         }
+        let direct = ["magnet", "url"].into_iter().find_map(|key| {
+            reply
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|m| m.starts_with("magnet:"))
+                .map(str::to_string)
+        });
+        if let Some(magnet) = direct {
+            return Ok(magnet);
+        }
         reply
-            .get("magnet")
+            .get("hash")
             .and_then(serde_json::Value::as_str)
-            .filter(|m| m.starts_with("magnet:"))
-            .map(str::to_string)
-            .ok_or_else(|| IndexerError::Parse("magnet endpoint reply had no magnet".to_string()))
+            .filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .map(|h| format!("magnet:?xt=urn:btih:{h}"))
+            .ok_or_else(|| {
+                IndexerError::Parse("magnet endpoint reply had no link or hash".to_string())
+            })
     }
 
     /// Seconds since the Unix epoch, as the signature's timestamp component.
@@ -218,8 +241,12 @@ impl DownloadResolver for ExtTorrentsResolver {
 
         let timestamp = Self::now_unix();
         let signature = Self::sign(torrent_id, timestamp, &page_token);
+        // `download_type` is what the endpoint reads to decide which link to hand
+        // back; it is not an optional hint. An earlier `action=get_magnet` was not a
+        // parameter the endpoint has at all, so the field it does look for arrived
+        // empty.
         let form = format!(
-            "torrent_id={torrent_id}&action=get_magnet&timestamp={timestamp}&hmac={signature}&sessid={csrf_token}"
+            "torrent_id={torrent_id}&download_type=magnet&timestamp={timestamp}&hmac={signature}&sessid={csrf_token}"
         );
 
         let reply = fetcher
@@ -296,6 +323,49 @@ mod tests {
         assert_eq!(
             ExtTorrentsResolver::magnet_from_reply(body).unwrap(),
             "magnet:?xt=urn:btih:E4F4A432&dn=x"
+        );
+    }
+
+    /// The shape the endpoint actually answers with: the link arrives under `url`.
+    /// Reading only `magnet` meant every resolve failed against a reply that was
+    /// carrying a perfectly good link.
+    #[test]
+    fn the_link_is_read_from_the_url_field() {
+        let body = r#"{"success":true,"type":"magnet","url":"magnet:?xt=urn:btih:E4F4A432&dn=x"}"#;
+        assert_eq!(
+            ExtTorrentsResolver::magnet_from_reply(body).unwrap(),
+            "magnet:?xt=urn:btih:E4F4A432&dn=x"
+        );
+    }
+
+    /// A reply with no link but a usable infohash still identifies the torrent, so
+    /// it is built into a magnet rather than dropped — what the tracker's own client
+    /// does, including when a non-fatal `error` rides along beside the hash.
+    #[test]
+    fn a_reply_with_only_an_infohash_still_yields_a_magnet() {
+        let body = r#"{"success":true,"hash":"E4F4A432DEADBEEF","error":"cached copy"}"#;
+        assert_eq!(
+            ExtTorrentsResolver::magnet_from_reply(body).unwrap(),
+            "magnet:?xt=urn:btih:E4F4A432DEADBEEF"
+        );
+    }
+
+    /// A success carrying neither a link nor a hash is a failed resolve, not an
+    /// empty magnet handed onward to the download client.
+    #[test]
+    fn a_reply_with_neither_link_nor_hash_is_an_error() {
+        let err = ExtTorrentsResolver::magnet_from_reply(r#"{"success":true}"#).unwrap_err();
+        assert!(err.to_string().contains("no link or hash"), "{err}");
+    }
+
+    /// A non-magnet `url` (an interstitial or ad redirect) must not be passed off as
+    /// a magnet; the infohash beside it is the usable answer.
+    #[test]
+    fn a_non_magnet_url_falls_through_to_the_infohash() {
+        let body = r#"{"success":true,"url":"https://ext.to/interstitial","hash":"ABC123"}"#;
+        assert_eq!(
+            ExtTorrentsResolver::magnet_from_reply(body).unwrap(),
+            "magnet:?xt=urn:btih:ABC123"
         );
     }
 
