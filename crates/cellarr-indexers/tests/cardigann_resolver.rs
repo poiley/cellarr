@@ -90,8 +90,11 @@ impl Fetcher for SignedTrackerFetcher {
         if self.refuse.contains(&id) {
             return Ok(r#"{"success":false,"error":"Invalid session"}"#.to_string());
         }
+        // The live endpoint answers `{"success":true,"type":"magnet","url":"magnet:…"}`
+        // — the link arrives under `url`, not `magnet`. The stub mirrors that so this
+        // path is exercised against the shape the tracker really sends.
         Ok(format!(
-            r#"{{"success":true,"magnet":"magnet:?xt=urn:btih:{:0>40}"}}"#,
+            r#"{{"success":true,"type":"magnet","url":"magnet:?xt=urn:btih:{:0>40}"}}"#,
             id
         ))
     }
@@ -145,7 +148,7 @@ async fn rows_without_a_link_are_resolved_into_magnets() {
 }
 
 #[tokio::test]
-async fn the_signed_request_carries_id_action_timestamp_and_signature() {
+async fn the_signed_request_carries_id_download_type_timestamp_and_signature() {
     let fetcher = Arc::new(SignedTrackerFetcher::new());
     indexer(fetcher.clone())
         .search(&SearchTerms {
@@ -170,9 +173,12 @@ async fn the_signed_request_carries_id_action_timestamp_and_signature() {
         SignedTrackerFetcher::form_field(body, "torrent_id"),
         Some("11223344")
     );
+    // `download_type` is the field the endpoint reads to choose which link to hand
+    // back. It was previously sent as `action=get_magnet`, which is not a parameter
+    // the endpoint has, so the field it does look for arrived empty.
     assert_eq!(
-        SignedTrackerFetcher::form_field(body, "action"),
-        Some("get_magnet")
+        SignedTrackerFetcher::form_field(body, "download_type"),
+        Some("magnet")
     );
     assert_eq!(
         SignedTrackerFetcher::form_field(body, "sessid"),
