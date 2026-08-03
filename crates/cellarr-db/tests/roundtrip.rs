@@ -567,10 +567,10 @@ async fn monitored_missing_orders_least_recently_searched_first() {
 
     // Search `a`, then `b`: the never-searched `c` must sort ahead of both, and the
     // earlier-searched `a` ahead of the later-searched `b`.
-    content.mark_missing_searched(vec![a.id]).await.unwrap();
+    content.mark_missing_searched(vec![a.id], &Default::default()).await.unwrap();
     // A distinct timestamp for `b` (searched_at has second resolution).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    content.mark_missing_searched(vec![b.id]).await.unwrap();
+    content.mark_missing_searched(vec![b.id], &Default::default()).await.unwrap();
 
     let order: Vec<ContentId> = content
         .monitored_missing()
@@ -587,7 +587,7 @@ async fn monitored_missing_orders_least_recently_searched_first() {
 
     // Re-searching `c` moves it to the back (now the most-recently-searched).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    content.mark_missing_searched(vec![c.id]).await.unwrap();
+    content.mark_missing_searched(vec![c.id], &Default::default()).await.unwrap();
     let order2: Vec<ContentId> = content
         .monitored_missing()
         .await
@@ -2958,4 +2958,276 @@ async fn import_failures_accumulate_per_grab_and_clear_on_success() {
 
     // Clearing a grab that never failed is a no-op, not an error.
     grabs.clear_import_attempts(other).await.unwrap();
+}
+
+/// A search that returns NOTHING AT ALL is the signal that the indexers may not
+/// carry this content, and it is the only thing that should defer a node. A search
+/// that returned candidates — even if every one was rejected — must not, or a node
+/// whose releases are merely below the quality cutoff would stop being looked for.
+#[tokio::test]
+async fn only_a_search_that_found_nothing_defers_the_node() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let content = db.content();
+
+    let barren = movie_node(library_id, ContentId::new());
+    let stocked = movie_node(library_id, ContentId::new());
+    content.upsert(&barren).await.unwrap();
+    content.upsert(&stocked).await.unwrap();
+
+    let both = vec![barren.id, stocked.id];
+    let fruitless: std::collections::HashSet<ContentId> = [barren.id].into_iter().collect();
+    content
+        .mark_missing_searched(both.clone(), &fruitless)
+        .await
+        .unwrap();
+
+    // The node that found nothing is held back; the one with candidates is not.
+    let due: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert!(
+        !due.contains(&barren.id),
+        "a node whose search returned nothing must back off"
+    );
+    assert!(
+        due.contains(&stocked.id),
+        "a node that HAD candidates must keep being searched at full cadence"
+    );
+
+    // And a later productive search clears the backoff immediately, so content the
+    // indexers start carrying recovers on the very next sweep.
+    content
+        .mark_missing_searched(vec![barren.id], &Default::default())
+        .await
+        .unwrap();
+    let due: Vec<ContentId> = content
+        .monitored_missing()
+        .await
+        .unwrap()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert!(
+        due.contains(&barren.id),
+        "one candidate must clear the backoff, not decay it"
+    );
+}
+
+/// The backoff curve: prompt at first, capped at a day so a newly-aired episode the
+/// indexers had not yet listed is never left stale for longer than that.
+#[tokio::test]
+async fn the_search_backoff_grows_and_is_capped_at_a_day() {
+    use cellarr_db::ContentRepo;
+    assert_eq!(ContentRepo::search_backoff(0), time::Duration::ZERO);
+    assert_eq!(ContentRepo::search_backoff(1), time::Duration::hours(1));
+    assert_eq!(ContentRepo::search_backoff(2), time::Duration::hours(2));
+    assert_eq!(ContentRepo::search_backoff(3), time::Duration::hours(4));
+    let mut previous = time::Duration::ZERO;
+    for n in 1..40u32 {
+        let w = ContentRepo::search_backoff(n);
+        assert!(w >= previous, "attempt {n} went backwards");
+        assert!(w <= time::Duration::hours(24), "attempt {n} exceeded the cap");
+        previous = w;
+    }
+    assert_eq!(ContentRepo::search_backoff(u32::MAX), time::Duration::hours(24));
+}
+
+/// "Why is this missing?" has to distinguish situations that look identical in a
+/// list of missing items but call for completely different actions: waiting is
+/// fine, a quality block is a profile decision the user can act on today, and
+/// never-found means the indexers do not carry it and waiting will never help.
+#[tokio::test]
+async fn missing_reason_separates_never_found_from_dead_torrents_and_quality_blocks() {
+    use cellarr_core::repo::DecisionLogRepository;
+    use cellarr_core::MissingReason;
+
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let content = db.content();
+
+    let fresh = movie_node(library_id, ContentId::new());
+    let barren = movie_node(library_id, ContentId::new());
+    let dead = movie_node(library_id, ContentId::new());
+    let blocked = movie_node(library_id, ContentId::new());
+    for n in [&fresh, &barren, &dead, &blocked] {
+        content.upsert(n).await.unwrap();
+    }
+
+    // Never searched at all.
+    assert_eq!(
+        content.missing_reason(fresh.id).await.unwrap(),
+        MissingReason::NotYetSearched
+    );
+
+    // Searched, nothing ever offered.
+    content
+        .mark_missing_searched(vec![barren.id], &[barren.id].into_iter().collect())
+        .await
+        .unwrap();
+    match content.missing_reason(barren.id).await.unwrap() {
+        MissingReason::NeverFound { searches, .. } => assert_eq!(searches, 1),
+        other => panic!("expected NeverFound, got {other:?}"),
+    }
+
+    // Offered only unseeded torrents.
+    let log_reject = |node: &cellarr_core::ContentNode, reason, title: &str| {
+        let record = cellarr_core::history::DecisionLogRecord {
+            at: time::OffsetDateTime::now_utc(),
+            run_id: cellarr_core::PipelineRunId::new(),
+            transition: cellarr_core::pipeline::Transition::new(
+                cellarr_core::pipeline::Stage::Decide,
+                cellarr_core::pipeline::Stage::Rejected,
+                cellarr_core::pipeline::TransitionKind::Reject,
+            )
+            .unwrap(),
+            decision: Some(cellarr_core::Decision {
+                content_ref: node.as_ref(),
+                release: Release {
+                    indexer_id: IndexerId::new(),
+                    title: title.to_string(),
+                    download_url: "magnet:?xt=urn:btih:x".into(),
+                    guid: Some(title.to_string()),
+                    protocol: Protocol::Torrent,
+                    size: Some(1),
+                    seeders: Some(0),
+                    indexer_flags: vec![],
+                },
+                verdict: cellarr_core::decision::Verdict::Reject { reason },
+            }),
+            note: None,
+        };
+        record
+    };
+    DecisionLogRepository::append(
+        &db.decision_log(),
+        &log_reject(
+            &dead,
+            cellarr_core::decision::RejectReason::InsufficientSeeders,
+            "Dead.Release.1080p",
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        content.missing_reason(dead.id).await.unwrap(),
+        MissingReason::OnlyDeadTorrents { candidates: 1 }
+    );
+
+    // Offered something alive that the profile refuses — the actionable case.
+    DecisionLogRepository::append(
+        &db.decision_log(),
+        &log_reject(
+            &blocked,
+            cellarr_core::decision::RejectReason::QualityNotAllowed,
+            "Wanted.Movie.720p.WEB",
+        ),
+    )
+    .await
+    .unwrap();
+    match content.missing_reason(blocked.id).await.unwrap() {
+        MissingReason::BlockedByQuality {
+            candidates,
+            example,
+        } => {
+            assert_eq!(candidates, 1);
+            assert_eq!(example.as_deref(), Some("Wanted.Movie.720p.WEB"));
+        }
+        other => panic!("expected BlockedByQuality, got {other:?}"),
+    }
+}
+
+/// Pruning bounds an append-only table that nothing else trims, without touching
+/// the recent rows the missing-reason answers are computed from.
+#[tokio::test]
+async fn pruning_the_decision_log_drops_only_rows_past_the_window() {
+    use cellarr_core::repo::DecisionLogRepository;
+    let (_dir, db) = temp_db().await;
+    let now = time::OffsetDateTime::now_utc();
+
+    let write_at = |at: time::OffsetDateTime| cellarr_core::history::DecisionLogRecord {
+        at,
+        run_id: cellarr_core::PipelineRunId::new(),
+        transition: cellarr_core::pipeline::Transition::new(
+            cellarr_core::pipeline::Stage::Discover,
+            cellarr_core::pipeline::Stage::Parse,
+            cellarr_core::pipeline::TransitionKind::Advance,
+        )
+        .unwrap(),
+        decision: None,
+        note: None,
+    };
+    for age_days in [1_i64, 10, 45, 90] {
+        DecisionLogRepository::append(&db.decision_log(), &write_at(now - time::Duration::days(age_days)))
+            .await
+            .unwrap();
+    }
+
+    let removed = db
+        .decision_log()
+        .prune_before(now - time::Duration::days(30))
+        .await
+        .unwrap();
+    assert_eq!(removed, 2, "only the 45- and 90-day-old rows are past a 30-day window");
+
+    // Idempotent: a second prune over the same window removes nothing.
+    assert_eq!(
+        db.decision_log()
+            .prune_before(now - time::Duration::days(30))
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+/// The rollup is what turns an invisible backlog into a decision. Per-item answers
+/// do not scale: "never found" repeated 469 times is noise, while "this show has
+/// 469 episodes nobody can find" is something a user can act on.
+#[tokio::test]
+async fn the_missing_rollup_ranks_titles_by_how_hopeless_they_are() {
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let content = db.content();
+
+    // A show nothing can be found for, and one that is merely incomplete.
+    let (_s1, _season1, hopeless_eps) = tv_tree(&db, library_id, 1, &[1, 2, 3], &[]).await;
+    let (_s2, _season2, ordinary_eps) = tv_tree(&db, library_id, 1, &[1, 2], &[]).await;
+    let hopeless_ids: Vec<ContentId> = hopeless_eps.iter().map(|(_, id)| *id).collect();
+    let ordinary_ids: Vec<ContentId> = ordinary_eps.iter().map(|(_, id)| *id).collect();
+
+    // Every episode of the first show has been searched and found nothing.
+    content
+        .mark_missing_searched(
+            hopeless_ids.clone(),
+            &hopeless_ids.iter().copied().collect(),
+        )
+        .await
+        .unwrap();
+    // The second show's episodes were searched and DID have candidates.
+    content
+        .mark_missing_searched(ordinary_ids.clone(), &Default::default())
+        .await
+        .unwrap();
+
+    let summary = content.missing_summary(10).await.unwrap();
+    assert!(!summary.is_empty(), "titles with missing content are reported");
+    let worst = &summary[0];
+    assert_eq!(
+        worst.never_found, 3,
+        "the hopeless show sorts first, with every episode counted as never-found"
+    );
+    assert!(
+        worst.futile_since.is_some(),
+        "how long it has been futile is what makes it actionable"
+    );
+    // The merely-incomplete show is present but reports nothing as never-found.
+    let ordinary = summary
+        .iter()
+        .find(|s| s.never_found == 0)
+        .expect("a show with candidates is still listed as missing content");
+    assert_eq!(ordinary.missing, 2);
 }

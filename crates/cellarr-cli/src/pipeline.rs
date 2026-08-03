@@ -547,9 +547,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
     /// in-flight download the concurrency cap counts), `false` otherwise (the
     /// environment was not ready, or the run rejected / found nothing / imported
     /// inline).
-    async fn run_node(&self, content: &ContentRef) -> Result<bool, String> {
+    async fn run_node(&self, content: &ContentRef) -> Result<NodeRun, String> {
         let Some((indexer, client, config)) = self.env.resolve(content).await? else {
-            return Ok(false);
+            // No indexer/client configured for this node: nothing was searched, so it
+            // must not count as a fruitless search or it would back off for a reason
+            // that has nothing to do with what the indexers carry.
+            return Ok(NodeRun::default());
         };
         let mut runner = PipelineRunner::new(
             &indexer,
@@ -599,7 +602,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .map_err(|e| format!("pipeline run failed: {e}"))?;
         self.publish_outcome(content, &outcome);
         // A `Grabbed` outcome is a new in-flight download the concurrency cap counts.
-        Ok(matches!(outcome, RunOutcome::Grabbed { .. }))
+        // `NothingFound` means Discover returned no release at all — not that one was
+        // found and rejected — which is what the search-fatigue backoff counts.
+        Ok(NodeRun {
+            grabbed: matches!(outcome, RunOutcome::Grabbed { .. }),
+            found_nothing: matches!(outcome, RunOutcome::NothingFound),
+        })
     }
 
     /// Translate a terminal [`RunOutcome`] into the live [`DomainEvent`]s the
@@ -678,8 +686,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                 continue; // an upgrade grab is already downloading for this node
             }
             match self.run_node(node).await {
-                Ok(true) => active += 1, // an upgrade download was grabbed — count it
-                Ok(false) => {}
+                // Upgrades keep their own `upgrade_search` bookkeeping and are not
+                // subject to the search-fatigue backoff: a node being upgraded
+                // already HAS a file, so "found nothing" says nothing about whether
+                // the indexers carry it.
+                Ok(run) if run.grabbed => active += 1,
+                Ok(_) => {}
                 Err(detail) => {
                     tracing::warn!(content = %node.id, error = %detail, "upgrade sweep: run failed for node; continuing");
                 }
@@ -722,6 +734,11 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // reached) are NOT stamped, so they keep their place at the front for the
         // next sweep.
         let mut searched: Vec<cellarr_core::ContentId> = Vec::new();
+        // Nodes whose search returned NO candidate at all. These back off so content
+        // the indexers do not carry stops consuming the bounded per-sweep budget (and
+        // a rate-limited indexer request) on every single sweep.
+        let mut fruitless: std::collections::HashSet<cellarr_core::ContentId> =
+            std::collections::HashSet::new();
         for node in &nodes {
             if in_flight.contains(&node.id) {
                 continue; // already grabbed and downloading; reconcile finalizes it
@@ -741,9 +758,17 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             // still-missing nodes.
             searched.push(node.id);
             match self.run_node(node).await {
-                Ok(true) => active += 1, // a new download was grabbed — count it toward the cap
-                Ok(false) => {}
+                Ok(run) => {
+                    if run.grabbed {
+                        active += 1; // a new download was grabbed — count it toward the cap
+                    }
+                    if run.found_nothing {
+                        fruitless.insert(node.id);
+                    }
+                }
                 Err(detail) => {
+                    // A failed run is not evidence that the indexers carry nothing —
+                    // it is evidence the run broke — so it never counts as fruitless.
                     tracing::warn!(content = %node.id, error = %detail, "pipeline run failed for node; continuing");
                 }
             }
@@ -751,10 +776,48 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         // Stamp the searched nodes so the next sweep rotates to the next slice
         // (best-effort: a stamp failure only means the next sweep may re-search them
         // sooner — it never blocks acquisition).
-        if let Err(e) = self.db.content().mark_missing_searched(searched).await {
+        if !fruitless.is_empty() {
+            tracing::info!(
+                fruitless = fruitless.len(),
+                searched = searched.len(),
+                "acquisition sweep: nodes with no candidate at all will back off"
+            );
+        }
+        if let Err(e) = self
+            .db
+            .content()
+            .mark_missing_searched(searched, &fruitless)
+            .await
+        {
             tracing::warn!(error = %e, "recording last-search timestamps failed");
         }
         JobResult::Success
+    }
+
+    /// `PruneDecisionLog`: age the decision log out to its retention window.
+    ///
+    /// The log is append-only diagnostic data and nothing trimmed it — on the
+    /// reference deployment it had reached 178,606 rows / 315 MB and was growing
+    /// about 9k rows a day, making it by far the largest object in the database. The
+    /// window is generous enough that every recent run stays fully explainable
+    /// (which is what the missing-reason answers read), and a prune failure is
+    /// retryable rather than fatal: stale diagnostics never justify failing a cycle.
+    async fn run_prune_decision_log(&self) -> JobResult {
+        let cutoff = time::OffsetDateTime::now_utc() - DECISION_LOG_RETENTION;
+        match self.db.decision_log().prune_before(cutoff).await {
+            Ok(0) => JobResult::Success,
+            Ok(removed) => {
+                tracing::info!(
+                    removed,
+                    retention_days = DECISION_LOG_RETENTION.whole_days(),
+                    "decision log pruned"
+                );
+                JobResult::Success
+            }
+            Err(e) => JobResult::Retryable {
+                detail: format!("pruning the decision log failed: {e}"),
+            },
+        }
     }
 
     /// `RescanLibrary`: reconcile on-disk files against the `media_file` table,
@@ -1837,6 +1900,7 @@ impl<E: PipelineEnv> JobHandler for LivePipelineHandler<E> {
             JobKind::MetadataRefresh => self.refresh_metadata().await,
             // Reconcile on-disk files against the DB: adopt what parses, surface the rest.
             JobKind::RescanLibrary => self.run_rescan().await,
+            JobKind::PruneDecisionLog => self.run_prune_decision_log().await,
             // Reconcile in-flight grabs against reality: clean redundant/dead ones.
             JobKind::ReconcileDownloads => self.run_reconcile_downloads().await,
             // Sweep every file for missing wanted-language subtitles, and the
@@ -1869,6 +1933,7 @@ fn command_label(kind: &JobKind) -> &'static str {
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
         JobKind::RescanLibrary => "RescanLibrary",
+        JobKind::PruneDecisionLog => "PruneDecisionLog",
         JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
         JobKind::SubtitleScan => "SubtitleScan",
@@ -1995,6 +2060,14 @@ fn import_retry_backoff(attempts: u32) -> time::Duration {
     }
 }
 
+/// How much decision-log history to keep.
+///
+/// Long enough that every recent acquisition stays explainable — the "why is this
+/// missing?" answers read this table — and short enough that an append-only log on
+/// a homelab database does not grow without bound. Thirty days of the reference
+/// deployment's ~9k rows/day is roughly 270k rows, versus unbounded today.
+const DECISION_LOG_RETENTION: time::Duration = time::Duration::days(30);
+
 /// hang a request indefinitely (a VPN blip); this reconcile runs on the
 /// single-threaded job loop, so an un-timed-out poll would freeze the daemon.
 const RECONCILE_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -2040,6 +2113,17 @@ pub struct LivePipelineEnv {
     /// How long to wait between Track polls so the poll budget spans a real,
     /// multi-minute download.
     track_poll_interval: std::time::Duration,
+}
+
+/// What one node's pipeline run did, as the acquisition sweep needs to see it.
+#[derive(Debug, Clone, Copy, Default)]
+struct NodeRun {
+    /// A new download was handed to the client — counts toward the concurrency cap.
+    grabbed: bool,
+    /// Discover returned NO release at all. Deliberately narrower than "did not
+    /// grab": a node whose candidates were all rejected HAS candidates, and must
+    /// keep being searched at full cadence.
+    found_nothing: bool,
 }
 
 impl LivePipelineEnv {
