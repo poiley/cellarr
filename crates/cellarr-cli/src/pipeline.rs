@@ -1302,6 +1302,28 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     let Some(path) = status.content_path.as_deref() else {
                         continue; // completed but no importable path yet — leave
                     };
+                    // A download whose import keeps failing is retried on an
+                    // exponential backoff rather than on every cycle. Three grabs
+                    // that could never import once turned this sweep into 639
+                    // consecutive runs in six hours with zero RssSync — nothing else
+                    // was scheduled, so nothing was searched for at all. Backing off
+                    // rather than capping is deliberate: the contract is that a
+                    // download whose bytes are on disk is left for a human and never
+                    // abandoned, and a cap would abandon a good one whose import hit
+                    // a transient (a database blip lasting hours burns any cap).
+                    if let Ok(Some((attempts, last))) =
+                        self.db.grabs().import_attempt(g.id).await
+                    {
+                        let wait = import_retry_backoff(attempts);
+                        let due = last + wait;
+                        if time::OffsetDateTime::now_utc() < due {
+                            tracing::debug!(
+                                grab = %g.id, attempts, ?wait,
+                                "reconcile-downloads: import backing off, not due yet"
+                            );
+                            continue;
+                        }
+                    }
                     let runner = PipelineRunner::new(
                         &indexer,
                         &client,
@@ -1328,6 +1350,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                             )
                             .await; // best-effort
                             let _ = self.db.grabs().clear_download_progress(g.id).await;
+                            let _ = self.db.grabs().clear_import_attempts(g.id).await;
                             cleaned += 1;
                         }
                         Err(e) => {
@@ -1382,7 +1405,19 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                                     continue;
                                 }
                             }
-                            tracing::warn!(grab = %g.id, error = %e, "reconcile-downloads: finalize import failed");
+                            let attempts = self
+                                .db
+                                .grabs()
+                                .record_import_failure(g.id, &e.detail)
+                                .await
+                                .unwrap_or(1);
+                            tracing::warn!(
+                                grab = %g.id,
+                                error = %e,
+                                attempts,
+                                retry_in = ?import_retry_backoff(attempts),
+                                "reconcile-downloads: finalize import failed"
+                            );
                         }
                     }
                 }
@@ -1939,6 +1974,27 @@ const PROGRESS_EPSILON: f64 = 0.001;
 
 /// How long to wait for a single download-client status poll in the reconcile
 /// sweep before giving up and leaving the grab for the next cycle. The client can
+/// How long to wait before retrying a completed download whose import failed,
+/// given how many times in a row it has failed.
+///
+/// Doubles from a minute and is capped at six hours, so the first couple of
+/// failures still retry promptly (a genuinely transient one recovers within
+/// minutes) while a download that can never import settles to four attempts a day
+/// instead of one per sweep. The cap matters more than the curve: it is what keeps
+/// a permanently-broken grab from crowding out every other job.
+fn import_retry_backoff(attempts: u32) -> time::Duration {
+    const BASE_SECS: i64 = 60;
+    const MAX: time::Duration = time::Duration::hours(6);
+    let shift = attempts.saturating_sub(1).min(16);
+    let secs = BASE_SECS.saturating_mul(1_i64 << shift);
+    let backoff = time::Duration::seconds(secs);
+    if backoff > MAX {
+        MAX
+    } else {
+        backoff
+    }
+}
+
 /// hang a request indefinitely (a VPN blip); this reconcile runs on the
 /// single-threaded job loop, so an un-timed-out poll would freeze the daemon.
 const RECONCILE_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -3322,5 +3378,52 @@ mod auto_onboard_tests {
         // No ids at all → None.
         let none = cand("Bare", None, &[]);
         assert_eq!(native_external_id(&none, MediaType::Movie), None);
+    }
+}
+
+#[cfg(test)]
+mod import_backoff_tests {
+    use super::import_retry_backoff;
+
+    /// The first failures retry promptly, so a genuinely transient import failure
+    /// (a database blip, a file still being written) recovers in minutes rather
+    /// than waiting out a long penalty.
+    #[test]
+    fn the_first_retries_are_prompt() {
+        assert_eq!(import_retry_backoff(1), time::Duration::minutes(1));
+        assert_eq!(import_retry_backoff(2), time::Duration::minutes(2));
+        assert_eq!(import_retry_backoff(3), time::Duration::minutes(4));
+    }
+
+    /// The cap is the point of this: a download that can never import settles to a
+    /// few attempts a day instead of one per sweep, which is what stopped it from
+    /// crowding every other job out of the loop.
+    #[test]
+    fn a_permanently_failing_import_settles_at_the_cap() {
+        assert_eq!(import_retry_backoff(20), time::Duration::hours(6));
+        assert_eq!(import_retry_backoff(u32::MAX), time::Duration::hours(6));
+    }
+
+    /// Monotonic, and never zero — a zero wait would reinstate the every-cycle
+    /// retry this exists to prevent.
+    #[test]
+    fn the_wait_only_grows_and_is_never_zero() {
+        let mut previous = time::Duration::ZERO;
+        for attempts in 1..40u32 {
+            let wait = import_retry_backoff(attempts);
+            assert!(wait > time::Duration::ZERO, "attempt {attempts} waited zero");
+            assert!(wait >= previous, "attempt {attempts} went backwards");
+            assert!(wait <= time::Duration::hours(6));
+            previous = wait;
+        }
+    }
+
+    /// The shift is bounded, so a large attempt count cannot overflow into a
+    /// negative or wrapped duration and accidentally make the wait tiny.
+    #[test]
+    fn a_huge_attempt_count_does_not_overflow_the_shift() {
+        for attempts in [17u32, 33, 64, 1000, u32::MAX] {
+            assert_eq!(import_retry_backoff(attempts), time::Duration::hours(6));
+        }
     }
 }

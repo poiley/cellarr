@@ -2890,3 +2890,72 @@ async fn a_complete_season_is_missing_at_neither_level() {
         assert!(!ids.contains(id));
     }
 }
+
+/// The reconcile sweep backs a failing import off against this counter, so it has
+/// to accumulate per grab and reset the moment the import succeeds — a backoff
+/// that outlived the problem would delay a download that is now fine.
+#[tokio::test]
+async fn import_failures_accumulate_per_grab_and_clear_on_success() {
+    let (_dir, db) = temp_db().await;
+    let grabs = db.grabs();
+
+    let request = |title: &str| GrabRequest {
+        content_ref: ContentRef {
+            id: ContentId::new(),
+            library_id: LibraryId::new(),
+            media_type: MediaType::Movie,
+            coords: Coordinates::Movie,
+        },
+        release: Release {
+            indexer_id: IndexerId::new(),
+            title: title.to_string(),
+            download_url: format!("magnet:?xt=urn:btih:{title}"),
+            guid: Some(title.to_string()),
+            protocol: Protocol::Torrent,
+            size: Some(1),
+            seeders: Some(1),
+            indexer_flags: vec![],
+        },
+        indexer_id: IndexerId::new(),
+        client_id: DownloadClientId::new(),
+        category: "cellarr".to_string(),
+        release_type: Some(cellarr_core::ReleaseType::Movie),
+    };
+    let doomed = grabs.create(&request("doomed")).await.unwrap();
+    let other = grabs.create(&request("other")).await.unwrap();
+
+    // Never failed -> no row, so a healthy grab is never delayed.
+    assert!(grabs.import_attempt(doomed).await.unwrap().is_none());
+
+    for expected in 1..=3u32 {
+        let n = grabs
+            .record_import_failure(doomed, "render name: naming token \"Season\" is missing")
+            .await
+            .unwrap();
+        assert_eq!(n, expected, "consecutive failures must count up");
+    }
+    let (attempts, last) = grabs.import_attempt(doomed).await.unwrap().unwrap();
+    assert_eq!(attempts, 3);
+    assert!(
+        (time::OffsetDateTime::now_utc() - last) < time::Duration::minutes(1),
+        "last_attempt is stamped now, which is what the backoff measures from"
+    );
+
+    // Counting is per grab: one bad download must not back off an unrelated one.
+    assert!(
+        grabs.import_attempt(other).await.unwrap().is_none(),
+        "a failure on one grab must not delay another"
+    );
+
+    // A success forgets the history, so the next failure starts from one again.
+    grabs.clear_import_attempts(doomed).await.unwrap();
+    assert!(grabs.import_attempt(doomed).await.unwrap().is_none());
+    assert_eq!(
+        grabs.record_import_failure(doomed, "again").await.unwrap(),
+        1,
+        "the counter restarts after a success rather than resuming the old backoff"
+    );
+
+    // Clearing a grab that never failed is a no-op, not an error.
+    grabs.clear_import_attempts(other).await.unwrap();
+}
