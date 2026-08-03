@@ -1333,3 +1333,146 @@ async fn a_season_pack_imports_as_its_individual_episodes() {
         "a file matching no episode node must be skipped"
     );
 }
+
+/// A torrent the indexer reports as having NO seeders cannot download, so it is
+/// dropped before anything is parsed, identified or decided. On the library this
+/// was built against those were 80% of all rejections — every one at exactly zero —
+/// so the whole pipeline ran, and wrote a decision-log row, for releases that could
+/// never produce a file.
+///
+/// The subtle half is what it must NOT do: an all-dead result is not "nothing
+/// found". The indexers DO carry this content, so it must stay on the normal search
+/// cadence rather than being backed off as un-carried, because seeders come back.
+#[tokio::test]
+async fn unseeded_torrents_are_dropped_without_being_mistaken_for_nothing_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2020),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+
+    let dead = |title: &str| {
+        let mut r = tv_release(title);
+        r.seeders = Some(0);
+        r
+    };
+    let indexer = FakeIndexer {
+        releases: vec![
+            dead("The.Show.S01E01.1080p.WEB-DL-A"),
+            dead("The.Show.S01E01.1080p.WEB-DL-B"),
+        ],
+    };
+    let client = FakeDownloadClient {
+        content_path: tmp.path().to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        tmp.path().join("library"),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S01E01.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    match runner.run(&node).await.unwrap() {
+        // Rejected, NOT NothingFound: candidates existed, they were simply unseeded.
+        RunOutcome::Rejected { reason } => assert!(
+            reason.contains("no seeders"),
+            "the reason must name the seeder problem, got: {reason}"
+        ),
+        RunOutcome::NothingFound => {
+            panic!("an all-unseeded result must not be reported as nothing found — \
+                    that would back the node off as though the indexers do not carry it")
+        }
+        other => panic!("expected a seeder rejection, got {other:?}"),
+    }
+
+    // One aggregate row, not one per dead release: cutting that volume is the point.
+    let reason = db.content().missing_reason(node.id).await.unwrap();
+    assert!(
+        matches!(
+            reason,
+            cellarr_core::MissingReason::OnlyDeadTorrents { .. }
+        ),
+        "the item must be explainable as 'only dead torrents', got {reason:?}"
+    );
+}
+
+/// A release with an UNKNOWN seeder count is not a dead one, and usenet has no
+/// seeders at all — neither may be dropped by the unseeded filter.
+#[tokio::test]
+async fn releases_with_no_reported_seeder_count_still_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2020),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+    let mut unknown = tv_release("The.Show.S01E01.1080p.WEB-DL-GROUP");
+    unknown.seeders = None;
+    let indexer = FakeIndexer {
+        releases: vec![unknown],
+    };
+    let completed = tmp.path().join("done");
+    std::fs::create_dir_all(&completed).unwrap();
+    std::fs::write(
+        completed.join("The.Show.S01E01.1080p.WEB-DL-GROUP.mkv"),
+        b"x",
+    )
+    .unwrap();
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        tmp.path().join("library"),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S01E01.{Extension}",
+    );
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        !matches!(outcome, RunOutcome::Rejected { .. } | RunOutcome::NothingFound),
+        "an unknown seeder count is not a dead torrent; got {outcome:?}"
+    );
+}
