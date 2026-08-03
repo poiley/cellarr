@@ -104,6 +104,80 @@ impl GrabRepo {
             .await
     }
 
+    /// How many times `grab`'s import has failed in a row, and when it last was
+    /// tried. `None` once it has never failed (or has since succeeded).
+    pub async fn import_attempt(&self, grab: GrabId) -> Result<Option<(u32, OffsetDateTime)>> {
+        let row = sqlx::query(&pq(
+            "SELECT attempts, last_attempt FROM import_attempt WHERE grab_id = ?1",
+        ))
+        .bind(grab.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(r) => {
+                let attempts: i64 = r.try_get("attempts")?;
+                let last: String = r.try_get("last_attempt")?;
+                Ok(Some((
+                    u32::try_from(attempts).unwrap_or(u32::MAX),
+                    parse_time("last_attempt", &last)?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Count one failed import for `grab`, stamping the time and reason, and return
+    /// the new consecutive-failure count. The count is what the reconcile sweep
+    /// backs off against, so a download that can never import stops being retried
+    /// every cycle without ever being abandoned.
+    pub async fn record_import_failure(&self, grab: GrabId, error: &str) -> Result<u32> {
+        let now = format_time(OffsetDateTime::now_utc())?;
+        let error = error.chars().take(500).collect::<String>();
+        self.writer
+            .submit({
+                let now = now.clone();
+                move |conn| {
+                    Box::pin(async move {
+                        sqlx::query(&pq(
+                            "INSERT INTO import_attempt (grab_id, attempts, last_attempt, last_error)
+                             VALUES (?1, 1, ?2, ?3)
+                             ON CONFLICT(grab_id) DO UPDATE
+                                 SET attempts = import_attempt.attempts + 1,
+                                     last_attempt = excluded.last_attempt,
+                                     last_error = excluded.last_error",
+                        ))
+                        .bind(grab.to_string())
+                        .bind(&now)
+                        .bind(&error)
+                        .execute(&mut *conn)
+                        .await?;
+                        Ok(())
+                    })
+                }
+            })
+            .await?;
+        Ok(self
+            .import_attempt(grab)
+            .await?
+            .map_or(1, |(attempts, _)| attempts))
+    }
+
+    /// Forget `grab`'s import failures — it imported, so the backoff must not
+    /// outlive the problem. Idempotent.
+    pub async fn clear_import_attempts(&self, grab: GrabId) -> Result<()> {
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq("DELETE FROM import_attempt WHERE grab_id = ?1"))
+                        .bind(grab.to_string())
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     /// Drop `grab`'s progress row once it reaches a terminal state (imported,
     /// blocklisted, failed), so the tracking table does not accumulate dead rows.
     /// Idempotent — a missing row is a no-op.
