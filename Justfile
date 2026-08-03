@@ -90,7 +90,13 @@ test-pg *ARGS:
         hostport="$(docker port "$name" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')" || true
         [ -n "${hostport:-}" ] && break; sleep 0.5
     done
-    until docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; do sleep 0.5; done
+    # `pg_isready` alone is NOT enough: the official image starts a temporary server
+    # to run initdb, answers ready on it, then RESTARTS. A client that connects in
+    # that window gets "connection reset by peer" from the migration, which reads as
+    # a broken migration rather than a not-yet-started database — it has produced
+    # false failures across the whole suite more than once. Wait for a real query on
+    # the real database instead.
+    until docker exec "$name" psql -U postgres -d cellarr -c 'SELECT 1' >/dev/null 2>&1; do sleep 0.5; done
     export CELLARR_TEST_DATABASE_URL="postgres://postgres:cellarr@127.0.0.1:${hostport}/cellarr"
     echo "Postgres for run {{run_id}} at 127.0.0.1:${hostport}"
     if command -v cargo-nextest >/dev/null 2>&1; then

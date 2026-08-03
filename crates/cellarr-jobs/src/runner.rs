@@ -44,6 +44,7 @@ use cellarr_core::{
     history::{DecisionLogRecord, HistoryEvent, HistoryRecord},
     pipeline::{Stage, Transition, TransitionKind},
     ContentMatch, ContentRef, CustomFormat, Decision, DownloadState, Grab, GrabId, GrabRequest,
+    Protocol,
     GrabStatus, IndexerId, NamingTokens, ParsedRelease, PipelineRunId, PlannedMove, QualityProfile,
     QualityRanking, Release, Score,
 };
@@ -680,7 +681,64 @@ where
         let mut stage = Stage::Discover;
 
         // --- Discover -----------------------------------------------------
-        let releases = self.discover(content).await?;
+        let mut releases = self.discover(content).await?;
+
+        // Drop torrents the indexer explicitly reports as having NO seeders, before
+        // anything is parsed, identified or decided. On the reference library these
+        // were 56,557 of 70,203 rejections — 80% — and every one was at exactly zero,
+        // so the whole pipeline ran on releases that could never download, and wrote
+        // a decision-log row for each. One aggregate row is logged below instead.
+        //
+        // Only an EXPLICIT zero qualifies. A missing seeder count (`None`) is unknown,
+        // not dead, and usenet has no seeders at all — both must pass through, which
+        // is why this checks the protocol and `Some(0)` rather than a truthy test.
+        let total_found = releases.len();
+        let dead_exemplar = releases
+            .iter()
+            .find(|r| r.protocol == Protocol::Torrent && r.seeders == Some(0))
+            .cloned();
+        releases.retain(|r| !(r.protocol == Protocol::Torrent && r.seeders == Some(0)));
+        let dead = total_found - releases.len();
+
+        // Everything on offer was unseeded. Logged as a Discover failure — the run
+        // genuinely ends here with nothing usable — carrying ONE decision so the item
+        // stays explainable as "only dead torrents" without a row per release.
+        //
+        // The outcome is deliberately `Rejected`, not `NothingFound`: the indexers DO
+        // carry this content, it is merely unseeded right now, so it must stay on the
+        // normal search cadence rather than being backed off as un-carried. Seeders
+        // come back; a show the indexers do not have does not.
+        if releases.is_empty() && dead > 0 {
+            let reason = format!("all {dead} candidates have no seeders");
+            if let Some(exemplar) = dead_exemplar {
+                self.log(
+                    run_id,
+                    stage,
+                    Stage::Failed,
+                    TransitionKind::Fail,
+                    Some(Decision {
+                        content_ref: content.clone(),
+                        release: exemplar,
+                        verdict: Verdict::Reject {
+                            reason: cellarr_core::decision::RejectReason::InsufficientSeeders,
+                        },
+                    }),
+                    Some(reason.clone()),
+                )
+                .await?;
+            }
+            return Ok(RunOutcome::Rejected { reason });
+        }
+        if dead > 0 {
+            // Some were dead, some were not: the live ones carry the run, and the
+            // dead ones are dropped silently. Not logging them per release is the
+            // point — they were 80% of every decision row written.
+            tracing::debug!(
+                dead,
+                considered = total_found,
+                "dropped unseeded torrents before parse"
+            );
+        }
         if releases.is_empty() {
             self.log(
                 run_id,
@@ -2376,6 +2434,27 @@ where
             .unwrap_or_else(|| cellarr_core::ReleaseType::from_parsed(&parsed));
         let matched_ref = &grab.request.content_ref;
 
+        // The decision log has to record this path too. Deferred tracking made the
+        // reconcile sweep the normal way an acquisition completes, and it logged
+        // only history — so the log showed no grab reaching Track, Import or Done
+        // for three weeks while thousands of imports actually succeeded. An audit
+        // trail that goes quiet exactly where the work finishes is worse than none,
+        // because it reads as "nothing completed".
+        //
+        // A fresh run id: this finalization is its own unit of work, picking up a
+        // download an earlier run handed off.
+        let run_id = PipelineRunId::new();
+        let _ = self
+            .log(
+                run_id,
+                Stage::Track,
+                Stage::Import,
+                TransitionKind::Advance,
+                None,
+                Some("reconcile finalization of a deferred download".into()),
+            )
+            .await;
+
         // Reconcile finalization is never an upgrade (it imports a completed
         // download onto a node); no file is being replaced.
         let destinations = self
@@ -2388,15 +2467,26 @@ where
             .await
             .map_err(|e| format!("set imported: {e}"))?;
         // Record the import in history (parity with the inline path) so the activity
-        // view shows a reconcile-finalized import too. This finalization is its own
-        // unit of work, keyed by a fresh run id.
+        // view shows a reconcile-finalized import too, and close the run in the
+        // decision log so it reads as a completed acquisition rather than one that
+        // silently stopped at Track.
         self.append_history(
-            PipelineRunId::new(),
+            run_id,
             matched_ref.id,
             HistoryEvent::Imported { grab_id: grab.id },
         )
         .await
         .map_err(|e| format!("history append: {e}"))?;
+        let _ = self
+            .log(
+                run_id,
+                Stage::Import,
+                Stage::Done,
+                TransitionKind::Advance,
+                None,
+                Some("imported".into()),
+            )
+            .await;
         let paths: Vec<String> = destinations.iter().map(|(p, _)| p.clone()).collect();
         self.fire_files_webhook(WebhookEventType::Download, matched_ref, &paths)
             .await;

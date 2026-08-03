@@ -476,6 +476,13 @@ async fn register_recurring(state: &AppState) -> Result<()> {
         .add_cron(JobKind::RescanLibrary, "@daily", RetryPolicy::default())
         .await
         .context("registering RescanLibrary")?;
+    // Trim the append-only decision log to its retention window. Database
+    // maintenance, not user-visible work: daily is ample for a table that grows a
+    // few thousand rows a day, and it contends with nothing else.
+    scheduler
+        .add_cron(JobKind::PruneDecisionLog, "@daily", RetryPolicy::default())
+        .await
+        .context("registering PruneDecisionLog")?;
     // Reconcile in-flight grabs against the download client every few minutes:
     // mark redundant grabs (content already imported by another grab) terminal and
     // clean genuinely-dead downloads (failed / gone from the client). Without it a

@@ -89,6 +89,7 @@ pub fn command_name(kind: &JobKind) -> &'static str {
         JobKind::MetadataRefresh => "RefreshMetadata",
         JobKind::DiskSpaceCheck => "DiskSpaceCheck",
         JobKind::RescanLibrary => "RescanLibrary",
+        JobKind::PruneDecisionLog => "PruneDecisionLog",
         JobKind::ReconcileDownloads => "ReconcileDownloads",
         JobKind::ManualSearch { .. } => "ManualSearch",
         JobKind::SubtitleScan => "SubtitleScan",

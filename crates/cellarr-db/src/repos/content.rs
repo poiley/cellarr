@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::dialect::{pq, DbPool};
 use async_trait::async_trait;
 use cellarr_core::repo::{ContentRepository, DeletedContent};
+use cellarr_core::{MissingReason, MissingSummary};
 use cellarr_core::{
     ContentId, ContentKind, ContentMetadata, ContentNode, ContentRef, Coordinates, LibraryId,
     MediaType, SeriesType, TitleId,
@@ -62,6 +63,175 @@ impl ContentRepo {
             .collect()
     }
 
+    /// Why `id` still has no file — see [`MissingReason`].
+    ///
+    /// Reads the search bookkeeping and the decision log rather than guessing: an
+    /// item with no decision rows was never offered anything, and one whose rows are
+    /// all `insufficient_seeders` was offered only torrents nobody seeds. The
+    /// ordering of the checks is the priority a human wants: an actionable quality
+    /// block outranks "some other rejection", and never-found outranks both because
+    /// it means waiting will not help.
+    pub async fn missing_reason(&self, id: ContentId) -> Result<MissingReason> {
+        let key = id.to_string();
+        let search = sqlx::query(&pq(
+            "SELECT searched_at, fruitless FROM missing_search WHERE content_id = ?1",
+        ))
+        .bind(&key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let rows = sqlx::query(&pq(
+            "SELECT decision FROM decision_log
+             WHERE content_id = ?1 AND decision IS NOT NULL
+             ORDER BY at DESC LIMIT 500",
+        ))
+        .bind(&key)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut dead = 0u32;
+        let mut quality = 0u32;
+        let mut quality_example = None;
+        let mut other = 0u32;
+        for row in &rows {
+            let raw: String = row.try_get("decision")?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let reason = value
+                .pointer("/verdict/reason/reason")
+                .and_then(serde_json::Value::as_str);
+            match reason {
+                Some("insufficient_seeders") => dead += 1,
+                Some("quality_not_allowed") => {
+                    quality += 1;
+                    if quality_example.is_none() {
+                        quality_example = value
+                            .pointer("/release/title")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                    }
+                }
+                Some(_) => other += 1,
+                None => {}
+            }
+        }
+
+        // Never offered anything at all — the case that looks like patience but is
+        // actually a coverage gap.
+        if dead == 0 && quality == 0 && other == 0 {
+            return Ok(match search {
+                None => MissingReason::NotYetSearched,
+                Some(row) => {
+                    let fruitless: i64 = row.try_get("fruitless")?;
+                    if fruitless == 0 {
+                        // Searched, nothing recorded either way: too early to judge.
+                        MissingReason::NotYetSearched
+                    } else {
+                        MissingReason::NeverFound {
+                            searches: u32::try_from(fruitless).unwrap_or(u32::MAX),
+                            last_searched: row.try_get("searched_at")?,
+                        }
+                    }
+                }
+            });
+        }
+        if quality > 0 {
+            return Ok(MissingReason::BlockedByQuality {
+                candidates: quality,
+                example: quality_example,
+            });
+        }
+        if dead > 0 && other == 0 {
+            return Ok(MissingReason::OnlyDeadTorrents { candidates: dead });
+        }
+        Ok(MissingReason::Waiting)
+    }
+
+    /// Per-title rollup of what is missing and why, worst first.
+    ///
+    /// One query rather than `missing_reason` per item: at library scale the
+    /// per-item answer is noise, and the useful artefact is "this show has 469
+    /// episodes nobody can find", which is a decision the user can act on. Titles
+    /// with nothing missing are omitted.
+    pub async fn missing_summary(&self, limit: usize) -> Result<Vec<MissingSummary>> {
+        // `root` is the title a leaf belongs to: an episode's grandparent (season ->
+        // series), or the item itself for a flat movie.
+        let rows = sqlx::query(&pq(
+            "WITH leaf AS (
+                 SELECT c.id,
+                        COALESCE(s.parent_id, c.parent_id, c.id) AS root_id
+                 FROM content c
+                 LEFT JOIN content s ON s.id = c.parent_id AND s.kind = 'season'
+                 WHERE c.monitored = 1
+                   AND c.kind IN ('movie', 'episode', 'track', 'book')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM content_file cf WHERE cf.content_id = c.id
+                   )
+             ),
+             tally AS (
+                 SELECT l.root_id,
+                        l.id,
+                        m.fruitless,
+                        m.searched_at,
+                        (SELECT count(*) FROM decision_log d
+                          WHERE d.content_id = l.id AND d.decision IS NOT NULL) AS seen
+                 FROM leaf l
+                 LEFT JOIN missing_search m ON m.content_id = l.id
+             )
+             SELECT t.root_id,
+                    cm.title AS title,
+                    count(*) AS missing,
+                    sum(CASE WHEN t.seen = 0 AND COALESCE(t.fruitless, 0) > 0 THEN 1 ELSE 0 END) AS never_found,
+                    min(CASE WHEN t.seen = 0 AND COALESCE(t.fruitless, 0) > 0 THEN t.searched_at END) AS futile_since
+             FROM tally t
+             LEFT JOIN content_meta cm ON cm.content_id = t.root_id
+             GROUP BY t.root_id, cm.title
+             ORDER BY never_found DESC, missing DESC
+             LIMIT ?1",
+        ))
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|r| {
+                let root: String = r.try_get("root_id")?;
+                let missing: i64 = r.try_get("missing")?;
+                let never: Option<i64> = r.try_get("never_found")?;
+                Ok(MissingSummary {
+                    content_id: ContentId::from_uuid(crate::convert::parse_uuid("root_id", &root)?),
+                    title: r.try_get("title")?,
+                    missing: u32::try_from(missing).unwrap_or(u32::MAX),
+                    never_found: u32::try_from(never.unwrap_or(0)).unwrap_or(u32::MAX),
+                    // Counted per title by the caller when it needs the breakdown;
+                    // the expensive per-reason tallies are left to `missing_reason`
+                    // so this stays one cheap query over the whole library.
+                    only_dead: 0,
+                    blocked_by_quality: 0,
+                    futile_since: r.try_get("futile_since")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Current consecutive-fruitless count per content id, for every node that has
+    /// one. Read once per sweep so the per-node update does not issue a query each.
+    pub async fn fruitless_counts(&self) -> Result<std::collections::HashMap<String, u32>> {
+        let rows = sqlx::query(&pq(
+            "SELECT content_id, fruitless FROM missing_search WHERE fruitless > 0",
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let id: String = r.try_get("content_id")?;
+                let n: i64 = r.try_get("fruitless")?;
+                Ok((id, u32::try_from(n).unwrap_or(u32::MAX)))
+            })
+            .collect()
+    }
+
     /// Record that `ids` were just considered for an upgrade, so the next sweep
     /// moves on to the next least-recently-searched slice. Upserts each node's
     /// `searched_at` to now. Best-effort ordering bookkeeping — a write failure only
@@ -91,27 +261,84 @@ impl ContentRepo {
             .await
     }
 
+    /// How long to wait before searching again for a node whose last `fruitless`
+    /// searches all returned NOTHING — no candidate release at all, not even a
+    /// rejected one.
+    ///
+    /// Doubles from an hour and caps at a day. The cap is the important half: it
+    /// bounds how stale a node can get, so a newly-aired episode the indexers had
+    /// not yet listed is still picked up within a day, while a show they simply do
+    /// not carry stops consuming a rotation slot (and a rate-limited indexer
+    /// request) on every single sweep.
+    #[must_use]
+    pub fn search_backoff(fruitless: u32) -> time::Duration {
+        const BASE_SECS: i64 = 60 * 60;
+        const MAX: time::Duration = time::Duration::hours(24);
+        if fruitless == 0 {
+            return time::Duration::ZERO;
+        }
+        let shift = fruitless.saturating_sub(1).min(16);
+        let backoff = time::Duration::seconds(BASE_SECS.saturating_mul(1_i64 << shift));
+        if backoff > MAX {
+            MAX
+        } else {
+            backoff
+        }
+    }
+
     /// Record that `ids` were just run through an acquisition search, so the next
     /// monitored-missing sweep moves on to the next least-recently-searched slice.
     /// Upserts each node's `searched_at` to now. Best-effort ordering bookkeeping — a
     /// write failure only costs fairness on the next run, never correctness. The
     /// acquisition counterpart to [`mark_upgrade_searched`](Self::mark_upgrade_searched).
-    pub async fn mark_missing_searched(&self, ids: Vec<ContentId>) -> Result<()> {
+    ///
+    /// `fruitless_ids` are the subset that returned NO candidate release at all.
+    /// Each of those has its consecutive-fruitless count incremented and its next
+    /// due time pushed out by [`search_backoff`](Self::search_backoff); everything
+    /// else resets to zero, so a node the indexers start carrying is searched at
+    /// full cadence again from the very next sweep.
+    pub async fn mark_missing_searched(
+        &self,
+        ids: Vec<ContentId>,
+        fruitless_ids: &std::collections::HashSet<ContentId>,
+    ) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
-        let now = crate::convert::format_time(time::OffsetDateTime::now_utc())?;
+        let now_ts = time::OffsetDateTime::now_utc();
+        let now = crate::convert::format_time(now_ts)?;
+        let fruitless: std::collections::HashSet<String> =
+            fruitless_ids.iter().map(ToString::to_string).collect();
+        // The next due time depends on the count AFTER this search, which is only
+        // known per row, so read-modify-write each fruitless node. Productive nodes
+        // clear both columns in one statement.
+        let existing = self.fruitless_counts().await?;
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
                     for id in ids {
+                        let key = id.to_string();
+                        let (fruitless_now, due) = if fruitless.contains(&key) {
+                            let n = existing.get(&key).copied().unwrap_or(0).saturating_add(1);
+                            let due = crate::convert::format_time(
+                                now_ts + Self::search_backoff(n),
+                            )?;
+                            (i64::from(n), Some(due))
+                        } else {
+                            (0, None)
+                        };
                         sqlx::query(&pq(
-                            "INSERT INTO missing_search (content_id, searched_at)
-                             VALUES (?1, ?2)
-                             ON CONFLICT(content_id) DO UPDATE SET searched_at = excluded.searched_at",
+                            "INSERT INTO missing_search (content_id, searched_at, fruitless, next_due_at)
+                             VALUES (?1, ?2, ?3, ?4)
+                             ON CONFLICT(content_id) DO UPDATE SET
+                                 searched_at = excluded.searched_at,
+                                 fruitless   = excluded.fruitless,
+                                 next_due_at = excluded.next_due_at",
                         ))
-                        .bind(id.to_string())
+                        .bind(&key)
                         .bind(&now)
+                        .bind(fruitless_now)
+                        .bind(due)
                         .execute(&mut *conn)
                         .await?;
                     }
@@ -1349,7 +1576,17 @@ impl ContentRepository for ContentRepo {
         // starvation but gave no coverage guarantee, leaving grabbable-but-unlucky
         // items un-searched indefinitely. The trailing `RANDOM()` only breaks ties
         // within a stamp tier (notably the never-searched tier) so no stable sub-order
-        // can form while a large tier drains. Mirrors `upgrade_candidates`. Portable
+        // can form while a large tier drains.
+        //
+        // A node whose recent searches all returned NOTHING is held back until its
+        // `next_due_at` (see `search_backoff`). Without that, content the indexers do
+        // not carry occupies the bounded per-sweep budget forever at the same
+        // priority as obtainable content — on the reference library that was 773 of
+        // 1088 missing items, searched for three weeks without one candidate ever
+        // returned. The stamp is only ever set by a search that found nothing, and
+        // any candidate clears it, so nothing gettable is ever delayed.
+        //
+        // Mirrors `upgrade_candidates`. Portable
         // across SQLite and Postgres (`searched_at IS NULL` yields 1/0 / true-false;
         // DESC puts the never-searched first).
         let rows = sqlx::query(&pq(
@@ -1399,8 +1636,10 @@ impl ContentRepository for ContentRepo {
                        )
                      )
                    )
+               AND (m.next_due_at IS NULL OR m.next_due_at <= ?1)
              ORDER BY (m.searched_at IS NULL) DESC, m.searched_at ASC, RANDOM()",
         ))
+        .bind(crate::convert::format_time(time::OffsetDateTime::now_utc())?)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
