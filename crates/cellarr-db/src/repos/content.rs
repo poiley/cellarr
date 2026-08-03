@@ -120,18 +120,23 @@ impl ContentRepo {
         // Never offered anything at all — the case that looks like patience but is
         // actually a coverage gap.
         if dead == 0 && quality == 0 && other == 0 {
+            // Judged on the EVIDENCE — it has been searched, and nothing was ever
+            // offered — not on the fruitless counter, which only starts filling once
+            // a sweep runs and so reports zero for a backlog that has been futile for
+            // weeks. Keying on the counter here made this contradict the rollup
+            // outright: the summary called 469 episodes never-found while asking
+            // about any one of them answered "not yet searched".
             return Ok(match search {
                 None => MissingReason::NotYetSearched,
                 Some(row) => {
                     let fruitless: i64 = row.try_get("fruitless")?;
-                    if fruitless == 0 {
-                        // Searched, nothing recorded either way: too early to judge.
-                        MissingReason::NotYetSearched
-                    } else {
-                        MissingReason::NeverFound {
-                            searches: u32::try_from(fruitless).unwrap_or(u32::MAX),
-                            last_searched: row.try_get("searched_at")?,
-                        }
+                    MissingReason::NeverFound {
+                        // Counts the fruitless searches actually OBSERVED. Searches
+                        // that predate the counter are not known, so this is a floor,
+                        // never zero — claiming "never found in 0 searches" would be
+                        // nonsense.
+                        searches: u32::try_from(fruitless).unwrap_or(u32::MAX).max(1),
+                        last_searched: row.try_get("searched_at")?,
                     }
                 }
             });
