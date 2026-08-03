@@ -43,6 +43,13 @@ pub enum JobKind {
         /// The content node (UUID string) to search for.
         content_id: String,
     },
+    /// Trim the decision log to its retention window.
+    ///
+    /// The log is append-only and nothing pruned it: on the reference deployment it
+    /// had reached 178,606 rows and 315 MB, growing ~9k rows a day, making it by far
+    /// the largest object in the database. It is diagnostic data with a short useful
+    /// life, so it is aged out rather than kept forever.
+    PruneDecisionLog,
     /// Periodic sweep for missing subtitles across every content node that has a
     /// file: for each wanted language a file lacks, search a provider and fetch it.
     SubtitleScan,
@@ -65,6 +72,9 @@ impl JobKind {
                 "indexer"
             }
             JobKind::MetadataRefresh => "metadata",
+            // Pure database maintenance — its own bucket so it never competes with
+            // acquisition or metadata work.
+            JobKind::PruneDecisionLog => "database",
             JobKind::DiskSpaceCheck => "disk",
             // A rescan is filesystem-bound (scan + in-place adopt), sharing no third
             // party — its own bucket keeps it off the indexer/metadata budgets.
@@ -87,6 +97,7 @@ impl JobKind {
             JobKind::MetadataRefresh => "metadata_refresh".into(),
             JobKind::DiskSpaceCheck => "disk_space_check".into(),
             JobKind::RescanLibrary => "rescan_library".into(),
+            JobKind::PruneDecisionLog => "prune_decision_log".into(),
             JobKind::ReconcileDownloads => "reconcile_downloads".into(),
             JobKind::ManualSearch { content_id } => format!("manual_search:{content_id}"),
             JobKind::SubtitleScan => "subtitle_scan".into(),
