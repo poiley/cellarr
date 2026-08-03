@@ -58,6 +58,41 @@ impl DecisionLogRepo {
             })
             .collect()
     }
+
+    /// Delete decision-log rows older than `cutoff`, returning how many went.
+    ///
+    /// The log is append-only diagnostic data with a short useful life, and nothing
+    /// trimmed it — it had reached 178,606 rows / 315 MB on the reference deployment
+    /// and was growing ~9k rows a day. Deleting by age keeps recent runs fully
+    /// explainable (which is what `missing_reason` reads) while bounding the table.
+    ///
+    /// # Errors
+    /// Returns a [`DbError`] on query failure.
+    pub async fn prune_before(&self, cutoff: time::OffsetDateTime) -> Result<u64> {
+        let cutoff = format_time(cutoff)?;
+        // Counted before the delete: the writer channel yields no row count, and the
+        // number is wanted only to report what the sweep did.
+        let doomed: i64 = sqlx::query(&pq("SELECT count(*) AS n FROM decision_log WHERE at < ?1"))
+            .bind(&cutoff)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get("n")?;
+        if doomed == 0 {
+            return Ok(0);
+        }
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq("DELETE FROM decision_log WHERE at < ?1"))
+                        .bind(&cutoff)
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(u64::try_from(doomed).unwrap_or(0))
+    }
 }
 
 #[async_trait]
@@ -75,12 +110,19 @@ impl DecisionLogRepository for DecisionLogRepo {
             .map(serde_json::to_string)
             .transpose()?;
         let note = record.note.clone();
+        // Denormalized out of the `decision` blob so the log is queryable by content
+        // in portable SQL — the JSON accessors differ between SQLite and Postgres, so
+        // "why is this item still missing?" could not otherwise be asked at all.
+        let content_id = record
+            .decision
+            .as_ref()
+            .map(|d| d.content_ref.id.to_string());
         self.writer
             .submit(move |conn| {
                 Box::pin(async move {
                     sqlx::query(&pq(
-                        "INSERT INTO decision_log (id, at, run_id, transition, decision, note)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+                        "INSERT INTO decision_log (id, at, run_id, transition, decision, note, content_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
                     )
                     .bind(id)
                     .bind(at)
@@ -88,6 +130,7 @@ impl DecisionLogRepository for DecisionLogRepo {
                     .bind(transition)
                     .bind(decision)
                     .bind(note)
+                    .bind(content_id)
                     .execute(&mut *conn)
                     .await?;
                     Ok(())

@@ -484,3 +484,72 @@ pub struct Library {
     /// The default quality profile applied to new items.
     pub default_quality_profile: crate::ids::QualityProfileId,
 }
+
+/// Why a monitored item still has no file — the one honest answer to "why don't I
+/// have this yet?".
+///
+/// The distinction matters because these look identical in a list of missing items
+/// but call for completely different actions: waiting is fine, a quality block is a
+/// profile decision, dead torrents mean nobody is seeding it, and never-found means
+/// the configured indexers simply do not carry it and no amount of waiting will
+/// help. On the library this was built against, 71% of missing items were the last
+/// kind and nothing surfaced that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum MissingReason {
+    /// Not searched yet — newly added, or the sweep has not reached it.
+    NotYetSearched,
+    /// Searched, and the indexers returned no candidate release AT ALL. Carries how
+    /// many consecutive searches came back empty and when the first one was, which
+    /// is what turns "be patient" into "your indexers do not have this".
+    NeverFound {
+        /// Consecutive searches that returned nothing.
+        searches: u32,
+        /// When it was most recently searched (RFC3339).
+        last_searched: String,
+    },
+    /// Candidates exist, but every one was a torrent with no seeders — present in
+    /// the index, undownloadable in practice.
+    OnlyDeadTorrents {
+        /// How many such candidates were seen.
+        candidates: u32,
+    },
+    /// Candidates exist and are alive, but the quality profile rejects them. This is
+    /// the actionable one: widening the profile would acquire it today.
+    BlockedByQuality {
+        /// How many candidates were rejected on quality.
+        candidates: u32,
+        /// An example release title, so the choice is concrete.
+        example: Option<String>,
+    },
+    /// A grab is in flight, or candidates were rejected for some other reason — the
+    /// ordinary "still working on it" case.
+    Waiting,
+}
+
+/// A whole title's missing-content picture, rolled up so an invisible backlog
+/// becomes one actionable line.
+///
+/// Per-item reasons are useless at scale: "Dancing with the Stars S03E11: never
+/// found" repeated 469 times is noise, while "Dancing with the Stars: 469 episodes,
+/// no candidate in 3 weeks" is a decision — unmonitor it, or add an indexer that
+/// carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingSummary {
+    /// The series/movie node this summarizes.
+    pub content_id: ContentId,
+    /// Its title, for display.
+    pub title: Option<String>,
+    /// Monitored items underneath it with no file.
+    pub missing: u32,
+    /// Of those, how many have never had a single candidate release offered.
+    pub never_found: u32,
+    /// Of those, how many were offered only torrents with no seeders.
+    pub only_dead: u32,
+    /// Of those, how many are gettable but rejected by the quality profile.
+    pub blocked_by_quality: u32,
+    /// The oldest "still searching and still nothing" timestamp underneath it —
+    /// how long this has been futile (RFC3339).
+    pub futile_since: Option<String>,
+}

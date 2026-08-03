@@ -8,7 +8,7 @@
 //! Errors are the structured [`ApiError`] bodies (`code` + `message`), never
 //! bare statuses, so clients branch on `code`.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, State, Query};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use cellarr_core::repo::{ContentRepository, ProfileRepository};
@@ -38,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .route("/content/{id}/files", get(list_content_files))
         .route("/content/{id}/subtitles", get(list_content_subtitles))
         .route("/content/{id}/history", get(content_history))
+        .route("/content/{id}/missing-reason", get(content_missing_reason))
+        .route("/missing/summary", get(missing_summary))
         .route("/indexers", get(list_indexers))
         .route("/downloadclients", get(list_download_clients))
         .route("/qualityprofiles", get(get_quality_profiles))
@@ -283,6 +285,40 @@ async fn content_history(
     use cellarr_core::repo::HistoryRepository;
     let content_id = ContentId::from_uuid(parse_uuid(&id, "content")?);
     Ok(Json(state.db.history().for_content(content_id).await?))
+}
+
+/// Why one monitored item still has no file.
+///
+/// The list of missing items answers "what", never "why", so a coverage gap (the
+/// indexers do not carry this show), a seeding problem (present but nobody seeds
+/// it), and an actionable profile block all look identical. This answers it from
+/// the search bookkeeping and the decision log rather than guessing.
+async fn content_missing_reason(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<cellarr_core::MissingReason>> {
+    let content_id = ContentId::from_uuid(parse_uuid(&id, "content")?);
+    Ok(Json(state.db.content().missing_reason(content_id).await?))
+}
+
+/// Per-title rollup of what is missing and why, worst first.
+///
+/// At library scale the per-item answer is noise; this is the artefact a human can
+/// act on — "this show has N episodes nobody can find" — which is what turns an
+/// invisible backlog into a decision to unmonitor it or add an indexer.
+async fn missing_summary(
+    State(state): State<AppState>,
+    Query(q): Query<MissingSummaryQuery>,
+) -> ApiResult<Json<Vec<cellarr_core::MissingSummary>>> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    Ok(Json(state.db.content().missing_summary(limit).await?))
+}
+
+/// `?limit=` for [`missing_summary`], bounded so a caller cannot ask for the whole
+/// library in one response.
+#[derive(Debug, serde::Deserialize)]
+struct MissingSummaryQuery {
+    limit: Option<usize>,
 }
 
 // --- indexers --------------------------------------------------------------
