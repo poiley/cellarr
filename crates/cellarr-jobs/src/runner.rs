@@ -1552,10 +1552,13 @@ where
     /// (the loop this whole field exists to prevent).
     async fn persist_imported_files(
         &self,
-        matched_ref: &ContentRef,
         title_parsed: &ParsedRelease,
         release_type: cellarr_core::ReleaseType,
-        destinations: &[String],
+        // Each imported destination paired with the content node it belongs to. For
+        // an ordinary grab every pair carries the grabbed node; for a season pack
+        // each file carries its own episode, which is what makes the pack land as N
+        // separately-tracked episodes rather than N links onto the season.
+        destinations: &[(String, cellarr_core::ContentId)],
     ) -> Result<()> {
         use cellarr_core::repo::MediaFileRepository;
         // The quality the decision engine graded the grab on, single-sourced from
@@ -1563,11 +1566,11 @@ where
         // sentinel, which still records the file as present (so the node is no
         // longer "missing") without claiming a quality it does not have.
         let quality = cellarr_core::resolve_quality(title_parsed, &self.config.ranking);
-        // Distinct destination paths only: several planned moves can render to the
-        // same on-disk path (e.g. a season pack whose per-episode naming is not
-        // yet wired), and `media_file.path` is unique. One path is one file row.
+        // Distinct destination paths only: several planned moves can still render to
+        // the same on-disk path (a naming format that omits the episode numbering,
+        // say), and `media_file.path` is unique. One path is one file row.
         let mut seen_paths = std::collections::BTreeSet::new();
-        for dest in destinations {
+        for (dest, owner) in destinations {
             if !seen_paths.insert(dest.clone()) {
                 continue;
             }
@@ -1606,7 +1609,7 @@ where
             };
             self.db
                 .media_files()
-                .link(matched_ref.id, file_id)
+                .link(*owner, file_id)
                 .await
                 .map_err(|e| JobError::Persistence(Box::new(e)))?;
         }
@@ -1805,6 +1808,9 @@ where
             .await
         {
             Ok(destinations) => {
+                // The webhook/outcome surfaces carry paths only; the owner pairing
+                // matters solely to persistence.
+                let paths: Vec<String> = destinations.iter().map(|(p, _)| p.clone()).collect();
                 self.set_grab_status(grab_id, GrabStatus::Imported).await?;
                 // Persist a media_file row for each imported destination, carrying
                 // the durable release type, and link it to the content node. This
@@ -1814,13 +1820,13 @@ where
                 // recognizes an already-held full-season pack — closing the
                 // re-grab loop. Computed from the title parse (the quality the
                 // decision already graded the grab on).
-                self.persist_imported_files(matched_ref, parsed, release_type, &destinations)
+                self.persist_imported_files(parsed, release_type, &destinations)
                     .await?;
                 // The `Download` (import) webhook fires on the Import->Rename
                 // advance; the `Rename` webhook fires on Rename->Notify. Both
                 // carry the destination files the receiver reads. (Sonarr/Radarr
                 // name the import event `Download`, kept for compatibility.)
-                self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
+                self.fire_files_webhook(WebhookEventType::Download, matched_ref, &paths)
                     .await;
                 // The provider notification: an `Upgrade` when this grab replaced
                 // a lower-quality file, else an `Import`. This is also what a
@@ -1835,11 +1841,11 @@ where
                     matched_ref,
                     release,
                     &grab_quality,
-                    &destinations,
+                    &paths,
                 )
                 .await;
                 *stage = self.advance(run_id, *stage, None).await?; // -> Rename
-                self.fire_files_webhook(WebhookEventType::Rename, matched_ref, &destinations)
+                self.fire_files_webhook(WebhookEventType::Rename, matched_ref, &paths)
                     .await;
                 *stage = self.advance(run_id, *stage, None).await?; // -> Notify
                 self.append_history(run_id, content.id, HistoryEvent::Imported { grab_id })
@@ -1848,7 +1854,7 @@ where
                     .await?; // -> Done
                 Ok(GrabTrackResult::Done(RunOutcome::Imported {
                     grab_id,
-                    destinations,
+                    destinations: paths,
                 }))
             }
             Err(failure) => {
@@ -2002,6 +2008,101 @@ where
         }
     }
 
+    /// Pair every source file with the content node it should be imported as.
+    ///
+    /// Ordinary grabs (a movie, one episode) are one file for one node, so every
+    /// source maps to the grabbed node and this is a no-op.
+    ///
+    /// A SEASON PACK is one grab standing for a whole season, and its files belong
+    /// to the episode nodes underneath it. Each file's own name is re-parsed for its
+    /// episode number and matched against the season's children, so a pack lands as
+    /// N correctly-named episodes, each linked to the episode it actually is.
+    ///
+    /// Files that match no episode node are DROPPED rather than failing the import:
+    /// packs routinely carry extras, specials, and episodes past what the metadata
+    /// source knows about, and none of those should hold back the episodes that did
+    /// match. A pack where nothing matches is an error — that is a genuinely wrong
+    /// grab, not a partial one.
+    async fn resolve_pack_placements(
+        &self,
+        matched_ref: &ContentRef,
+        sources: &[std::path::PathBuf],
+    ) -> Result<Vec<(std::path::PathBuf, ContentRef)>> {
+        use cellarr_core::repo::ContentRepository;
+        use cellarr_core::Coordinates as Co;
+
+        let Co::SeasonPack { season } = matched_ref.coords else {
+            return Ok(sources
+                .iter()
+                .map(|s| (s.clone(), matched_ref.clone()))
+                .collect());
+        };
+        let season = u32::from(season);
+
+        let episodes = self
+            .db
+            .content()
+            .children(matched_ref.id)
+            .await
+            .map_err(|e| JobError::Persistence(Box::new(e)))?;
+        let mut placements = Vec::with_capacity(sources.len());
+        let mut unmatched = Vec::new();
+        for source in sources {
+            let name = source
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            let parsed = cellarr_parse::parse_title(name);
+            // The file's own episode number is what places it. Absolute numbering is
+            // matched too, since an anime pack names files by absolute number while
+            // the nodes carry both.
+            let target = episodes.iter().find(|node| {
+                parsed.coordinates.iter().any(|c| match (c, &node.coords) {
+                    (
+                        Co::Episode {
+                            season: fs, episode: fe, ..
+                        },
+                        Co::Episode {
+                            season: ns, episode: ne, ..
+                        },
+                    ) => fs == ns && fe == ne,
+                    (
+                        Co::Absolute { number },
+                        Co::Episode {
+                            absolute: Some(abs), ..
+                        },
+                    ) => number == abs,
+                    _ => false,
+                })
+            });
+            match target {
+                Some(node) => placements.push((source.clone(), node.as_ref())),
+                None => unmatched.push(name.to_string()),
+            }
+        }
+
+        if placements.is_empty() {
+            return Err(JobError::NotConfigured {
+                resource: "season pack placement",
+                detail: format!(
+                    "no file in the pack for season {season} matched an episode of {}",
+                    matched_ref.id
+                ),
+            });
+        }
+        if !unmatched.is_empty() {
+            tracing::info!(
+                content_id = %matched_ref.id,
+                season,
+                matched = placements.len(),
+                skipped = unmatched.len(),
+                files = ?unmatched,
+                "season pack: files matching no episode node were skipped"
+            );
+        }
+        Ok(placements)
+    }
+
     /// Build and execute the import plan for one completed download.
     ///
     /// Re-parses the *file* path (the second parse, the source of truth) and
@@ -2023,7 +2124,7 @@ where
         // as a replacement (cellarr-fs swaps in place or removes the old path), and
         // the stale row is dropped after commit so the new quality is recorded.
         replaced: Option<(cellarr_core::MediaFileId, String)>,
-    ) -> std::result::Result<Vec<String>, ImportFailure> {
+    ) -> std::result::Result<Vec<(String, cellarr_core::ContentId)>, ImportFailure> {
         let src = std::path::Path::new(content_path);
         if !src.exists() {
             return Err(format!("download content path does not exist: {content_path}").into());
@@ -2042,29 +2143,43 @@ where
         let module = self
             .module_for(matched_ref)
             .map_err(|e| format!("module: {e}"))?;
-        let tokens = module
-            .naming_tokens(matched_ref)
-            .await
-            .map_err(|e| format!("naming tokens: {e}"))?;
 
-        let naming_format = naming_format_for_node(
-            &self.config.naming_format,
-            &self.config.anime_naming_format,
-            self.config.series_type,
-            matched_ref.media_type,
-            &tokens,
-        );
+        // Which content node each source file belongs to.
+        //
+        // For every grab except a season pack this is the grabbed node itself, once
+        // per file. A SEASON PACK is the exception: it is one grab carrying a whole
+        // season, so its files belong to the individual EPISODE nodes underneath it,
+        // not to the season. Naming and linkage both have to follow that — the
+        // season carries no `Episode` token, so `{Episode Block}` could not render,
+        // and even if it could, every file in the pack would render to the same
+        // destination and collide.
+        let placements = self
+            .resolve_pack_placements(matched_ref, &sources)
+            .await
+            .map_err(|e| format!("resolve pack placements: {e}"))?;
+
+        let mut moves = Vec::with_capacity(placements.len());
         use cellarr_core::repo::MediaFileRepository;
         // `replaced` being set means the decision graded this grab an UPGRADE.
         let is_upgrade = replaced.is_some();
-        let mut moves = Vec::with_capacity(sources.len());
         // The superseded rows to drop after commit: `(path-to-match, old id)`. For a
         // same-path replacement the path is the move destination (guarded by whether
         // that move actually placed a new file); for a distinct-path one it is the
         // old file's own path.
         let mut replaced_rows: Vec<(String, cellarr_core::MediaFileId)> = Vec::new();
-        for source in &sources {
+        for (source, target) in &placements {
             let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+            let tokens = module
+                .naming_tokens(target)
+                .await
+                .map_err(|e| format!("naming tokens: {e}"))?;
+            let naming_format = naming_format_for_node(
+                &self.config.naming_format,
+                &self.config.anime_naming_format,
+                self.config.series_type,
+                target.media_type,
+                &tokens,
+            );
             let rel = cellarr_fs::render_name(naming_format, &with_ext_token(&tokens, ext))
                 .map_err(|e| format!("render name: {e}"))?;
             let dest = self.config.library_root.join(&rel);
@@ -2096,7 +2211,7 @@ where
                     replaces = Some(f.id);
                     replaced_path = Some(dest_str.clone());
                     replaced_rows.push((dest_str.clone(), f.id));
-                } else if sources.len() == 1 {
+                } else if placements.len() == 1 {
                     if let Some((id, path)) = &replaced {
                         replaces = Some(*id);
                         replaced_path = Some(path.clone());
@@ -2108,7 +2223,7 @@ where
             moves.push(PlannedMove {
                 source_path: source.to_string_lossy().into_owned(),
                 destination_path: dest_str,
-                content_ids: vec![matched_ref.id],
+                content_ids: vec![target.id],
                 replaces,
                 replaced_path,
                 hardlink: false,
@@ -2154,10 +2269,18 @@ where
                 )
             })
             .collect();
-        let destinations: Vec<String> = result
+        // Paired back with the node each move was planned for. `result.moves` keeps
+        // the plan's order, which is `placements`' order, so the zip is the mapping.
+        let destinations: Vec<(String, cellarr_core::ContentId)> = result
             .moves
             .into_iter()
-            .map(|m| m.destination_path.to_string_lossy().into_owned())
+            .zip(placements.iter())
+            .map(|(m, (_, target))| {
+                (
+                    m.destination_path.to_string_lossy().into_owned(),
+                    target.id,
+                )
+            })
             .collect();
 
         // A completed replacement supersedes each old file: cellarr-fs has already
@@ -2185,7 +2308,8 @@ where
         // All of this runs after the media is durably committed, so a failure is
         // logged and swallowed — it never rolls back or corrupts the import.
         // `sources` and `destinations` are in the same plan order.
-        for (src, dst) in plan.moves.iter().zip(destinations.iter()) {
+        let placed_paths: Vec<&str> = destinations.iter().map(|(p, _)| p.as_str()).collect();
+        for (src, dst) in plan.moves.iter().zip(placed_paths.iter()) {
             // A move that replaces an existing library file (an upgrade) also
             // supersedes that file's extras; a fresh/adopt move leaves any existing
             // extra in place.
@@ -2205,7 +2329,9 @@ where
         // media is already durable; a sidecar failure is logged and never fails
         // the import (so the crash-safe stage->verify->commit guarantee stands).
         if self.config.write_nfo {
-            self.write_nfo_sidecars(matched_ref, &destinations).await;
+            let nfo_paths: Vec<String> =
+                destinations.iter().map(|(p, _)| p.clone()).collect();
+            self.write_nfo_sidecars(matched_ref, &nfo_paths).await;
         }
 
         Ok(destinations)
@@ -2255,7 +2381,7 @@ where
         let destinations = self
             .import(grab.id, matched_ref, &parsed, content_path, None)
             .await?;
-        self.persist_imported_files(matched_ref, &parsed, release_type, &destinations)
+        self.persist_imported_files(&parsed, release_type, &destinations)
             .await
             .map_err(|e| format!("persist imported files: {e}"))?;
         self.set_grab_status(grab.id, GrabStatus::Imported)
@@ -2271,9 +2397,10 @@ where
         )
         .await
         .map_err(|e| format!("history append: {e}"))?;
-        self.fire_files_webhook(WebhookEventType::Download, matched_ref, &destinations)
+        let paths: Vec<String> = destinations.iter().map(|(p, _)| p.clone()).collect();
+        self.fire_files_webhook(WebhookEventType::Download, matched_ref, &paths)
             .await;
-        Ok(destinations)
+        Ok(paths)
     }
 
     /// Write the `.nfo` metadata sidecars next to the imported destinations, using
@@ -3237,10 +3364,9 @@ where
         };
         if !already_linked {
             self.persist_imported_files(
-                matched_ref,
                 &file_parsed,
                 cellarr_core::ReleaseType::from_parsed(&file_parsed),
-                std::slice::from_ref(&destination_path),
+                &[(destination_path.clone(), matched_ref.id)],
             )
             .await
             .map_err(|e| format!("persist imported file: {e}"))?;
