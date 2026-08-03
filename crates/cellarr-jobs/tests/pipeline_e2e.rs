@@ -1197,3 +1197,139 @@ async fn first_run_with_reject(db: &Database) -> cellarr_core::PipelineRunId {
         .unwrap();
     cellarr_core::PipelineRunId::from_uuid(row.0.parse().unwrap())
 }
+
+/// A season pack is ONE grab standing for a whole season, but its files belong to
+/// the individual episodes underneath it. Until the import fanned out per file, the
+/// whole pack was named from the season node — which carries no `Episode` token, so
+/// `{Episode}` could not render and the import failed outright. Every automatic
+/// season-pack grab then sat un-importable forever, retried by every reconcile
+/// cycle, which is how it starved the rest of the job loop.
+///
+/// This drives a real pack through the pipeline and asserts the fan-out: each file
+/// lands under its OWN episode's name and is linked to that episode's node.
+#[tokio::test]
+async fn a_season_pack_imports_as_its_individual_episodes() {
+    use cellarr_core::repo::{ContentRepository, MediaFileRepository};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+
+    // The acquisition target is the SEASON, as the automatic sweep now yields.
+    let season = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Season,
+        Coordinates::SeasonPack { season: 2 },
+    )
+    .await;
+
+    // Its episodes: the nodes the pack's files must land on.
+    let mut episode_ids = Vec::new();
+    for ep in [1u32, 2] {
+        let id = ContentId::new();
+        db.content()
+            .upsert(&cellarr_core::ContentNode {
+                tags: Vec::new(),
+                id,
+                library_id: season.library_id,
+                media_type: MediaType::Tv,
+                parent_id: Some(season.id),
+                kind: cellarr_core::ContentKind::Episode,
+                series_type: cellarr_core::SeriesType::Standard,
+                coords: Coordinates::Episode {
+                    season: 2,
+                    episode: ep,
+                    absolute: None,
+                },
+                monitored: true,
+                title_id: None,
+            })
+            .await
+            .unwrap();
+        episode_ids.push((ep, id));
+    }
+
+    // A pack carrying both episodes plus a file for an episode this series does not
+    // have — packs routinely carry extras, and one must not sink the whole import.
+    let completed = tmp.path().join("downloads/complete/The.Show.S02.1080p.WEB-DL");
+    std::fs::create_dir_all(&completed).unwrap();
+    for name in [
+        "The.Show.S02E01.1080p.WEB-DL.x264-GROUP.mkv",
+        "The.Show.S02E02.1080p.WEB-DL.x264-GROUP.mkv",
+        "The.Show.S02E99.1080p.WEB-DL.x264-GROUP.mkv",
+    ] {
+        std::fs::write(completed.join(name), b"synthetic episode").unwrap();
+    }
+
+    let library_root = tmp.path().join("library/tv");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let registry = registry_for(
+        &season,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2018),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+    let indexer = FakeIndexer {
+        releases: vec![tv_release("The.Show.S02.1080p.WEB-DL.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    // A per-episode format: it can only render if each file is named from its OWN
+    // episode node, which is the whole point.
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    match runner.run(&season).await.unwrap() {
+        RunOutcome::Imported { .. } => {}
+        other => panic!("the season pack must import, got {other:?}"),
+    }
+
+    // Each episode file landed under its own episode's name.
+    for ep in [1u32, 2] {
+        let expected = library_root.join(format!("The Show/The Show - S02E{ep:02}.mkv"));
+        assert!(
+            expected.exists(),
+            "episode {ep} must be named from its own node: {} missing",
+            expected.display()
+        );
+    }
+
+    // And each is linked to ITS episode node, not to the season the grab named.
+    for (ep, id) in &episode_ids {
+        let files = MediaFileRepository::list_for_content(&db.media_files(), *id)
+            .await
+            .unwrap();
+        assert_eq!(
+            files.len(),
+            1,
+            "episode {ep} must own exactly one imported file"
+        );
+    }
+    let on_season = MediaFileRepository::list_for_content(&db.media_files(), season.id)
+        .await
+        .unwrap();
+    assert!(
+        on_season.is_empty(),
+        "files belong to the episodes, not to the season node itself"
+    );
+
+    // The unmatched file was skipped, not imported and not fatal.
+    assert!(
+        !library_root.join("The Show/The Show - S02E99.mkv").exists(),
+        "a file matching no episode node must be skipped"
+    );
+}
