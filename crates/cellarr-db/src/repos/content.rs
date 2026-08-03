@@ -154,6 +154,13 @@ impl ContentRepo {
     /// per-item answer is noise, and the useful artefact is "this show has 469
     /// episodes nobody can find", which is a decision the user can act on. Titles
     /// with nothing missing are omitted.
+    ///
+    /// "Never found" is judged on the EVIDENCE — the item has been searched and has
+    /// no decision row at all — rather than on the fruitless counter the backoff
+    /// keeps. Both describe the same thing going forward, but the counter only
+    /// starts filling after a sweep runs, so keying on it would report zero for a
+    /// backlog that has been futile for weeks. The evidence is already in the
+    /// database and is what makes this answer useful the moment it ships.
     pub async fn missing_summary(&self, limit: usize) -> Result<Vec<MissingSummary>> {
         // `root` is the title a leaf belongs to: an episode's grandparent (season ->
         // series), or the item itself for a flat movie.
@@ -182,8 +189,8 @@ impl ContentRepo {
              SELECT t.root_id,
                     cm.title AS title,
                     count(*) AS missing,
-                    sum(CASE WHEN t.seen = 0 AND COALESCE(t.fruitless, 0) > 0 THEN 1 ELSE 0 END) AS never_found,
-                    min(CASE WHEN t.seen = 0 AND COALESCE(t.fruitless, 0) > 0 THEN t.searched_at END) AS futile_since
+                    sum(CASE WHEN t.seen = 0 AND t.searched_at IS NOT NULL THEN 1 ELSE 0 END) AS never_found,
+                    min(CASE WHEN t.seen = 0 AND t.searched_at IS NOT NULL THEN t.searched_at END) AS futile_since
              FROM tally t
              LEFT JOIN content_meta cm ON cm.content_id = t.root_id
              GROUP BY t.root_id, cm.title

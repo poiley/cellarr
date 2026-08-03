@@ -3207,11 +3207,57 @@ async fn the_missing_rollup_ranks_titles_by_how_hopeless_they_are() {
         )
         .await
         .unwrap();
-    // The second show's episodes were searched and DID have candidates.
+    // The second show's episodes were searched and DID have candidates. A real
+    // productive search leaves a decision row behind, which is the evidence the
+    // rollup reads — so the fixture has to write one, or it is modelling a search
+    // that found something while recording that it considered nothing.
     content
         .mark_missing_searched(ordinary_ids.clone(), &Default::default())
         .await
         .unwrap();
+    for id in &ordinary_ids {
+        cellarr_core::repo::DecisionLogRepository::append(
+            &db.decision_log(),
+            &cellarr_core::history::DecisionLogRecord {
+                at: time::OffsetDateTime::now_utc(),
+                run_id: cellarr_core::PipelineRunId::new(),
+                transition: cellarr_core::pipeline::Transition::new(
+                    cellarr_core::pipeline::Stage::Decide,
+                    cellarr_core::pipeline::Stage::Rejected,
+                    cellarr_core::pipeline::TransitionKind::Reject,
+                )
+                .unwrap(),
+                decision: Some(cellarr_core::Decision {
+                    content_ref: cellarr_core::ContentRef {
+                        id: *id,
+                        library_id,
+                        media_type: MediaType::Tv,
+                        coords: Coordinates::Episode {
+                            season: 1,
+                            episode: 1,
+                            absolute: None,
+                        },
+                    },
+                    release: Release {
+                        indexer_id: IndexerId::new(),
+                        title: "Something.Was.Offered.1080p".into(),
+                        download_url: "magnet:?xt=urn:btih:z".into(),
+                        guid: Some("g".into()),
+                        protocol: Protocol::Torrent,
+                        size: Some(1),
+                        seeders: Some(9),
+                        indexer_flags: vec![],
+                    },
+                    verdict: cellarr_core::decision::Verdict::Reject {
+                        reason: cellarr_core::decision::RejectReason::QualityNotAllowed,
+                    },
+                }),
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
 
     let summary = content.missing_summary(10).await.unwrap();
     assert!(!summary.is_empty(), "titles with missing content are reported");
