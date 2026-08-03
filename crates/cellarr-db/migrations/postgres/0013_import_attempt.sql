@@ -12,7 +12,7 @@
 -- `last_error` is kept so the reason is visible without trawling logs.
 CREATE TABLE IF NOT EXISTS import_attempt (
     grab_id      text PRIMARY KEY NOT NULL,
-    attempts     integer NOT NULL,
+    attempts     bigint NOT NULL,
     last_attempt text NOT NULL,
     last_error   text
 );
