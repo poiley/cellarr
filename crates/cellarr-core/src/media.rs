@@ -503,7 +503,8 @@ pub enum MissingReason {
     /// many consecutive searches came back empty and when the first one was, which
     /// is what turns "be patient" into "your indexers do not have this".
     NeverFound {
-        /// Consecutive searches that returned nothing.
+        /// Consecutive searches OBSERVED to return nothing. A floor, not a total:
+        /// searches predating the counter are not known, so this never claims zero.
         searches: u32,
         /// When it was most recently searched (RFC3339).
         last_searched: String,

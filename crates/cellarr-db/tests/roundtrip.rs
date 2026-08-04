@@ -3278,6 +3278,41 @@ async fn the_missing_rollup_ranks_titles_by_how_hopeless_they_are() {
     assert_eq!(ordinary.missing, 2);
 }
 
+/// The per-item answer and the rollup must not contradict each other.
+///
+/// They did: the summary called 469 episodes never-found while asking about any one
+/// of them answered "not yet searched", because the rollup judged on the evidence
+/// and this judged on the fruitless counter — which only starts filling once a
+/// sweep runs, and so reads zero for a backlog that has been futile for weeks.
+#[tokio::test]
+async fn a_node_searched_before_the_counter_existed_still_reads_as_never_found() {
+    use cellarr_core::MissingReason;
+    let (_dir, db) = temp_db().await;
+    let library_id = tv_library(&db).await;
+    let content = db.content();
+
+    let node = movie_node(library_id, ContentId::new());
+    content.upsert(&node).await.unwrap();
+
+    // A search stamp with NO fruitless count — exactly what every row looked like
+    // before the counter column existed, and what the backfill leaves behind.
+    content
+        .mark_missing_searched(vec![node.id], &Default::default())
+        .await
+        .unwrap();
+
+    match content.missing_reason(node.id).await.unwrap() {
+        MissingReason::NeverFound { searches, .. } => assert!(
+            searches >= 1,
+            "never-found in zero searches is nonsense; the count is a floor"
+        ),
+        other => panic!(
+            "a searched node that was never offered anything is never-found, \
+             not {other:?} — this is what contradicted the rollup"
+        ),
+    }
+}
+
 /// A grab whose download finished but whose import keeps failing must be
 /// distinguishable from one still downloading, because the two cost completely
 /// different things: the first uses a row in the database, the second uses the
