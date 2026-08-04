@@ -1476,3 +1476,93 @@ async fn releases_with_no_reported_seeder_count_still_pass() {
         "an unknown seeder count is not a dead torrent; got {outcome:?}"
     );
 }
+
+/// A single episode can legitimately be satisfied by a release carrying many — a
+/// season or multi-season pack chosen because it was the best candidate for that
+/// episode. Only the file that IS the episode should be imported.
+///
+/// Without this, every file in the pack was checked against the one grabbed
+/// episode, so the first mismatch failed the whole import. A 4-season pack grabbed
+/// to fill one episode sat un-importable for weeks on exactly that: the first file
+/// was S01E01 and the intent was S04E11.
+#[tokio::test]
+async fn a_pack_grabbed_for_one_episode_imports_only_that_episode() {
+    use cellarr_core::repo::MediaFileRepository;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 4,
+            episode: 11,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+
+    // A season pack, laid out in a season folder, containing the wanted episode
+    // among many others.
+    let completed = tmp.path().join("downloads/The.Show.S04.1080p");
+    let sub = completed.join("Season 4");
+    std::fs::create_dir_all(&sub).unwrap();
+    for ep in [1u32, 5, 11] {
+        std::fs::write(
+            sub.join(format!("The.Show.S04E{ep:02}.1080p.WEB.mkv")),
+            vec![0u8; 4000],
+        )
+        .unwrap();
+    }
+
+    let indexer = FakeIndexer {
+        releases: vec![tv_release("The.Show.S04.1080p.WEB-DL.x264-GROUP")],
+    };
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let library_root = tmp.path().join("library");
+    std::fs::create_dir_all(&library_root).unwrap();
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Series Title}/{Series Title} - S{Season}E{Episode}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    match runner.run(&node).await.unwrap() {
+        RunOutcome::Imported { .. } => {}
+        other => panic!("the pack must import the wanted episode, got {other:?}"),
+    }
+
+    // Exactly the grabbed episode landed — not the other seven files.
+    let wanted = library_root.join("The Show/The Show - S04E11.mkv");
+    assert!(wanted.exists(), "the grabbed episode must be imported");
+    let files = MediaFileRepository::list_for_content(&db.media_files(), node.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        files.len(),
+        1,
+        "only the grabbed episode is imported, not the whole pack"
+    );
+    assert!(
+        !library_root.join("The Show/The Show - S04E01.mkv").exists(),
+        "an episode the grab never asked for must not be imported"
+    );
+}
