@@ -3750,14 +3750,7 @@ fn collect_sources(src: &std::path::Path) -> std::io::Result<Vec<std::path::Path
         return Ok(vec![src.to_path_buf()]);
     }
     let mut videos: Vec<(std::path::PathBuf, u64)> = Vec::new();
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && is_video_file(&path) && !is_sample_file(&path) {
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            videos.push((path, size));
-        }
-    }
+    collect_videos_into(src, 0, &mut videos)?;
     // Drop tiny extras (an unnamed sample/featurette) relative to the largest video
     // — anything under 10% of the biggest file. A real second feature/episode is
     // never that small; this catches samples that lack a "sample" token in the name.
@@ -3768,6 +3761,78 @@ fn collect_sources(src: &std::path::Path) -> std::io::Result<Vec<std::path::Path
     let mut out: Vec<std::path::PathBuf> = videos.into_iter().map(|(p, _)| p).collect();
     out.sort();
     Ok(out)
+}
+
+/// How deep to walk a download for media files.
+///
+/// Real layouts nest two or three levels at most (`<release>/Season 01/`,
+/// `<release>/Disc 1/VIDEO_TS/`). The bound is a guard against a pathological or
+/// hostile archive, not a real limit.
+const MAX_SOURCE_DEPTH: usize = 6;
+
+/// Whether a directory is one whose contents are extras rather than the media
+/// itself. Recursing into these would import a featurette as though it were the
+/// episode.
+fn is_extras_dir(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|n| {
+            matches!(
+                n.as_str(),
+                "sample"
+                    | "samples"
+                    | "extras"
+                    | "featurettes"
+                    | "featurette"
+                    | "behind the scenes"
+                    | "deleted scenes"
+                    | "trailers"
+                    | "subs"
+                    | "subtitles"
+                    | "proof"
+                    | "screens"
+            )
+        })
+}
+
+/// Walk `dir` for media files, descending into subdirectories.
+///
+/// A single-level scan was the bug this replaces: a season pack laid out as
+/// `<release>/Season 1/…`, which is how multi-season packs are almost always
+/// published, presented no importable files at all and the grab could never
+/// finalize — it sat in the queue for weeks, retried forever.
+///
+/// Symlinked directories are not followed (a link back up the tree would recurse
+/// forever), and extras directories are skipped so a featurette is never mistaken
+/// for the episode.
+fn collect_videos_into(
+    dir: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<(std::path::PathBuf, u64)>,
+) -> std::io::Result<()> {
+    if depth > MAX_SOURCE_DEPTH {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        // `file_type` does not traverse the link, so a symlinked directory is
+        // identified as a link and skipped rather than followed.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if !is_extras_dir(&path) {
+                collect_videos_into(&path, depth + 1, out)?;
+            }
+        } else if file_type.is_file() && is_video_file(&path) && !is_sample_file(&path) {
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((path, size));
+        }
+    }
+    Ok(())
 }
 
 /// The second-parse verification gate. Re-parse each source file name and confirm
@@ -3843,8 +3908,20 @@ fn coords_agree(
         // path resolved it to (a node `expand_series` stamped with TVDB's
         // `absoluteNumber`). Without this the coordinate guard would reject the very
         // adoption the matcher just chose.
-        Co::Absolute { number } => title_coords.iter().any(|tc| {
-            matches!(tc, Co::Episode { absolute: Some(abs), .. } if abs == number)
+        Co::Absolute { number } => title_coords.iter().any(|tc| match tc {
+            Co::Episode { absolute: Some(abs), .. } => abs == number,
+            // A MOVIE has no absolute episode numbering, so a bare number parsed out
+            // of a film's own title is a parser artifact, never evidence that the
+            // file is the wrong content. Films are full of them — "Evangelion:
+            // 3.0+1.0 Thrice Upon a Time", "Ocean's 11", "Se7en" — and one such grab
+            // sat un-importable for three weeks, retried on every reconcile cycle,
+            // rejected by this guard because its own title parsed as episode 3.
+            //
+            // Narrow on purpose: only a BARE number is forgiven. A file parsing as a
+            // real `SxxEyy` against a movie intent is a genuine mismatch and still
+            // fails, because that is the case this guard exists to catch.
+            Co::Movie => true,
+            _ => false,
         }),
         other => title_coords.contains(&other),
     }
@@ -4200,13 +4277,17 @@ mod tests {
     }
 
     #[test]
-    fn collect_sources_walks_a_directory_and_sorts_files() {
+    fn collect_sources_walks_a_directory_recursively_and_sorts_files() {
         let dir = tempfile::tempdir().unwrap();
         // Create out of lexical order to prove the result is sorted.
         for name in ["c.mkv", "a.mkv", "b.mkv"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        // A nested directory is NOT descended into (one level only).
+        // Nested media IS collected. This assertion used to be the opposite — one
+        // level only — and that was wrong in a way that cost real downloads: a season
+        // pack laid out as `<release>/Season N/…`, which is how multi-season packs
+        // are almost always published, presented no importable files at all and the
+        // grab could never finalize. One sat in the queue for three weeks.
         let sub = dir.path().join("subdir");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("deep.mkv"), b"x").unwrap();
@@ -4218,8 +4299,8 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["a.mkv", "b.mkv", "c.mkv"],
-            "only top-level files, sorted, no recursion into subdir"
+            vec!["a.mkv", "b.mkv", "c.mkv", "deep.mkv"],
+            "nested media is found, and the result is sorted"
         );
     }
 
@@ -4243,6 +4324,103 @@ mod tests {
             names,
             vec!["Feature.1080p.mkv"],
             "import only the main feature — no sample, tiny extra, or sidecars; got {names:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_collection_tests {
+    use super::collect_sources;
+
+    /// A season pack laid out as `<release>/Season N/…` — how multi-season packs are
+    /// almost always published — presented NO importable files under a single-level
+    /// scan, so the grab could never finalize. One sat in the queue for weeks being
+    /// retried, holding a download slot the whole time.
+    #[test]
+    fn media_nested_in_season_folders_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Show S01-04 1080p");
+        for season in 1..=3 {
+            let sub = root.join(format!("Season {season}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join(format!("Show.S0{season}E01.mkv")), vec![0u8; 5000]).unwrap();
+            // A sidecar subtitle must not be collected as media.
+            std::fs::write(sub.join(format!("Show.S0{season}E01.eng.srt")), b"sub").unwrap();
+        }
+        let found = collect_sources(&root).unwrap();
+        assert_eq!(found.len(), 3, "one episode per season folder: {found:?}");
+        assert!(found.iter().all(|p| p.extension().unwrap() == "mkv"));
+    }
+
+    /// Recursing must not sweep in extras: a featurette imported as though it were
+    /// the episode is worse than importing nothing.
+    #[test]
+    fn extras_directories_are_not_descended_into() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Movie 2020 1080p");
+        std::fs::create_dir_all(root.join("Featurettes")).unwrap();
+        std::fs::create_dir_all(root.join("Sample")).unwrap();
+        std::fs::write(root.join("Movie.2020.1080p.mkv"), vec![0u8; 9000]).unwrap();
+        std::fs::write(root.join("Featurettes/Making.Of.mkv"), vec![0u8; 8000]).unwrap();
+        std::fs::write(root.join("Sample/sample.mkv"), vec![0u8; 8000]).unwrap();
+
+        let found = collect_sources(&root).unwrap();
+        assert_eq!(found.len(), 1, "only the feature itself: {found:?}");
+        assert!(found[0].to_string_lossy().ends_with("Movie.2020.1080p.mkv"));
+    }
+
+    /// A symlinked directory is not followed. One pointing back up its own tree
+    /// would otherwise recurse until the depth bound, doing pointless work and
+    /// collecting the same files repeatedly.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directories_are_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Show");
+        std::fs::create_dir_all(root.join("Season 1")).unwrap();
+        std::fs::write(root.join("Season 1/Show.S01E01.mkv"), vec![0u8; 5000]).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("Season 1/loop")).unwrap();
+
+        let found = collect_sources(&root).unwrap();
+        assert_eq!(found.len(), 1, "the loop must not multiply the result: {found:?}");
+    }
+}
+
+#[cfg(test)]
+mod movie_absolute_parse_tests {
+    use super::verify_second_parse;
+    use cellarr_core::{Coordinates as Co, ParsedRelease};
+
+    fn parsed(coords: Vec<Co>) -> ParsedRelease {
+        let mut p = ParsedRelease::new("x");
+        p.coordinates = coords;
+        p
+    }
+
+    /// A film whose own title contains a number parses as an anime absolute episode.
+    /// That is a parser artifact, not evidence the file is the wrong content — and it
+    /// held a real grab un-importable for three weeks, retried every cycle.
+    #[test]
+    fn a_number_in_a_film_title_does_not_block_its_import() {
+        let title = parsed(vec![Co::Movie]);
+        let sources = [std::path::PathBuf::from(
+            "[EMBER] Evangelion 3.0+1.0 Thrice Upon a Time (2021) [1080p].mkv",
+        )];
+        assert!(
+            verify_second_parse(&title, &sources).is_ok(),
+            "a bare number parsed from a movie's title must not fail the import"
+        );
+    }
+
+    /// The guard still catches what it exists for: a file that is genuinely a TV
+    /// episode must not be imported against a movie grab.
+    #[test]
+    fn a_real_episode_file_still_fails_a_movie_grab() {
+        let title = parsed(vec![Co::Movie]);
+        let sources = [std::path::PathBuf::from("Some.Show.S02E05.1080p.WEB.mkv")];
+        assert!(
+            verify_second_parse(&title, &sources).is_err(),
+            "an SxxEyy file against a movie intent is a real mismatch and must hold"
         );
     }
 }
