@@ -135,6 +135,35 @@ pub struct Release {
     pub indexer_flags: Vec<String>,
 }
 
+/// The `download_url` an indexer writes when a release's real link exists but has
+/// to be FETCHED — a tracker that hides its magnets behind a signed endpoint, say.
+///
+/// Deliberately distinguishable from an empty url, which means the opposite: this
+/// release has no link and never will, and is dropped at Discover. Collapsing the
+/// two loses the difference between "not yet fetched" and "not available", and the
+/// cost of that is high — resolving every candidate up front is expensive enough
+/// that it has to be capped, and the cap was discarding 88% of one tracker's
+/// candidates before the decision engine ever saw them.
+pub const DEFERRED_LINK: &str = "cellarr:deferred";
+
+impl Release {
+    /// Whether this release's download link still has to be fetched.
+    ///
+    /// Such a release is a perfectly good candidate — it has a title, size, seeders
+    /// and flags, which is everything the decision engine needs. Only the grab needs
+    /// the link, so only the release that WINS needs resolving.
+    #[must_use]
+    pub fn link_is_deferred(&self) -> bool {
+        self.download_url == DEFERRED_LINK
+    }
+
+    /// Whether this release can never be acted on: no link, and none to fetch.
+    #[must_use]
+    pub fn has_no_link(&self) -> bool {
+        self.download_url.trim().is_empty()
+    }
+}
+
 /// A release together with the parse used to reason about it.
 ///
 /// Identify operates on this pairing; the parse is kept alongside the raw

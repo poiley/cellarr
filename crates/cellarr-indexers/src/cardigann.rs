@@ -1167,7 +1167,7 @@ impl CardigannIndexer {
         };
         let body = decode_body(&bytes, self.definition.encoding.as_deref());
         let mut releases = self.extract(&body)?;
-        self.resolve_pending_links(&mut releases).await;
+        self.mark_deferred_links(&mut releases);
         Ok(releases)
     }
 
@@ -1261,78 +1261,65 @@ impl CardigannIndexer {
             .unwrap_or(DEFAULT_RESOLVE_LIMIT)
     }
 
-    /// Fill in links for releases the extractor left [`PENDING_LINK`], dropping any
-    /// the resolver can't satisfy.
+    /// Flag rows that arrived without a link as DEFERRED when a resolver could
+    /// fetch one, and leave the rest empty so Discover drops them.
     ///
-    /// Runs only for rows that arrived without a link, best-seeded first and capped
-    /// by [`resolve_limit`](Self::resolve_limit). One release failing to resolve
-    /// must not fail the search — the tracker may simply have pulled that torrent —
-    /// so failures drop the release and are traced rather than propagated.
-    async fn resolve_pending_links(&self, releases: &mut Vec<Release>) {
-        let Some(resolver) = self.resolver.clone() else {
-            return;
-        };
-        let pending = releases
-            .iter()
-            .filter(|r| r.download_url == PENDING_LINK)
-            .count();
-        if pending == 0 {
+    /// Nothing is fetched here. Resolving at search time means resolving
+    /// speculatively for every candidate, which is expensive enough on a tracker
+    /// that signs its magnets that it has to be capped — and the cap threw away 88%
+    /// of one tracker's candidates before the decision engine ever saw them. A
+    /// deferred release is a complete candidate for deciding: title, size, seeders
+    /// and flags all come from the listing. Only the winner needs a link.
+    fn mark_deferred_links(&self, releases: &mut [Release]) {
+        if self.resolver.is_none() {
             return;
         }
-
-        // Resolve the most-seeded rows first so the cap keeps the candidates worth
-        // having. Rows that already carry a link keep their original order.
-        let limit = self.resolve_limit();
-        let mut order: Vec<usize> = (0..releases.len())
-            .filter(|i| releases[*i].download_url == PENDING_LINK)
-            .collect();
-        order.sort_by_key(|i| std::cmp::Reverse(releases[*i].seeders.unwrap_or(0)));
-        let attempt: std::collections::HashSet<usize> = order.iter().copied().take(limit).collect();
-        if pending > limit {
-            tracing::info!(
+        let mut deferred = 0;
+        for release in releases.iter_mut() {
+            // A row with no link but a details url is one the resolver can fetch.
+            if release.download_url.trim().is_empty()
+                && release.guid.as_deref().is_some_and(|g| !g.trim().is_empty())
+            {
+                release.download_url = cellarr_core::DEFERRED_LINK.to_string();
+                deferred += 1;
+            }
+        }
+        if deferred > 0 {
+            tracing::debug!(
                 indexer = %self.definition.name,
-                pending,
-                limit,
-                dropped = pending - limit,
-                "capping download-link resolution to the best-seeded rows"
+                deferred,
+                "links deferred until a release is chosen"
             );
         }
+    }
 
-        let mut resolved = Vec::with_capacity(releases.len());
-        for (index, mut release) in std::mem::take(releases).into_iter().enumerate() {
-            if release.download_url != PENDING_LINK {
-                resolved.push(release);
-                continue;
-            }
-            if !attempt.contains(&index) {
-                continue;
-            }
-            let Some(details) = release.guid.clone() else {
-                continue;
-            };
-            if let Some(host) = Url::parse(&details)
-                .ok()
-                .and_then(|u| u.host_str().map(ToString::to_string))
-            {
-                self.rate_limiter.until_ready(&host).await;
-            }
-            self.pace().await;
-            match resolver.resolve(&details, self.fetcher.as_ref()).await {
-                Ok(link) => {
-                    release.download_url = finalize_magnet(link, &release.title);
-                    resolved.push(release);
-                }
-                Err(err) => {
-                    tracing::debug!(
-                        indexer = %self.definition.name,
-                        details = %details,
-                        error = %err,
-                        "dropping release whose download link could not be resolved"
-                    );
-                }
-            }
+    /// Fetch the real link for one deferred release.
+    ///
+    /// This is the whole point of deferring: exactly one resolve per acquisition
+    /// instead of one per speculatively-kept candidate. A failure is returned rather
+    /// than swallowed so the caller can fall through to the next candidate — the
+    /// grab-next loop already does exactly that when a grab fails.
+    async fn resolve_deferred(&self, mut release: Release) -> Result<Release> {
+        let Some(resolver) = self.resolver.clone() else {
+            return Ok(release);
+        };
+        let details = release
+            .guid
+            .clone()
+            .filter(|g| !g.trim().is_empty())
+            .ok_or_else(|| {
+                IndexerError::Parse("release has a deferred link but no details url".to_string())
+            })?;
+        if let Some(host) = Url::parse(&details)
+            .ok()
+            .and_then(|u| u.host_str().map(ToString::to_string))
+        {
+            self.rate_limiter.until_ready(&host).await;
         }
-        *releases = resolved;
+        self.pace().await;
+        let link = resolver.resolve(&details, self.fetcher.as_ref()).await?;
+        release.download_url = finalize_magnet(link, &release.title);
+        Ok(release)
     }
 }
 
@@ -1370,6 +1357,14 @@ impl Indexer for CardigannIndexer {
 
     fn name(&self) -> &str {
         &self.definition.name
+    }
+
+    #[tracing::instrument(name = "indexer.resolve", skip_all, fields(indexer = %self.definition.name))]
+    async fn resolve(&self, release: Release) -> Result<Release> {
+        if release.link_is_deferred() {
+            return self.resolve_deferred(release).await;
+        }
+        Ok(release)
     }
 
     #[tracing::instrument(name = "indexer.search", skip_all, fields(indexer = %self.definition.name))]

@@ -83,7 +83,7 @@ pub use profile::{
     condition_matches, custom_format_matches, resolve_quality, Condition, ConditionKind,
     CustomFormat, Quality, QualityDefinition, QualityProfile, QualityRanking, SizeVerdict,
 };
-pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType};
+pub use release::{ContentMatch, ParsedCandidate, Protocol, Release, ReleaseType, DEFERRED_LINK};
 pub use releaseprofile::{plain_term_matches, regex_term, PreferredTerm, ReleaseProfile};
 pub use repo::{
     ContentRepository, DecisionLogRepository, DeletedContent, GrabRepository, HistoryRepository,

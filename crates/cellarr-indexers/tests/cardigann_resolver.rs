@@ -16,6 +16,7 @@ use cellarr_core::{Indexer, IndexerId, SearchTerms};
 use cellarr_indexers::cardigann::CardigannIndexer;
 use cellarr_indexers::http::Fetcher;
 use cellarr_indexers::{Definition, ExtTorrentsResolver, HostRateLimiter, IndexerError, Result};
+use cellarr_core::Release;
 
 const DEFINITION: &str = include_str!("fixtures/cardigann_signedtracker.yml");
 const LISTING_HTML: &str = include_str!("fixtures/cardigann_signedtracker.html");
@@ -114,16 +115,38 @@ fn indexer(fetcher: Arc<SignedTrackerFetcher>) -> CardigannIndexer {
     ])))
 }
 
-#[tokio::test]
-async fn rows_without_a_link_are_resolved_into_magnets() {
-    let fetcher = Arc::new(SignedTrackerFetcher::new());
-    let releases = indexer(fetcher.clone())
+
+/// Search, then resolve exactly the rows the engine deferred — what the pipeline
+/// does, except the pipeline only ever resolves the ONE release it chose to grab.
+/// Resolving all of them here keeps these tests exercising the resolver end to end.
+async fn search_and_resolve(ix: &CardigannIndexer, query: &str) -> Vec<Release> {
+    let found = ix
         .search(&SearchTerms {
-            queries: vec!["example show".to_string()],
+            queries: vec![query.to_string()],
             ..SearchTerms::default()
         })
         .await
         .expect("search");
+    let mut out = Vec::new();
+    for release in found {
+        if release.link_is_deferred() {
+            match cellarr_core::traits::Indexer::resolve(ix, release).await {
+                Ok(resolved) => out.push(resolved),
+                // The old engine dropped a row it could not resolve; the pipeline now
+                // moves to the next candidate instead. Same outcome for these tests.
+                Err(_) => continue,
+            }
+        } else {
+            out.push(release);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn rows_without_a_link_are_resolved_into_magnets() {
+    let fetcher = Arc::new(SignedTrackerFetcher::new());
+    let releases = search_and_resolve(&indexer(fetcher.clone()), "example show").await;
 
     assert_eq!(releases.len(), 2, "both rows should survive: {releases:?}");
     assert!(
@@ -150,13 +173,7 @@ async fn rows_without_a_link_are_resolved_into_magnets() {
 #[tokio::test]
 async fn the_signed_request_carries_id_download_type_timestamp_and_signature() {
     let fetcher = Arc::new(SignedTrackerFetcher::new());
-    indexer(fetcher.clone())
-        .search(&SearchTerms {
-            queries: vec!["example show".to_string()],
-            ..SearchTerms::default()
-        })
-        .await
-        .expect("search");
+    let _ = search_and_resolve(&indexer(fetcher.clone()), "example show").await;
 
     let posts = fetcher.posts();
     assert_eq!(posts.len(), 2, "one signed request per link-less row");
@@ -205,13 +222,7 @@ async fn the_signed_request_carries_id_download_type_timestamp_and_signature() {
 #[tokio::test]
 async fn a_row_the_endpoint_refuses_is_dropped_not_surfaced_linkless() {
     let fetcher = Arc::new(SignedTrackerFetcher::refusing("11223344"));
-    let releases = indexer(fetcher)
-        .search(&SearchTerms {
-            queries: vec!["example show".to_string()],
-            ..SearchTerms::default()
-        })
-        .await
-        .expect("search");
+    let releases = search_and_resolve(&indexer(fetcher), "example show").await;
 
     assert_eq!(
         releases.len(),
@@ -297,13 +308,8 @@ async fn a_get_only_fetcher_cannot_resolve_and_drops_the_rows() {
     )
     .with_resolver(Arc::new(ExtTorrentsResolver::with_hosts(vec![
         "signedtracker.example".to_string(),
-    ])))
-    .search(&SearchTerms {
-        queries: vec!["example show".to_string()],
-        ..SearchTerms::default()
-    })
-    .await
-    .expect("search");
+    ])));
+    let releases = search_and_resolve(&releases, "example show").await;
 
     assert!(releases.is_empty(), "{releases:?}");
     // The seam's own error stays typed rather than panicking.
@@ -317,13 +323,7 @@ async fn a_get_only_fetcher_cannot_resolve_and_drops_the_rows() {
 #[tokio::test]
 async fn search_level_inputs_are_sent_on_every_path() {
     let fetcher = Arc::new(SignedTrackerFetcher::new());
-    indexer(fetcher.clone())
-        .search(&SearchTerms {
-            queries: vec!["example show".to_string()],
-            ..SearchTerms::default()
-        })
-        .await
-        .expect("search");
+    let _ = search_and_resolve(&indexer(fetcher.clone()), "example show").await;
 
     let listing: Vec<String> = fetcher
         .gets()
@@ -369,14 +369,23 @@ async fn a_keywordless_search_takes_the_else_branch_of_an_or_condition() {
 
 /// Resolution costs two requests per release against the slowest indexer in the
 /// set, so an unbounded sweep is not acceptable. The cap keeps the best-seeded
-/// rows and drops the rest rather than resolving everything.
+/// Search must hand back EVERY candidate, resolving none of them.
+///
+/// Resolving at search time meant resolving speculatively, which is expensive
+/// enough on a tracker that signs its magnets that it had to be capped to the
+/// best-seeded few — and the cap discarded the rest before the decision engine ever
+/// saw them. On the live library that was 1,050 of 1,188 candidates, 88%, thrown
+/// away unconsidered: if the kept few happened to be the wrong quality or language,
+/// the search yielded nothing while dozens of viable alternatives existed.
+///
+/// So the contract is now the opposite of a cap: nothing is dropped, nothing is
+/// fetched, and the cost is paid once by whichever release actually wins.
 #[tokio::test]
-async fn resolution_is_capped_at_the_best_seeded_rows() {
+async fn search_defers_every_link_and_costs_no_requests() {
     let fetcher = Arc::new(SignedTrackerFetcher::new());
-    let def = Definition::from_yaml(DEFINITION).expect("parse definition");
     let releases = CardigannIndexer::with_deps(
         IndexerId::new(),
-        def,
+        Definition::from_yaml(DEFINITION).expect("parse definition"),
         std::collections::BTreeMap::from([("resolveLimit".to_string(), "1".to_string())]),
         Arc::clone(&fetcher) as Arc<dyn Fetcher>,
         Arc::new(HostRateLimiter::conservative_default()),
@@ -393,19 +402,22 @@ async fn resolution_is_capped_at_the_best_seeded_rows() {
 
     assert_eq!(
         releases.len(),
-        1,
-        "cap should keep exactly one: {releases:?}"
+        2,
+        "every candidate survives search, even under a resolveLimit that used to \
+         discard all but one: {releases:?}"
     );
-    // The 42-seeder row wins over the 7-seeder one.
     assert!(
-        releases[0].download_url.contains("11223344"),
-        "cap should keep the best-seeded row, got {:?}",
-        releases[0].download_url
+        releases.iter().all(|r| r.link_is_deferred()),
+        "links are deferred, not fetched: {releases:?}"
+    );
+    assert!(
+        releases.iter().all(|r| !r.has_no_link()),
+        "a deferred link is NOT an absent one — Discover must keep these candidates"
     );
     assert_eq!(
         fetcher.posts().len(),
-        1,
-        "only the kept row should cost requests"
+        0,
+        "search must cost no resolve requests at all; the winner pays, once"
     );
 }
 
@@ -427,16 +439,14 @@ async fn a_definitions_request_delay_paces_the_engine() {
     )
     .with_resolver(Arc::new(ExtTorrentsResolver::with_hosts(vec![
         "signedtracker.example".to_string(),
-    ])))
-    .search(&SearchTerms {
-        queries: vec!["example show".to_string()],
-        ..SearchTerms::default()
-    })
-    .await
-    .expect("search");
+    ])));
+    // Pacing has to cover BOTH phases now that the link is fetched later: the search
+    // requests, and the resolve the winner triggers. Deferring must not become a way
+    // to slip past a tracker's published interval.
+    let releases = search_and_resolve(&releases, "example show").await;
 
-    assert_eq!(releases.len(), 1);
-    // Two search paths plus one resolve = at least three paced requests, so at
+    assert_eq!(releases.len(), 2);
+    // Two search paths plus the resolves = at least three paced requests, so at
     // least two full delays must have elapsed.
     assert!(
         started.elapsed() >= std::time::Duration::from_secs(2),

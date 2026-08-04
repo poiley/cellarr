@@ -112,6 +112,25 @@ pub trait Indexer: Send + Sync {
 
     /// Fetch the latest releases (RSS-style) for periodic discovery.
     async fn latest(&self) -> Result<Vec<Release>, Self::Error>;
+
+    /// Fetch the real download link for a release whose link was deferred, and
+    /// return the release ready to grab.
+    ///
+    /// Exists so an indexer whose links are EXPENSIVE — a tracker that hides its
+    /// magnets behind a signed endpoint, costing extra requests through a fragile
+    /// challenge solver — can hand back candidates without paying for a link nobody
+    /// may want. The decision engine needs title, size, seeders and flags, all of
+    /// which the listing already carries; only the release that wins needs a link.
+    ///
+    /// Resolving up front means resolving speculatively, which has to be capped, and
+    /// the cap discards candidates the decision engine never gets to consider — 88%
+    /// of one tracker's, on the library this was written against.
+    ///
+    /// The default returns the release unchanged, which is correct for every indexer
+    /// that already carries real links.
+    async fn resolve(&self, release: Release) -> Result<Release, Self::Error> {
+        Ok(release)
+    }
 }
 
 /// The coarse lifecycle state of a tracked download.
