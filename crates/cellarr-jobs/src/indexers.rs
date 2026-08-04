@@ -329,6 +329,14 @@ impl NabAdapter {
             NabAdapter::Cardigann(a) => a.latest().await,
         }
     }
+
+    async fn resolve(&self, release: Release) -> cellarr_indexers::Result<Release> {
+        match self {
+            NabAdapter::Torznab(a) => a.resolve(release).await,
+            NabAdapter::Newznab(a) => a.resolve(release).await,
+            NabAdapter::Cardigann(a) => a.resolve(release).await,
+        }
+    }
 }
 
 /// Read a string setting out of an [`IndexerConfig`]'s `settings` JSON object.
@@ -397,6 +405,40 @@ impl Indexer for DbIndexerSet {
         self.fan_out(|adapter| async move { adapter.latest().await })
             .await
     }
+
+    /// Route a deferred-link resolve to the indexer that actually produced the
+    /// release.
+    ///
+    /// The set fans searches out across every configured indexer, so a release
+    /// carries the id of ONE of them. Inheriting the trait's default here — which
+    /// returns the release untouched — meant a deferred link sailed through the set
+    /// unresolved and reached the download client as the literal sentinel —
+    /// `unsupported download_url scheme (not magnet: or http(s)): cellarr:deferred`.
+    ///
+    /// Fanning out is wrong for this: only the originating indexer holds the
+    /// resolver and the session that can fetch the link, and asking the others would
+    /// be pointless work against unrelated trackers.
+    async fn resolve(&self, release: Release) -> Result<Release, Self::Error> {
+        if !release.link_is_deferred() {
+            return Ok(release);
+        }
+        let configs = self.enabled_configs().await?;
+        let Some(config) = configs.iter().find(|c| c.id == release.indexer_id) else {
+            return Err(IndexerSetError::Search {
+                name: "configured-indexers".to_string(),
+                source: cellarr_indexers::IndexerError::Unsupported(format!(
+                    "no configured indexer {} to resolve this release's link",
+                    release.indexer_id
+                )),
+            });
+        };
+        let name = config.name.clone();
+        let adapter = self.build_adapter(config)?;
+        adapter
+            .resolve(release)
+            .await
+            .map_err(|source| IndexerSetError::Search { name, source })
+    }
 }
 
 #[cfg(test)]
@@ -444,7 +486,7 @@ mod tests {
         }
     }
 
-    async fn temp_db() -> (tempfile::TempDir, Database) {
+    pub(super) async fn temp_db() -> (tempfile::TempDir, Database) {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("c.sqlite").to_str().unwrap())
             .await
@@ -734,5 +776,64 @@ search:
             set.build_adapter(&bad),
             Err(IndexerSetError::Misconfigured { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod deferred_resolve_routing_tests {
+    use super::*;
+    use cellarr_core::{DEFERRED_LINK, IndexerId, Protocol};
+
+    fn deferred_release(indexer_id: IndexerId) -> Release {
+        Release {
+            indexer_id,
+            title: "Some.Release.1080p".to_string(),
+            download_url: DEFERRED_LINK.to_string(),
+            guid: Some("https://tracker.example/some-release-1/".to_string()),
+            protocol: Protocol::Torrent,
+            size: Some(1),
+            seeders: Some(9),
+            indexer_flags: vec![],
+        }
+    }
+
+    /// A release whose link is deferred can only be resolved by the indexer that
+    /// produced it — that is where the resolver and the authenticated session live.
+    ///
+    /// Inheriting the trait's default no-op here let the sentinel sail through the
+    /// set unresolved and reach the download client verbatim:
+    /// `unsupported download_url scheme (not magnet: or http(s)): cellarr:deferred`.
+    /// 26 grabs failed that way within an hour of shipping deferred links.
+    #[tokio::test]
+    async fn a_deferred_release_from_an_unknown_indexer_is_an_error_not_a_silent_pass() {
+        let (_dir, db) = crate::indexers::tests::temp_db().await;
+        let set = DbIndexerSet::new(db);
+
+        // No indexer configured with this id: resolving is impossible, and saying so
+        // is the point — passing the sentinel on would fail at the download client
+        // with a message about the URL scheme, which explains nothing.
+        let orphan = deferred_release(IndexerId::new());
+        let err = Indexer::resolve(&set, orphan)
+            .await
+            .expect_err("an unresolvable deferred link must be an error");
+        assert!(
+            err.to_string().contains("resolve"),
+            "the error must name what could not be done, got: {err}"
+        );
+    }
+
+    /// A release that already carries a real link is returned untouched, without
+    /// consulting any indexer — resolving is only for deferred links.
+    #[tokio::test]
+    async fn a_release_with_a_real_link_is_returned_untouched() {
+        let (_dir, db) = crate::indexers::tests::temp_db().await;
+        let set = DbIndexerSet::new(db);
+
+        let mut ready = deferred_release(IndexerId::new());
+        ready.download_url = "magnet:?xt=urn:btih:abc".to_string();
+        let out = Indexer::resolve(&set, ready.clone())
+            .await
+            .expect("a resolved release needs no indexer");
+        assert_eq!(out.download_url, ready.download_url);
     }
 }
