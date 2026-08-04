@@ -705,11 +705,11 @@ where
         // failing on the broken path permanently poisoned the working one: 193
         // releases blocklisted in a single day, unreachable ever after, for a defect
         // in one feed rather than anything wrong with the release.
-        let linkless = releases
-            .iter()
-            .filter(|r| r.download_url.trim().is_empty())
-            .count();
-        releases.retain(|r| !r.download_url.trim().is_empty());
+        // `has_no_link` is deliberately narrower than "no url yet": a DEFERRED link
+        // is a link that exists and will be fetched if this release wins, so such a
+        // candidate must survive to the decision engine.
+        let linkless = releases.iter().filter(|r| r.has_no_link()).count();
+        releases.retain(|r| !r.has_no_link());
         if linkless > 0 {
             tracing::info!(
                 linkless,
@@ -1736,6 +1736,25 @@ where
         let grab_quality = cellarr_core::resolve_quality(parsed, &self.config.ranking)
             .name
             .clone();
+        // Fetch the real link now, for THIS release only. A deferred link is the
+        // whole reason a candidate could be considered without paying for it: one
+        // resolve per acquisition instead of one per candidate kept on spec.
+        //
+        // A failure here is a grab failure, which is exactly right — the grab-next
+        // loop moves to the next candidate, so a tracker that has pulled one torrent
+        // costs that release and nothing else.
+        let release = &if release.link_is_deferred() {
+            self.indexer
+                .resolve(release.clone())
+                .await
+                .map_err(|e| JobError::Stage {
+                    stage: Stage::Grab,
+                    source: Box::new(e),
+                })?
+        } else {
+            release.clone()
+        };
+
         let request = GrabRequest {
             content_ref: matched_ref.clone(),
             release: release.clone(),
