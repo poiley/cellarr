@@ -643,6 +643,55 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         }
     }
 
+    /// How many downloads are actually OCCUPYING the download client right now.
+    ///
+    /// Deliberately not the same as the in-flight skip set. A grab whose download
+    /// has finished but whose import keeps failing is still non-terminal — it must
+    /// still be skipped, or the sweep would re-grab it — but it is using no
+    /// bandwidth and no client slot, so counting it against
+    /// `max_active_downloads` throttles acquisition for no reason.
+    ///
+    /// That is not hypothetical: two such grabs, whose downloads completed in July
+    /// and which can never import, permanently held 2 of 10 slots on the reference
+    /// deployment. A fifth of acquisition throughput, gone, and every future
+    /// un-importable download would have taken another slot forever.
+    ///
+    /// An `import_attempt` row is the proof: reconcile only tries to import a
+    /// download the client reports complete, so the row means the bytes are on disk.
+    /// A load failure falls back to counting everything, which is the conservative
+    /// direction — it throttles rather than floods.
+    async fn active_download_count(
+        &self,
+        in_flight_grabs: usize,
+    ) -> usize {
+        match self.db.grabs().awaiting_import().await {
+            Ok(finished) => in_flight_grabs.saturating_sub(finished.len()),
+            Err(e) => {
+                tracing::warn!(error = %e, "sweep: loading import attempts failed; counting every in-flight grab against the download cap");
+                in_flight_grabs
+            }
+        }
+    }
+
+    /// Non-terminal grabs, as a count — what the download cap starts from before
+    /// the finished-but-unimportable ones are discounted.
+    async fn in_flight_grab_count(&self) -> usize {
+        use cellarr_core::repo::GrabRepository;
+        use cellarr_core::GrabStatus;
+        match self.db.grabs().list().await {
+            Ok(grabs) => grabs
+                .into_iter()
+                .filter(|g| {
+                    !matches!(
+                        g.status,
+                        GrabStatus::Imported | GrabStatus::Failed | GrabStatus::Blocklisted
+                    )
+                })
+                .count(),
+            Err(_) => 0,
+        }
+    }
+
     /// The automatic quality-UPGRADE sweep: consider up to `limit` monitored nodes
     /// that already have a file (least-recently-searched first) for a better
     /// release. Runs each through the same decision path as the gap-fill sweep — the
@@ -664,7 +713,19 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         }
         let in_flight = self.in_flight_content().await;
         let cap = self.max_active_downloads.map(|c| c as usize);
-        let mut active = in_flight.len();
+        // Count only downloads actually running. A finished-but-unimportable grab is
+        // still skipped above (so it is never re-grabbed) but must not hold a slot in
+        // a DOWNLOAD budget it is not using.
+        let mut active = self
+            .active_download_count(self.in_flight_grab_count().await)
+            .await;
+        if active < in_flight.len() {
+            tracing::info!(
+                occupying = active,
+                in_flight = in_flight.len(),
+                "acquisition sweep: discounting finished-but-unimportable grabs from the download cap"
+            );
+        }
         // Nodes we actually CONSIDERED this run (attempted or already-in-flight) —
         // marked searched so the rotation moves past them. Nodes deferred because the
         // download cap was already saturated are NOT marked, so they are retried once
@@ -807,10 +868,16 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
         match self.db.decision_log().prune_before(cutoff).await {
             Ok(0) => JobResult::Success,
             Ok(removed) => {
+                // `removed` is rows, not bytes. Postgres does not return the space to
+                // the filesystem on DELETE — autovacuum marks it reusable, so the
+                // table plateaus rather than shrinking, and its on-disk size can even
+                // tick UP right after a prune. That is expected, and worth saying
+                // here, because "pruned 12,242 rows" next to a table that just grew
+                // reads as a broken prune.
                 tracing::info!(
                     removed,
                     retention_days = DECISION_LOG_RETENTION.whole_days(),
-                    "decision log pruned"
+                    "decision log pruned (space is reclaimed for reuse by autovacuum,                      so the table plateaus rather than shrinking on disk)"
                 );
                 JobResult::Success
             }

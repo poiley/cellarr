@@ -3277,3 +3277,69 @@ async fn the_missing_rollup_ranks_titles_by_how_hopeless_they_are() {
         .expect("a show with candidates is still listed as missing content");
     assert_eq!(ordinary.missing, 2);
 }
+
+/// A grab whose download finished but whose import keeps failing must be
+/// distinguishable from one still downloading, because the two cost completely
+/// different things: the first uses a row in the database, the second uses the
+/// download client, the network, and a slot in the concurrency budget.
+///
+/// Conflating them is expensive. Two finished-but-unimportable grabs permanently
+/// held 2 of 10 download slots on the reference deployment — a fifth of acquisition
+/// throughput, held by downloads that had completed weeks earlier — and every
+/// future un-importable download would have taken another slot, forever.
+#[tokio::test]
+async fn grabs_whose_download_finished_are_identifiable_so_they_stop_holding_slots() {
+    let (_dir, db) = temp_db().await;
+    let grabs = db.grabs();
+
+    let request = |title: &str| GrabRequest {
+        content_ref: ContentRef {
+            id: ContentId::new(),
+            library_id: LibraryId::new(),
+            media_type: MediaType::Movie,
+            coords: Coordinates::Movie,
+        },
+        release: Release {
+            indexer_id: IndexerId::new(),
+            title: title.to_string(),
+            download_url: format!("magnet:?xt=urn:btih:{title}"),
+            guid: Some(title.to_string()),
+            protocol: Protocol::Torrent,
+            size: Some(1),
+            seeders: Some(5),
+            indexer_flags: vec![],
+        },
+        indexer_id: IndexerId::new(),
+        client_id: DownloadClientId::new(),
+        category: "cellarr".to_string(),
+        release_type: Some(cellarr_core::ReleaseType::Movie),
+    };
+    let downloading = grabs.create(&request("still-downloading")).await.unwrap();
+    let finished = grabs.create(&request("finished-but-stuck")).await.unwrap();
+
+    // Nothing has failed an import yet: neither is known to have finished.
+    assert!(grabs.awaiting_import().await.unwrap().is_empty());
+
+    // Reconcile tried to import one and failed — which it only does once the client
+    // reports the download COMPLETE, so this is proof the bytes are on disk.
+    grabs
+        .record_import_failure(finished, "no importable files under /downloads/x")
+        .await
+        .unwrap();
+
+    let done = grabs.awaiting_import().await.unwrap();
+    assert!(
+        done.contains(&finished),
+        "a grab whose import failed has finished downloading and must not hold a download slot"
+    );
+    assert!(
+        !done.contains(&downloading),
+        "a grab still downloading is genuinely occupying the client and must keep its slot"
+    );
+    assert_eq!(done.len(), 1);
+
+    // Once it finally imports, the backoff row goes and it stops being counted here
+    // at all — it is terminal, not merely finished.
+    grabs.clear_import_attempts(finished).await.unwrap();
+    assert!(grabs.awaiting_import().await.unwrap().is_empty());
+}

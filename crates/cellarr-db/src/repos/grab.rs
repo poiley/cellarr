@@ -162,6 +162,30 @@ impl GrabRepo {
             .map_or(1, |(attempts, _)| attempts))
     }
 
+    /// Grab ids whose download has FINISHED and whose import is failing.
+    ///
+    /// An `import_attempt` row can only exist because the reconcile sweep tried to
+    /// import the grab, and it only tries once the download client reports the
+    /// download complete. So the row is proof the bytes are already on disk: the
+    /// grab is not occupying the download client, the network, or any bandwidth —
+    /// only a row in the database and a slot in whatever counts "active downloads".
+    ///
+    /// The acquisition sweep uses this to stop such grabs consuming the
+    /// download-concurrency budget. Two of them had permanently taken 2 of 10 slots
+    /// on the reference deployment — a fifth of acquisition throughput, held by
+    /// downloads that had finished weeks earlier and could never import.
+    pub async fn awaiting_import(&self) -> Result<std::collections::HashSet<GrabId>> {
+        let rows = sqlx::query(&pq("SELECT grab_id FROM import_attempt"))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| {
+                let id: String = r.try_get("grab_id")?;
+                Ok(GrabId::from_uuid(crate::convert::parse_uuid("grab_id", &id)?))
+            })
+            .collect()
+    }
+
     /// Forget `grab`'s import failures — it imported, so the backoff must not
     /// outlive the problem. Idempotent.
     pub async fn clear_import_attempts(&self, grab: GrabId) -> Result<()> {
