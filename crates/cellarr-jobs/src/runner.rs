@@ -693,12 +693,43 @@ where
         // not dead, and usenet has no seeders at all — both must pass through, which
         // is why this checks the protocol and `Some(0)` rather than a truthy test.
         let total_found = releases.len();
+
+        // A release with no download url cannot be acted on by anything downstream:
+        // there is nothing to hand the client. Dropping it here rather than at Grab
+        // matters because of what failing at Grab used to do — blocklist it.
+        //
+        // That was actively harmful. The blocklist key prefers the release GUID, and
+        // an indexer that serves a link-less item still serves its real guid — the
+        // same guid the identical release carries from a source that CAN produce the
+        // link (here, a Cardigann definition that resolves the magnet itself). So
+        // failing on the broken path permanently poisoned the working one: 193
+        // releases blocklisted in a single day, unreachable ever after, for a defect
+        // in one feed rather than anything wrong with the release.
+        let linkless = releases
+            .iter()
+            .filter(|r| r.download_url.trim().is_empty())
+            .count();
+        releases.retain(|r| !r.download_url.trim().is_empty());
+        if linkless > 0 {
+            tracing::info!(
+                linkless,
+                considered = total_found,
+                content_id = %content.id,
+                "discover: dropped releases carrying no download url"
+            );
+        }
+
+        // Counted from what REMAINS after the link-less drop, not from the original
+        // total: a release with no link is not an unseeded torrent, and folding the
+        // two together reported "all N candidates have no seeders" for releases whose
+        // seeder count was fine.
+        let considered = releases.len();
         let dead_exemplar = releases
             .iter()
             .find(|r| r.protocol == Protocol::Torrent && r.seeders == Some(0))
             .cloned();
         releases.retain(|r| !(r.protocol == Protocol::Torrent && r.seeders == Some(0)));
-        let dead = total_found - releases.len();
+        let dead = considered - releases.len();
 
         // Everything on offer was unseeded. Logged as a Discover failure — the run
         // genuinely ends here with nothing usable — carrying ONE decision so the item
@@ -733,11 +764,7 @@ where
             // Some were dead, some were not: the live ones carry the run, and the
             // dead ones are dropped silently. Not logging them per release is the
             // point — they were 80% of every decision row written.
-            tracing::debug!(
-                dead,
-                considered = total_found,
-                "dropped unseeded torrents before parse"
-            );
+            tracing::debug!(dead, considered, "dropped unseeded torrents before parse");
         }
         if releases.is_empty() {
             self.log(
