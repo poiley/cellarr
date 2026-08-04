@@ -2089,6 +2089,47 @@ where
         use cellarr_core::repo::ContentRepository;
         use cellarr_core::Coordinates as Co;
 
+        // A grab whose intent is ONE episode can still be satisfied by a release
+        // carrying many — a season or multi-season pack picked because it was the
+        // best available candidate for that episode. Take only the file that IS the
+        // episode and leave the rest; importing a pack's other seasons against a
+        // single-episode intent is not something the caller asked for, and checking
+        // every file against that one episode makes the import fail outright.
+        //
+        // A 4-season pack grabbed to fill one episode sat un-importable for weeks on
+        // exactly this: the first file was S01E01 and the intent was S04E11.
+        if let Co::Episode { .. } = matched_ref.coords {
+            if sources.len() > 1 {
+                let wanted: Vec<_> = sources
+                    .iter()
+                    .filter(|source| {
+                        let name = source
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default();
+                        cellarr_parse::parse_title(name)
+                            .coordinates
+                            .iter()
+                            .any(|c| coords_agree(&[&matched_ref.coords], c))
+                    })
+                    .map(|s| (s.clone(), matched_ref.clone()))
+                    .collect();
+                if !wanted.is_empty() {
+                    if wanted.len() < sources.len() {
+                        tracing::info!(
+                            content_id = %matched_ref.id,
+                            took = wanted.len(),
+                            of = sources.len(),
+                            "pack import: taking only the files matching the grabbed episode"
+                        );
+                    }
+                    return Ok(wanted);
+                }
+                // Nothing matched: fall through so the second-parse guard reports the
+                // real disagreement rather than this silently importing nothing.
+            }
+        }
+
         let Co::SeasonPack { season } = matched_ref.coords else {
             return Ok(sources
                 .iter()
@@ -2289,9 +2330,13 @@ where
             });
         }
 
-        // Verify the second parse agrees with the grab intent on coordinates,
-        // when both carry them. A hard disagreement holds, per the pipeline doc.
-        verify_second_parse(title_parsed, &sources)?;
+        // Verify the second parse against the files actually BEING imported, not
+        // every file the download happened to contain. A pack carries seasons the
+        // grab never asked for, and holding the import because one of those does not
+        // match the grabbed episode fails a perfectly good import.
+        let placed_sources: Vec<std::path::PathBuf> =
+            placements.iter().map(|(p, _)| p.clone()).collect();
+        verify_second_parse(title_parsed, &placed_sources)?;
 
         let plan = cellarr_fs::plan_import(grab_id, moves)
             .await
