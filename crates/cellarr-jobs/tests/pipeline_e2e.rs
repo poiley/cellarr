@@ -1566,3 +1566,80 @@ async fn a_pack_grabbed_for_one_episode_imports_only_that_episode() {
         "an episode the grab never asked for must not be imported"
     );
 }
+
+/// A release with no download url is not a candidate — there is nothing to hand a
+/// download client. It must be dropped at Discover, and above all NOT blocklisted.
+///
+/// The blocklist key prefers the release GUID, and an indexer serving a link-less
+/// item still serves its real guid — the same guid the identical release carries
+/// from a source that CAN produce the link. So failing at Grab poisoned the working
+/// path for that release permanently: 193 were blocklisted in one day on the live
+/// library, for a defect in one feed rather than anything wrong with the release.
+#[tokio::test]
+async fn a_release_with_no_download_url_is_dropped_and_never_blocklisted() {
+    use cellarr_core::blocklist::BlocklistRepository;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2020),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+
+    // What a feed that cannot resolve its own links serves: a real title and guid,
+    // an empty link.
+    let mut linkless = tv_release("The.Show.S01E01.1080p.WEB-DL-GROUP");
+    linkless.download_url = String::new();
+    linkless.guid = Some("https://tracker.example/the-show-s01e01-12345/".into());
+    let guid_release = linkless.clone();
+
+    let indexer = FakeIndexer {
+        releases: vec![linkless],
+    };
+    let client = FakeDownloadClient {
+        content_path: tmp.path().to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        tmp.path().join("library"),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S01E01.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::NothingFound),
+        "a link-less release is no candidate at all, got {outcome:?}"
+    );
+
+    // The decisive part: the same release, from a source that CAN produce a link,
+    // must still be grabbable.
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &guid_release)
+            .await
+            .unwrap(),
+        "blocklisting on a missing link poisons the identical release from a working \
+         indexer, because the blocklist matches on the guid they share"
+    );
+}
