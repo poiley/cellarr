@@ -225,6 +225,41 @@ impl DownloadResolver for ExtTorrentsResolver {
     }
 
     async fn resolve(&self, details_url: &str, fetcher: &dyn Fetcher) -> Result<String> {
+        // The signature is bound to the session that served the details page, and
+        // the page and the magnet request are two separate trips through the
+        // challenge solver — whose session gate is held per REQUEST, not per
+        // sequence. Another search slipping between them rotates the session and the
+        // endpoint answers "Invalid session", which says nothing is wrong with the
+        // release, only that our tokens went stale.
+        //
+        // Deferring links made this more likely, not less: resolves used to run in a
+        // batch straight after the listing fetch and now run at grab time, further
+        // from the page they were signed against. One retry with freshly fetched
+        // tokens is what a stale session actually needs.
+        match self.resolve_once(details_url, fetcher).await {
+            Err(err) if Self::is_stale_session(&err) => {
+                tracing::debug!(
+                    details = %details_url,
+                    error = %err,
+                    "magnet endpoint rejected the session; refetching tokens and retrying once"
+                );
+                self.resolve_once(details_url, fetcher).await
+            }
+            other => other,
+        }
+    }
+}
+
+impl ExtTorrentsResolver {
+    /// Whether the endpoint refused because our session tokens are stale, rather
+    /// than because anything is wrong with the release.
+    fn is_stale_session(err: &IndexerError) -> bool {
+        let text = err.to_string().to_ascii_lowercase();
+        text.contains("invalid session") || text.contains("refresh the page")
+    }
+
+    /// One full attempt: fetch the details page for fresh tokens, sign, and ask.
+    async fn resolve_once(&self, details_url: &str, fetcher: &dyn Fetcher) -> Result<String> {
         let torrent_id = Self::torrent_id(details_url).ok_or_else(|| {
             IndexerError::Parse(format!("no torrent id in details URL {details_url}"))
         })?;
@@ -435,5 +470,41 @@ search:
         assert!(r.handles("https://extranet.torrentbay.st/a-1/"));
         assert!(!r.handles("https://notext.to.evil.com/a-1/"));
         assert!(!r.handles("https://thepiratebay.org/a-1/"));
+    }
+}
+
+#[cfg(test)]
+mod stale_session_tests {
+    use super::*;
+
+    /// "Invalid session" means our tokens went stale between fetching the details
+    /// page and asking for the magnet — nothing is wrong with the release, so it
+    /// must be retried with fresh tokens rather than dropped.
+    #[test]
+    fn a_stale_session_refusal_is_recognised() {
+        let err = IndexerError::Parse("magnet endpoint refused: Invalid session".to_string());
+        assert!(ExtTorrentsResolver::is_stale_session(&err));
+        let err = IndexerError::Parse(
+            "magnet endpoint refused: Invalid request. Please refresh the page.".to_string(),
+        );
+        assert!(ExtTorrentsResolver::is_stale_session(&err));
+    }
+
+    /// A refusal that is ABOUT the release must not be retried — retrying would
+    /// double the cost of every genuinely gone torrent against a tracker whose
+    /// request budget is the scarce resource.
+    #[test]
+    fn a_refusal_about_the_release_is_not_retried() {
+        for message in [
+            "magnet endpoint refused: torrent not found",
+            "magnet endpoint reply had no link or hash",
+            "no torrent id in details URL https://ext.to/browse/",
+        ] {
+            let err = IndexerError::Parse(message.to_string());
+            assert!(
+                !ExtTorrentsResolver::is_stale_session(&err),
+                "{message} is about the release, not the session"
+            );
+        }
     }
 }
