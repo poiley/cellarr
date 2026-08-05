@@ -316,8 +316,19 @@ pub fn resolve_quality(parsed: &ParsedRelease, ranking: &QualityRanking) -> Qual
         (None, Some(Resolution::R1080p)) => "HDTV-1080p",
         (None, Some(Resolution::R2160p)) => "HDTV-2160p",
 
-        // WEBRip / WEB-DL with no resolution cannot be bucketed; neither can a
-        // release with no source and no resolution.
+        // Web sources with no resolution token are SD, the same convention the
+        // arm above applies to bare HDTV. A release that went to the trouble of
+        // naming its source and omitted the resolution is not withholding a
+        // 1080p: on public trackers `Show S01E01 WEB x264-GROUP` is an SD encode,
+        // and the originals bucket it the same way.
+        //
+        // Reaching the unknown bucket instead was the worse answer twice over: it
+        // discarded a source we had successfully read, and it reported the release
+        // as unparseable when the parse was fine.
+        (Some(Source::WebDl), None) => "WEBDL-480p",
+        (Some(Source::Webrip), None) => "WEBRip-480p",
+
+        // A release with neither source nor resolution genuinely cannot be placed.
         _ => return ranking.unknown(),
     };
 
@@ -731,6 +742,27 @@ mod tests {
             .expect("Bluray-2160p Remux present");
         assert!(sdtv.rank < bluray_1080p.rank);
         assert!(bluray_1080p.rank < bluray_2160p_remux.rank);
+    }
+
+    #[test]
+    fn a_web_source_without_a_resolution_is_sd_not_unknown() {
+        // These titles are real: public trackers publish plenty of
+        // "Show S01E01 WEB x264-GROUP" with no resolution token at all. The source
+        // parsed fine, so calling the whole release unparseable both threw away
+        // what we had read and misreported our own success as a failure.
+        let r = QualityRanking::default();
+
+        let webdl = resolve_quality(&parsed_with(Some(Source::WebDl), None), &r);
+        assert_eq!(webdl.name, "WEBDL-480p");
+
+        let webrip = resolve_quality(&parsed_with(Some(Source::Webrip), None), &r);
+        assert_eq!(webrip.name, "WEBRip-480p");
+
+        // Neither source nor resolution is still genuinely unplaceable, and must
+        // stay that way: the point is to stop guessing where we had read
+        // something, not to start guessing where we had not.
+        let nothing = resolve_quality(&parsed_with(None, None), &r);
+        assert_eq!(nothing.name, r.unknown().name);
     }
 
     #[test]
