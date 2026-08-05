@@ -479,16 +479,18 @@ fn an_unreadable_quality_and_an_excluded_quality_reject_for_different_reasons() 
         &ctx(&prof, &formats, &ranking),
     )
     .unwrap();
-    assert!(
-        matches!(
-            excluded.verdict,
-            Verdict::Reject {
-                reason: cellarr_core::RejectReason::QualityNotAllowed
-            }
+    // The name must be the quality actually read, not a placeholder: the whole
+    // point of carrying it is to tell a correctly-refused quality from a misread
+    // one, which a constant string could not do.
+    match &excluded.verdict {
+        Verdict::Reject {
+            reason: cellarr_core::RejectReason::QualityNotAllowed { quality },
+        } => assert_eq!(
+            quality, "WEBDL-1080p",
+            "the refused quality must be the one that was read"
         ),
-        "a quality the profile excludes must reject as QualityNotAllowed, got {:?}",
-        excluded.verdict
-    );
+        other => panic!("a quality the profile excludes must reject as QualityNotAllowed, got {other:?}"),
+    }
 
     // No source and no resolution: nothing to compare against the profile at all.
     let unreadable = decide(

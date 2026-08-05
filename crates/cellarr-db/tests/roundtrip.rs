@@ -3123,7 +3123,7 @@ async fn missing_reason_separates_never_found_from_dead_torrents_and_quality_blo
         &db.decision_log(),
         &log_reject(
             &blocked,
-            cellarr_core::decision::RejectReason::QualityNotAllowed,
+            cellarr_core::decision::RejectReason::QualityNotAllowed { quality: "Bluray-720p".to_string() },
             "Wanted.Movie.720p.WEB",
         ),
     )
@@ -3249,7 +3249,7 @@ async fn the_missing_rollup_ranks_titles_by_how_hopeless_they_are() {
                         indexer_flags: vec![],
                     },
                     verdict: cellarr_core::decision::Verdict::Reject {
-                        reason: cellarr_core::decision::RejectReason::QualityNotAllowed,
+                        reason: cellarr_core::decision::RejectReason::QualityNotAllowed { quality: "Bluray-720p".to_string() },
                     },
                 }),
                 note: None,

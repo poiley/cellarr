@@ -332,7 +332,7 @@ async fn imported_profile_reproduces_quality_gating() {
         matches!(
             d2.verdict,
             cellarr_core::Verdict::Reject {
-                reason: cellarr_core::RejectReason::QualityNotAllowed
+                reason: cellarr_core::RejectReason::QualityNotAllowed { .. }
             }
         ),
         "disallowed quality rejects: {:?}",

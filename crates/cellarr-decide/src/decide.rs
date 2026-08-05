@@ -217,7 +217,9 @@ fn decide_verdict_inner(
     };
 
     if !ctx.profile.allowed_qualities.contains(&quality.rank) {
-        return reject(RejectReason::QualityNotAllowed);
+        return reject(RejectReason::QualityNotAllowed {
+            quality: quality.name.clone(),
+        });
     }
 
     // Per-quality size bounds: a release whose size-per-minute (reported size /
