@@ -238,12 +238,29 @@ impl DownloadResolver for ExtTorrentsResolver {
         // tokens is what a stale session actually needs.
         match self.resolve_once(details_url, fetcher).await {
             Err(err) if Self::is_stale_session(&err) => {
-                tracing::debug!(
+                // At info, and reporting the retry's own outcome, because a retry
+                // that silently fails is indistinguishable from one that never ran:
+                // both leave only the original failure in the log. Without the
+                // second line there is no way to tell a fix that works from a fix
+                // that fires and loses anyway.
+                tracing::info!(
                     details = %details_url,
                     error = %err,
                     "magnet endpoint rejected the session; refetching tokens and retrying once"
                 );
-                self.resolve_once(details_url, fetcher).await
+                let retried = self.resolve_once(details_url, fetcher).await;
+                match &retried {
+                    Ok(_) => tracing::info!(
+                        details = %details_url,
+                        "retry with fresh tokens succeeded"
+                    ),
+                    Err(err) => tracing::info!(
+                        details = %details_url,
+                        error = %err,
+                        "retry with fresh tokens failed too"
+                    ),
+                }
+                retried
             }
             other => other,
         }
