@@ -1323,7 +1323,17 @@ where
                 .await?;
             match &decision.verdict {
                 Verdict::Reject { reason } => {
-                    let note = format!("rejected: {}", reason_text(reason));
+                    // Name the title when the quality was unreadable. Every other
+                    // reject reason is self-explanatory from the reason alone —
+                    // this one is a report that our own parsing came up empty, and
+                    // without the title there is nothing to act on: no way to see
+                    // what the unreadable titles have in common, or to tell a real
+                    // gap from a handful of genuinely junk releases.
+                    let note = if matches!(reason, cellarr_core::RejectReason::QualityUnknown) {
+                        format!("rejected: {} ({})", reason_text(reason), release.title)
+                    } else {
+                        format!("rejected: {}", reason_text(reason))
+                    };
                     self.log_decision(
                         run_id,
                         Stage::Decide,
