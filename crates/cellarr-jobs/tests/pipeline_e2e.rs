@@ -1108,8 +1108,9 @@ async fn junk_low_quality_release_is_rejected_with_a_logged_reason_and_no_file_m
         "The Matrix",
     );
 
-    // A junk release with no recognizable source/resolution -> resolves to the
-    // "Unknown" quality, which the profile does not allow -> QualityNotAllowed.
+    // A junk release with no recognizable source/resolution -> no quality could be
+    // read from the title at all, which is reported separately from a quality the
+    // profile knows about and excludes.
     let indexer = FakeIndexer {
         releases: vec![movie_release("The Matrix 1999 junk nonsense")],
     };
@@ -1129,7 +1130,7 @@ async fn junk_low_quality_release_is_rejected_with_a_logged_reason_and_no_file_m
     match &outcome {
         RunOutcome::Rejected { reason } => {
             assert!(
-                reason.contains("quality not allowed"),
+                reason.contains("could not read a quality"),
                 "reject reason should explain the rejection, got: {reason}"
             );
         }

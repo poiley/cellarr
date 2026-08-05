@@ -213,7 +213,7 @@ fn decide_verdict_inner(
     }
 
     let Some(quality) = resolve_candidate_quality(parsed, ctx.ranking) else {
-        return reject(RejectReason::QualityNotAllowed);
+        return reject(RejectReason::QualityUnknown);
     };
 
     if !ctx.profile.allowed_qualities.contains(&quality.rank) {
