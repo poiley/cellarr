@@ -1791,17 +1791,34 @@ where
                 }
                 Err(e) => {
                     // The client never accepted the grab, so there is nothing to
-                    // remove from it. Blocklist the release so grab-next moves past it.
-                    return self
-                        .fail_grab(
-                            run_id,
-                            content.id,
-                            grab_id,
-                            None,
-                            format!("grab failed: {e}"),
-                            release,
-                        )
-                        .await;
+                    // remove from it.
+                    //
+                    // Whether the RELEASE is blocklisted depends on whose fault this
+                    // was. `is_transient_client_fault` covers the ones that are ours
+                    // or the client's — an unreachable client, bad auth, a url this
+                    // build cannot hand over — and a release is not bad because we
+                    // could not deliver it. Blocklisting on those keys the release's
+                    // GUID, which is shared with the SAME release from any other
+                    // indexer, so it poisons sources that would have worked.
+                    //
+                    // That is not hypothetical: it has happened twice, for 193 and
+                    // then 86 releases, from an empty download_url and from a
+                    // deferred-link sentinel — both `DownloadError::Config`, both our
+                    // side. The retry loop above already classifies the error; it
+                    // just was not consulted once the retries ran out.
+                    let ours = is_transient_client_fault(&e);
+                    let detail = format!("grab failed: {e}");
+                    return if ours {
+                        tracing::warn!(
+                            error = %e,
+                            "grab failed on a client-side fault; failing the grab WITHOUT blocklisting the release"
+                        );
+                        self.fail_grab_without_blocklisting(run_id, grab_id, detail)
+                            .await
+                    } else {
+                        self.fail_grab(run_id, content.id, grab_id, None, detail, release)
+                            .await
+                    };
                 }
             }
         };
@@ -2648,6 +2665,32 @@ where
     /// to remove). Removal is best-effort: a client that errors on remove (or has
     /// already dropped the download) must not abort the self-heal — the release is
     /// still blocklisted and the next-best is still grabbed.
+    /// End a grab that failed through no fault of the release.
+    ///
+    /// The grab row goes terminal so nothing retries it, but the release is NOT
+    /// blocklisted — it may be perfectly good, and the blocklist key is its GUID,
+    /// which the identical release carries from every other indexer that offers it.
+    /// Blocklisting here would make a release unreachable everywhere because of a
+    /// fault on our side.
+    async fn fail_grab_without_blocklisting(
+        &self,
+        run_id: PipelineRunId,
+        grab_id: GrabId,
+        detail: String,
+    ) -> Result<GrabTrackResult> {
+        self.set_grab_status(grab_id, GrabStatus::Failed).await?;
+        self.log(
+            run_id,
+            Stage::Grab,
+            Stage::Failed,
+            TransitionKind::Fail,
+            None,
+            Some(detail.clone()),
+        )
+        .await?;
+        Ok(GrabTrackResult::Done(RunOutcome::Failed { detail }))
+    }
+
     async fn fail_grab(
         &self,
         run_id: PipelineRunId,

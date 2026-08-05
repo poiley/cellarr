@@ -1643,3 +1643,89 @@ async fn a_release_with_no_download_url_is_dropped_and_never_blocklisted() {
          indexer, because the blocklist matches on the guid they share"
     );
 }
+
+/// A release is not bad because WE could not hand it to the download client.
+///
+/// The blocklist matches on the release GUID, which the identical release carries
+/// from every other indexer offering it — so blocklisting on a fault of ours makes
+/// that release unreachable everywhere. It has happened twice on the live library,
+/// for 193 releases and then 86, from an empty download_url and from a
+/// deferred-link sentinel. Both were `DownloadError::Config`; both were our side.
+#[tokio::test]
+async fn a_client_side_grab_failure_does_not_blocklist_the_release() {
+    use cellarr_core::blocklist::BlocklistRepository;
+
+    struct RefusingClient;
+    #[async_trait]
+    impl cellarr_core::traits::DownloadClient for RefusingClient {
+        type Error = cellarr_download::DownloadError;
+        fn name(&self) -> &str {
+            "refusing-client"
+        }
+        async fn add(&self, _req: &cellarr_core::GrabRequest) -> Result<String, Self::Error> {
+            // Exactly the shape both incidents took: a url this build cannot deliver.
+            Err(cellarr_download::DownloadError::Config(
+                "unsupported download_url scheme (not magnet: or http(s)): cellarr:deferred".into(),
+            ))
+        }
+        async fn status(&self, _id: &str) -> Result<cellarr_core::DownloadStatus, Self::Error> {
+            unreachable!("never added")
+        }
+        async fn remove(&self, _id: &str, _delete: bool) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2020),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+    let offered = tv_release("The.Show.S01E01.1080p.WEB-DL-GROUP");
+    let indexer = FakeIndexer {
+        releases: vec![offered.clone()],
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        tmp.path().join("library"),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S01E01.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &RefusingClient, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Failed { .. }),
+        "the grab fails, got {outcome:?}"
+    );
+
+    // The decisive assertion: the release is still grabbable from anywhere else.
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &offered)
+            .await
+            .unwrap(),
+        "a fault on our side must not poison this release for every other indexer \
+         that offers it — the blocklist matches on the guid they share"
+    );
+}
