@@ -117,6 +117,62 @@ const STALL_PROGRESS_FLOOR: f32 = 0.01;
 /// Sonarr/Radarr's bounded "grab next release on failure". Default 5.
 const MAX_GRAB_NEXT_ATTEMPTS: u32 = 5;
 
+/// What one search actually did with what the indexers offered.
+///
+/// Every significant loss this pipeline has had was silent: candidates discarded
+/// before the decision engine, releases blocklisted for faults that were ours,
+/// links thrown away by a resolve cap. None of it was reported as a failure, and
+/// each took a database query against the live library to find — one of them a full
+/// day later, another only after it had poisoned 86 releases.
+///
+/// One line per search makes the shape of a search legible without asking: what was
+/// offered, what never reached the decision engine and why, and what came of it.
+#[derive(Debug, Default, Clone, Copy)]
+struct SearchFunnel {
+    /// Releases the indexers returned.
+    offered: usize,
+    /// Dropped before Parse: no download link, and none to fetch.
+    no_link: usize,
+    /// Dropped before Parse: a torrent the indexer reports as having no seeders.
+    unseeded: usize,
+    /// Of those that survived, how many carry a link still to be fetched.
+    deferred: usize,
+    /// Candidates that reached the decision engine.
+    considered: usize,
+}
+
+impl SearchFunnel {
+    /// Emit the one line. Logged at INFO because it is the record of a search, not
+    /// a diagnostic to be switched on after something has already gone wrong —
+    /// by then the search is over and its candidates are gone.
+    fn emit(&self, content: &ContentRef, outcome: &Result<RunOutcome>) {
+        // A search that offered nothing says nothing worth a line; the empty-result
+        // case is already logged where it is decided.
+        if self.offered == 0 {
+            return;
+        }
+        let result = match outcome {
+            Ok(RunOutcome::Imported { .. }) => "imported",
+            Ok(RunOutcome::Grabbed { .. }) => "grabbed",
+            Ok(RunOutcome::Rejected { .. }) => "rejected",
+            Ok(RunOutcome::Failed { .. }) => "failed",
+            Ok(RunOutcome::HeldForReview { .. }) => "held",
+            Ok(RunOutcome::NothingFound) => "nothing-found",
+            Err(_) => "error",
+        };
+        tracing::info!(
+            content_id = %content.id,
+            offered = self.offered,
+            dropped_no_link = self.no_link,
+            dropped_unseeded = self.unseeded,
+            considered = self.considered,
+            deferred = self.deferred,
+            result,
+            "search funnel"
+        );
+    }
+}
+
 /// The result of tracking one download to a terminal point.
 enum TrackOutcome {
     /// The download completed; carries the client-reported content path (if any).
@@ -667,6 +723,20 @@ where
         fields(content_id = %content.id, run_id = tracing::field::Empty)
     )]
     pub async fn run(&self, content: &ContentRef) -> Result<RunOutcome> {
+        // The funnel is emitted from HERE rather than at each return, so no exit
+        // path can be the one that stays quiet — which is exactly the case worth
+        // seeing.
+        let mut funnel = SearchFunnel::default();
+        let outcome = self.run_counted(content, &mut funnel).await;
+        funnel.emit(content, &outcome);
+        outcome
+    }
+
+    async fn run_counted(
+        &self,
+        content: &ContentRef,
+        funnel: &mut SearchFunnel,
+    ) -> Result<RunOutcome> {
         let run_id = PipelineRunId::new();
         // Recorded after creation so the whole run span (and every child stage
         // span) carries the canonical run_id correlation field.
@@ -693,6 +763,7 @@ where
         // not dead, and usenet has no seeders at all — both must pass through, which
         // is why this checks the protocol and `Some(0)` rather than a truthy test.
         let total_found = releases.len();
+        funnel.offered = total_found;
 
         // A release with no download url cannot be acted on by anything downstream:
         // there is nothing to hand the client. Dropping it here rather than at Grab
@@ -709,6 +780,7 @@ where
         // is a link that exists and will be fetched if this release wins, so such a
         // candidate must survive to the decision engine.
         let linkless = releases.iter().filter(|r| r.has_no_link()).count();
+        funnel.no_link = linkless;
         releases.retain(|r| !r.has_no_link());
         if linkless > 0 {
             tracing::info!(
@@ -730,6 +802,9 @@ where
             .cloned();
         releases.retain(|r| !(r.protocol == Protocol::Torrent && r.seeders == Some(0)));
         let dead = considered - releases.len();
+        funnel.unseeded = dead;
+        funnel.deferred = releases.iter().filter(|r| r.link_is_deferred()).count();
+        funnel.considered = releases.len();
 
         // Everything on offer was unseeded. Logged as a Discover failure — the run
         // genuinely ends here with nothing usable — carrying ONE decision so the item

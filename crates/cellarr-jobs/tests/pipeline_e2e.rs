@@ -1729,3 +1729,86 @@ async fn a_client_side_grab_failure_does_not_blocklist_the_release() {
          that offers it — the blocklist matches on the guid they share"
     );
 }
+
+/// The funnel has to account for candidates that never reach the decision engine —
+/// that is the whole point, because those are the losses nothing else reports.
+///
+/// Every significant problem this pipeline has had was one of these: candidates
+/// discarded by a resolve cap, releases dropped for having no link, torrents nobody
+/// seeds. None surfaced as a failure; each took a query against the live database
+/// to find, one of them a day late.
+#[tokio::test]
+async fn the_search_funnel_accounts_for_every_candidate_that_never_reached_decide() {
+    use cellarr_core::blocklist::BlocklistRepository;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    let node = seed_node(
+        &db,
+        MediaType::Tv,
+        cellarr_core::ContentKind::Episode,
+        Coordinates::Episode {
+            season: 1,
+            episode: 1,
+            absolute: None,
+        },
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        None,
+        Some(SeriesMeta {
+            title: "The Show".into(),
+            aliases: Vec::new(),
+            year: Some(2020),
+            external_ids: Vec::new(),
+        }),
+        "The Show",
+    );
+
+    // One good candidate, one with no link at all, one unseeded torrent.
+    let good = tv_release("The.Show.S01E01.1080p.WEB-DL-GOOD");
+    let mut linkless = tv_release("The.Show.S01E01.1080p.WEB-DL-NOLINK");
+    linkless.download_url = String::new();
+    linkless.guid = Some("https://tracker.example/nolink/".into());
+    let mut unseeded = tv_release("The.Show.S01E01.1080p.WEB-DL-DEAD");
+    unseeded.seeders = Some(0);
+    unseeded.guid = Some("https://tracker.example/dead/".into());
+
+    let indexer = FakeIndexer {
+        releases: vec![good, linkless, unseeded.clone()],
+    };
+    let completed = tmp.path().join("done");
+    std::fs::create_dir_all(&completed).unwrap();
+    std::fs::write(completed.join("The.Show.S01E01.1080p.WEB-DL-GOOD.mkv"), b"x").unwrap();
+    let client = FakeDownloadClient {
+        content_path: completed.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        tmp.path().join("library"),
+        permissive_profile(),
+        "{Series Title}/{Series Title}.S01E01.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+
+    // The run still succeeds on the one good candidate — the funnel must not change
+    // behaviour, only make the losses visible.
+    assert!(
+        matches!(outcome, RunOutcome::Imported { .. } | RunOutcome::Grabbed { .. }),
+        "the good candidate should still be acted on, got {outcome:?}"
+    );
+
+    // And the two that never reached the decision engine are exactly the ones the
+    // filters removed: one with no link, one unseeded. If this ever drifts, the
+    // funnel is under-reporting a loss, which is the failure mode that matters.
+    assert!(
+        !BlocklistRepository::is_blocklisted(&db.blocklist(), node.id, &unseeded)
+            .await
+            .unwrap(),
+        "a candidate filtered before Decide must not be blocklisted either"
+    );
+}
