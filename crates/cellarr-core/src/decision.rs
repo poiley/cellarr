@@ -55,6 +55,14 @@ pub enum Verdict {
 pub enum RejectReason {
     /// The quality is not allowed by the profile.
     QualityNotAllowed,
+    /// The release title carried no quality we could recognize, so there was
+    /// nothing to compare against the profile.
+    ///
+    /// Distinct from [`Self::QualityNotAllowed`], which means the quality *was*
+    /// read and the profile excludes it. Collapsing the two hides the only one
+    /// of the pair that is our bug rather than the user's configuration: a
+    /// release we failed to parse looks exactly like one they chose not to want.
+    QualityUnknown,
     /// The total custom-format score is below the profile minimum.
     BelowMinimumCustomFormatScore,
     /// The release (or its group) is blocklisted.

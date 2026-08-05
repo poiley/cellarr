@@ -47,7 +47,7 @@ reason  = "quality_not_allowed"
 [[case]]
 name   = "reject_unknown_quality"
 source = "precedence rule 1: unresolvable quality is not allowed"
-notes  = "no source/resolution -> cannot resolve a rank"
+notes  = "no source/resolution -> cannot resolve a rank, which is reported apart from a rank the profile excludes"
 title  = "Some.Weird.Release-GROUP"
 [case.parsed]
 [case.profile]
@@ -58,7 +58,7 @@ min_cf_score           = 0
 upgrade_until_cf_score = 100
 [case.expected]
 verdict = "reject"
-reason  = "quality_not_allowed"
+reason  = "quality_unknown"
 
 [[case]]
 name   = "reject_below_min_cf_score"

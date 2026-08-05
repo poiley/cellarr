@@ -457,3 +457,56 @@ fn a_better_quality_pack_still_upgrades_over_an_existing_full_season() {
         decision.verdict
     );
 }
+
+#[test]
+fn an_unreadable_quality_and_an_excluded_quality_reject_for_different_reasons() {
+    // These two failures look identical from the outside — nothing gets grabbed —
+    // but only one of them is the user's doing. A release whose quality the
+    // profile excludes is the profile working as configured; a release whose
+    // quality we could not read at all is a parse gap on our side. Reporting both
+    // as "quality not allowed by profile" makes our own bug indistinguishable
+    // from a deliberate setting, so the two reasons must stay distinct.
+    let ranking = QualityRanking::default();
+    let formats: Vec<CustomFormat> = vec![];
+    let prof = profile(&[rank::BLURAY_1080P], rank::BLURAY_2160P, 100_000);
+
+    // Known quality, excluded by the profile (which allows only Bluray-1080p).
+    let excluded = decide(
+        content_ref(),
+        &release("Movie.2024.1080p.WEB-DL-GROUP", &[]),
+        &parsed(Source::WebDl, Resolution::R1080p),
+        None,
+        &ctx(&prof, &formats, &ranking),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            excluded.verdict,
+            Verdict::Reject {
+                reason: cellarr_core::RejectReason::QualityNotAllowed
+            }
+        ),
+        "a quality the profile excludes must reject as QualityNotAllowed, got {:?}",
+        excluded.verdict
+    );
+
+    // No source and no resolution: nothing to compare against the profile at all.
+    let unreadable = decide(
+        content_ref(),
+        &release("Some.Release.Without.Any.Quality.Markers", &[]),
+        &cellarr_core::parsed::ParsedRelease::new("t"),
+        None,
+        &ctx(&prof, &formats, &ranking),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            unreadable.verdict,
+            Verdict::Reject {
+                reason: cellarr_core::RejectReason::QualityUnknown
+            }
+        ),
+        "an unreadable quality must reject as QualityUnknown, got {:?}",
+        unreadable.verdict
+    );
+}

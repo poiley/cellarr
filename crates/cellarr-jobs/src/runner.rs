@@ -3717,6 +3717,7 @@ fn reason_text(reason: &cellarr_core::RejectReason) -> String {
     use cellarr_core::RejectReason as R;
     match reason {
         R::QualityNotAllowed => "quality not allowed by profile".into(),
+        R::QualityUnknown => "could not read a quality from the release title".into(),
         R::BelowMinimumCustomFormatScore => "below minimum custom-format score".into(),
         R::Blocklisted => "release is blocklisted".into(),
         R::SizeOutOfRange => "size out of configured range".into(),
