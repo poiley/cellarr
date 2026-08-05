@@ -3716,7 +3716,9 @@ fn protocol_str(p: cellarr_core::Protocol) -> &'static str {
 fn reason_text(reason: &cellarr_core::RejectReason) -> String {
     use cellarr_core::RejectReason as R;
     match reason {
-        R::QualityNotAllowed => "quality not allowed by profile".into(),
+        R::QualityNotAllowed { quality } => {
+            format!("quality not allowed by profile ({quality})")
+        }
         R::QualityUnknown => "could not read a quality from the release title".into(),
         R::BelowMinimumCustomFormatScore => "below minimum custom-format score".into(),
         R::Blocklisted => "release is blocklisted".into(),
@@ -4155,7 +4157,7 @@ mod tests {
         // readable. (A missing arm would fail to compile, but this also pins the
         // strings against accidental blanking.)
         let cases = [
-            reason_text(&R::QualityNotAllowed),
+            reason_text(&R::QualityNotAllowed { quality: "Bluray-720p".to_string() }),
             reason_text(&R::BelowMinimumCustomFormatScore),
             reason_text(&R::Blocklisted),
             reason_text(&R::SizeOutOfRange),

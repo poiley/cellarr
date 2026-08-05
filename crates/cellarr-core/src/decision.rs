@@ -54,7 +54,15 @@ pub enum Verdict {
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum RejectReason {
     /// The quality is not allowed by the profile.
-    QualityNotAllowed,
+    ///
+    /// Carries the quality that was read, because the reason alone cannot
+    /// distinguish a profile refusing a quality it was configured to refuse from
+    /// one refusing a quality we misread. The second is our bug wearing the
+    /// first's clothes, and without the name there is no way to tell them apart.
+    QualityNotAllowed {
+        /// The quality resolved from the release, as the profile saw it.
+        quality: String,
+    },
     /// The release title carried no quality we could recognize, so there was
     /// nothing to compare against the profile.
     ///
