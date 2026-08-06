@@ -224,3 +224,88 @@ async fn the_pool_hands_back_one_fetcher_per_session() {
         "distinct sessions must not share one"
     );
 }
+
+/// The gate admits one request at a time, so a sequence that holds it for its
+/// whole body would hang on its own inner requests if those tried to take it
+/// again. This is the failure the re-entrancy check exists to prevent, and it
+/// would present as the pipeline stalling rather than as a test failure, so it is
+/// worth pinning directly.
+#[tokio::test]
+async fn a_sequence_does_not_deadlock_against_the_gate_it_holds() {
+    let stub = Stub::start(Some("cellarr-seq"), 0).await;
+    let fetcher = FlareSolverrFetcher::with_endpoint(stub.endpoint(), "cellarr-seq");
+
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fetcher.in_session(Box::pin(async {
+            fetcher.get("https://tracker.example/details").await?;
+            fetcher
+                .post("https://tracker.example/magnet", "id=1", "form")
+                .await
+        })),
+    )
+    .await
+    .expect("a sequence must not deadlock on its own gate");
+
+    out.expect("the sequence completes");
+}
+
+/// The whole point of holding the session: two requests that must share it are
+/// not just kept from overlapping, but kept from having anything land *between*
+/// them. Per-request serialization gives the first guarantee and not the second,
+/// which is why the magnet endpoint kept rejecting tokens that had just been
+/// issued.
+#[tokio::test]
+async fn nothing_lands_between_the_requests_of_one_sequence() {
+    let stub = Stub::start(Some("cellarr-int"), 0).await;
+    let fetcher = Arc::new(FlareSolverrFetcher::with_endpoint(
+        stub.endpoint(),
+        "cellarr-int",
+    ));
+
+    // The sequence issues two GETs with a pause between them; every competitor
+    // issues a POST. The pause is what makes the test meaningful: with the gate
+    // taken per request, a competitor takes it during the gap and its POST lands
+    // between the two GETs.
+    let seq = {
+        let f = Arc::clone(&fetcher);
+        tokio::spawn(async move {
+            f.in_session(Box::pin(async {
+                f.get("https://tracker.example/first").await?;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                f.get("https://tracker.example/second").await
+            }))
+            .await
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let mut competitors = Vec::new();
+    for i in 0..4 {
+        let f = Arc::clone(&fetcher);
+        competitors.push(tokio::spawn(async move {
+            f.post(&format!("https://tracker.example/other/{i}"), "x=1", "form")
+                .await
+        }));
+    }
+
+    seq.await.expect("join").expect("the sequence completes");
+    for c in competitors {
+        c.await.expect("join").expect("competitor completes");
+    }
+
+    let commands = stub.commands();
+    let requests: Vec<&String> = commands
+        .iter()
+        .filter(|c| c.starts_with("request."))
+        .collect();
+    let first_get = requests
+        .iter()
+        .position(|c| c.as_str() == "request.get")
+        .expect("the sequence's first request is recorded");
+    assert_eq!(
+        requests.get(first_get + 1).map(|c| c.as_str()),
+        Some("request.get"),
+        "the sequence's second request must immediately follow its first, got {requests:?}"
+    );
+}

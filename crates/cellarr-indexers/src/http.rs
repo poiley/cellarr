@@ -8,9 +8,23 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use std::future::Future;
+use std::pin::Pin;
+
 use tokio::sync::OnceCell;
 
 use crate::error::{IndexerError, Result};
+
+tokio::task_local! {
+    /// Set for the duration of a [`Fetcher::in_session`] body, marking that this
+    /// task already holds the FlareSolverr gate.
+    ///
+    /// The gate admits one request at a time, so a sequence holding it would
+    /// deadlock against its own inner requests without this. A task-local is the
+    /// right scope: it travels with the sequence and is invisible to every other
+    /// task, which must still queue normally.
+    static GATE_HELD: ();
+}
 
 /// Something that can fetch a URL and return its body as text.
 #[async_trait]
@@ -46,6 +60,25 @@ pub trait Fetcher: Send + Sync {
         self.post(url, body, content_type)
             .await
             .map(String::into_bytes)
+    }
+
+    /// Run `op` with this fetcher's underlying session held for its whole
+    /// duration, so a sequence of requests that must share one session is not
+    /// interleaved with anyone else's.
+    ///
+    /// Needed when a later request is only valid against the session that served
+    /// an earlier one — a signature bound to tokens from a details page, say.
+    /// Serializing each request individually is not enough for that: it stops two
+    /// requests overlapping but still lets an unrelated request land *between*
+    /// them and rotate the session out from under the pair.
+    ///
+    /// The default runs `op` unchanged, which is correct for every fetcher whose
+    /// requests carry no session identity.
+    async fn in_session<'a>(
+        &'a self,
+        op: Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>,
+    ) -> Result<String> {
+        op.await
     }
 }
 
@@ -277,11 +310,18 @@ impl FlareSolverrFetcher {
     /// Run a `request.get`/`request.post` and return the page body, serialized
     /// against this session and retried once if the session itself has died.
     async fn request(&self, payload: serde_json::Value) -> Result<String> {
-        let _permit = self
-            .gate
-            .acquire()
-            .await
-            .map_err(|_| IndexerError::Parse("flaresolverr gate closed".to_string()))?;
+        // Skip the gate when this task already holds it for a whole sequence:
+        // acquiring the single permit again would deadlock against ourselves.
+        let _permit = if GATE_HELD.try_with(|()| ()).is_ok() {
+            None
+        } else {
+            Some(
+                self.gate
+                    .acquire()
+                    .await
+                    .map_err(|_| IndexerError::Parse("flaresolverr gate closed".to_string()))?,
+            )
+        };
         self.ensure_session().await;
         match self.request_once(payload.clone()).await {
             Err(err) if Self::is_session_fault(&err) => {
@@ -415,6 +455,22 @@ impl Fetcher for FlareSolverrFetcher {
             "maxTimeout": self.max_timeout_ms,
         }))
         .await
+    }
+
+    async fn in_session<'a>(
+        &'a self,
+        op: Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>,
+    ) -> Result<String> {
+        // Take the gate once for the whole sequence rather than once per request.
+        // Holding it end to end is the point: it is what stops another search
+        // landing between two requests that have to share a session.
+        let _permit = self
+            .gate
+            .acquire()
+            .await
+            .map_err(|_| IndexerError::Parse("flaresolverr gate closed".to_string()))?;
+        self.ensure_session().await;
+        GATE_HELD.scope((), op).await
     }
 }
 
