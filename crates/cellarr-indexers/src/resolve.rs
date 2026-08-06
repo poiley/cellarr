@@ -225,45 +225,20 @@ impl DownloadResolver for ExtTorrentsResolver {
     }
 
     async fn resolve(&self, details_url: &str, fetcher: &dyn Fetcher) -> Result<String> {
-        // The signature is bound to the session that served the details page, and
-        // the page and the magnet request are two separate trips through the
-        // challenge solver — whose session gate is held per REQUEST, not per
-        // sequence. Another search slipping between them rotates the session and the
-        // endpoint answers "Invalid session", which says nothing is wrong with the
-        // release, only that our tokens went stale.
+        // The magnet request is signed against tokens the details page issued, so
+        // the two trips have to land on the same session. Serializing individual
+        // requests does not achieve that: it stops them overlapping, but still lets
+        // an unrelated search land between them and rotate the session, after which
+        // the endpoint answers "Invalid session" — a complaint about our tokens,
+        // not about the release.
         //
-        // Deferring links made this more likely, not less: resolves used to run in a
-        // batch straight after the listing fetch and now run at grab time, further
-        // from the page they were signed against. One retry with freshly fetched
-        // tokens is what a stale session actually needs.
-        match self.resolve_once(details_url, fetcher).await {
-            Err(err) if Self::is_stale_session(&err) => {
-                // At info, and reporting the retry's own outcome, because a retry
-                // that silently fails is indistinguishable from one that never ran:
-                // both leave only the original failure in the log. Without the
-                // second line there is no way to tell a fix that works from a fix
-                // that fires and loses anyway.
-                tracing::info!(
-                    details = %details_url,
-                    error = %err,
-                    "magnet endpoint rejected the session; refetching tokens and retrying once"
-                );
-                let retried = self.resolve_once(details_url, fetcher).await;
-                match &retried {
-                    Ok(_) => tracing::info!(
-                        details = %details_url,
-                        "retry with fresh tokens succeeded"
-                    ),
-                    Err(err) => tracing::info!(
-                        details = %details_url,
-                        error = %err,
-                        "retry with fresh tokens failed too"
-                    ),
-                }
-                retried
-            }
-            other => other,
-        }
+        // Holding the session across the pair is the fix. A retry with fresh tokens
+        // was tried first and recovered nothing (0 of 26 in production): a retry
+        // races for the session on exactly the same terms as the request that just
+        // lost it, so under steady search traffic it loses again.
+        fetcher
+            .in_session(Box::pin(self.resolve_once(details_url, fetcher)))
+            .await
     }
 }
 
