@@ -255,10 +255,16 @@ impl ExtTorrentsResolver {
         let torrent_id = Self::torrent_id(details_url).ok_or_else(|| {
             IndexerError::Parse(format!("no torrent id in details URL {details_url}"))
         })?;
-        let origin = Self::origin(details_url)
+        // The magnet request has to be addressed to the host the details page
+        // actually came from, not the one it was asked for. The tracker publishes
+        // several entry hostnames that redirect to one canonical host, and the
+        // session the tokens belong to lives on *that* host — a request to the
+        // entry hostname is answered by a redirect, never reaching the session.
+        let page = fetcher.get_page(details_url).await?;
+        let origin = Self::origin(&page.final_url)
+            .or_else(|| Self::origin(details_url))
             .ok_or_else(|| IndexerError::Parse(format!("unusable details URL {details_url}")))?;
-
-        let page = fetcher.get(details_url).await?;
+        let page = page.body;
         let page_token = Self::page_token(&page, "pageToken")
             .ok_or_else(|| IndexerError::Parse("details page carried no pageToken".to_string()))?;
         // The endpoint checks the session id separately from the signature, so a
@@ -276,12 +282,12 @@ impl ExtTorrentsResolver {
             "torrent_id={torrent_id}&download_type=magnet&timestamp={timestamp}&hmac={signature}&sessid={csrf_token}"
         );
 
+        // Sent as the page would send it, carrying the session the details page was
+        // fetched under. A browser-driven navigation drops that session cookie on a
+        // cross-site POST, and the endpoint then answers "Invalid session" — a
+        // complaint about a cookie that never arrived, not about the signature.
         let reply = fetcher
-            .post(
-                &format!("{origin}{}", Self::MAGNET_PATH),
-                &form,
-                "application/x-www-form-urlencoded",
-            )
+            .post_in_page_session(&format!("{origin}{}", Self::MAGNET_PATH), &form)
             .await?;
         Self::magnet_from_reply(&reply)
     }

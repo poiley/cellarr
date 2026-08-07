@@ -26,6 +26,18 @@ tokio::task_local! {
     static GATE_HELD: ();
 }
 
+/// A fetched page plus the context a follow-up request needs.
+#[derive(Debug, Clone)]
+pub struct FetchedPage {
+    /// The response body.
+    pub body: String,
+    /// The URL the request actually ended up at, which is not always the one
+    /// asked for: a site may redirect to a canonical host, and a follow-up
+    /// request bound to the page's session has to be addressed to *that* host or
+    /// it never reaches the session at all.
+    pub final_url: String,
+}
+
 /// Something that can fetch a URL and return its body as text.
 #[async_trait]
 pub trait Fetcher: Send + Sync {
@@ -60,6 +72,35 @@ pub trait Fetcher: Send + Sync {
         self.post(url, body, content_type)
             .await
             .map(String::into_bytes)
+    }
+
+    /// GET `url`, reporting where the request ended up as well as what it
+    /// returned.
+    ///
+    /// The default reports the URL that was asked for, which is right for any
+    /// fetcher that does not follow redirects on the caller's behalf.
+    async fn get_page(&self, url: &str) -> Result<FetchedPage> {
+        Ok(FetchedPage {
+            body: self.get(url).await?,
+            final_url: url.to_string(),
+        })
+    }
+
+    /// POST the way a page's own script would: as a request carrying the session
+    /// the page was fetched under.
+    ///
+    /// Distinct from [`Fetcher::post`], which for a browser-driving fetcher is a
+    /// top-level *navigation*. A navigation is subject to the cookie's SameSite
+    /// policy, and a session cookie is routinely withheld from a cross-site POST
+    /// navigation — so the endpoint sees no session at all and rejects a
+    /// perfectly well-formed request. A page's own XHR has no such problem, and
+    /// this is the seam for reproducing it.
+    ///
+    /// The default is an ordinary POST, which is already right for a fetcher
+    /// whose requests are plain HTTP rather than browser navigations.
+    async fn post_in_page_session(&self, url: &str, body: &str) -> Result<String> {
+        self.post(url, body, "application/x-www-form-urlencoded")
+            .await
     }
 
     /// Run `op` with this fetcher's underlying session held for its whole
@@ -134,6 +175,20 @@ impl ReqwestFetcher {
     }
 }
 
+/// One solved request: what came back, and where it came back from.
+struct Solved {
+    body: String,
+    final_url: String,
+}
+
+/// The session context captured from a solve: what a follow-up request must
+/// present to be recognized as coming from the same browser.
+#[derive(Debug, Clone)]
+struct PageSession {
+    cookies: Vec<(String, String)>,
+    user_agent: String,
+}
+
 /// A [`Fetcher`] that proxies through a **FlareSolverr** instance.
 ///
 /// Some trackers sit behind an interstitial bot check that a plain HTTP client
@@ -155,6 +210,10 @@ pub struct FlareSolverrFetcher {
     max_timeout_ms: u64,
     /// Ensures the session is created once, on first use.
     session_ready: OnceCell<()>,
+    /// Cookies and User-Agent from the most recent solve, so a follow-up request
+    /// can be issued directly under the same session instead of as a navigation.
+    /// Written on every solve; the sequence lock is what makes the pairing sound.
+    page_session: std::sync::Mutex<Option<PageSession>>,
     /// One in-flight request at a time.
     ///
     /// A session is one browser. Driving several requests into it concurrently
@@ -184,6 +243,7 @@ impl FlareSolverrFetcher {
             session: session.into(),
             max_timeout_ms: Self::DEFAULT_MAX_TIMEOUT_MS,
             session_ready: OnceCell::new(),
+            page_session: std::sync::Mutex::new(None),
             gate: tokio::sync::Semaphore::new(1),
         }
     }
@@ -309,7 +369,7 @@ impl FlareSolverrFetcher {
 
     /// Run a `request.get`/`request.post` and return the page body, serialized
     /// against this session and retried once if the session itself has died.
-    async fn request(&self, payload: serde_json::Value) -> Result<String> {
+    async fn request(&self, payload: serde_json::Value) -> Result<Solved> {
         // Skip the gate when this task already holds it for a whole sequence:
         // acquiring the single permit again would deadlock against ourselves.
         let _permit = if GATE_HELD.try_with(|()| ()).is_ok() {
@@ -338,7 +398,7 @@ impl FlareSolverrFetcher {
     }
 
     /// One attempt, with no session handling.
-    async fn request_once(&self, payload: serde_json::Value) -> Result<String> {
+    async fn request_once(&self, payload: serde_json::Value) -> Result<Solved> {
         let envelope = self.command(payload).await?;
 
         if envelope.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
@@ -370,7 +430,46 @@ impl FlareSolverrFetcher {
                 body_snippet: (!snippet.is_empty()).then_some(snippet),
             });
         }
-        Ok(unwrap_pre(&body))
+        // Keep the session this solve ran under, so a follow-up request can be
+        // issued directly as the page rather than as a navigation.
+        let cookies: Vec<(String, String)> = solution
+            .get("cookies")
+            .and_then(serde_json::Value::as_array)
+            .map(|cs| {
+                cs.iter()
+                    .filter_map(|c| {
+                        Some((
+                            c.get("name")?.as_str()?.to_string(),
+                            c.get("value")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let user_agent = solution
+            .get("userAgent")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !cookies.is_empty() {
+            if let Ok(mut slot) = self.page_session.lock() {
+                *slot = Some(PageSession {
+                    cookies,
+                    user_agent,
+                });
+            }
+        }
+        // Where the request ended up, which a redirect to a canonical host makes
+        // different from where it was aimed.
+        let final_url = solution
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok(Solved {
+            body: unwrap_pre(&body),
+            final_url,
+        })
     }
 }
 
@@ -435,13 +534,64 @@ fn unwrap_pre(body: &str) -> String {
 #[async_trait]
 impl Fetcher for FlareSolverrFetcher {
     async fn get(&self, url: &str) -> Result<String> {
-        self.request(serde_json::json!({
-            "cmd": "request.get",
-            "url": url,
-            "session": self.session,
-            "maxTimeout": self.max_timeout_ms,
-        }))
-        .await
+        self.get_page(url).await.map(|p| p.body)
+    }
+
+    async fn get_page(&self, url: &str) -> Result<FetchedPage> {
+        let solved = self
+            .request(serde_json::json!({
+                "cmd": "request.get",
+                "url": url,
+                "session": self.session,
+                "maxTimeout": self.max_timeout_ms,
+            }))
+            .await?;
+        let final_url = if solved.final_url.is_empty() {
+            url.to_string()
+        } else {
+            solved.final_url
+        };
+        Ok(FetchedPage {
+            body: solved.body,
+            final_url,
+        })
+    }
+
+    /// Issue the POST directly, presenting the cookies the solve established,
+    /// instead of driving the browser to navigate to it.
+    ///
+    /// A navigation is subject to SameSite, which withholds the session cookie
+    /// from a cross-site POST — the endpoint then sees no session and rejects a
+    /// request that is otherwise exactly right. Sending it ourselves reproduces
+    /// what the page's own script does. The User-Agent is carried over with the
+    /// cookies because a clearance cookie is issued against one.
+    async fn post_in_page_session(&self, url: &str, body: &str) -> Result<String> {
+        let Some(session) = self.page_session.lock().ok().and_then(|s| s.clone()) else {
+            // Nothing solved yet, so there is no session to present; a navigation
+            // is no worse than nothing here.
+            return self
+                .post(url, body, "application/x-www-form-urlencoded")
+                .await;
+        };
+        let cookies = session
+            .cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let resp = self
+            .client
+            .post(url)
+            .header(reqwest::header::COOKIE, cookies)
+            .header(reqwest::header::USER_AGENT, session.user_agent)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body.to_string())
+            .send()
+            .await?;
+        ReqwestFetcher::read_body(resp).await
     }
 
     async fn post(&self, url: &str, body: &str, _content_type: &str) -> Result<String> {
@@ -455,6 +605,7 @@ impl Fetcher for FlareSolverrFetcher {
             "maxTimeout": self.max_timeout_ms,
         }))
         .await
+        .map(|s| s.body)
     }
 
     async fn in_session<'a>(

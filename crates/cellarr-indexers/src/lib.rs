@@ -34,7 +34,7 @@ pub use caps::{parse_caps, Caps, Category, SearchMode};
 pub use cardigann::{CardigannIndexer, Definition};
 pub use error::{IndexerError, Result};
 pub use feed::parse_feed;
-pub use http::{Fetcher, FetcherPool, FlareSolverrFetcher, ReqwestFetcher};
+pub use http::{FetchedPage, Fetcher, FetcherPool, FlareSolverrFetcher, ReqwestFetcher};
 pub use ratelimit::HostRateLimiter;
 pub use resolve::{resolver_for, DownloadResolver, ExtTorrentsResolver};
 pub use torznab::{NabIndexer, NewznabIndexer, TorznabIndexer};
