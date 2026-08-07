@@ -60,13 +60,24 @@ pub(crate) async fn read_indexers(
             let implementation = opt_text(row, "Implementation").unwrap_or_default();
             let settings = parse_settings(opt_text(row, "Settings"));
             let priority: i64 = row.try_get("Priority").unwrap_or(0);
-            let enabled = row.try_get::<i64, _>("EnableRss").unwrap_or(1) != 0;
+            // All three capabilities, not just RSS. The source models them
+            // independently, and reading one to stand for all of them silently
+            // drops the operator's choice — an indexer they kept for searches but
+            // out of the RSS cadence would come across switched off entirely.
+            let flag = |col: &str| row.try_get::<i64, _>(col).unwrap_or(1) != 0;
+            let enable_rss = flag("EnableRss");
+            let enable_automatic_search = flag("EnableAutomaticSearch");
+            let enable_interactive_search = flag("EnableInteractiveSearch");
+            let enabled = enable_rss || enable_automatic_search || enable_interactive_search;
             IndexerConfig {
                 id: IndexerId::new(),
                 name,
                 kind: adapter_kind(&implementation, kind),
                 protocol: protocol_of(row),
                 enabled,
+                enable_rss,
+                enable_automatic_search,
+                enable_interactive_search,
                 priority: priority as i32,
                 // The legacy Sonarr/Radarr minimumSeeders/seedCriteria live in the
                 // indexer's Settings JSON; carrying them across is long-tail and

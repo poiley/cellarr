@@ -55,6 +55,32 @@ pub enum IndexerSetError {
     },
 }
 
+/// Which of an indexer's capabilities a fan-out is exercising.
+///
+/// The *arr model lets an operator keep a tracker out of the RSS cadence while
+/// still searching it (and vice versa), so which capability is being used
+/// decides which indexers are eligible — the enabled flag alone cannot say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    /// Periodic RSS/latest polling.
+    Rss,
+    /// The scheduled search for missing content.
+    AutomaticSearch,
+    /// A search an operator asked for directly.
+    InteractiveSearch,
+}
+
+impl Capability {
+    /// Whether `ix` may be used for this capability.
+    fn permitted_by(self, ix: &IndexerConfig) -> bool {
+        match self {
+            Self::Rss => ix.enable_rss,
+            Self::AutomaticSearch => ix.enable_automatic_search,
+            Self::InteractiveSearch => ix.enable_interactive_search,
+        }
+    }
+}
+
 /// An aggregate [`Indexer`] backed by the persisted indexer configuration.
 ///
 /// Clone is cheap (it holds a [`Database`] handle and a shared rate limiter).
@@ -73,6 +99,10 @@ pub struct DbIndexerSet {
     /// default) is the "no content tags" case — only global indexers apply, which
     /// matches today's behavior since indexers are untagged by default.
     content_tags: Vec<u32>,
+    /// Which capability this set's `search` exercises. The scheduled sweep and an
+    /// operator's own search are separately switchable per indexer, and the set
+    /// has to know which one it is serving to honor that.
+    search_capability: Capability,
     /// Long-lived fetchers shared across searches. Adapters are rebuilt per search,
     /// but a FlareSolverr session must outlive them (see [`FetcherPool`]); sharing
     /// one pool the way the rate limiter is shared keeps a single session per
@@ -90,6 +120,7 @@ impl DbIndexerSet {
             rate_limiter: Arc::new(HostRateLimiter::conservative_default()),
             fail_fast: false,
             content_tags: Vec::new(),
+            search_capability: Capability::AutomaticSearch,
             fetchers: Arc::new(FetcherPool::new()),
         }
     }
@@ -107,6 +138,7 @@ impl DbIndexerSet {
             rate_limiter,
             fail_fast,
             content_tags: Vec::new(),
+            search_capability: Capability::AutomaticSearch,
             fetchers: Arc::new(FetcherPool::new()),
         }
     }
@@ -115,6 +147,13 @@ impl DbIndexerSet {
     /// per indexer. Without this each set builds its own pool, which is correct but
     /// gives up session reuse across runs.
     #[must_use]
+    /// Serve an operator-initiated search, which an indexer can be excluded from
+    /// separately from the scheduled one.
+    pub fn for_interactive_search(mut self) -> Self {
+        self.search_capability = Capability::InteractiveSearch;
+        self
+    }
+
     pub fn with_fetcher_pool(mut self, fetchers: Arc<FetcherPool>) -> Self {
         self.fetchers = fetchers;
         self
@@ -133,7 +172,11 @@ impl DbIndexerSet {
     /// priority order. A tag-scoped indexer is kept only when it shares a tag id
     /// with the content; an untagged indexer is global. With no content tags,
     /// only global (untagged) indexers are kept.
-    async fn enabled_configs(&self) -> Result<Vec<IndexerConfig>, IndexerSetError> {
+    /// Every enabled, in-scope indexer, whatever its capabilities.
+    ///
+    /// For looking an indexer *up* — finding the one that produced a release —
+    /// rather than choosing ones to use.
+    async fn all_enabled_configs(&self) -> Result<Vec<IndexerConfig>, IndexerSetError> {
         let configs = self
             .db
             .config()
@@ -146,15 +189,32 @@ impl DbIndexerSet {
             .collect())
     }
 
+    /// The indexers eligible for `capability`.
+    async fn enabled_configs(
+        &self,
+        capability: Capability,
+    ) -> Result<Vec<IndexerConfig>, IndexerSetError> {
+        Ok(self
+            .all_enabled_configs()
+            .await?
+            .into_iter()
+            .filter(|ix| capability.permitted_by(ix))
+            .collect())
+    }
+
     /// Run `op` against every enabled, well-formed adapter, concatenating the
     /// releases. Misconfigured indexers and (unless `fail_fast`) adapter failures
     /// are skipped so one bad indexer never blinds discovery.
-    async fn fan_out<F, Fut>(&self, op: F) -> Result<Vec<Release>, IndexerSetError>
+    async fn fan_out<F, Fut>(
+        &self,
+        capability: Capability,
+        op: F,
+    ) -> Result<Vec<Release>, IndexerSetError>
     where
         F: Fn(NabAdapter) -> Fut,
         Fut: std::future::Future<Output = cellarr_indexers::Result<Vec<Release>>>,
     {
-        let configs = self.enabled_configs().await?;
+        let configs = self.enabled_configs(capability).await?;
         let mut all = Vec::new();
         for config in configs {
             let adapter = match self.build_adapter(&config) {
@@ -394,7 +454,7 @@ impl Indexer for DbIndexerSet {
     }
 
     async fn search(&self, terms: &SearchTerms) -> Result<Vec<Release>, Self::Error> {
-        self.fan_out(|adapter| {
+        self.fan_out(self.search_capability, |adapter| {
             let terms = terms.clone();
             async move { adapter.search(&terms).await }
         })
@@ -402,8 +462,10 @@ impl Indexer for DbIndexerSet {
     }
 
     async fn latest(&self) -> Result<Vec<Release>, Self::Error> {
-        self.fan_out(|adapter| async move { adapter.latest().await })
-            .await
+        self.fan_out(Capability::Rss, |adapter| async move {
+            adapter.latest().await
+        })
+        .await
     }
 
     /// Route a deferred-link resolve to the indexer that actually produced the
@@ -422,7 +484,9 @@ impl Indexer for DbIndexerSet {
         if !release.link_is_deferred() {
             return Ok(release);
         }
-        let configs = self.enabled_configs().await?;
+        // Every enabled indexer, whatever its capabilities: this is looking up the
+        // indexer that already produced the release, not choosing one to search.
+        let configs = self.all_enabled_configs().await?;
         let Some(config) = configs.iter().find(|c| c.id == release.indexer_id) else {
             return Err(IndexerSetError::Search {
                 name: "configured-indexers".to_string(),
@@ -479,11 +543,59 @@ mod tests {
             kind: "torznab".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags,
             settings: json!({ "baseUrl": "http://localhost", "apiKey": "k" }),
         }
+    }
+
+    /// An indexer kept out of one capability must still serve the others.
+    ///
+    /// Collapsing the three into a single switch meant an operator who wanted a
+    /// tracker searched but out of the RSS cadence lost it entirely, which is a
+    /// perfectly ordinary thing to want from a tracker that rate-limits.
+    #[tokio::test]
+    async fn a_capability_an_indexer_is_excluded_from_does_not_exclude_it_from_the_others() {
+        let (_dir, db) = temp_db().await;
+        let mut rss_only = indexer("rss-only", vec![]);
+        rss_only.enable_automatic_search = false;
+        rss_only.enable_interactive_search = false;
+        let mut search_only = indexer("search-only", vec![]);
+        search_only.enable_rss = false;
+        db.config().upsert_indexer(&rss_only).await.unwrap();
+        db.config().upsert_indexer(&search_only).await.unwrap();
+
+        let set = DbIndexerSet::new(db.clone());
+        let names = |cs: Vec<IndexerConfig>| {
+            let mut n: Vec<String> = cs.into_iter().map(|c| c.name).collect();
+            n.sort();
+            n
+        };
+
+        assert_eq!(
+            names(set.enabled_configs(Capability::Rss).await.unwrap()),
+            vec!["rss-only".to_string()],
+            "only the RSS-enabled indexer polls"
+        );
+        assert_eq!(
+            names(
+                set.enabled_configs(Capability::AutomaticSearch)
+                    .await
+                    .unwrap()
+            ),
+            vec!["search-only".to_string()],
+            "only the search-enabled indexer is searched"
+        );
+        // Lookup is not selection: finding the indexer that produced a release has
+        // to see every enabled one, whatever it is switched off for.
+        assert_eq!(
+            names(set.all_enabled_configs().await.unwrap()),
+            vec!["rss-only".to_string(), "search-only".to_string()],
+        );
     }
 
     pub(super) async fn temp_db() -> (tempfile::TempDir, Database) {
@@ -510,7 +622,7 @@ mod tests {
         // Content carrying tag 7: both apply.
         let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![7]);
         let names: Vec<String> = set
-            .enabled_configs()
+            .enabled_configs(Capability::AutomaticSearch)
             .await
             .unwrap()
             .into_iter()
@@ -522,7 +634,7 @@ mod tests {
         // Content carrying tag 1 (not 7): the scoped indexer is excluded.
         let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![1]);
         let names: Vec<String> = set
-            .enabled_configs()
+            .enabled_configs(Capability::AutomaticSearch)
             .await
             .unwrap()
             .into_iter()
@@ -533,7 +645,7 @@ mod tests {
         // Untagged content: only the global indexer is searched.
         let set = DbIndexerSet::new(db.clone()).with_content_tags(vec![]);
         let names: Vec<String> = set
-            .enabled_configs()
+            .enabled_configs(Capability::AutomaticSearch)
             .await
             .unwrap()
             .into_iter()
@@ -571,6 +683,9 @@ search:
             kind: "cardigann".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags: vec![],
@@ -639,6 +754,9 @@ search:
             kind: "cardigann".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags: vec![],
@@ -688,6 +806,9 @@ search:
             kind: "cardigann".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags: vec![],
@@ -727,6 +848,9 @@ search:
             kind: "cardigann".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags: vec![],
@@ -755,6 +879,9 @@ search:
             kind: "cardigann".into(),
             protocol: Protocol::Torrent,
             enabled: true,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
             priority: 25,
             criteria: Default::default(),
             tags: vec![],
@@ -836,4 +963,5 @@ mod deferred_resolve_routing_tests {
             .expect("a resolved release needs no indexer");
         assert_eq!(out.download_url, ready.download_url);
     }
+
 }

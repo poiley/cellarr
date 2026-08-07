@@ -670,3 +670,71 @@ async fn re_reading_an_unknown_indexer_id_is_a_not_found() {
         .expect("get by id");
     assert_eq!(response.status(), 404);
 }
+
+/// The three capability flags are independent, and a write that sets them must
+/// be readable back as it was sent.
+///
+/// They used to collapse: only `enableRss` was read off the pushed body, the
+/// other two were discarded, and all three were reported back from a single
+/// stored flag. Turning RSS off while asking to keep both searches therefore
+/// disabled the indexer outright — and the reply still showed the write as
+/// applied, so nothing surfaced as an error. Anyone driving cellarr from
+/// Sonarr's or Radarr's indexer screen would hit it.
+#[tokio::test]
+async fn an_indexers_capability_flags_are_stored_and_returned_independently() {
+    let srv = common::start_open().await;
+    common::seed_indexer(&srv.state, "capabilities").await;
+
+    let listed: Vec<serde_json::Value> = reqwest::Client::new()
+        .get(srv.url("/api/v3/indexer"))
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("list json");
+    let existing = listed
+        .iter()
+        .find(|ix| ix["name"] == "capabilities")
+        .expect("seeded indexer is listed")
+        .clone();
+    let id = existing["id"].as_i64().expect("id is a number");
+
+    // Keep both searches, drop RSS — the combination that used to switch the
+    // whole indexer off.
+    let mut body = existing.clone();
+    body["enableRss"] = serde_json::json!(false);
+    body["enableAutomaticSearch"] = serde_json::json!(true);
+    body["enableInteractiveSearch"] = serde_json::json!(true);
+
+    let response = reqwest::Client::new()
+        .put(srv.url(&format!("/api/v3/indexer/{id}")))
+        .json(&body)
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(response.status(), 200, "the update is accepted");
+    let updated: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(updated["enableRss"], false, "RSS was turned off");
+    assert_eq!(
+        updated["enableAutomaticSearch"], true,
+        "automatic search was asked to stay on and must still be on"
+    );
+    assert_eq!(
+        updated["enableInteractiveSearch"], true,
+        "interactive search was asked to stay on and must still be on"
+    );
+
+    // And it must have been persisted, not just echoed back.
+    let reread: serde_json::Value = reqwest::Client::new()
+        .get(srv.url(&format!("/api/v3/indexer/{id}")))
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(reread["enableRss"], false, "the write persisted");
+    assert_eq!(reread["enableAutomaticSearch"], true);
+    assert_eq!(reread["enableInteractiveSearch"], true);
+}

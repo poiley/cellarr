@@ -2561,9 +2561,9 @@ fn v3_indexer(ix: &cellarr_core::IndexerConfig) -> Value {
         "configContract": format!("{implementation}Settings"),
         "protocol": protocol_str(ix.protocol),
         "priority": ix.priority,
-        "enableRss": ix.enabled,
-        "enableAutomaticSearch": ix.enabled,
-        "enableInteractiveSearch": ix.enabled,
+        "enableRss": ix.enabled && ix.enable_rss,
+        "enableAutomaticSearch": ix.enabled && ix.enable_automatic_search,
+        "enableInteractiveSearch": ix.enabled && ix.enable_interactive_search,
         "supportsRss": true,
         "supportsSearch": true,
         "fields": fields,
@@ -2707,6 +2707,15 @@ struct IndexerBody {
     #[serde(default = "default_true")]
     #[serde(rename = "enableRss")]
     enable_rss: bool,
+    /// Read alongside `enableRss` rather than inferred from it. The three are
+    /// independent in the v3 contract, and a client that sets one and not the
+    /// others means it.
+    #[serde(default = "default_true")]
+    #[serde(rename = "enableAutomaticSearch")]
+    enable_automatic_search: bool,
+    #[serde(default = "default_true")]
+    #[serde(rename = "enableInteractiveSearch")]
+    enable_interactive_search: bool,
     /// The tag ids this indexer is scoped to (the v3 `tags` array). Empty/omitted
     /// = global (applies to all content).
     #[serde(default)]
@@ -2773,7 +2782,16 @@ fn indexer_from_body(
         name: body.name.clone().unwrap_or_default(),
         kind,
         protocol,
-        enabled: body.enable_rss,
+        // Enabled if the client asked for ANY capability. Reading the master
+        // switch off `enableRss` alone meant turning RSS off turned the whole
+        // indexer off — including the searches the same request had just asked to
+        // keep — and the reply still showed the write as applied.
+        enabled: body.enable_rss
+            || body.enable_automatic_search
+            || body.enable_interactive_search,
+        enable_rss: body.enable_rss,
+        enable_automatic_search: body.enable_automatic_search,
+        enable_interactive_search: body.enable_interactive_search,
         priority: body.priority.unwrap_or(25),
         criteria,
         tags: body.tags.clone(),

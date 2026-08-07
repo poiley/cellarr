@@ -2329,7 +2329,10 @@ impl LivePipelineEnv {
             /* fail_fast = */ false,
         )
         .with_fetcher_pool(Arc::clone(&self.fetchers))
-        .with_content_tags(content_tag_ids);
+        .with_content_tags(content_tag_ids)
+        // This path serves a search the operator asked for, which an indexer can
+        // be excluded from independently of the scheduled sweep.
+        .for_interactive_search();
         Ok(Some((indexer, config)))
     }
 
