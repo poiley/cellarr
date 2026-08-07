@@ -420,3 +420,69 @@ fn find_one_file(root: &std::path::Path) -> Option<PathBuf> {
     }
     None
 }
+
+/// A search that finds candidates and can use none of them must back off, exactly
+/// like one that found nothing.
+///
+/// The two look different but behave identically on the next sweep: the same dead
+/// or wrongly-graded releases come back, so re-running at full cadence cannot
+/// succeed and only spends an indexer's request budget. In production this left
+/// 1,439 nodes pinned at zero fatigue, re-searched forever, which exhausted a
+/// public tracker's daily allowance and got the indexer disabled for hours at a
+/// time.
+#[tokio::test]
+async fn a_node_whose_candidates_are_all_rejected_still_backs_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+
+    let download_dir = tmp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"synthetic movie bytes").unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_monitored_movie(&db).await;
+    let registry = Arc::new(movie_registry(&node));
+
+    // The indexer offers its usual candidate; the profile allows nothing, so every
+    // candidate is rejected. Discover still found releases — this is precisely the
+    // case that used not to count.
+    let mut refuses_everything = permissive_profile();
+    refuses_everything.allowed_qualities = Vec::new();
+
+    let events = cellarr_api::events::EventBus::default();
+    let env = FakeEnv {
+        content_path: downloaded.to_string_lossy().into_owned(),
+        library_root,
+        profile: refuses_everything,
+    };
+    let handler = Arc::new(LivePipelineHandler::new(
+        db.clone(),
+        registry,
+        events.clone(),
+        env,
+    ));
+    let scheduler = Scheduler::new(
+        Arc::new(SystemClock),
+        Arc::new(MemoryJobStore::new()),
+        handler,
+        ConcurrencyCaps::default(),
+    );
+
+    scheduler
+        .submit_now(JobKind::MissingItemSearch, RetryPolicy::default())
+        .await
+        .unwrap();
+    scheduler.tick().await.unwrap();
+    scheduler.join_in_flight().await;
+
+    let counts = db.content().fruitless_counts().await.unwrap();
+    assert_eq!(
+        counts.get(&node.id.to_string()).copied(),
+        Some(1),
+        "a node whose candidates were all rejected must be counted fruitless, got {counts:?}"
+    );
+}
