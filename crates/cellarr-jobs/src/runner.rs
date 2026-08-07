@@ -1806,13 +1806,31 @@ where
                 Some(existing) => existing.id,
                 None => {
                     let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+                    // Read the file itself, always. What a container states is an
+                    // observation about this file and worth recording whatever the
+                    // title said — it is the only description of the actual bytes
+                    // the library will ever hold.
+                    let probed = probed_quality(dest, &self.config.ranking);
+                    let media_info = probed.as_ref().map(|(_, info)| info.clone());
+                    // The title is preferred for quality because it knows the
+                    // source; the probe only assumes one. A file adopted from an
+                    // existing library has no release title to read, so its name
+                    // yields nothing and the probe is all there is — which still
+                    // beats recording it as Unknown, since an ungraded file
+                    // compares as the worst possible quality and so looks
+                    // upgradable by anything.
+                    let quality = if is_unknown_quality(&quality) {
+                        probed.map_or_else(|| quality.clone(), |(q, _)| q)
+                    } else {
+                        quality.clone()
+                    };
                     let file = cellarr_core::MediaFile {
                         id: cellarr_core::MediaFileId::new(),
                         path: dest.clone(),
                         size,
-                        quality: quality.clone(),
+                        quality,
                         languages: title_parsed.languages.clone(),
-                        media_info: None,
+                        media_info,
                         custom_format_score: None,
                         release_type: Some(release_type),
                     };
@@ -3755,6 +3773,53 @@ where
     }
 }
 
+/// Whether a resolved quality is the Unknown sentinel — a file we have not
+/// actually graded.
+fn is_unknown_quality(q: &cellarr_core::Quality) -> bool {
+    q.name.is_empty() || q.name.eq_ignore_ascii_case("unknown")
+}
+
+/// Grade a file from its own container header when its name could not.
+///
+/// Returns the quality and the probe reading to record alongside it, or `None`
+/// when the file cannot be read — which leaves it Unknown, the honest answer.
+///
+/// **This chooses a source it cannot observe.** A container states the picture
+/// size and nothing about provenance: a disc rip, a web download and a broadcast
+/// capture at the same resolution are identical here. The resolution is taken as
+/// read and the source is assumed to be the best of that band, which is a
+/// deliberate call — it keeps a good file from being replaced by a worse one
+/// carrying a higher-ranked source name. The cost is the opposite error: a
+/// mediocre file is recorded as though it were a disc rip, and neither the UI nor
+/// an upgrade decision can tell the difference. Anything relying on that
+/// distinction must not read a probed quality as though the source were observed.
+pub fn probed_quality(
+    path: &str,
+    ranking: &cellarr_core::QualityRanking,
+) -> Option<(cellarr_core::Quality, serde_json::Value)> {
+    let probe = cellarr_fs::probe_video(std::path::Path::new(path))?;
+    // Banded on WIDTH. Height is not a reliable band marker because letterboxing
+    // varies it freely — a 2.40:1 4K encode is 3840x1600, which by height alone
+    // would read as 1080p. Width holds its nominal value across aspect ratios.
+    // Standard definition is the exception: PAL and NTSC share a width and are
+    // separated by height.
+    let name = match probe.width {
+        w if w >= 3000 => "Bluray-2160p",
+        w if w >= 1600 => "Bluray-1080p",
+        w if w >= 1100 => "Bluray-720p",
+        _ if probe.height >= 500 => "Bluray-576p",
+        w if w > 0 => "Bluray-480p",
+        _ => return None,
+    };
+    let quality = ranking.by_name(name)?;
+    let info = serde_json::json!({
+        "source": "container-probe",
+        "width": probe.width,
+        "height": probe.height,
+    });
+    Some((quality, info))
+}
+
 /// Map a resolved quality name to the `Option<String>` a notification carries:
 /// the Unknown-sentinel/empty name becomes `None` (the parser could not bucket
 /// the release), so a notification never claims a quality it does not have.
@@ -4207,6 +4272,46 @@ pub type SharedRegistry = Arc<MediaRegistry>;
 
 #[cfg(test)]
 mod tests {
+
+    /// A title that states its quality is believed over the file, and a title
+    /// that states none falls through to the file.
+    ///
+    /// The two carry different authority and must not be collapsed: a release
+    /// title names the source, which no container records. Preferring the probe
+    /// would overwrite a known Blu-ray with an assumed one; ignoring it would
+    /// leave an adopted library ungraded, which compares as the worst possible
+    /// quality and so looks upgradable by anything.
+    #[test]
+    fn a_probe_grades_only_what_the_title_could_not() {
+        let ranking = cellarr_core::QualityRanking::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        // A file the probe cannot read stands in for "no reading available".
+        let unreadable = dir.path().join("nothing.mkv");
+        std::fs::write(&unreadable, b"not a container").unwrap();
+        assert!(
+            probed_quality(unreadable.to_str().unwrap(), &ranking).is_none(),
+            "an unreadable file yields no grade, rather than a guessed one"
+        );
+
+        // The Unknown sentinel is what triggers the fallback at the call site.
+        let graded = cellarr_core::resolve_quality(
+            &cellarr_parse::parse_title("Movie.2019.1080p.BluRay.x264-GROUP"),
+            &ranking,
+        );
+        assert!(
+            !is_unknown_quality(&graded),
+            "a title that states its quality is graded from the title"
+        );
+        let ungraded = cellarr_core::resolve_quality(
+            &cellarr_parse::parse_title("Movie (2019)"),
+            &ranking,
+        );
+        assert!(
+            is_unknown_quality(&ungraded),
+            "a library-scheme name states no quality, so the file must be asked"
+        );
+    }
     use super::*;
     use cellarr_core::Coordinates as Co;
 

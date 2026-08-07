@@ -238,6 +238,63 @@ impl MediaFileRepo {
     ///
     /// # Errors
     /// Returns a [`DbError`] on query/decode failure.
+    /// Files whose quality was never established — the Unknown sentinel.
+    ///
+    /// Returned as `(id, path)` so a caller can read each file and grade it. An
+    /// ungraded file compares as the worst possible quality, so it looks
+    /// upgradable by anything; this is what a backfill walks to fix that.
+    pub async fn ungraded(&self, limit: usize) -> Result<Vec<(MediaFileId, String)>> {
+        let rows = sqlx::query(&pq(
+            "SELECT id, path FROM media_file WHERE quality_rank = 0 ORDER BY path",
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            let path: String = row.try_get("path")?;
+            let Ok(uuid) = parse_uuid("id", &id) else {
+                continue;
+            };
+            out.push((MediaFileId::from_uuid(uuid), path));
+            if limit > 0 && out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Record a quality (and the reading it came from) onto an existing file.
+    pub async fn set_quality(
+        &self,
+        id: MediaFileId,
+        quality: &cellarr_core::Quality,
+        media_info: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let id = id.to_string();
+        let rank = i64::from(quality.rank);
+        let quality = serde_json::to_string(quality)?;
+        let media_info = media_info.map(serde_json::to_string).transpose()?;
+        self.writer
+            .submit(move |conn| {
+                Box::pin(async move {
+                    sqlx::query(&pq(
+                        "UPDATE media_file
+                         SET quality = ?1, quality_rank = ?2, media_info = ?3
+                         WHERE id = ?4",
+                    ))
+                    .bind(quality)
+                    .bind(rank)
+                    .bind(media_info)
+                    .bind(id)
+                    .execute(&mut *conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+    }
+
     pub async fn all_grouped_by_content(
         &self,
     ) -> Result<std::collections::HashMap<ContentId, Vec<cellarr_core::MediaFile>>> {
