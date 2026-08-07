@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use cellarr_core::{Indexer, IndexerId, SearchTerms};
 use cellarr_indexers::cardigann::CardigannIndexer;
 use cellarr_indexers::http::Fetcher;
+use cellarr_indexers::resolve::DownloadResolver;
 use cellarr_indexers::{Definition, ExtTorrentsResolver, HostRateLimiter, IndexerError, Result};
 use cellarr_core::Release;
 
@@ -452,5 +453,58 @@ async fn a_definitions_request_delay_paces_the_engine() {
         started.elapsed() >= std::time::Duration::from_secs(2),
         "expected the engine to pace itself, took only {:?}",
         started.elapsed()
+    );
+}
+
+/// The magnet request must be addressed to the host the details page actually
+/// came from, not the one it was asked for.
+///
+/// The tracker publishes several entry hostnames that redirect to one canonical
+/// host, and the session the page's tokens belong to lives on the canonical one.
+/// Addressing the entry hostname gets a redirect instead of the endpoint, so the
+/// session never arrives and every request is refused as "Invalid session" —
+/// which reads as a signing problem and is nothing of the sort.
+struct RedirectingFetcher {
+    posted: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl Fetcher for RedirectingFetcher {
+    async fn get(&self, _url: &str) -> Result<String> {
+        Ok(DETAILS_HTML.to_string())
+    }
+
+    async fn get_page(&self, _url: &str) -> Result<cellarr_indexers::FetchedPage> {
+        Ok(cellarr_indexers::FetchedPage {
+            body: DETAILS_HTML.to_string(),
+            final_url: "https://canonical.example/some-release-77/".to_string(),
+        })
+    }
+
+    async fn post_in_page_session(&self, url: &str, _body: &str) -> Result<String> {
+        self.posted.lock().expect("lock").push(url.to_string());
+        Ok(r#"{"success":true,"type":"magnet","url":"magnet:?xt=urn:btih:aa"}"#.to_string())
+    }
+}
+
+#[tokio::test]
+async fn the_magnet_request_goes_to_the_host_the_details_page_resolved_to() {
+    let fetcher = RedirectingFetcher {
+        posted: std::sync::Mutex::new(Vec::new()),
+    };
+    let resolver = ExtTorrentsResolver::with_hosts(vec!["entry.example".to_string()]);
+
+    let link = resolver
+        .resolve("https://entry.example/some-release-77/", &fetcher)
+        .await
+        .expect("the magnet resolves");
+    assert!(link.starts_with("magnet:"), "got {link}");
+
+    let posted = fetcher.posted.lock().expect("lock").clone();
+    assert_eq!(posted.len(), 1, "one magnet request, got {posted:?}");
+    assert!(
+        posted[0].starts_with("https://canonical.example/"),
+        "the magnet request must go to the host the page resolved to, got {}",
+        posted[0]
     );
 }
