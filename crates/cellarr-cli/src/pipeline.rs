@@ -602,11 +602,12 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             .map_err(|e| format!("pipeline run failed: {e}"))?;
         self.publish_outcome(content, &outcome);
         // A `Grabbed` outcome is a new in-flight download the concurrency cap counts.
-        // `NothingFound` means Discover returned no release at all — not that one was
-        // found and rejected — which is what the search-fatigue backoff counts.
+        // Anything else means this search did not get us the file, which is what the
+        // backoff counts — see the sweep for why "found only unusable candidates"
+        // belongs in that bucket alongside "found nothing".
         Ok(NodeRun {
             grabbed: matches!(outcome, RunOutcome::Grabbed { .. }),
-            found_nothing: matches!(outcome, RunOutcome::NothingFound),
+            searched: true,
         })
     }
 
@@ -823,7 +824,15 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
                     if run.grabbed {
                         active += 1; // a new download was grabbed — count it toward the cap
                     }
-                    if run.found_nothing {
+                    // A search that found candidates and could use none of them is
+                    // no more productive than one that found nothing: the same
+                    // dead or wrongly-graded releases come back every sweep, so
+                    // repeating it at full cadence buys nothing and spends an
+                    // indexer budget that is not ours to spend.
+                    //
+                    // Backing these off only delays the retry — the curve caps at
+                    // a day, so a release that does appear is still picked up.
+                    if !run.grabbed {
                         fruitless.insert(node.id);
                     }
                 }
@@ -841,7 +850,7 @@ impl<E: PipelineEnv> LivePipelineHandler<E> {
             tracing::info!(
                 fruitless = fruitless.len(),
                 searched = searched.len(),
-                "acquisition sweep: nodes with no candidate at all will back off"
+                "acquisition sweep: nodes this search could not get a file for will back off"
             );
         }
         if let Err(e) = self
@@ -2187,10 +2196,13 @@ pub struct LivePipelineEnv {
 struct NodeRun {
     /// A new download was handed to the client — counts toward the concurrency cap.
     grabbed: bool,
-    /// Discover returned NO release at all. Deliberately narrower than "did not
-    /// grab": a node whose candidates were all rejected HAS candidates, and must
-    /// keep being searched at full cadence.
-    found_nothing: bool,
+    /// The node was actually searched: an indexer and client were configured and
+    /// the run reached the indexers.
+    ///
+    /// Distinguishes "searched and got nothing usable" from "never searched at
+    /// all", which must not back off — a node with no environment configured says
+    /// nothing about what the indexers carry.
+    searched: bool,
 }
 
 impl LivePipelineEnv {
