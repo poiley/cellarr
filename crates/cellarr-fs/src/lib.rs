@@ -31,6 +31,7 @@ mod health;
 mod import;
 mod nfo;
 mod permissions;
+mod probe;
 mod recycle;
 mod rename;
 mod scan;
@@ -48,6 +49,7 @@ pub use import::{
 };
 pub use nfo::{render_nfo, sidecar_path, write_sidecar, NfoKind, NfoMetadata};
 pub use permissions::{apply_to_file, apply_to_folder, PermissionOutcome};
+pub use probe::{probe_video, VideoProbe};
 pub use recycle::{recycle_or_delete, RecycleDisposition, RecycleResult};
 pub use rename::{
     has_absolute_episode, primary_target, render_episode_name, render_name, render_name_with,

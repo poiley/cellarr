@@ -50,6 +50,25 @@ enum Command {
     /// against the live DB, or export the current DB state as a file.
     #[command(subcommand)]
     ManagedConfig(ManagedConfigCommand),
+    /// Grade library files whose quality was never established, by reading their
+    /// container headers.
+    ///
+    /// A library adopted in place has no release title to parse, so its files
+    /// record no quality — and an ungraded file compares as the worst possible
+    /// one, which makes it look upgradable by anything. This reads the picture
+    /// size from each file and records the corresponding quality.
+    ///
+    /// Note that a container states resolution and not provenance, so the source
+    /// is assumed rather than observed (see `probed_quality`). Run with
+    /// `--dry-run` first to see what it would change.
+    BackfillQuality {
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Stop after this many files (0 = no limit).
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        limit: usize,
+    },
     /// Print version information.
     Version,
 }
@@ -123,6 +142,16 @@ async fn real_main() -> Result<ExitCode> {
         }
         Command::ConfigCheck => run_config_check(&config).map(|()| ExitCode::SUCCESS),
         Command::ManagedConfig(cmd) => run_managed_config(&config, cmd).await,
+        Command::BackfillQuality { dry_run, limit } => {
+            let _log_guard = init_tracing(
+                &config.log.filter,
+                Some(&config.log_dir()),
+                config.otel.endpoint.as_deref(),
+            );
+            run_backfill_quality(&config, dry_run, limit)
+                .await
+                .map(|()| ExitCode::SUCCESS)
+        }
         Command::Version => {
             println!("cellarr {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
@@ -221,6 +250,60 @@ fn init_tracing(
 
 /// Drive `cellarr-migrate` end to end: import the source database(s) into a fresh
 /// cellarr database under the configured data dir.
+/// Grade library files whose quality was never established, by reading their
+/// container headers.
+///
+/// Only touches files recorded as Unknown, and only ever raises them off that
+/// sentinel — a file that was already graded is never re-graded from a probe,
+/// because a parsed release title knows the source and a container does not.
+async fn run_backfill_quality(config: &Config, dry_run: bool, limit: usize) -> Result<()> {
+    use cellarr_db::Database;
+
+    let db = Database::connect(&config.database_target())
+        .await
+        .with_context(|| {
+            format!(
+                "opening database at {}",
+                config.database_target_redacted()
+            )
+        })?;
+    let ranking = cellarr_core::QualityRanking::default();
+    let ungraded = db
+        .media_files()
+        .ungraded(limit)
+        .await
+        .context("listing ungraded files")?;
+    println!("{} ungraded file(s) to examine", ungraded.len());
+
+    let (mut graded, mut unreadable) = (0usize, 0usize);
+    let mut by_quality: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (id, path) in &ungraded {
+        match cellarr_jobs::runner::probed_quality(path, &ranking) {
+            Some((quality, info)) => {
+                *by_quality.entry(quality.name.clone()).or_default() += 1;
+                graded += 1;
+                if !dry_run {
+                    db.media_files()
+                        .set_quality(*id, &quality, Some(&info))
+                        .await
+                        .with_context(|| format!("recording quality for {path}"))?;
+                }
+            }
+            None => unreadable += 1,
+        }
+    }
+
+    if dry_run {
+        println!("dry run — nothing written");
+    }
+    println!("graded {graded}, left unreadable {unreadable}");
+    for (name, n) in by_quality {
+        println!("  {name}: {n}");
+    }
+    Ok(())
+}
+
 async fn run_migrate(config: &Config, sources: &[PathBuf]) -> Result<()> {
     use cellarr_db::Database;
 
