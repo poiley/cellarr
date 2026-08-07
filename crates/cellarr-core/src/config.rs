@@ -414,9 +414,30 @@ pub struct IndexerConfig {
     pub kind: String,
     /// The download protocol this indexer's releases use.
     pub protocol: Protocol,
-    /// Whether the indexer is enabled.
+    /// Whether the indexer is enabled at all.
+    ///
+    /// The master switch. An indexer with every capability turned off is not
+    /// enabled, and one with any capability on is.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether periodic RSS/latest polling may use this indexer.
+    ///
+    /// These three mirror the *arr model, where an indexer's capabilities are
+    /// independent rather than one switch: an operator commonly leaves a tracker
+    /// available to searches while keeping it out of the RSS cadence. Collapsing
+    /// them loses that distinction, and — worse — makes a client's write for one
+    /// capability silently land on another.
+    ///
+    /// Default true so an indexer stored before these existed keeps working
+    /// exactly as it did.
+    #[serde(default = "default_true")]
+    pub enable_rss: bool,
+    /// Whether the automatic (scheduled) search may use this indexer.
+    #[serde(default = "default_true")]
+    pub enable_automatic_search: bool,
+    /// Whether an operator-initiated interactive search may use this indexer.
+    #[serde(default = "default_true")]
+    pub enable_interactive_search: bool,
     /// Priority for ordering/tie-breaking (lower is preferred, matching the
     /// *arr convention). When two otherwise-equal releases are found, the one from
     /// the lower-priority-number indexer wins (see the decision engine).

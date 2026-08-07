@@ -303,6 +303,9 @@ async fn configure_indexer(db: &Database, base_url: &str) -> IndexerConfig {
         kind: "torznab".into(),
         protocol: Protocol::Torrent,
         enabled: true,
+        enable_rss: true,
+        enable_automatic_search: true,
+        enable_interactive_search: true,
         priority: 25,
         criteria: Default::default(),
         settings: json!({
