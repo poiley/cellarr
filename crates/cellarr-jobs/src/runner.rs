@@ -234,6 +234,15 @@ enum GrabTrackResult {
     /// from the client. The caller should grab the next-best release. Carries the
     /// failure detail for the run's terminal `Failed` outcome if the loop ends.
     FailedGrabNext(String),
+    /// The release's download link could not be fetched, so nothing was grabbed
+    /// and nothing ever reached the client.
+    ///
+    /// Distinct from [`Self::FailedGrabNext`] because the failure is on our side
+    /// of the wire — an indexer's link endpoint — and says nothing about the
+    /// release. It must not be blocklisted, or an indexer having a bad day would
+    /// permanently poison every release it ever offered. The caller skips it for
+    /// the rest of this run and tries the next candidate.
+    LinkUnavailable(String),
 }
 
 /// The terminal outcome of driving a candidate through the pipeline.
@@ -864,12 +873,25 @@ where
         // mirrors Sonarr/Radarr's "grab next release on failure" self-healing.
         let mut last_reject: Option<String> = None;
         let mut last_failure: Option<String> = None;
+        // Releases whose link could not be fetched this run. Skipped rather than
+        // blocklisted: the fault is the indexer's link endpoint, not the release,
+        // and blocklisting would make an indexer's outage permanent. Per-run, so
+        // the next sweep gives them a fresh chance.
+        let mut unresolvable: std::collections::HashSet<(cellarr_core::IndexerId, String)> =
+            std::collections::HashSet::new();
         for _attempt in 0..MAX_GRAB_NEXT_ATTEMPTS {
             // Walk the candidates for the best grabbable one this attempt. A
             // blocklisted release (including one this run just failed) is skipped;
             // a reject is logged and the next candidate tried.
             let picked = match self
-                .pick_grabbable(run_id, &mut stage, content, &releases, &mut last_reject)
+                .pick_grabbable(
+                    run_id,
+                    &mut stage,
+                    content,
+                    &releases,
+                    &mut last_reject,
+                    &unresolvable,
+                )
                 .await?
             {
                 PickResult::Grabbable(picked) => picked,
@@ -912,6 +934,20 @@ where
                     // Reset the local stage cursor to Decide so the next attempt's
                     // advances are legal (the decision log is an append-only event
                     // stream, so several grab cycles in one run read correctly).
+                    stage = Stage::Decide;
+                    continue;
+                }
+                // No link, so nothing was grabbed and nothing was blocklisted.
+                // Skip this release for the rest of the run and try the next.
+                GrabTrackResult::LinkUnavailable(detail) => {
+                    tracing::warn!(
+                        content = %content.id,
+                        release = %picked.release.title,
+                        detail = %detail,
+                        "no download link for this release; trying the next candidate"
+                    );
+                    unresolvable.insert((picked.release.indexer_id, picked.release.title.clone()));
+                    last_failure = Some(detail);
                     stage = Stage::Decide;
                     continue;
                 }
@@ -1221,6 +1257,9 @@ where
         {
             GrabTrackResult::Done(outcome) => Ok(outcome),
             GrabTrackResult::FailedGrabNext(detail) => Ok(RunOutcome::Failed { detail }),
+            // This path grabs the one release the caller asked for, so there is no
+            // next-best to fall through to: a missing link is simply the failure.
+            GrabTrackResult::LinkUnavailable(detail) => Ok(RunOutcome::Failed { detail }),
         }
     }
 
@@ -1236,8 +1275,16 @@ where
         content: &ContentRef,
         releases: &[Release],
         last_reject: &mut Option<String>,
+        unresolvable: &std::collections::HashSet<(cellarr_core::IndexerId, String)>,
     ) -> Result<PickResult> {
         for release in releases {
+            // A release this run already failed to fetch a link for would be picked
+            // again on every attempt — it is not blocklisted, so nothing else would
+            // exclude it — and the grab-next budget would burn down re-picking it
+            // instead of reaching the healthy indexers' candidates behind it.
+            if unresolvable.contains(&(release.indexer_id, release.title.clone())) {
+                continue;
+            }
             // --- Parse (real cellarr-parse on the *title*) ----------------
             let parsed = cellarr_parse::parse_title(&release.title);
 
@@ -1829,13 +1876,18 @@ where
         // loop moves to the next candidate, so a tracker that has pulled one torrent
         // costs that release and nothing else.
         let release = &if release.link_is_deferred() {
-            self.indexer
-                .resolve(release.clone())
-                .await
-                .map_err(|e| JobError::Stage {
-                    stage: Stage::Grab,
-                    source: Box::new(e),
-                })?
+            match self.indexer.resolve(release.clone()).await {
+                Ok(resolved) => resolved,
+                // Returned, not propagated. Propagating ended the whole run, so one
+                // indexer that could not hand out links took down acquisition
+                // entirely: its candidates won on quality, died here, and the
+                // healthy indexers' releases in the same search were never tried.
+                Err(e) => {
+                    return Ok(GrabTrackResult::LinkUnavailable(format!(
+                        "could not fetch a download link: {e}"
+                    )));
+                }
+            }
         } else {
             release.clone()
         };

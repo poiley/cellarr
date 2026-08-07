@@ -1813,3 +1813,118 @@ async fn the_search_funnel_accounts_for_every_candidate_that_never_reached_decid
         "a candidate filtered before Decide must not be blocklisted either"
     );
 }
+
+/// An indexer that hands out no links must cost its own releases and nothing
+/// else.
+///
+/// This is the failure that took acquisition to zero for two days: one tracker's
+/// link endpoint started refusing every request, its candidates kept winning on
+/// quality, and the resolve error ended the whole run — so a perfectly good
+/// release from a healthy indexer, sitting right behind it in the same search,
+/// was never tried. One broken indexer silently suppressed the working ones.
+struct BrokenLinkIndexer {
+    releases: Vec<Release>,
+    /// Titles whose resolve fails, standing in for a tracker that lists releases
+    /// but will not hand out a download link for them.
+    linkless: Vec<String>,
+}
+
+#[async_trait]
+impl cellarr_core::traits::Indexer for BrokenLinkIndexer {
+    type Error = FakeIndexerError;
+    fn name(&self) -> &str {
+        "broken-link-indexer"
+    }
+    async fn search(&self, _terms: &SearchTerms) -> Result<Vec<Release>, Self::Error> {
+        Ok(self.releases.clone())
+    }
+    async fn latest(&self) -> Result<Vec<Release>, Self::Error> {
+        Ok(self.releases.clone())
+    }
+    async fn resolve(&self, release: Release) -> Result<Release, Self::Error> {
+        if self.linkless.contains(&release.title) {
+            return Err(FakeIndexerError);
+        }
+        Ok(release)
+    }
+}
+
+#[tokio::test]
+async fn a_release_with_no_obtainable_link_does_not_stop_the_next_one_being_grabbed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(tmp.path().join("cellarr.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+
+    let download_dir = tmp.path().join("downloads/movie");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let downloaded = download_dir.join("The.Matrix.1999.1080p.WEB-DL.x264-GROUP.mkv");
+    std::fs::write(&downloaded, b"synthetic movie bytes").unwrap();
+    let library_root = tmp.path().join("library/movies");
+    std::fs::create_dir_all(&library_root).unwrap();
+
+    let node = seed_node(
+        &db,
+        MediaType::Movie,
+        cellarr_core::ContentKind::Movie,
+        Coordinates::Movie,
+    )
+    .await;
+    let registry = registry_for(
+        &node,
+        Some(MovieMeta {
+            title: "The Matrix".into(),
+            aliases: Vec::new(),
+            year: Some(1999),
+            external_ids: Vec::new(),
+        }),
+        None,
+        "The Matrix",
+    );
+
+    // The Bluray outranks the WEB-DL, so it is picked first — and its link cannot
+    // be fetched. The WEB-DL behind it is perfectly grabbable.
+    let mut broken = movie_release("The.Matrix.1999.1080p.BluRay.x264-GROUP");
+    broken.download_url = cellarr_core::release::DEFERRED_LINK.to_string();
+    broken.guid = Some("guid-broken".into());
+    let mut good = movie_release("The.Matrix.1999.1080p.WEB-DL.x264-GROUP");
+    good.guid = Some("guid-good".into());
+
+    let indexer = BrokenLinkIndexer {
+        releases: vec![broken.clone(), good.clone()],
+        linkless: vec![broken.title.clone()],
+    };
+    let client = FakeDownloadClient {
+        content_path: downloaded.to_string_lossy().into_owned(),
+    };
+    let clock = LogicalClock::new(0);
+    let config = runner_config(
+        library_root.clone(),
+        permissive_profile(),
+        "{Movie Title} ({Release Year})/{Movie Title}.{Extension}",
+    );
+
+    let runner = PipelineRunner::new(&indexer, &client, &registry, &db, &clock, &config);
+    let outcome = runner.run(&node).await.unwrap();
+
+    let destinations = match outcome {
+        RunOutcome::Imported { destinations, .. } => destinations,
+        other => panic!("the linkless release must not stop the next one; got {other:?}"),
+    };
+    assert_eq!(destinations.len(), 1);
+    assert!(
+        std::path::Path::new(&destinations[0]).exists(),
+        "the grabbable release must be imported at {:?}",
+        destinations[0]
+    );
+
+    // And the release we could not fetch a link for must NOT be blocklisted: the
+    // fault was the indexer's endpoint, not the release, and blocklisting would
+    // make an indexer's bad afternoon permanent.
+    use cellarr_core::BlocklistRepository as _;
+    let blocklisted = db.blocklist().list().await.unwrap();
+    assert!(
+        blocklisted.is_empty(),
+        "a link we could not fetch is our failure, not the release's, so it must not be blocklisted; got {blocklisted:?}"
+    );
+}
